@@ -1,0 +1,103 @@
+bun.lock
+  s_ed60c185a1fe80::t_6e37627fd2fc27 1-596
+apps/dashboard/tsconfig.app.json
+  s_ed60c185a1fe80::t_56dcbf3b76aba7 1-25
+Cargo.toml
+  s_ed60c185a1fe80::t_066cdaf0c3c4df 1-28
+apps/dashboard/src/main.tsx
+  s_ed60c185a1fe80::t_56dcbf3b76aba7 1-10
+apps/dashboard/eslint.config.js
+  s_ed60c185a1fe80::t_56dcbf3b76aba7 1-22
+apps/dashboard/src/index.css
+  s_ed60c185a1fe80::t_56dcbf3b76aba7 2,4-9
+  s_ed60c185a1fe80::t_d467b5d00217b3 1,3
+packages/cli/package.json
+  s_ed60c185a1fe80::t_0ca13f3ddc85c8 1-20
+package.json
+  s_ed60c185a1fe80::t_126f8fd5418b87 1-19
+apps/dashboard/.gitignore
+  s_ed60c185a1fe80::t_56dcbf3b76aba7 1-24
+Cargo.lock
+  s_ed60c185a1fe80::t_6e37627fd2fc27 1-632
+packages/policy/schema/policy.schema.json
+  s_ed60c185a1fe80::t_19eff444c3a710 1-40
+packages/api/package.json
+  s_ed60c185a1fe80::t_9a61c7c231ca81 1-19
+packages/cli/src/index.ts
+  s_ed60c185a1fe80::t_4fd58160865864 1-31
+README.md
+  s_ed60c185a1fe80::t_cdf67e0a637bb7 1-2,4,7,9,14-16,18,22,25-31,33-38,40,48-50,52,54,65,67,73-75,77-79,88,90,94-97,99,101-114,116-126,128-136,138-139,141-142,144-145,147-151,153,155,157,160-161,163-165,173-176,188-190,192,194,197-199,201-202
+  s_ed60c185a1fe80::t_7aa4bd798d391f 158,167,169-170,172
+  s_ed60c185a1fe80::t_4c32f694b7b95f 3,5-6,8,10-13,17,19-21,23-24,32,39,41-47,51,53,55-60,62-64,66,68-72,76,80-87,89,91-93,98,100,115,127,137,140,143,146,152,154,156,159,162,166,168,171,177-187,191,193,195-196,200
+  s_ed60c185a1fe80::t_329d3222d0e698 61
+packages/api/src/index.ts
+  s_ed60c185a1fe80::t_5a9854604d045a 1-22
+policies/agent.yaml
+  s_ed60c185a1fe80::t_6576f6e5e8f201 1-27
+apps/dashboard/index.html
+  s_ed60c185a1fe80::t_56dcbf3b76aba7 1-5,7-12
+  s_ed60c185a1fe80::t_60bdbff3a3875e 6
+crates/honmoon-proxy/src/lib.rs
+  s_ed60c185a1fe80::t_6f3f5487d98420 1-30,36-50,53-56
+  s_ed60c185a1fe80::t_28f6c4f15f7379 31-35,51-52,57-58
+apps/dashboard/tsconfig.node.json
+  s_ed60c185a1fe80::t_56dcbf3b76aba7 1-24
+packages/policy/tsconfig.json
+  s_ed60c185a1fe80::t_9e01fad70318dc 1-16
+packages/policy/package.json
+  s_ed60c185a1fe80::t_db6973d0a2c7e9 1-19
+crates/honmoon-cli/src/main.rs
+  s_ed60c185a1fe80::t_dbf0afc665ca20 1-66
+  s_ed60c185a1fe80::t_28f6c4f15f7379 67
+.gitignore
+  s_ed60c185a1fe80::t_734c7985f3370f 1-18
+apps/dashboard/src/App.tsx
+  s_ed60c185a1fe80::t_56dcbf3b76aba7 2-4,11,23,25,33-36
+  s_ed60c185a1fe80::t_ee61d3b5dd7d8e 1,5-10,12-22,24,26-32
+crates/honmoon-core/Cargo.toml
+  s_ed60c185a1fe80::t_3a3588e71c2bc4 3-8,11-13
+  s_ed60c185a1fe80::t_28f6c4f15f7379 1-2,9-10
+apps/dashboard/README.md
+  s_ed60c185a1fe80::t_56dcbf3b76aba7 1-73
+packages/policy/src/index.ts
+  s_ed60c185a1fe80::t_a880ed7293896c 1-31
+packages/cli/tsconfig.json
+  s_ed60c185a1fe80::t_bdd885e9d6a000 1-14
+packages/api/tsconfig.json
+  s_ed60c185a1fe80::t_865e02ded0eb4a 1-14
+crates/honmoon-core/src/lib.rs
+  s_ed60c185a1fe80::t_28f6c4f15f7379 77-78,85-87,103,109,124-125
+  s_ed60c185a1fe80::t_d438e9448656a8 1-76,79-84,88-102,104-108,110-123
+crates/honmoon-cli/Cargo.toml
+  s_ed60c185a1fe80::t_28f6c4f15f7379 1-2,9,14
+  s_ed60c185a1fe80::t_78474b05377c35 3-8,10-13,15-21
+crates/honmoon-proxy/Cargo.toml
+  s_ed60c185a1fe80::t_898fe7c5923e9e 3-8,11-15
+  s_ed60c185a1fe80::t_28f6c4f15f7379 1-2,9-10
+apps/dashboard/tsconfig.json
+  s_ed60c185a1fe80::t_56dcbf3b76aba7 1-7
+rust-toolchain.toml
+  s_ed60c185a1fe80::t_ffdb6828820c0e 1-3
+apps/dashboard/vite.config.ts
+  s_ed60c185a1fe80::t_56dcbf3b76aba7 1-2,4-6,13
+  s_ed60c185a1fe80::t_989a0b6cfb2f9d 3,7-12
+apps/dashboard/package.json
+  s_ed60c185a1fe80::t_56dcbf3b76aba7 1,3,5-12,16,19-21,23,25-31,33-37
+  s_ed60c185a1fe80::t_12dd1ee0b5687b 2,4,13-15,17-18,22,24,32
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.8",
+  "base_commit_sha": "1653ae833bd35311336a8c3834d9cb85bfeb6e35",
+  "prompts": {},
+  "sessions": {
+    "s_ed60c185a1fe80": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "319316d6-5908-4852-a2a0-4c6af3d2067c",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Minsu Lee <amond@amond.net>"
+    }
+  }
+}
