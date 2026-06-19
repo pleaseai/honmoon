@@ -1,0 +1,21 @@
+[package]
+name = "honmoon-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "Honmoon CLI — run / gateway / join"
+
+[[bin]]
+name = "honmoon"
+path = "src/main.rs"
+
+[dependencies]
+honmoon-core.workspace = true
+honmoon-proxy.workspace = true
+tokio.workspace = true
+clap.workspace = true
+anyhow.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true

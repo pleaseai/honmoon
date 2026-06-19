@@ -1,0 +1,13 @@
+[package]
+name = "honmoon-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "Honmoon policy engine, CEL evaluation, and protocol facts model"
+
+[dependencies]
+serde.workspace = true
+serde_yaml.workspace = true
+thiserror.workspace = true

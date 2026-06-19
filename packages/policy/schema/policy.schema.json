@@ -1,0 +1,40 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://honmoon.dev/schema/policy.schema.json",
+  "title": "Honmoon Policy",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "version": { "type": "integer", "minimum": 1 },
+    "egress": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "default": { "$ref": "#/$defs/verdict" },
+        "allow": { "type": "array", "items": { "type": "string" } },
+        "deny": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "rules": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/rule" }
+    }
+  },
+  "$defs": {
+    "verdict": {
+      "type": "string",
+      "enum": ["allow", "deny", "pause"]
+    },
+    "rule": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "endpoint", "condition", "verdict"],
+      "properties": {
+        "name": { "type": "string" },
+        "endpoint": { "type": "string" },
+        "condition": { "type": "string" },
+        "verdict": { "$ref": "#/$defs/verdict" }
+      }
+    }
+  }
+}

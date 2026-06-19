@@ -1,0 +1,15 @@
+[package]
+name = "honmoon-proxy"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "Honmoon wire-level proxy and protocol parsers (HTTP/SQL/K8s)"
+
+[dependencies]
+honmoon-core.workspace = true
+tokio.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+tracing.workspace = true

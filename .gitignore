@@ -1,0 +1,18 @@
+# Rust
+/target
+**/*.rs.bk
+
+# Node / Bun
+node_modules/
+dist/
+.vite/
+*.tsbuildinfo
+
+# Bun
+bun.lockb
+
+# Editor / OS
+.DS_Store
+.idea/
+.vscode/
+*.log

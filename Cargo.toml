@@ -1,0 +1,28 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/honmoon-core",
+    "crates/honmoon-proxy",
+    "crates/honmoon-cli",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+repository = "https://github.com/amondnet/honmoon-mono"
+rust-version = "1.85"
+
+[workspace.dependencies]
+honmoon-core = { path = "crates/honmoon-core" }
+honmoon-proxy = { path = "crates/honmoon-proxy" }
+
+# Shared third-party deps (pin centrally, opt in per crate)
+tokio = { version = "1", features = ["full"] }
+serde = { version = "1", features = ["derive"] }
+serde_yaml = "0.9"
+anyhow = "1"
+thiserror = "2"
+clap = { version = "4", features = ["derive"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
