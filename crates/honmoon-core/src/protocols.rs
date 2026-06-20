@@ -44,19 +44,26 @@ pub fn parse_sql(query: &str) -> SqlFacts {
 
     // Table extraction depends on the verb's syntax.
     let table = match verb.as_str() {
-        // DROP TABLE x / TRUNCATE TABLE x / TRUNCATE x
+        // DROP TABLE [IF EXISTS] x / TRUNCATE [TABLE] [ONLY] x / DROP MATERIALIZED VIEW x
         "DROP" | "TRUNCATE" => {
-            let mut rest = tokens;
-            let next = rest.next().unwrap_or_default();
-            // Skip an optional object keyword (TABLE/VIEW/INDEX/...).
-            if next.eq_ignore_ascii_case("table")
-                || next.eq_ignore_ascii_case("view")
-                || next.eq_ignore_ascii_case("index")
-            {
-                rest.next().unwrap_or_default()
-            } else {
-                next
-            }
+            // Skip leading object-type and option keywords; the first token that
+            // is not one of these is the relation name.
+            const MODIFIERS: &[&str] = &[
+                "table",
+                "view",
+                "materialized",
+                "index",
+                "sequence",
+                "schema",
+                "database",
+                "if",
+                "exists",
+                "concurrently",
+                "only",
+            ];
+            tokens
+                .find(|t| !MODIFIERS.iter().any(|m| t.eq_ignore_ascii_case(m)))
+                .unwrap_or_default()
         }
         // INSERT INTO x / DELETE FROM x / SELECT ... FROM x
         "INSERT" | "DELETE" | "SELECT" => {
@@ -124,15 +131,16 @@ pub fn parse_k8s_request(method: &str, path: &str) -> K8sFacts {
     let mut resource = String::new();
     let mut has_resource_name = false;
 
-    if rest.first() == Some(&"namespaces") {
-        // namespaces/{ns}/{resource}/{name?}
-        if let Some(ns) = rest.get(1) {
-            namespace = ns.to_ascii_lowercase();
-        }
-        if let Some(res) = rest.get(2) {
-            resource = res.to_ascii_lowercase();
-            has_resource_name = rest.len() >= 4;
-        }
+    if rest.first() == Some(&"namespaces") && rest.len() >= 3 {
+        // Namespaced resource: namespaces/{ns}/{resource}/{name?}
+        namespace = rest[1].to_ascii_lowercase();
+        resource = rest[2].to_ascii_lowercase();
+        has_resource_name = rest.len() >= 4;
+    } else if rest.first() == Some(&"namespaces") {
+        // The Namespace resource itself: `/api/v1/namespaces` (list) or
+        // `/api/v1/namespaces/{name}` (get) — `namespaces` IS the resource.
+        resource = "namespaces".to_string();
+        has_resource_name = rest.len() == 2;
     } else if let Some(res) = rest.first() {
         // Cluster-scoped: {resource}/{name?}
         resource = res.to_ascii_lowercase();
@@ -235,6 +243,33 @@ mod tests {
         assert_eq!(f.resource, "deployments");
         assert_eq!(f.namespace, "");
         assert_eq!(f.verb, "get"); // named resource → get
+    }
+
+    #[test]
+    fn drop_if_exists_extracts_real_table() {
+        assert_eq!(parse_sql("DROP TABLE IF EXISTS users").table, "users");
+        assert_eq!(parse_sql("DROP MATERIALIZED VIEW mv").table, "mv");
+        assert_eq!(parse_sql("TRUNCATE ONLY accounts").table, "accounts");
+        assert_eq!(parse_sql("DROP INDEX CONCURRENTLY idx_a").table, "idx_a");
+    }
+
+    #[test]
+    fn k8s_namespace_resource_itself() {
+        // Regression: `namespaces` as the cluster-scoped resource, not a prefix.
+        let list = parse_k8s_request("GET", "/api/v1/namespaces");
+        assert_eq!(list.resource, "namespaces");
+        assert_eq!(list.namespace, "");
+        assert_eq!(list.verb, "list");
+
+        let get = parse_k8s_request("DELETE", "/api/v1/namespaces/prod");
+        assert_eq!(get.resource, "namespaces");
+        assert_eq!(get.namespace, "");
+        assert_eq!(get.verb, "delete"); // named → delete a namespace
+
+        // Still parses a namespaced resource under a namespace.
+        let secret = parse_k8s_request("GET", "/api/v1/namespaces/prod/secrets");
+        assert_eq!(secret.resource, "secrets");
+        assert_eq!(secret.namespace, "prod");
     }
 
     #[test]
