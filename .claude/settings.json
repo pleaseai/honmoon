@@ -1,0 +1,10 @@
+{
+  "enabledPlugins": {
+    "standards@passionfactory": true,
+    "please@passionfactory": true,
+    "context@passionfactory": true,
+    "github@passionfactory": true,
+    "tidy-first@passionfactory": true,
+    "research@passionfactory": true
+  }
+}

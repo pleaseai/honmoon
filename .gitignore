@@ -16,3 +16,6 @@ bun.lockb
 .idea/
 .vscode/
 *.log
+
+# please plugin runtime state
+.please/state/
