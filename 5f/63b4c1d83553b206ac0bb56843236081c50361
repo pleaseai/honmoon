@@ -1,0 +1,26 @@
+crates/honmoon-proxy/tests/egress.rs
+  s_ed60c185a1fe80::t_e8c4bc937c79e0 31-34,36-38
+.please/docs/tracks/tech-debt-tracker.md
+  s_ed60c185a1fe80::t_3b33eb2106e43c 13
+crates/honmoon-proxy/src/gateway.rs
+  s_ed60c185a1fe80::t_38cb14b66669e4 108-113,119,123,126
+  s_ed60c185a1fe80::t_594c31e1e975c9 70-73
+.github/workflows/ci.yml
+  s_ed60c185a1fe80::t_873819628c09b2 21-22,54-55
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.9",
+  "base_commit_sha": "5f63b4c1d83553b206ac0bb56843236081c50361",
+  "prompts": {},
+  "sessions": {
+    "s_ed60c185a1fe80": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "319316d6-5908-4852-a2a0-4c6af3d2067c",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
