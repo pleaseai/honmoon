@@ -67,6 +67,10 @@ async fn handle(mut client: TcpStream, policy: &Policy) -> std::io::Result<()> {
         Ok(result) => result?,
         Err(_elapsed) => return respond(&mut client, 408, "Request Timeout").await,
     };
+    // None = EOF before terminator, or head exceeded MAX_REQUEST_HEAD — reject.
+    let Some(head) = head else {
+        return respond(&mut client, 400, "Bad Request").await;
+    };
     let Some((method, target)) = parse_request_line(&head) else {
         return respond(&mut client, 400, "Bad Request").await;
     };
@@ -101,24 +105,27 @@ async fn handle(mut client: TcpStream, policy: &Policy) -> std::io::Result<()> {
     Ok(())
 }
 
-/// Read the request head (up to the blank line) without consuming tunnel bytes.
-async fn read_head(client: &mut TcpStream) -> std::io::Result<Vec<u8>> {
+/// Read the request head up to the blank line, without consuming tunnel bytes.
+///
+/// Returns `Some(head)` only when terminated by `\r\n\r\n`. Returns `None` if the
+/// peer closed before the terminator or the head exceeded `MAX_REQUEST_HEAD`, so
+/// the caller rejects partial/oversized heads rather than tunneling on them.
+async fn read_head(client: &mut TcpStream) -> std::io::Result<Option<Vec<u8>>> {
     let mut buf = Vec::with_capacity(256);
     let mut byte = [0u8; 1];
     loop {
         let n = client.read(&mut byte).await?;
         if n == 0 {
-            break;
+            return Ok(None); // EOF before the terminator
         }
         buf.push(byte[0]);
         if buf.ends_with(b"\r\n\r\n") {
-            break;
+            return Ok(Some(buf));
         }
         if buf.len() > MAX_REQUEST_HEAD {
-            break;
+            return Ok(None); // oversized — do not proceed
         }
     }
-    Ok(buf)
 }
 
 /// Parse `METHOD TARGET VERSION` from the first request line.

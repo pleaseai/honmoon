@@ -12,14 +12,6 @@ use std::time::Duration;
 
 use honmoon_core::Policy;
 
-fn free_port() -> u16 {
-    TcpListener::bind("127.0.0.1:0")
-        .unwrap()
-        .local_addr()
-        .unwrap()
-        .port()
-}
-
 /// A minimal HTTP upstream that answers every connection with `200 OK / "ok"`.
 fn start_upstream() -> u16 {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
@@ -36,11 +28,14 @@ fn start_upstream() -> u16 {
     port
 }
 
-/// Start the egress proxy on a free port and wait until it accepts connections.
+/// Start the egress proxy on a freshly bound loopback listener and return its port.
+///
+/// Binds here and hands the socket to the proxy thread (same pattern as
+/// `honmoon run`), so there is no free-port-then-rebind race.
 fn start_proxy(policy: Policy) -> u16 {
-    let port = free_port();
-    let addr = format!("127.0.0.1:{port}");
-    thread::spawn(move || honmoon_proxy::gateway::run(policy, &addr));
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    thread::spawn(move || honmoon_proxy::gateway::serve_listener(policy, listener));
     for _ in 0..250 {
         if TcpStream::connect(("127.0.0.1", port)).is_ok() {
             return port;
