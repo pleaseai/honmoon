@@ -63,6 +63,4 @@ jobs:
 
       - name: Build
         run: bun run build
-
-      - name: Test
-        run: bun test
+        # No JS test suite yet — re-add `bun test` here once packages/* have tests.
