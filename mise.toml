@@ -1,0 +1,54 @@
+# mise.toml — Honmoon dev toolchain (PassionFactory standard)
+# Usage: `mise trust && mise install`. Details: Skill("standards:dev-tooling")
+#
+# Rust is intentionally NOT managed here — the Cargo-canonical `rust-toolchain.toml`
+# (stable + rustfmt + clippy) drives the Rust toolchain via rustup. mise manages the
+# JS side; the tasks below wrap both ecosystems so `mise run check` covers everything.
+
+[tools]
+node = "24"
+bun = "latest"
+
+[env]
+# Secrets must not be inlined — wire dotenvx via Skill("standards:env-management").
+# _.file = ".env"
+
+[tasks.install]
+description = "Install all deps (Rust + JS)"
+run = [
+  "cargo fetch",
+  "bun install",
+]
+
+[tasks.dev]
+description = "Dashboard dev server (HMR)"
+run = "bun run dashboard:dev"
+
+[tasks.build]
+description = "Build Rust workspace + JS (dashboard, control plane)"
+run = [
+  "cargo build --workspace",
+  "bun run build",
+]
+
+[tasks.lint]
+description = "Lint: clippy (Rust) + eslint/tsc (JS)"
+run = [
+  "cargo clippy --workspace --all-targets -- -D warnings",
+  "bun run lint",
+]
+
+[tasks.fmt]
+description = "Format Rust"
+run = "cargo fmt --all"
+
+[tasks.test]
+description = "Test: cargo (Rust) + bun (JS)"
+run = [
+  "cargo test --workspace",
+  "bun test",
+]
+
+[tasks.check]
+description = "Full gate: lint → test"
+depends = ["lint", "test"]

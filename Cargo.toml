@@ -10,7 +10,7 @@ members = [
 version = "0.1.0"
 edition = "2024"
 license = "MIT"
-repository = "https://github.com/amondnet/honmoon-mono"
+repository = "https://github.com/pleaseai/honmoon"
 rust-version = "1.85"
 
 [workspace.dependencies]

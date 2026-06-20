@@ -1,0 +1,13 @@
+# orca.yaml — Orca worktree setup script
+# Runs when Orca creates a worktree. Details: Skill("standards:dev-tooling")
+#
+# Env: $ORCA_ROOT_PATH (source checkout), $ORCA_WORKTREE_PATH (new worktree)
+
+scripts:
+  setup: |
+    set -e
+    mise trust --quiet
+    mise install
+    mise exec -- bunx @pleaseai/worktreeinclude "$ORCA_ROOT_PATH" "$ORCA_WORKTREE_PATH"
+    mise exec -- bun install
+    cargo fetch
