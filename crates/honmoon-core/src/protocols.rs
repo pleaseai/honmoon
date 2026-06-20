@@ -19,14 +19,18 @@ pub fn parse_postgres_query(packet: &[u8]) -> Option<SqlFacts> {
         return None;
     }
     let len = u32::from_be_bytes([packet[1], packet[2], packet[3], packet[4]]) as usize;
-    // `len` covers the 4 length bytes + the NUL-terminated query string.
-    if len < 5 || 1 + len > packet.len() {
+    // `len` covers the 4 length bytes + the NUL-terminated query string, and the
+    // frame must match the buffer exactly — reject trailing/short bytes. The
+    // shortest valid body is a lone NUL, so `len >= 5`.
+    if len < 5 || 1 + len != packet.len() {
         return None;
     }
-    // Query bytes run from offset 5 up to (but not including) the trailing NUL.
-    let body = &packet[5..1 + len];
-    let query = std::str::from_utf8(body).ok()?;
-    let query = query.trim_end_matches('\0');
+    // Body is `packet[5..]` and MUST end in a single NUL terminator.
+    let body = &packet[5..];
+    if body.last() != Some(&0) {
+        return None;
+    }
+    let query = std::str::from_utf8(&body[..body.len() - 1]).ok()?;
     Some(parse_sql(query))
 }
 
@@ -106,36 +110,33 @@ pub fn parse_k8s_request(method: &str, path: &str) -> K8sFacts {
         .filter(|s| !s.is_empty())
         .collect();
 
+    // Skip the fixed API prefix so the version segment is never mistaken for a
+    // resource: core APIs are `/api/{version}/…` (2 segments), grouped APIs are
+    // `/apis/{group}/{version}/…` (3 segments).
+    let prefix = match segments.first() {
+        Some(&"api") => 2,
+        Some(&"apis") => 3,
+        _ => 0,
+    };
+    let rest = segments.get(prefix..).unwrap_or(&[]);
+
     let mut namespace = String::new();
     let mut resource = String::new();
     let mut has_resource_name = false;
 
-    // Walk segments; capture namespace and the resource that follows.
-    let mut i = 0;
-    while i < segments.len() {
-        match segments[i] {
-            "namespaces" if i + 1 < segments.len() => {
-                namespace = segments[i + 1].to_ascii_lowercase();
-                i += 2;
-                // A resource may follow the namespace.
-                if i < segments.len() {
-                    resource = segments[i].to_ascii_lowercase();
-                    has_resource_name = i + 1 < segments.len();
-                    i += 1;
-                }
-            }
-            // Skip the API root/group/version prefix.
-            "api" | "apis" => i += 1,
-            _ => {
-                // First non-prefix segment outside a namespace is the resource
-                // (cluster-scoped, e.g. /api/v1/nodes).
-                if resource.is_empty() && namespace.is_empty() && i >= 2 {
-                    resource = segments[i].to_ascii_lowercase();
-                    has_resource_name = i + 1 < segments.len();
-                }
-                i += 1;
-            }
+    if rest.first() == Some(&"namespaces") {
+        // namespaces/{ns}/{resource}/{name?}
+        if let Some(ns) = rest.get(1) {
+            namespace = ns.to_ascii_lowercase();
         }
+        if let Some(res) = rest.get(2) {
+            resource = res.to_ascii_lowercase();
+            has_resource_name = rest.len() >= 4;
+        }
+    } else if let Some(res) = rest.first() {
+        // Cluster-scoped: {resource}/{name?}
+        resource = res.to_ascii_lowercase();
+        has_resource_name = rest.len() >= 2;
     }
 
     let verb = k8s_verb(method, has_resource_name);
@@ -205,6 +206,35 @@ mod tests {
     fn rejects_non_query_packet() {
         assert!(parse_postgres_query(b"X\0\0\0\x04").is_none());
         assert!(parse_postgres_query(b"Q").is_none());
+    }
+
+    #[test]
+    fn rejects_malformed_query_frames() {
+        // Trailing extra bytes beyond the declared frame length.
+        let mut trailing = pg_query("SELECT 1");
+        trailing.push(b'!');
+        assert!(parse_postgres_query(&trailing).is_none());
+
+        // Body not NUL-terminated: 'Q' | len=8 | "SELECT" (no NUL).
+        let mut no_nul = vec![b'Q'];
+        no_nul.extend_from_slice(&8u32.to_be_bytes());
+        no_nul.extend_from_slice(b"SELECT");
+        assert!(parse_postgres_query(&no_nul).is_none());
+
+        // Length field larger than the buffer.
+        let mut short = vec![b'Q'];
+        short.extend_from_slice(&100u32.to_be_bytes());
+        short.extend_from_slice(b"x\0");
+        assert!(parse_postgres_query(&short).is_none());
+    }
+
+    #[test]
+    fn k8s_grouped_cluster_scoped_resource_not_version() {
+        // Regression: `v1` must not be captured as the resource.
+        let f = parse_k8s_request("GET", "/apis/apps/v1/deployments/api");
+        assert_eq!(f.resource, "deployments");
+        assert_eq!(f.namespace, "");
+        assert_eq!(f.verb, "get"); // named resource → get
     }
 
     #[test]
