@@ -1,0 +1,37 @@
+CLAUDE.md
+  s_ed60c185a1fe80::t_26883bf1b9018b 1-24
+.please/docs/knowledge/tech-stack.md
+  s_ed60c185a1fe80::t_7e303e401b000f 1-49
+.please/config.yml
+  s_ed60c185a1fe80::t_96508eafdec73a 1-29
+.please/docs/knowledge/product.md
+  s_ed60c185a1fe80::t_d756a30d616812 1-60
+.please/docs/knowledge/product-guidelines.md
+  s_ed60c185a1fe80::t_06767a0568a0fd 1-42
+.please/docs/decisions/index.md
+  s_ed60c185a1fe80::t_82e8d133f16938 1-6
+.gitignore
+  s_ed60c185a1fe80::t_ec8b7c15909a7f 19-21
+.please/docs/product-specs/index.md
+  s_ed60c185a1fe80::t_67e401416e991b 1-6
+.please/docs/knowledge/workflow.md
+  s_ed60c185a1fe80::t_0e925fb156789f 1-96
+.please/docs/tracks/tech-debt-tracker.md
+  s_ed60c185a1fe80::t_ec39f153731e8e 1-15
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.9",
+  "base_commit_sha": "f6ea411d1e0cf0bc8b32b7c933660e9a22d1607d",
+  "prompts": {},
+  "sessions": {
+    "s_ed60c185a1fe80": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "319316d6-5908-4852-a2a0-4c6af3d2067c",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Minsu Lee <amond@amond.net>"
+    }
+  }
+}
