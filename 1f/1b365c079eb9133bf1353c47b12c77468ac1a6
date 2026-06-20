@@ -1,0 +1,43 @@
+crates/honmoon-core/src/engine.rs
+  s_ed60c185a1fe80::t_28f52bd00294b9 238-263
+  s_ed60c185a1fe80::t_eaf05c91a32a41 79-88
+  s_ed60c185a1fe80::t_ab00d3c1201f76 185-237
+crates/honmoon-core/src/protocols.rs
+  s_ed60c185a1fe80::t_908300649a89e9 1-192,196-197,200-237,239-248
+  s_ed60c185a1fe80::t_84e37813d4fb10 193-195,198-199,238
+docs/roadmap.md
+  s_ed60c185a1fe80::t_6527e537ac743c 63,65,67-71,73-77
+.please/docs/tracks/active/phase-3-sql-k8s-parsers/metadata.json
+  s_ed60c185a1fe80::t_2dc2de3b2ba817 1-11
+.please/docs/tracks.jsonl
+  s_ed60c185a1fe80::t_2dc2de3b2ba817 1-2
+.please/docs/knowledge/tech-stack.md
+  s_ed60c185a1fe80::t_90a47bab32de54 18
+.please/docs/tracks/active/phase-3-sql-k8s-parsers/spec.md
+  s_ed60c185a1fe80::t_2dc2de3b2ba817 1-26
+ARCHITECTURE.md
+  s_ed60c185a1fe80::t_fed378c83258de 124-125
+  s_ed60c185a1fe80::t_201698272ae95e 57-58
+  s_ed60c185a1fe80::t_27ad884067caa9 74
+.please/docs/tracks/tech-debt-tracker.md
+  s_ed60c185a1fe80::t_f4c49282daa187 14
+crates/honmoon-core/src/lib.rs
+  s_ed60c185a1fe80::t_b7e1ff2e9d34d0 9
+  s_ed60c185a1fe80::t_ebdaff461d801f 74-76,85-88,100-119
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.9",
+  "base_commit_sha": "1f1b365c079eb9133bf1353c47b12c77468ac1a6",
+  "prompts": {},
+  "sessions": {
+    "s_ed60c185a1fe80": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "319316d6-5908-4852-a2a0-4c6af3d2067c",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
