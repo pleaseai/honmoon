@@ -29,7 +29,12 @@ pub fn evaluate(policy: &Policy, facts: &Facts) -> Verdict {
 }
 
 /// Match a domain against a pattern supporting a leading `*.` wildcard.
+///
+/// Matching is case-insensitive. Callers should pass an already-canonicalized
+/// `domain` (lowercased, trailing dot stripped); the pattern is lowercased here
+/// so policy authors need not worry about case.
 fn matches_domain(pattern: &str, domain: &str) -> bool {
+    let pattern = pattern.to_ascii_lowercase();
     if let Some(suffix) = pattern.strip_prefix("*.") {
         domain == suffix || domain.ends_with(&format!(".{suffix}"))
     } else {
@@ -54,6 +59,16 @@ mod tests {
 
         assert_eq!(evaluate(&policy, &facts("github.com")), Verdict::Allow);
         assert_eq!(evaluate(&policy, &facts("evil.com")), Verdict::Deny);
+    }
+
+    #[test]
+    fn pattern_matching_is_case_insensitive() {
+        // Policy patterns may use any case; the (already-canonicalized) domain matches.
+        assert!(matches_domain("GitHub.com", "github.com"));
+        assert!(matches_domain(
+            "*.GitHubUserContent.com",
+            "raw.githubusercontent.com"
+        ));
     }
 
     #[test]

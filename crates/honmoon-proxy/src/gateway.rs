@@ -11,7 +11,7 @@
 //!
 //! [ADR-0002]: ../../../.please/docs/decisions/0002-phase1-connect-proxy-on-tokio.md
 
-use std::net::SocketAddr;
+use std::time::Duration;
 
 use honmoon_core::{Facts, Policy, Verdict};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -20,18 +20,30 @@ use tokio::net::{TcpListener, TcpStream};
 use crate::evaluate;
 
 const MAX_REQUEST_HEAD: usize = 8 * 1024;
+/// Max time to receive the CONNECT request head before giving up (slowloris guard).
+const HEAD_READ_TIMEOUT: Duration = Duration::from_secs(10);
 
-/// Run the egress proxy, blocking forever (until process exit).
+/// Bind `addr` and run the egress proxy, blocking forever (until process exit).
 pub fn run(policy: Policy, addr: &str) -> ! {
-    let runtime = tokio::runtime::Runtime::new().expect("build tokio runtime");
-    let addr: SocketAddr = addr.parse().expect("valid listen address");
-    runtime.block_on(serve(policy, addr))
+    let listener = std::net::TcpListener::bind(addr).unwrap_or_else(|e| panic!("bind {addr}: {e}"));
+    serve_listener(policy, listener)
 }
 
-async fn serve(policy: Policy, addr: SocketAddr) -> ! {
-    let listener = TcpListener::bind(addr)
-        .await
-        .unwrap_or_else(|e| panic!("bind {addr}: {e}"));
+/// Run the egress proxy on an already-bound listener, blocking forever.
+///
+/// Taking a pre-bound listener lets `honmoon run` hand off a socket it bound
+/// itself — no free-port-then-rebind window (no TOCTOU race).
+pub fn serve_listener(policy: Policy, listener: std::net::TcpListener) -> ! {
+    listener
+        .set_nonblocking(true)
+        .expect("set listener non-blocking");
+    let runtime = tokio::runtime::Runtime::new().expect("build tokio runtime");
+    runtime.block_on(serve(policy, listener))
+}
+
+async fn serve(policy: Policy, std_listener: std::net::TcpListener) -> ! {
+    let listener = TcpListener::from_std(std_listener).expect("adopt std listener");
+    let addr = listener.local_addr().expect("listener addr");
     tracing::info!(%addr, "egress proxy listening");
     let policy = std::sync::Arc::new(policy);
     loop {
@@ -51,7 +63,10 @@ async fn serve(policy: Policy, addr: SocketAddr) -> ! {
 
 /// Handle one client connection: parse the CONNECT request, apply policy, tunnel.
 async fn handle(mut client: TcpStream, policy: &Policy) -> std::io::Result<()> {
-    let head = read_head(&mut client).await?;
+    let head = match tokio::time::timeout(HEAD_READ_TIMEOUT, read_head(&mut client)).await {
+        Ok(result) => result?,
+        Err(_elapsed) => return respond(&mut client, 408, "Request Timeout").await,
+    };
     let Some((method, target)) = parse_request_line(&head) else {
         return respond(&mut client, 400, "Bad Request").await;
     };
@@ -61,9 +76,9 @@ async fn handle(mut client: TcpStream, policy: &Policy) -> std::io::Result<()> {
         return respond(&mut client, 405, "Method Not Allowed").await;
     }
 
-    let host = host_of(&target);
+    let host = canonical_host(&target);
     let facts = Facts {
-        domain: Some(host.to_string()),
+        domain: Some(host.clone()),
     };
     if evaluate(policy, &facts) != Verdict::Allow {
         tracing::info!(domain = %host, "egress blocked");
@@ -125,6 +140,13 @@ fn host_of(target: &str) -> &str {
     target.rsplit_once(':').map(|(h, _)| h).unwrap_or(target)
 }
 
+/// Canonicalize the CONNECT host for policy evaluation: strip the port, drop a
+/// trailing dot (FQDN root), and lowercase. Without this, `GitHub.com` or
+/// `github.com.` could bypass a `github.com` rule.
+fn canonical_host(target: &str) -> String {
+    host_of(target).trim_end_matches('.').to_ascii_lowercase()
+}
+
 async fn respond(client: &mut TcpStream, status: u16, reason: &str) -> std::io::Result<()> {
     let msg =
         format!("HTTP/1.1 {status} {reason}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
@@ -148,5 +170,12 @@ mod tests {
         assert_eq!(host_of("github.com:443"), "github.com");
         assert_eq!(host_of("[::1]:443"), "::1");
         assert_eq!(host_of("nohost"), "nohost");
+    }
+
+    #[test]
+    fn canonical_host_lowercases_and_trims_dot() {
+        assert_eq!(canonical_host("GitHub.com:443"), "github.com");
+        assert_eq!(canonical_host("github.com.:443"), "github.com");
+        assert_eq!(canonical_host("API.Example.COM:8443"), "api.example.com");
     }
 }

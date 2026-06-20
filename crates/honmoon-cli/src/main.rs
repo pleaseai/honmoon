@@ -1,8 +1,7 @@
 //! `honmoon` — policy-based firewall gateway CLI.
 
-use std::net::{TcpListener, TcpStream};
+use std::net::TcpListener;
 use std::path::PathBuf;
-use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
@@ -70,14 +69,16 @@ fn run(policy: PathBuf, argv: Vec<String>) -> Result<()> {
         .context("no command given; usage: honmoon run --policy P -- <cmd> [args]")?;
 
     let policy = load_policy(&policy)?;
-    let addr = format!("127.0.0.1:{}", free_port()?);
 
+    // Bind the proxy socket here and hand it to the proxy thread. Binding in one
+    // place (rather than allocating a port, dropping it, and rebinding) closes
+    // the TOCTOU window where another process could steal the port.
+    let listener = TcpListener::bind("127.0.0.1:0").context("binding egress proxy")?;
+    let addr = listener.local_addr()?;
     {
         let policy = policy.clone();
-        let addr = addr.clone();
-        std::thread::spawn(move || honmoon_proxy::gateway::run(policy, &addr));
+        std::thread::spawn(move || honmoon_proxy::gateway::serve_listener(policy, listener));
     }
-    wait_until_listening(&addr)?;
 
     let proxy_url = format!("http://{addr}");
     tracing::info!(%proxy_url, "egress proxy ready");
@@ -100,22 +101,4 @@ fn load_policy(path: &PathBuf) -> Result<Policy> {
     let src = std::fs::read_to_string(path)
         .with_context(|| format!("reading policy {}", path.display()))?;
     Ok(Policy::from_yaml(&src)?)
-}
-
-/// Ask the OS for an unused TCP port on loopback.
-fn free_port() -> Result<u16> {
-    let listener = TcpListener::bind("127.0.0.1:0").context("allocating a free port")?;
-    Ok(listener.local_addr()?.port())
-}
-
-/// Block until `addr` accepts connections, or time out.
-fn wait_until_listening(addr: &str) -> Result<()> {
-    let deadline = Instant::now() + Duration::from_secs(5);
-    while Instant::now() < deadline {
-        if TcpStream::connect(addr).is_ok() {
-            return Ok(());
-        }
-        std::thread::sleep(Duration::from_millis(20));
-    }
-    anyhow::bail!("egress proxy did not start listening on {addr}");
 }
