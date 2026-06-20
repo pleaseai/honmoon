@@ -1,17 +1,17 @@
 {
   "name": "@honmoon/policy",
-  "version": "0.1.0",
   "type": "module",
-  "main": "src/index.ts",
-  "types": "src/index.ts",
+  "version": "0.1.0",
   "exports": {
     ".": "./src/index.ts",
     "./schema": "./schema/policy.schema.json"
   },
+  "main": "src/index.ts",
+  "types": "src/index.ts",
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "test": "bun test",
-    "lint": "tsc --noEmit -p tsconfig.json"
+    "typecheck": "tsc --noEmit -p tsconfig.json"
   },
   "devDependencies": {
     "typescript": "~6.0.2"

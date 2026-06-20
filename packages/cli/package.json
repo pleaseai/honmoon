@@ -1,14 +1,14 @@
 {
   "name": "@honmoon/cli",
-  "version": "0.1.0",
   "type": "module",
+  "version": "0.1.0",
   "bin": {
     "honmoonctl": "src/index.ts"
   },
   "scripts": {
     "build": "bun build src/index.ts --target=bun --outdir dist",
     "test": "bun test",
-    "lint": "tsc --noEmit -p tsconfig.json"
+    "typecheck": "tsc --noEmit -p tsconfig.json"
   },
   "dependencies": {
     "@honmoon/policy": "workspace:*"

@@ -42,7 +42,11 @@ pub struct Egress {
 
 impl Default for Egress {
     fn default() -> Self {
-        Self { default: Verdict::Deny, allow: Vec::new(), deny: Vec::new() }
+        Self {
+            default: Verdict::Deny,
+            allow: Vec::new(),
+            deny: Vec::new(),
+        }
     }
 }
 

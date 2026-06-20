@@ -1,5 +1,8 @@
 # Honmoon
 
+[![CI](https://github.com/pleaseai/honmoon/actions/workflows/ci.yml/badge.svg)](https://github.com/pleaseai/honmoon/actions/workflows/ci.yml)
+[![codecov](https://codecov.io/gh/pleaseai/honmoon/branch/master/graph/badge.svg)](https://codecov.io/gh/pleaseai/honmoon)
+
 > A **policy-based firewall gateway** guarding the boundary between AI agents and production systems.
 
 Honmoon is a security gateway that intercepts an AI agent's network traffic (e.g. Claude Code,
@@ -106,10 +109,10 @@ egress:
   default: deny
   allow:
     - github.com
-    - "*.githubusercontent.com"
+    - '*.githubusercontent.com'
     - api.anthropic.com
   deny:
-    - "*.internal.corp"
+    - '*.internal.corp'
 ```
 
 Protocol-aware rules using CEL:
@@ -124,10 +127,10 @@ rules:
   - name: sql-no-prod-drop
     endpoint: postgres-prod
     condition: "sql.verb == 'DROP' || sql.verb == 'TRUNCATE'"
-    verdict: pause   # requires human approval
+    verdict: pause # requires human approval
 
   - name: http-block-large-upload
-    endpoint: "*"
+    endpoint: '*'
     condition: "http.method == 'POST' && http.body_size > 10485760"
     verdict: deny
 ```
@@ -179,8 +182,8 @@ cd apps/dashboard && bun run dev
 Full phased roadmap (OSS / paid boundary, exit criteria): [`docs/roadmap.md`](./docs/roadmap.md).
 
 - [x] Scaffold the Rust data plane (`crates/`)
-- [ ] **Phase 1** — HTTP egress MVP on Pingora ([ADR-0001](./.please/docs/decisions/0001-adopt-pingora-http-data-plane.md))
-- [ ] **Phase 2** — CEL evaluator + HTTP facts
+- [x] **Phase 1** — HTTP egress MVP: terminating CONNECT proxy + domain allowlist ([ADR-0002](./.please/docs/decisions/0002-phase1-connect-proxy-on-tokio.md))
+- [ ] **Phase 2** — CEL evaluator + HTTP facts (TLS termination; revisit Pingora)
 - [ ] **Phase 3** — SQL / Kubernetes protocol parsers
 - [ ] **Phase 4** — `pause` approval workflow + audit log + dashboard
 - [ ] **Phase 5** — isolation modes (`run` / `gateway` / `join`)

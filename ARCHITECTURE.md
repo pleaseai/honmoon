@@ -33,14 +33,14 @@ Dependencies flow downward only. Lower layers must not import upper layers.
 │                     @honmoon/api (Bun.serve), @honmoon/cli,   │
 │                     @honmoon/dashboard (React SPA)            │
 ├─────────────────────────────────────────────────────────────┤
-│  Application Layer  honmoon-proxy (Pingora ProxyHttp +        │
-│                     forwarding + parsers), api handlers       │
+│  Application Layer  honmoon-proxy (CONNECT egress proxy +     │
+│                     parsers), api handlers                    │
 ├─────────────────────────────────────────────────────────────┤
 │  Domain Layer       honmoon-core (Policy/Verdict/Facts/CEL),  │
 │                     @honmoon/policy (types + JSON Schema)     │
 ├─────────────────────────────────────────────────────────────┤
-│  Infrastructure     pingora (HTTP, BoringSSL TLS), tokio      │
-│                     sockets, rust-embed, Bun, (planned) D1/DO │
+│  Infrastructure     tokio sockets, rust-embed, Bun,           │
+│                     (Phase 2+) Pingora/TLS, (planned) D1/DO   │
 └─────────────────────────────────────────────────────────────┘
 ```
 
@@ -70,7 +70,7 @@ For understanding policy authoring:
 | Module | Purpose | Key Files | Depends On | Depended By |
 |--------|---------|-----------|------------|-------------|
 | `crates/honmoon-core/` | Policy model, YAML parse, CEL eval (planned) | `src/lib.rs` | `serde`, `serde_yaml`, `thiserror` | `honmoon-proxy`, `honmoon-cli` |
-| `crates/honmoon-proxy/` | HTTP(S) egress proxy (Pingora `ProxyHttp`) + SQL/K8s parsers, `evaluate()` | `src/lib.rs` | `honmoon-core`, `pingora`, `tokio`, `tracing` | `honmoon-cli` |
+| `crates/honmoon-proxy/` | CONNECT egress proxy (`gateway`) + `evaluate()`; SQL/K8s parsers later | `src/gateway.rs`, `src/lib.rs` | `honmoon-core`, `tokio`, `tracing` | `honmoon-cli` |
 | `crates/honmoon-cli/` | `honmoon` binary — run/gateway/join | `src/main.rs` | `honmoon-core`, `honmoon-proxy`, `clap` | — (binary) |
 | `packages/policy/` | TS policy types + JSON Schema | `src/index.ts`, `schema/` | — | `@honmoon/cli`, `@honmoon/api`, `@honmoon/dashboard` |
 | `packages/cli/` | `honmoonctl` control-plane CLI | `src/index.ts` | `@honmoon/policy` | — (binary) |
@@ -86,9 +86,9 @@ must never silently allow a request. Violating this turns the firewall into a no
 (`crates/*`) must remain Apache-2.0 (or equivalent OSS). Monetization happens in the
 control/cloud plane only. Gating the data plane breaks the trust that drives adoption.
 
-**`honmoon-core` is transport-agnostic**: Do NOT add `tokio`, `pingora`, sockets, or any I/O
+**`honmoon-core` is transport-agnostic**: Do NOT add `tokio`, sockets, or any I/O
 dependency to `honmoon-core`. It is pure policy logic so it can be embedded anywhere and
-unit-tested without a runtime. Pingora stays confined to `honmoon-proxy` / `honmoon-cli`.
+unit-tested without a runtime. Transport/proxy code stays in `honmoon-proxy` / `honmoon-cli`.
 
 **Dual policy model stays in sync**: The Rust model (`honmoon-core`) and the TS model
 (`@honmoon/policy`) describe the same policy. Changes to one must update the other (tracked as
@@ -114,11 +114,13 @@ TS uses console/Bun logging for now.
 
 ## Quality Notes
 
-**Well-tested**: `honmoon-core` (policy parsing) and `honmoon-proxy` (domain matching) have
-unit tests and are safe to extend.
+**Well-tested**: `honmoon-core` (policy parsing), `honmoon-proxy` (domain matching, CONNECT
+parsing + hermetic egress integration test in `tests/egress.rs`). Safe to extend.
 
-**Fragile**: `honmoon-cli` `run`/`gateway`/`join` are stubs (`bail!`) — the actual sandbox,
-forwarding proxy, and tunnel are not yet implemented. The dashboard and API are scaffolds.
+**Fragile / incomplete**: `honmoon run` does not yet sandbox the child's network namespace —
+it only sets proxy env vars, so a child that ignores them escapes the policy. `honmoon join`
+is a stub (`bail!`). TLS termination / HTTP body inspection and SQL/K8s parsing are unbuilt.
+The dashboard and API are scaffolds.
 
 **Technical debt**: TD-001 (duplicated Rust/TS policy model), TD-002 (`serde_yaml` deprecated).
 Tracked in `.please/docs/tracks/tech-debt-tracker.md`.
@@ -129,5 +131,6 @@ _Last updated: 2026-06-20_
 
 _Key ADRs:_
 
-- _[ADR-0001](.please/docs/decisions/0001-adopt-pingora-http-data-plane.md): Adopt Pingora for the HTTP/HTTPS data plane (BoringSSL TLS backend)._
+- _[ADR-0002](.please/docs/decisions/0002-phase1-connect-proxy-on-tokio.md): Phase 1 CONNECT egress proxy on raw tokio; defer Pingora to the TLS-inspection phase._
+- _[ADR-0001](.please/docs/decisions/0001-adopt-pingora-http-data-plane.md): Adopt Pingora (superseded by 0002)._
 - _Candidates not yet recorded: CEL over HCL, Rust data plane + Bun control plane, open-core boundary._

@@ -8,7 +8,7 @@ Honmoon is a monorepo that separates languages by responsibility.
 
 | Layer | Language / Tool | Why |
 |-------|-----------------|-----|
-| Data plane | **Rust** (edition 2024) + **Pingora** (HTTP) | Wire-level proxy, protocol parsers, TLS, CEL eval — performance & memory safety critical. Single-binary deploy. HTTP(S) egress built on Cloudflare's Pingora ([ADR-0001](../decisions/0001-adopt-pingora-http-data-plane.md)). |
+| Data plane | **Rust** (edition 2024) | Wire-level proxy, protocol parsers, TLS, CEL eval — performance & memory safety critical. Single-binary deploy. Phase 1 egress is a tokio CONNECT proxy; Pingora deferred to the TLS-inspection phase ([ADR-0002](../decisions/0002-phase1-connect-proxy-on-tokio.md)). |
 | Control plane | **TypeScript on Bun** | CLI, policy compiler/validation, management & audit API. Fast iteration, ESM, native HTTP server. |
 | Dashboard | **React 19 + Vite 8 + Tailwind 4** | SPA embedded into the Rust binary via `rust-embed`. Mirrors clawpatrol for component reuse. |
 | Egress backend (optional) | **Squid (Docker)** | Battle-tested HTTP proxy + SSL Bump as an alternate backend. |
@@ -17,9 +17,10 @@ Honmoon is a monorepo that separates languages by responsibility.
 
 - `honmoon-core` — policy model (`Policy`/`Egress`/`Rule`/`Verdict`/`Facts`), YAML parsing, CEL eval. Transport-agnostic.
   - deps: `serde`, `serde_yaml` (⚠️ deprecated, see TD-002), `thiserror`
-- `honmoon-proxy` — HTTP(S) egress proxy (on **Pingora**) + non-HTTP protocol parsers (SQL/K8s on raw tokio), `evaluate()`.
-  - deps: `honmoon-core`, `pingora` (HTTP data plane; TLS backend = **BoringSSL**), `tokio`, `serde`, `thiserror`, `tracing`
-  - HTTP egress runs through Pingora's `ProxyHttp` (`request_filter` → policy). See [ADR-0001](../decisions/0001-adopt-pingora-http-data-plane.md).
+- `honmoon-proxy` — terminating `CONNECT` egress proxy (`gateway`, raw tokio) + `evaluate()`; SQL/K8s parsers later.
+  - deps: `honmoon-core`, `tokio`, `serde`, `thiserror`, `tracing`
+  - Phase 1 enforces a host-level allowlist over the CONNECT tunnel. Pingora is **deferred** to the
+    TLS-terminating HTTP-inspection phase. See [ADR-0002](../decisions/0002-phase1-connect-proxy-on-tokio.md).
 - `honmoon-cli` — `honmoon` binary (`run` / `gateway` / `join`).
   - deps: `honmoon-core`, `honmoon-proxy`, `tokio`, `clap`, `anyhow`, `tracing`, `tracing-subscriber`
 

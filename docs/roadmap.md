@@ -29,18 +29,20 @@ Greenfield monorepo, scaffolded and building:
 
 ---
 
-## Phase 1 — HTTP egress MVP `OSS`
+## Phase 1 — HTTP egress MVP `OSS` ✅ (done)
 
 The first vertical slice: `honmoon run` actually enforces a domain allowlist.
 
-- [ ] Pingora `ProxyHttp` service in `honmoon-proxy` (forward proxy, `CONNECT` opt-in)
-- [ ] `request_filter` → build `Facts{domain}` from SNI/Host → `evaluate()` → allow/deny (4xx)
-- [ ] `honmoon run --policy p.yaml -- <cmd>`: set `https_proxy`/`http_proxy` for the child, exec
-- [ ] BoringSSL TLS backend wired; graceful start/stop
-- [ ] Integration test: allowed domain succeeds, denied domain blocked
+- [x] Terminating `CONNECT` forward proxy in `honmoon-proxy::gateway` (raw tokio — see [ADR-0002](../.please/docs/decisions/0002-phase1-connect-proxy-on-tokio.md))
+- [x] Read CONNECT host → `Facts{domain}` → `evaluate()` → allow tunnels / deny `403` / non-CONNECT `405`
+- [x] `honmoon run --policy p.yaml -- <cmd>`: ephemeral proxy, set `https_proxy`/`http_proxy` for the child, exec, propagate exit code
+- [x] `honmoon gateway --config p.yaml --addr ...` runs the proxy standalone
+- [x] Hermetic integration test: allowed host tunnels to a local upstream, denied host blocked with 403
+- [ ] (deferred to Phase 2) TLS termination — needed only for body/HTTP-level rules; Pingora revisited there
 
-**Exit criteria**: `honmoon run --policy policies/agent.yaml -- curl https://github.com` succeeds
-while a non-allowlisted host is blocked, proven by an automated test.
+**Exit criteria**: ✅ proven by `crates/honmoon-proxy/tests/egress.rs` — an allowed host tunnels
+through to an in-process upstream (`200`), a denied host is blocked (`403`), hermetically over loopback.
+(The literal `curl https://github.com` smoke works too but is network-dependent; the automated test is hermetic.)
 
 ---
 
