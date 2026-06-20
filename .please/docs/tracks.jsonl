@@ -1,2 +1,2 @@
 {"id": "phase-2-cel-http-facts", "type": "feature", "status": "completed", "phase": "done", "issue": "", "created": "2026-06-20", "section": "completed"}
-{"id": "phase-3-sql-k8s-parsers", "type": "feature", "status": "in_progress", "phase": "implement", "issue": "", "created": "2026-06-21", "section": "active"}
+{"id": "phase-3-sql-k8s-parsers", "type": "feature", "status": "completed", "phase": "done", "issue": "", "created": "2026-06-21", "section": "completed"}
