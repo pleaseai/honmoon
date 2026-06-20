@@ -167,7 +167,6 @@ dependencies = [
  "clap",
  "honmoon-core",
  "honmoon-proxy",
- "tokio",
  "tracing",
  "tracing-subscriber",
 ]

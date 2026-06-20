@@ -179,8 +179,8 @@ cd apps/dashboard && bun run dev
 Full phased roadmap (OSS / paid boundary, exit criteria): [`docs/roadmap.md`](./docs/roadmap.md).
 
 - [x] Scaffold the Rust data plane (`crates/`)
-- [ ] **Phase 1** — HTTP egress MVP on Pingora ([ADR-0001](./.please/docs/decisions/0001-adopt-pingora-http-data-plane.md))
-- [ ] **Phase 2** — CEL evaluator + HTTP facts
+- [x] **Phase 1** — HTTP egress MVP: terminating CONNECT proxy + domain allowlist ([ADR-0002](./.please/docs/decisions/0002-phase1-connect-proxy-on-tokio.md))
+- [ ] **Phase 2** — CEL evaluator + HTTP facts (TLS termination; revisit Pingora)
 - [ ] **Phase 3** — SQL / Kubernetes protocol parsers
 - [ ] **Phase 4** — `pause` approval workflow + audit log + dashboard
 - [ ] **Phase 5** — isolation modes (`run` / `gateway` / `join`)

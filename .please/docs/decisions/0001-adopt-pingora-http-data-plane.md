@@ -2,7 +2,13 @@
 
 ## Status
 
-Accepted
+Superseded by [ADR-0002](0002-phase1-connect-proxy-on-tokio.md)
+
+**Why**: Verification during Phase 1 found Pingora's `HttpProxy` is reverse-proxy oriented
+and its `allow_connect_method_proxying` does proxy *chaining*, not terminating-tunnel forward
+proxying. Phase 1 ships a tokio CONNECT proxy; Pingora is deferred to the TLS-terminating
+HTTP-inspection phase. The framework direction for that later phase is not rejected, only
+deferred and re-scoped.
 
 ## Context
 
