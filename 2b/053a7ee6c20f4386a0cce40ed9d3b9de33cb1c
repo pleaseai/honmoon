@@ -1,0 +1,25 @@
+Cargo.toml
+  s_ed60c185a1fe80::t_d4781bc818293c 13
+.worktreeinclude
+  s_ed60c185a1fe80::t_d972658f303ae3 1-12
+mise.toml
+  s_ed60c185a1fe80::t_e0d70d66f2d4d0 1-54
+orca.yaml
+  s_ed60c185a1fe80::t_02b7614c285e27 1-13
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.9",
+  "base_commit_sha": "2b053a7ee6c20f4386a0cce40ed9d3b9de33cb1c",
+  "prompts": {},
+  "sessions": {
+    "s_ed60c185a1fe80": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "319316d6-5908-4852-a2a0-4c6af3d2067c",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
