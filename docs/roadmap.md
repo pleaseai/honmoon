@@ -46,15 +46,17 @@ through to an in-process upstream (`200`), a denied host is blocked (`403`), her
 
 ---
 
-## Phase 2 — Policy engine: CEL + facts `OSS`
+## Phase 2 — Policy engine: CEL + facts `OSS` ✅ (done)
 
-- [ ] Integrate a CEL evaluator (`cel-interpreter` or equivalent) in `honmoon-core`
-- [ ] `Rule` evaluation: match `endpoint`, evaluate `condition` over `Facts`, return `verdict`
-- [ ] HTTP facts (`http.method`, `http.path`, `http.host`, `http.body_size`)
-- [ ] Rule ordering / precedence semantics documented
-- [ ] Keep Rust `honmoon-core` and TS `@honmoon/policy` in sync (resolve TD-001 direction)
+- [x] Integrate `cel-interpreter` in `honmoon-core`
+- [x] `decide()`: rules in order — match `endpoint`, evaluate `condition` over `Facts`, return `verdict`; else egress lists
+- [x] HTTP facts (`http.method`, `http.path`, `http.host`, `http.body_size`) exposed to CEL as `http`
+- [x] Rule ordering / precedence documented (first matching rule wins; deny>allow>default for egress)
+- [x] Consolidated the policy engine in `honmoon-core` (domain matching moved out of `honmoon-proxy`)
+- [ ] (carried) Keep Rust `honmoon-core` and TS `@honmoon/policy` in sync — TD-001
 
-**Exit criteria**: the CEL rules in `policies/agent.yaml` evaluate correctly against synthetic facts.
+**Exit criteria**: ✅ CEL rules evaluate correctly against synthetic facts — see `crates/honmoon-core/src/engine.rs` tests (`cel_rule_matches_http_fact`, `rule_endpoint_must_match`, `unknown_fact_reference_does_not_match`).
+Note: real `http.method`/`path`/`body_size` need TLS termination (later phase); over CONNECT only `http.host` is populated.
 
 ---
 
