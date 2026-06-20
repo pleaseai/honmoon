@@ -6,6 +6,7 @@
 use serde::{Deserialize, Serialize};
 
 pub mod engine;
+pub mod protocols;
 
 pub use engine::decide;
 
@@ -70,9 +71,9 @@ pub struct Rule {
 
 /// Protocol facts extracted at the wire level (without decryption inspection).
 ///
-/// Populated incrementally by protocol parsers in `honmoon-proxy`. Sub-structs
-/// (`http`, and later `sql`/`k8s`) are exposed to CEL rule conditions as
-/// variables of the same name, e.g. `http.method == 'POST'`.
+/// Populated incrementally by protocol parsers in `honmoon-proxy` (see
+/// [`crate::protocols`]). Sub-structs (`http`/`sql`/`k8s`) are exposed to CEL
+/// rule conditions as variables of the same name, e.g. `sql.verb == 'DROP'`.
 #[derive(Debug, Clone, Default)]
 pub struct Facts {
     /// Target domain (canonicalized: lowercased, no trailing dot).
@@ -81,7 +82,10 @@ pub struct Facts {
     pub endpoint: Option<String>,
     /// HTTP request facts (only fully populated once TLS is terminated).
     pub http: Option<HttpFacts>,
-    // TODO(phase 3): sql / k8s fact sub-structs as parsers land.
+    /// SQL facts parsed from the wire (e.g. PostgreSQL simple query).
+    pub sql: Option<SqlFacts>,
+    /// Kubernetes API request facts.
+    pub k8s: Option<K8sFacts>,
 }
 
 /// HTTP request facts exposed to CEL as the `http` variable.
@@ -91,6 +95,27 @@ pub struct HttpFacts {
     pub host: String,
     pub path: String,
     pub body_size: i64,
+}
+
+/// SQL facts exposed to CEL as the `sql` variable.
+///
+/// `verb` is the leading SQL keyword, uppercased (`SELECT`, `DROP`, `TRUNCATE`,
+/// …). `table` is a best-effort primary table/relation name, lowercased.
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct SqlFacts {
+    pub verb: String,
+    pub table: String,
+}
+
+/// Kubernetes API request facts exposed to CEL as the `k8s` variable.
+///
+/// `verb` is the resource action (`get`/`list`/`create`/`update`/`patch`/`delete`),
+/// derived from the HTTP method. `resource` and `namespace` come from the API path.
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct K8sFacts {
+    pub verb: String,
+    pub resource: String,
+    pub namespace: String,
 }
 
 impl Policy {

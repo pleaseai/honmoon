@@ -76,7 +76,16 @@ fn eval_condition(condition: &str, facts: &Facts) -> bool {
             ctx.add_variable_from_value("http", value);
         }
     }
-    // TODO(phase 3): add `sql` / `k8s` variables from facts.
+    if let Some(sql) = &facts.sql {
+        if let Ok(value) = cel_interpreter::to_value(sql) {
+            ctx.add_variable_from_value("sql", value);
+        }
+    }
+    if let Some(k8s) = &facts.k8s {
+        if let Ok(value) = cel_interpreter::to_value(k8s) {
+            ctx.add_variable_from_value("k8s", value);
+        }
+    }
 
     matches!(program.execute(&ctx), Ok(Value::Bool(true)))
 }
@@ -172,5 +181,84 @@ mod tests {
         )
         .unwrap();
         assert_eq!(super::decide(&policy, &Facts::default()), Verdict::Allow);
+    }
+
+    /// Phase 3 exit criteria: a DROP/TRUNCATE against `postgres-prod` is caught,
+    /// and a `delete secrets` against `k8s-prod` is caught — end to end from a
+    /// raw PostgreSQL packet / K8s request through the parsers into `decide()`.
+    #[test]
+    fn protocol_facts_drive_policy_end_to_end() {
+        use crate::protocols::{parse_k8s_request, parse_postgres_query};
+
+        let policy = Policy::from_yaml(
+            "egress:\n  default: allow\nrules:\n  \
+             - name: no-prod-drop\n    endpoint: postgres-prod\n    condition: \"sql.verb == 'DROP' || sql.verb == 'TRUNCATE'\"\n    verdict: pause\n  \
+             - name: no-prod-secret-delete\n    endpoint: k8s-prod\n    condition: \"k8s.resource == 'secrets' && k8s.verb == 'delete'\"\n    verdict: deny\n",
+        )
+        .unwrap();
+
+        // PostgreSQL: DROP TABLE on postgres-prod → pause.
+        let body = b"DROP TABLE users;\0";
+        let mut pkt = vec![b'Q'];
+        pkt.extend_from_slice(&((4 + body.len()) as u32).to_be_bytes());
+        pkt.extend_from_slice(body);
+        let sql = parse_postgres_query(&pkt);
+        let pg_facts = Facts {
+            endpoint: Some("postgres-prod".into()),
+            sql,
+            ..Default::default()
+        };
+        assert_eq!(super::decide(&policy, &pg_facts), Verdict::Pause);
+
+        // K8s: DELETE a secret on k8s-prod → deny.
+        let k8s_facts = Facts {
+            endpoint: Some("k8s-prod".into()),
+            k8s: Some(parse_k8s_request(
+                "DELETE",
+                "/api/v1/namespaces/prod/secrets/db",
+            )),
+            ..Default::default()
+        };
+        assert_eq!(super::decide(&policy, &k8s_facts), Verdict::Deny);
+
+        // A harmless SELECT on postgres-prod → no rule matches → egress default (allow).
+        let safe = Facts {
+            endpoint: Some("postgres-prod".into()),
+            sql: parse_postgres_query(&{
+                let b = b"SELECT 1\0";
+                let mut p = vec![b'Q'];
+                p.extend_from_slice(&((4 + b.len()) as u32).to_be_bytes());
+                p.extend_from_slice(b);
+                p
+            }),
+            ..Default::default()
+        };
+        assert_eq!(super::decide(&policy, &safe), Verdict::Allow);
+    }
+
+    /// Guards the shipped example policy against parser/condition drift: the
+    /// real `policies/agent.yaml` rules must fire for the facts our parsers emit.
+    #[test]
+    fn shipped_example_policy_fires() {
+        use crate::protocols::parse_k8s_request;
+
+        let policy = Policy::from_yaml(include_str!("../../../policies/agent.yaml")).unwrap();
+
+        let k8s = Facts {
+            endpoint: Some("k8s-prod".into()),
+            k8s: Some(parse_k8s_request(
+                "DELETE",
+                "/api/v1/namespaces/prod/secrets/db",
+            )),
+            ..Default::default()
+        };
+        assert_eq!(super::decide(&policy, &k8s), Verdict::Deny);
+
+        let sql = Facts {
+            endpoint: Some("postgres-prod".into()),
+            sql: Some(crate::protocols::parse_sql("TRUNCATE accounts")),
+            ..Default::default()
+        };
+        assert_eq!(super::decide(&policy, &sql), Verdict::Pause);
     }
 }

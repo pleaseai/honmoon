@@ -15,7 +15,7 @@ Honmoon is a monorepo that separates languages by responsibility.
 
 ## Rust crates (`crates/`)
 
-- `honmoon-core` — policy model (`Policy`/`Egress`/`Rule`/`Verdict`/`Facts`/`HttpFacts`), YAML parsing, and the decision `engine` (`decide()`): CEL rule evaluation + egress domain matching. Transport-agnostic.
+- `honmoon-core` — policy model (`Policy`/`Egress`/`Rule`/`Verdict`/`Facts` + `HttpFacts`/`SqlFacts`/`K8sFacts`), YAML parsing, the decision `engine` (`decide()`: CEL + egress matching), and `protocols` (PostgreSQL `'Q'` + SQL + Kubernetes API parsers). Transport-agnostic.
   - deps: `serde`, `serde_yaml` (⚠️ deprecated, see TD-002), `thiserror`, `tracing`, `cel-interpreter`
 - `honmoon-proxy` — terminating `CONNECT` egress proxy (`gateway`, raw tokio) + `evaluate()`; SQL/K8s parsers later.
   - deps: `honmoon-core`, `tokio`, `serde`, `thiserror`, `tracing`

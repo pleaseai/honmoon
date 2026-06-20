@@ -11,6 +11,7 @@
 | TD-003 | phase-1-http-egress-mvp | `honmoon run` only sets proxy env vars; a child that ignores them bypasses policy. Needs real network isolation (netns / NetworkExtension) to be enforcing rather than advisory | High | 2026-06-20 |
 | TD-004 | phase-1-http-egress-mvp | CONNECT proxy sees only the host (SNI/authority); body/path rules require TLS termination (Phase 2). Document that HTTPS rules are host-level only for now | Medium | 2026-06-20 |
 | TD-005 | phase-1-http-egress-mvp | CI actions are pinned to tags (`@v4`/`@stable`), not commit SHAs (flagged by CodeRabbit). Pin all GitHub Actions to full SHAs for supply-chain hardening, repo-wide, in one pass | Low | 2026-06-20 |
+| TD-006 | phase-3-sql-k8s-parsers | SQL/K8s parsers (`honmoon-core::protocols`) are engine-complete and unit-tested but not fed by a live socket. Needs an inline TCP relay mode with per-endpoint listener config (postgres) and TLS termination (k8s HTTPS) to populate facts from real traffic | High | 2026-06-21 |
 
 ## Resolved
 
