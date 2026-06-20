@@ -54,7 +54,8 @@ For understanding the data plane (the firewall itself):
 - `crates/honmoon-cli/src/main.rs` — CLI dispatch for `run` / `gateway` / `join`. Start here.
 - `crates/honmoon-proxy/src/gateway.rs` — the CONNECT proxy; where requests meet policy via `decide()`.
 - `crates/honmoon-core/src/engine.rs` — `decide()`: CEL rule evaluation + egress matching.
-- `crates/honmoon-core/src/lib.rs` — the policy model (`Policy`, `Egress`, `Rule`, `Verdict`, `Facts`, `HttpFacts`).
+- `crates/honmoon-core/src/protocols.rs` — wire parsers (`parse_postgres_query`, `parse_sql`, `parse_k8s_request`) → SQL/K8s facts.
+- `crates/honmoon-core/src/lib.rs` — the policy model (`Policy`, `Egress`, `Rule`, `Verdict`, `Facts`, `HttpFacts`, `SqlFacts`, `K8sFacts`).
 
 For understanding the control plane and UI:
 
@@ -70,7 +71,7 @@ For understanding policy authoring:
 
 | Module | Purpose | Key Files | Depends On | Depended By |
 |--------|---------|-----------|------------|-------------|
-| `crates/honmoon-core/` | Policy model + decision `engine` (`decide()`): CEL rules + egress matching | `src/lib.rs`, `src/engine.rs` | `serde`, `serde_yaml`, `thiserror`, `cel-interpreter` | `honmoon-proxy`, `honmoon-cli` |
+| `crates/honmoon-core/` | Policy model + decision `engine` (`decide()`): CEL rules + egress matching; `protocols` (PostgreSQL/K8s parsers) | `src/lib.rs`, `src/engine.rs`, `src/protocols.rs` | `serde`, `serde_yaml`, `thiserror`, `cel-interpreter` | `honmoon-proxy`, `honmoon-cli` |
 | `crates/honmoon-proxy/` | CONNECT egress proxy (`gateway`); builds `Facts`, calls `decide()`; SQL/K8s parsers later | `src/gateway.rs` | `honmoon-core`, `tokio`, `tracing` | `honmoon-cli` |
 | `crates/honmoon-cli/` | `honmoon` binary — run/gateway/join | `src/main.rs` | `honmoon-core`, `honmoon-proxy`, `clap` | — (binary) |
 | `packages/policy/` | TS policy types + JSON Schema | `src/index.ts`, `schema/` | — | `@honmoon/cli`, `@honmoon/api`, `@honmoon/dashboard` |
@@ -120,7 +121,8 @@ parsing + hermetic egress integration test in `tests/egress.rs`). Safe to extend
 
 **Fragile / incomplete**: `honmoon run` does not yet sandbox the child's network namespace —
 it only sets proxy env vars, so a child that ignores them escapes the policy. `honmoon join`
-is a stub (`bail!`). TLS termination / HTTP body inspection and SQL/K8s parsing are unbuilt.
+is a stub (`bail!`). SQL/K8s **parsing** exists and is tested in `honmoon-core::protocols`, but is
+not yet fed by a live inline TCP relay (TD-006); TLS termination / HTTP body inspection are unbuilt.
 The dashboard and API are scaffolds.
 
 **Technical debt**: TD-001 (duplicated Rust/TS policy model), TD-002 (`serde_yaml` deprecated).

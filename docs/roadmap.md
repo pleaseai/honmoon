@@ -60,17 +60,21 @@ Note: real `http.method`/`path`/`body_size` need TLS termination (later phase); 
 
 ---
 
-## Phase 3 — Protocol awareness (SQL / K8s) `OSS`
+## Phase 3 — Protocol awareness (SQL / K8s) `OSS` ✅ (done)
 
-The moat: wire-level protocol parsing beyond HTTP.
+The moat: wire-level protocol parsing beyond HTTP — in `honmoon-core::protocols`.
 
-- [ ] Generic TCP relay path on raw `tokio` (non-HTTP), endpoint routing
-- [ ] PostgreSQL wire parser → `sql.verb`, `sql.table`
-- [ ] Kubernetes API facts → `k8s.resource`, `k8s.verb`, `k8s.namespace`
-- [ ] Per-endpoint policy binding (`endpoint: postgres-prod`, `k8s-prod`)
+- [x] PostgreSQL simple-query (`'Q'`) wire parser → `sql.verb`, `sql.table` (`parse_postgres_query`)
+- [x] SQL verb/table heuristic over a statement (`parse_sql`) — DROP/TRUNCATE/DELETE/UPDATE/INSERT/SELECT
+- [x] Kubernetes API facts → `k8s.resource`, `k8s.verb`, `k8s.namespace` (`parse_k8s_request`; core + grouped APIs, list vs get)
+- [x] `sql`/`k8s` facts wired into the CEL engine; per-endpoint policy binding via `Rule::endpoint`
+- [ ] (carried) Live inline TCP relay that feeds the parsers from real traffic — needs endpoint listener config + (for K8s) TLS termination; see TD-006
 
-**Exit criteria**: a `DROP`/`TRUNCATE` against `postgres-prod` and a `delete secrets` against
-`k8s-prod` are caught by policy.
+**Exit criteria**: ✅ a `DROP`/`TRUNCATE` against `postgres-prod` and a `delete secrets` against
+`k8s-prod` are caught by policy — proven end-to-end (raw packet/request → parser → `decide()`) by
+`engine.rs::protocol_facts_drive_policy_end_to_end` and against the shipped `policies/agent.yaml` by
+`shipped_example_policy_fires`.
+Note: parsing is engine-complete and tested; wiring it onto a live socket is the data-plane follow-up (TD-006).
 
 ---
 
