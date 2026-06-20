@@ -52,8 +52,9 @@ dependency. The proxy feeds it `Facts` and consumes a `Verdict`.
 For understanding the data plane (the firewall itself):
 
 - `crates/honmoon-cli/src/main.rs` — CLI dispatch for `run` / `gateway` / `join`. Start here.
-- `crates/honmoon-proxy/src/lib.rs` — `evaluate()` and domain matching; where requests meet policy.
-- `crates/honmoon-core/src/lib.rs` — the policy model (`Policy`, `Egress`, `Rule`, `Verdict`, `Facts`).
+- `crates/honmoon-proxy/src/gateway.rs` — the CONNECT proxy; where requests meet policy via `decide()`.
+- `crates/honmoon-core/src/engine.rs` — `decide()`: CEL rule evaluation + egress matching.
+- `crates/honmoon-core/src/lib.rs` — the policy model (`Policy`, `Egress`, `Rule`, `Verdict`, `Facts`, `HttpFacts`).
 
 For understanding the control plane and UI:
 
@@ -69,8 +70,8 @@ For understanding policy authoring:
 
 | Module | Purpose | Key Files | Depends On | Depended By |
 |--------|---------|-----------|------------|-------------|
-| `crates/honmoon-core/` | Policy model, YAML parse, CEL eval (planned) | `src/lib.rs` | `serde`, `serde_yaml`, `thiserror` | `honmoon-proxy`, `honmoon-cli` |
-| `crates/honmoon-proxy/` | CONNECT egress proxy (`gateway`) + `evaluate()`; SQL/K8s parsers later | `src/gateway.rs`, `src/lib.rs` | `honmoon-core`, `tokio`, `tracing` | `honmoon-cli` |
+| `crates/honmoon-core/` | Policy model + decision `engine` (`decide()`): CEL rules + egress matching | `src/lib.rs`, `src/engine.rs` | `serde`, `serde_yaml`, `thiserror`, `cel-interpreter` | `honmoon-proxy`, `honmoon-cli` |
+| `crates/honmoon-proxy/` | CONNECT egress proxy (`gateway`); builds `Facts`, calls `decide()`; SQL/K8s parsers later | `src/gateway.rs` | `honmoon-core`, `tokio`, `tracing` | `honmoon-cli` |
 | `crates/honmoon-cli/` | `honmoon` binary — run/gateway/join | `src/main.rs` | `honmoon-core`, `honmoon-proxy`, `clap` | — (binary) |
 | `packages/policy/` | TS policy types + JSON Schema | `src/index.ts`, `schema/` | — | `@honmoon/cli`, `@honmoon/api`, `@honmoon/dashboard` |
 | `packages/cli/` | `honmoonctl` control-plane CLI | `src/index.ts` | `@honmoon/policy` | — (binary) |

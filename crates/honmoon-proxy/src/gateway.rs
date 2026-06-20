@@ -13,11 +13,9 @@
 
 use std::time::Duration;
 
-use honmoon_core::{Facts, Policy, Verdict};
+use honmoon_core::{Facts, HttpFacts, Policy, Verdict, decide};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
-
-use crate::evaluate;
 
 const MAX_REQUEST_HEAD: usize = 8 * 1024;
 /// Max time to receive the CONNECT request head before giving up (slowloris guard).
@@ -81,10 +79,18 @@ async fn handle(mut client: TcpStream, policy: &Policy) -> std::io::Result<()> {
     }
 
     let host = canonical_host(&target);
+    // Over a CONNECT tunnel we only see the host; method/path/body remain unknown
+    // until TLS termination (a later phase). Expose the host as `http.host` so
+    // host-level CEL rules work today.
     let facts = Facts {
         domain: Some(host.clone()),
+        http: Some(HttpFacts {
+            host: host.clone(),
+            ..Default::default()
+        }),
+        ..Default::default()
     };
-    if evaluate(policy, &facts) != Verdict::Allow {
+    if decide(policy, &facts) != Verdict::Allow {
         tracing::info!(domain = %host, "egress blocked");
         return respond(&mut client, 403, "Forbidden").await;
     }

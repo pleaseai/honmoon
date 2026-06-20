@@ -5,6 +5,10 @@
 
 use serde::{Deserialize, Serialize};
 
+pub mod engine;
+
+pub use engine::decide;
+
 /// The decision the policy engine returns for a given request.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -66,11 +70,27 @@ pub struct Rule {
 
 /// Protocol facts extracted at the wire level (without decryption inspection).
 ///
-/// Populated incrementally by protocol parsers in `honmoon-proxy`.
+/// Populated incrementally by protocol parsers in `honmoon-proxy`. Sub-structs
+/// (`http`, and later `sql`/`k8s`) are exposed to CEL rule conditions as
+/// variables of the same name, e.g. `http.method == 'POST'`.
 #[derive(Debug, Clone, Default)]
 pub struct Facts {
+    /// Target domain (canonicalized: lowercased, no trailing dot).
     pub domain: Option<String>,
-    // TODO: http / sql / k8s fact sub-structs as parsers land.
+    /// Named endpoint this connection targets (matched against `Rule::endpoint`).
+    pub endpoint: Option<String>,
+    /// HTTP request facts (only fully populated once TLS is terminated).
+    pub http: Option<HttpFacts>,
+    // TODO(phase 3): sql / k8s fact sub-structs as parsers land.
+}
+
+/// HTTP request facts exposed to CEL as the `http` variable.
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct HttpFacts {
+    pub method: String,
+    pub host: String,
+    pub path: String,
+    pub body_size: i64,
 }
 
 impl Policy {

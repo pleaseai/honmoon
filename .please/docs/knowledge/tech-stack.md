@@ -15,8 +15,8 @@ Honmoon is a monorepo that separates languages by responsibility.
 
 ## Rust crates (`crates/`)
 
-- `honmoon-core` — policy model (`Policy`/`Egress`/`Rule`/`Verdict`/`Facts`), YAML parsing, CEL eval. Transport-agnostic.
-  - deps: `serde`, `serde_yaml` (⚠️ deprecated, see TD-002), `thiserror`
+- `honmoon-core` — policy model (`Policy`/`Egress`/`Rule`/`Verdict`/`Facts`/`HttpFacts`), YAML parsing, and the decision `engine` (`decide()`): CEL rule evaluation + egress domain matching. Transport-agnostic.
+  - deps: `serde`, `serde_yaml` (⚠️ deprecated, see TD-002), `thiserror`, `tracing`, `cel-interpreter`
 - `honmoon-proxy` — terminating `CONNECT` egress proxy (`gateway`, raw tokio) + `evaluate()`; SQL/K8s parsers later.
   - deps: `honmoon-core`, `tokio`, `serde`, `thiserror`, `tracing`
   - Phase 1 enforces a host-level allowlist over the CONNECT tunnel. Pingora is **deferred** to the

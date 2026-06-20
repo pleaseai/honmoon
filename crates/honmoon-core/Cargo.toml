@@ -8,6 +8,8 @@ rust-version.workspace = true
 description = "Honmoon policy engine, CEL evaluation, and protocol facts model"
 
 [dependencies]
+cel-interpreter = "0.10"
 serde.workspace = true
 serde_yaml.workspace = true
 thiserror.workspace = true
+tracing.workspace = true
