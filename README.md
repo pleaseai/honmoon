@@ -109,10 +109,10 @@ egress:
   default: deny
   allow:
     - github.com
-    - "*.githubusercontent.com"
+    - '*.githubusercontent.com'
     - api.anthropic.com
   deny:
-    - "*.internal.corp"
+    - '*.internal.corp'
 ```
 
 Protocol-aware rules using CEL:
@@ -127,10 +127,10 @@ rules:
   - name: sql-no-prod-drop
     endpoint: postgres-prod
     condition: "sql.verb == 'DROP' || sql.verb == 'TRUNCATE'"
-    verdict: pause   # requires human approval
+    verdict: pause # requires human approval
 
   - name: http-block-large-upload
-    endpoint: "*"
+    endpoint: '*'
     condition: "http.method == 'POST' && http.body_size > 10485760"
     verdict: deny
 ```
