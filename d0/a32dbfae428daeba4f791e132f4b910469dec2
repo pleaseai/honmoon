@@ -1,0 +1,33 @@
+docs/roadmap.md
+  s_ed60c185a1fe80::t_41720e08d7a343 1-135
+.please/docs/knowledge/tech-stack.md
+  s_ed60c185a1fe80::t_c414180f39bf49 20-22
+  s_ed60c185a1fe80::t_a8989e6bb9998c 11
+README.md
+  s_ed60c185a1fe80::t_3f79cc16d9b2c5 179-187
+.please/docs/decisions/index.md
+  s_ed60c185a1fe80::t_38474b48f29c63 7
+.please/docs/decisions/0001-adopt-pingora-http-data-plane.md
+  s_ed60c185a1fe80::t_74387cbbf08d3f 1-84
+ARCHITECTURE.md
+  s_ed60c185a1fe80::t_eb2e987442c77c 130-133
+  s_ed60c185a1fe80::t_16b4ddfb1f3e7c 36-37,42-43
+  s_ed60c185a1fe80::t_65c7d8a0b80f0f 73
+  s_ed60c185a1fe80::t_2686182dbdff81 89-91
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.9",
+  "base_commit_sha": "d0a32dbfae428daeba4f791e132f4b910469dec2",
+  "prompts": {},
+  "sessions": {
+    "s_ed60c185a1fe80": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "319316d6-5908-4852-a2a0-4c6af3d2067c",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Minsu Lee <amond@amond.net>"
+    }
+  }
+}
