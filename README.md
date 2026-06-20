@@ -1,5 +1,8 @@
 # Honmoon
 
+[![CI](https://github.com/pleaseai/honmoon/actions/workflows/ci.yml/badge.svg)](https://github.com/pleaseai/honmoon/actions/workflows/ci.yml)
+[![codecov](https://codecov.io/gh/pleaseai/honmoon/branch/master/graph/badge.svg)](https://codecov.io/gh/pleaseai/honmoon)
+
 > A **policy-based firewall gateway** guarding the boundary between AI agents and production systems.
 
 Honmoon is a security gateway that intercepts an AI agent's network traffic (e.g. Claude Code,
