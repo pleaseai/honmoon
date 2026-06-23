@@ -2,10 +2,13 @@
 
 use std::net::TcpListener;
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
-use honmoon_core::Policy;
+use honmoon_core::{AuditLog, Policy};
+use honmoon_mgmt::AppState;
+use honmoon_proxy::gateway::{DEFAULT_PAUSE_TIMEOUT, GatewayState};
 
 #[derive(Parser)]
 #[command(
@@ -28,12 +31,19 @@ enum Command {
         #[arg(last = true)]
         argv: Vec<String>,
     },
-    /// Run the central gateway proxy.
+    /// Run the central gateway proxy plus its management API + dashboard.
     Gateway {
         #[arg(long, value_name = "FILE")]
         config: PathBuf,
+        /// Address the egress proxy listens on.
         #[arg(long, default_value = "127.0.0.1:8443", value_name = "HOST:PORT")]
         addr: String,
+        /// Address the management API + dashboard listens on.
+        #[arg(long, default_value = "127.0.0.1:8444", value_name = "HOST:PORT")]
+        mgmt_addr: String,
+        /// Append every verdict to this JSONL audit log (default: in-memory only).
+        #[arg(long, value_name = "FILE")]
+        audit_log: Option<PathBuf>,
     },
     /// Join a gateway and route host traffic through it.
     Join {
@@ -50,15 +60,72 @@ fn main() -> Result<()> {
     let cli = Cli::parse();
     match cli.command {
         Command::Run { policy, argv } => run(policy, argv),
-        Command::Gateway { config, addr } => {
-            let policy = load_policy(&config)?;
-            tracing::info!(rules = policy.rules.len(), %addr, "starting gateway");
-            honmoon_proxy::gateway::run(policy, &addr)
-        }
+        Command::Gateway {
+            config,
+            addr,
+            mgmt_addr,
+            audit_log,
+        } => gateway(config, addr, mgmt_addr, audit_log),
         Command::Join { gateway } => {
             anyhow::bail!("`join` not yet implemented (gateway: {gateway})");
         }
     }
+}
+
+/// `honmoon gateway` — run the egress proxy and the management API (audit query,
+/// approval queue, embedded dashboard) together, sharing one runtime and one set
+/// of audit/approval state so held requests can be approved from the dashboard.
+fn gateway(
+    config: PathBuf,
+    addr: String,
+    mgmt_addr: String,
+    audit_log: Option<PathBuf>,
+) -> Result<()> {
+    let policy_yaml = std::fs::read_to_string(&config)
+        .with_context(|| format!("reading policy {}", config.display()))?;
+    let policy = Policy::from_yaml(&policy_yaml)?;
+    tracing::info!(rules = policy.rules.len(), %addr, %mgmt_addr, "starting gateway");
+
+    let audit = match &audit_log {
+        Some(path) => Arc::new(
+            AuditLog::with_file(1024, path)
+                .with_context(|| format!("opening audit log {}", path.display()))?,
+        ),
+        None => Arc::new(AuditLog::new(1024)),
+    };
+
+    let state = GatewayState {
+        policy: Arc::new(policy),
+        audit,
+        approvals: Arc::new(honmoon_proxy::approval::ApprovalRegistry::new()),
+        pause_timeout: DEFAULT_PAUSE_TIMEOUT,
+    };
+
+    // Bind both listeners up front so a bind error is reported before we spawn.
+    let proxy_listener =
+        TcpListener::bind(&addr).with_context(|| format!("binding proxy {addr}"))?;
+    let mgmt_listener = TcpListener::bind(&mgmt_addr)
+        .with_context(|| format!("binding management API {mgmt_addr}"))?;
+
+    let app_state = AppState::new(state.clone(), policy_yaml);
+
+    let runtime = tokio::runtime::Runtime::new().context("build tokio runtime")?;
+    runtime.block_on(async move {
+        // Run both servers and surface unexpected proxy termination — otherwise
+        // the process would keep serving the management API while egress
+        // filtering is silently down.
+        let proxy_task =
+            tokio::spawn(async move { honmoon_proxy::gateway::serve(state, proxy_listener).await });
+        tokio::select! {
+            mgmt = honmoon_mgmt::serve(app_state, mgmt_listener) => {
+                mgmt.context("management API server failed")
+            }
+            proxy = proxy_task => {
+                anyhow::bail!("proxy server task exited unexpectedly: {proxy:?}")
+            }
+        }
+    })?;
+    Ok(())
 }
 
 /// `honmoon run` — start an ephemeral egress proxy, then exec the child with

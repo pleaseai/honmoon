@@ -15,7 +15,7 @@ It unifies two layers of protection:
 2. **Protocol-aware policy engine** — parse protocols such as SQL, Kubernetes, and HTTP at the wire
    level to apply fine-grained rules (`deny` / `approve`) (the [clawpatrol](https://github.com/denoland/clawpatrol) approach)
 
-### The name
+## The name
 
 **Honmoon** (혼문, 魂門) borrows from Korean lore popularized by *KPop Demon Hunters*: a
 protective barrier woven to seal the human world off from the demon world. The metaphor fits —
@@ -88,13 +88,14 @@ Honmoon is a monorepo that separates languages by responsibility.
 ```
 honmoon-mono/
 ├── crates/                  # Rust — data plane
-│   ├── honmoon-core/        # policy engine, CEL evaluator, facts model
-│   ├── honmoon-proxy/       # wire-level proxy, protocol parsers (HTTP/SQL/K8s)
+│   ├── honmoon-core/        # policy engine, CEL evaluator, facts model, audit log
+│   ├── honmoon-proxy/       # wire-level proxy, protocol parsers, approval registry
+│   ├── honmoon-mgmt/        # management API (axum) + embedded dashboard (rust-embed)
 │   └── honmoon-cli/         # `honmoon` binary (run / gateway / join)
 ├── packages/                # TypeScript (Bun) — control plane
-│   ├── policy/              # policy schema, JSON Schema, validators
+│   ├── policy/              # policy schema, JSON Schema, runtime decision model
 │   ├── cli/                 # Bun-distributable wrapper CLI
-│   └── api/                 # management & audit API server
+│   └── api/                 # durable JSONL audit-log query API
 ├── apps/
 │   └── dashboard/           # React + Vite + Tailwind SPA (Bun) — embedded into Rust
 ├── deploy/
@@ -150,12 +151,18 @@ rules:
 # Run a single command in isolation — only allowed domains are reachable
 honmoon run --policy policies/agent.yaml -- curl https://api.github.com
 
-# Run the gateway
-honmoon gateway --config policies/agent.yaml
+# Run the gateway: egress proxy on :8443, management API + dashboard on :8444
+honmoon gateway --config policies/agent.yaml --audit-log honmoon-audit.jsonl
+#   proxy:     http://127.0.0.1:8443   (point https_proxy here)
+#   dashboard: http://127.0.0.1:8444   (audit log, approval queue, policy)
 
 # Join a gateway from a client (routes all host traffic)
 honmoon join --gateway honmoon.internal:8443
 ```
+
+When a request hits a `pause` rule the gateway holds the connection and surfaces it
+on the dashboard's **approval queue**; approving it lets the request through, denying
+it returns `403`. Every verdict is recorded in the audit log.
 
 ---
 
@@ -178,9 +185,14 @@ bun install
 bun run build        # build dashboard (Vite) + control plane
 bun test
 
-# Dashboard dev server (HMR)
+# Dashboard dev server (HMR) — proxies /api to a local gateway on :8444
 cd apps/dashboard && bun run dev
 ```
+
+> The dashboard is embedded into the `honmoon` binary via `rust-embed`, so build it
+> (`bun run --filter @honmoon/dashboard build`) **before** a release `cargo build`.
+> A bare `cargo build` without a dashboard build still succeeds — `honmoon-mgmt`'s
+> `build.rs` drops in a placeholder so the binary always links.
 
 ---
 
@@ -190,9 +202,9 @@ Full phased roadmap (OSS / paid boundary, exit criteria): [`docs/roadmap.md`](./
 
 - [x] Scaffold the Rust data plane (`crates/`)
 - [x] **Phase 1** — HTTP egress MVP: terminating CONNECT proxy + domain allowlist ([ADR-0002](./.please/docs/decisions/0002-phase1-connect-proxy-on-tokio.md))
-- [ ] **Phase 2** — CEL evaluator + HTTP facts (TLS termination; revisit Pingora)
-- [ ] **Phase 3** — SQL / Kubernetes protocol parsers
-- [ ] **Phase 4** — `pause` approval workflow + audit log + dashboard
+- [x] **Phase 2** — CEL evaluator + HTTP facts
+- [x] **Phase 3** — SQL / Kubernetes protocol parsers
+- [x] **Phase 4** — `pause` approval workflow + audit log + dashboard
 - [ ] **Phase 5** — isolation modes (`run` / `gateway` / `join`)
 - [ ] **Phase 6+** — team control plane & hosted SaaS (paid)
 

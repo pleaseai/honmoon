@@ -1,6 +1,6 @@
 # Honmoon Roadmap
 
-> Status: Draft (v0.1) · Last updated: 2026-06-20
+> Status: Draft (v0.2) · Last updated: 2026-06-23
 >
 > A phased path from the current scaffold to a production-grade, open-core firewall
 > gateway. Phases are roughly sequential but later OSS phases can overlap. The
@@ -78,15 +78,27 @@ Note: parsing is engine-complete and tested; wiring it onto a live socket is the
 
 ---
 
-## Phase 4 — Verdicts, audit & dashboard `OSS`
+## Phase 4 — Verdicts, audit & dashboard `OSS` ✅ (done)
 
-- [ ] `pause` verdict: hold a request pending approval (local, single-node)
-- [ ] Local audit log (every verdict, structured) + query API in `@honmoon/api`
-- [ ] Dashboard: audit log viewer, policy editor (Prism), approval queue
-- [ ] Embed built dashboard into the Rust binary via `rust-embed`; served by the management API
+- [x] `pause` verdict: hold a request pending approval (local, single-node) — the data
+  plane registers held requests in `honmoon-proxy::approval::ApprovalRegistry`, awaits a
+  `oneshot` resolution (auto-rejects after `--pause-timeout`), and tunnels or `403`s
+- [x] Local audit log (every verdict, structured) — `honmoon-core::audit::AuditLog`
+  (bounded in-memory ring + optional JSONL sink via `--audit-log`) + query API: the
+  in-process management API serves the live ring; `@honmoon/api` queries the durable JSONL
+  log (`/api/audit` with `limit`/`decision`/`since`/`domain`, `/api/audit/stats`)
+- [x] Dashboard (`apps/dashboard`): Overview, audit log viewer, Prism policy editor, and
+  approval queue with approve/deny — live-polling the management API
+- [x] Embed built dashboard into the Rust binary via `rust-embed` (`honmoon-mgmt`); the
+  management API serves it. `honmoon gateway` runs the proxy + management API on one
+  runtime sharing audit/approval state (`--mgmt-addr`, default `127.0.0.1:8444`)
 
-**Exit criteria**: a `pause` rule surfaces in the dashboard and can be approved/denied; the
-decision is recorded in the audit log.
+**Exit criteria**: ✅ proven by `crates/honmoon-mgmt/tests/e2e.rs` — a `pause` rule holds a
+live CONNECT, the held request appears on the management API's approval queue, approving it
+(over HTTP) lets the tunnel through (`200`) while rejecting blocks it (`403`), and every step
+(`paused` → `approved`/`rejected`) is recorded in the audit log.
+Note: over CONNECT only `http.host`-based pause rules fire today; SQL/K8s `pause` needs the
+live inline relay + TLS termination (TD-006).
 
 ---
 
