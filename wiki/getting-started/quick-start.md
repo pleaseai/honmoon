@@ -6,9 +6,10 @@ description: Run your first policy-enforced command and stand up the gateway pro
 # Quick Start
 
 This page walks through the two operating modes that work today — `honmoon run` (process
-wrapper) and `honmoon gateway` (standalone proxy) — using the shipped example policy. Both are
-Phase 1 features proven by the hermetic integration test
-([egress.rs](https://github.com/pleaseai/honmoon/blob/master/crates/honmoon-proxy/tests/egress.rs)).
+wrapper) and `honmoon gateway` (standalone proxy) — using the shipped example policy. Both build on
+the same terminating CONNECT proxy, whose allow/deny/tunnel behavior is proven by the hermetic
+integration test ([egress.rs](https://github.com/pleaseai/honmoon/blob/master/crates/honmoon-proxy/tests/egress.rs)). (That test exercises
+the proxy directly; `run`'s env-var exec wiring is covered by the CLI itself, not that test.)
 
 ## At a glance
 

@@ -7,10 +7,13 @@ description: Write Honmoon policies — egress allow/deny lists and CEL protocol
 
 A Honmoon policy is a single YAML document with two sections: an `egress` block (domain
 allow/deny lists — the common case) and a list of `rules` (protocol-aware CEL conditions — the
-fine-grained case). The shape is defined identically by the Rust model
+fine-grained case). The same field structure is described by the Rust model
 ([lib.rs:25-70](https://github.com/pleaseai/honmoon/blob/master/crates/honmoon-core/src/lib.rs#L25-L70)),
 the TypeScript types ([index.ts:7-31](https://github.com/pleaseai/honmoon/blob/master/packages/policy/src/index.ts#L7-L31)),
-and the JSON Schema ([policy.schema.json](https://github.com/pleaseai/honmoon/blob/master/packages/policy/schema/policy.schema.json)).
+and the JSON Schema ([policy.schema.json](https://github.com/pleaseai/honmoon/blob/master/packages/policy/schema/policy.schema.json)) —
+though their *validation* differs: the JSON Schema is the strict one (`additionalProperties: false`,
+`version ≥ 1`), while the Rust loader tolerates and defaults missing fields and the TS types are
+compile-time only. Keeping the three aligned is tracked as TD-001.
 
 ## At a glance
 

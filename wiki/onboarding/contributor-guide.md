@@ -180,9 +180,12 @@ Five types carry the whole domain. Learn these and you understand Honmoon
 | `Rule` | `endpoint` + CEL `condition` + `verdict` | A protocol-aware fine-grained rule |
 | `Facts` | domain + endpoint + http/sql/k8s | What we know about a request |
 
-The cardinal invariant: **fail closed.** `Egress::default()` returns `Verdict::Deny`, and a broken
-or unmatched rule can never produce `Allow` ([lib.rs:48-60](https://github.com/pleaseai/honmoon/blob/master/crates/honmoon-core/src/lib.rs#L48-L60)).
-If you ever change the decision path, this is the property your tests must protect.
+The cardinal invariant: **fail closed.** A broken or unmatched rule never *directly* yields
+`Allow` — it falls through to `egress.default`, which is `Verdict::Deny` out of the box
+(`Egress::default()`, [lib.rs:48-60](https://github.com/pleaseai/honmoon/blob/master/crates/honmoon-core/src/lib.rs#L48-L60)). So with the
+default (or any `egress.default: deny`) policy, failure paths deny; a policy that sets
+`egress.default: allow` opts out of that safety. If you change the decision path, the property
+your tests must protect is "no failure path *upgrades* a verdict past `egress.default`."
 
 ### 2.3 Reading order for the source
 

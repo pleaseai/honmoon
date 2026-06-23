@@ -97,8 +97,10 @@ def eval_cel(condition, facts) -> bool:
     return run(program, ctx) is True        # non-bool / runtime error => not a match
 ```
 
-The asymmetry is the point: **every failure path resolves toward `deny`/no-match.** There is no
-branch where a malformed input becomes `Allow`.
+The asymmetry is the point: **every failure path resolves to no-match, then falls through to
+`egress.default`** — which is `deny` out of the box (and should stay that way in
+security-sensitive policies). No malformed input *upgrades* a verdict past the egress default; a
+policy that explicitly sets `egress.default: allow` is choosing to opt out of fail-closed.
 
 ## Design tradeoffs worth knowing
 

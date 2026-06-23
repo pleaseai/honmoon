@@ -36,10 +36,12 @@
   font-weight: 700;
 }
 
-/* Tables: denser, security-tool feel. */
+/* Tables: denser, security-tool feel. Keep VitePress's block+overflow so wide
+   tables scroll horizontally on narrow viewports instead of overflowing. */
 .vp-doc table {
-  display: table;
+  display: block;
   width: 100%;
+  overflow-x: auto;
   font-size: 0.9em;
 }
 .vp-doc th {

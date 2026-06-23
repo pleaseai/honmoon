@@ -116,7 +116,7 @@ This matters for positioning a security product:
 | Does it read the *content* of traffic? | No. It looks only at the minimum needed to make a decision (e.g. "this is a 'delete' on 'secrets'"), never the full message contents | [protocols.rs:7-8](https://github.com/pleaseai/honmoon/blob/master/crates/honmoon-core/src/protocols.rs#L7-L8), [product-guidelines.md:25-27](https://github.com/pleaseai/honmoon/blob/master/.please/docs/knowledge/product-guidelines.md#L25-L27) |
 | Is the core open for inspection? | Yes — the part that inspects traffic is 100% open source, on purpose, so security teams can audit it | [business-model.md:12-18](https://github.com/pleaseai/honmoon/blob/master/docs/business-model.md#L12-L18) |
 | Where does data live? | On your own machine/server (self-hosted). A hosted option is a future paid offering | [business-model.md:41-43](https://github.com/pleaseai/honmoon/blob/master/docs/business-model.md#L41-L43) |
-| What happens if a rule is broken or missing? | It defaults to **blocking** — the safe choice — never to silently allowing | [product-guidelines.md:23-24](https://github.com/pleaseai/honmoon/blob/master/.please/docs/knowledge/product-guidelines.md#L23-L24) |
+| What happens if a rule is broken or missing? | It falls back to your configured default — which is **block (deny)** out of the box, the safe choice. Keep that default for fail-safe behavior | [product-guidelines.md:23-24](https://github.com/pleaseai/honmoon/blob/master/.please/docs/knowledge/product-guidelines.md#L23-L24) |
 
 ## FAQ
 

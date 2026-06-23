@@ -182,9 +182,12 @@ Five types carry the whole domain. Learn these and you understand Honmoon
 | `Rule` | `endpoint` + CEL `condition` + `verdict` | A protocol-aware fine-grained rule |
 | `Facts` | domain + endpoint + http/sql/k8s | What we know about a request |
 
-The cardinal invariant: **fail closed.** `Egress::default()` returns `Verdict::Deny`, and a broken
-or unmatched rule can never produce `Allow` ([lib.rs:48-60](https://github.com/pleaseai/honmoon/blob/master/crates/honmoon-core/src/lib.rs#L48-L60)).
-If you ever change the decision path, this is the property your tests must protect.
+The cardinal invariant: **fail closed.** A broken or unmatched rule never *directly* yields
+`Allow` — it falls through to `egress.default`, which is `Verdict::Deny` out of the box
+(`Egress::default()`, [lib.rs:48-60](https://github.com/pleaseai/honmoon/blob/master/crates/honmoon-core/src/lib.rs#L48-L60)). So with the
+default (or any `egress.default: deny`) policy, failure paths deny; a policy that sets
+`egress.default: allow` opts out of that safety. If you change the decision path, the property
+your tests must protect is "no failure path *upgrades* a verdict past `egress.default`."
 
 ### 2.3 Reading order for the source
 
@@ -448,8 +451,10 @@ def eval_cel(condition, facts) -> bool:
     return run(program, ctx) is True        # non-bool / runtime error => not a match
 ```
 
-The asymmetry is the point: **every failure path resolves toward `deny`/no-match.** There is no
-branch where a malformed input becomes `Allow`.
+The asymmetry is the point: **every failure path resolves to no-match, then falls through to
+`egress.default`** — which is `deny` out of the box (and should stay that way in
+security-sensitive policies). No malformed input *upgrades* a verdict past the egress default; a
+policy that explicitly sets `egress.default: allow` is choosing to opt out of fail-closed.
 
 ## Design tradeoffs worth knowing
 
@@ -837,7 +842,7 @@ This matters for positioning a security product:
 | Does it read the *content* of traffic? | No. It looks only at the minimum needed to make a decision (e.g. "this is a 'delete' on 'secrets'"), never the full message contents | [protocols.rs:7-8](https://github.com/pleaseai/honmoon/blob/master/crates/honmoon-core/src/protocols.rs#L7-L8), [product-guidelines.md:25-27](https://github.com/pleaseai/honmoon/blob/master/.please/docs/knowledge/product-guidelines.md#L25-L27) |
 | Is the core open for inspection? | Yes — the part that inspects traffic is 100% open source, on purpose, so security teams can audit it | [business-model.md:12-18](https://github.com/pleaseai/honmoon/blob/master/docs/business-model.md#L12-L18) |
 | Where does data live? | On your own machine/server (self-hosted). A hosted option is a future paid offering | [business-model.md:41-43](https://github.com/pleaseai/honmoon/blob/master/docs/business-model.md#L41-L43) |
-| What happens if a rule is broken or missing? | It defaults to **blocking** — the safe choice — never to silently allowing | [product-guidelines.md:23-24](https://github.com/pleaseai/honmoon/blob/master/.please/docs/knowledge/product-guidelines.md#L23-L24) |
+| What happens if a rule is broken or missing? | It falls back to your configured default — which is **block (deny)** out of the box, the safe choice. Keep that default for fail-safe behavior | [product-guidelines.md:23-24](https://github.com/pleaseai/honmoon/blob/master/.please/docs/knowledge/product-guidelines.md#L23-L24) |
 
 ## FAQ
 
@@ -950,7 +955,7 @@ flowchart TB
 
 The critical invariant: **`honmoon-core` is transport-agnostic.** It has no `tokio` or
 networking dependency — its `Cargo.toml` pulls only `serde`, `serde_json`, `serde_yaml`,
-`thiserror`, `time`, and `cel-interpreter`. The proxy feeds it `Facts` and consumes a `Verdict`. This is
+`thiserror`, `time`, `tracing`, and `cel-interpreter`. The proxy feeds it `Facts` and consumes a `Verdict`. This is
 what lets the entire policy engine be unit-tested with zero I/O
 ([ARCHITECTURE.md:47-48](https://github.com/pleaseai/honmoon/blob/master/ARCHITECTURE.md#L47-L48), [tech-stack.md:18-19](https://github.com/pleaseai/honmoon/blob/master/.please/docs/knowledge/tech-stack.md#L18-L19)).
 
@@ -2296,9 +2301,10 @@ The full quality gate and definition of done are in
 # Quick Start
 
 This page walks through the two operating modes that work today — `honmoon run` (process
-wrapper) and `honmoon gateway` (standalone proxy) — using the shipped example policy. Both are
-Phase 1 features proven by the hermetic integration test
-([egress.rs](https://github.com/pleaseai/honmoon/blob/master/crates/honmoon-proxy/tests/egress.rs)).
+wrapper) and `honmoon gateway` (standalone proxy) — using the shipped example policy. Both build on
+the same terminating CONNECT proxy, whose allow/deny/tunnel behavior is proven by the hermetic
+integration test ([egress.rs](https://github.com/pleaseai/honmoon/blob/master/crates/honmoon-proxy/tests/egress.rs)). (That test exercises
+the proxy directly; `run`'s env-var exec wiring is covered by the CLI itself, not that test.)
 
 ## At a glance
 
@@ -2469,10 +2475,13 @@ e2e test drives a full `pause` → approve-over-HTTP → tunnel (and reject → 
 
 A Honmoon policy is a single YAML document with two sections: an `egress` block (domain
 allow/deny lists — the common case) and a list of `rules` (protocol-aware CEL conditions — the
-fine-grained case). The shape is defined identically by the Rust model
+fine-grained case). The same field structure is described by the Rust model
 ([lib.rs:25-70](https://github.com/pleaseai/honmoon/blob/master/crates/honmoon-core/src/lib.rs#L25-L70)),
 the TypeScript types ([index.ts:7-31](https://github.com/pleaseai/honmoon/blob/master/packages/policy/src/index.ts#L7-L31)),
-and the JSON Schema ([policy.schema.json](https://github.com/pleaseai/honmoon/blob/master/packages/policy/schema/policy.schema.json)).
+and the JSON Schema ([policy.schema.json](https://github.com/pleaseai/honmoon/blob/master/packages/policy/schema/policy.schema.json)) —
+though their *validation* differs: the JSON Schema is the strict one (`additionalProperties: false`,
+`version ≥ 1`), while the Rust loader tolerates and defaults missing fields and the TS types are
+compile-time only. Keeping the three aligned is tracked as TD-001.
 
 ## At a glance
 
