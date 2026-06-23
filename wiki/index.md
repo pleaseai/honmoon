@@ -101,3 +101,17 @@ flowchart LR
 | Policy | **YAML + JSON Schema + CEL** | Declarative egress; portable CEL conditions for protocol rules |
 
 <!-- Sources: ARCHITECTURE.md:70-80, .please/docs/knowledge/tech-stack.md:9-14, Cargo.toml:9-28, package.json:1-26 -->
+
+## Related Pages
+
+- [Overview](/getting-started/overview) — what Honmoon is and the threat model it addresses.
+- [Architecture](/deep-dive/architecture) — dependency layers, module boundaries, and the transport-agnostic core.
+- [Policy Authoring](/getting-started/policy-authoring) — write egress allow/deny lists and CEL protocol rules.
+- [Roadmap & Open-Core Model](/deep-dive/roadmap-open-core) — what ships when, and the open-core boundary.
+
+## References
+
+- [README.md](https://github.com/pleaseai/honmoon/blob/master/README.md)
+- [ARCHITECTURE.md](https://github.com/pleaseai/honmoon/blob/master/ARCHITECTURE.md)
+- [Cargo.toml](https://github.com/pleaseai/honmoon/blob/master/Cargo.toml)
+- [package.json](https://github.com/pleaseai/honmoon/blob/master/package.json)

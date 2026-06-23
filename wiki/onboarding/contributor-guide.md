@@ -181,11 +181,13 @@ Five types carry the whole domain. Learn these and you understand Honmoon
 | `Facts` | domain + endpoint + http/sql/k8s | What we know about a request |
 
 The cardinal invariant: **fail closed.** A broken or unmatched rule never *directly* yields
-`Allow` — it falls through to `egress.default`, which is `Verdict::Deny` out of the box
-(`Egress::default()`, [lib.rs:48-60](https://github.com/pleaseai/honmoon/blob/master/crates/honmoon-core/src/lib.rs#L48-L60)). So with the
-default (or any `egress.default: deny`) policy, failure paths deny; a policy that sets
+`Allow` — it proceeds to egress evaluation (the `deny` list, then the `allow` list, then
+`egress.default`), and `Egress::default()` is `Verdict::Deny` out of the box
+([lib.rs:48-60](https://github.com/pleaseai/honmoon/blob/master/crates/honmoon-core/src/lib.rs#L48-L60)). So with the
+default (or any `egress.default: deny`) policy, failure paths resolve to deny; a policy that sets
 `egress.default: allow` opts out of that safety. If you change the decision path, the property
-your tests must protect is "no failure path *upgrades* a verdict past `egress.default`."
+your tests must protect is "no failure path *upgrades* a verdict past what the egress block (and its
+default) would return."
 
 ### 2.3 Reading order for the source
 
@@ -210,7 +212,7 @@ flowchart TD
 ### 2.4 What is real vs scaffold
 
 Knowing this saves you from "fixing" something that was never built. Marked honestly throughout
-the wiki and grounded in the [tech-debt tracker](https://github.com/pleaseai/honmoon/blob/master/.please/docs/tracks/tech-debt-tracker.md):
+the wiki and grounded in the [tech-debt tracker](https://github.com/pleaseai/honmoon/blob/master/.please/docs/tracks/tech-debt-tracker.md#L9-L14):
 
 | Area | Status |
 |------|--------|
@@ -252,7 +254,12 @@ stateDiagram-v2
   Refactor --> Commit: one conventional commit per task
   Commit --> [*]
   Refactor --> Red: next behavior
+  style Red fill:#2d333b,stroke:#f85149,color:#e6edf3
+  style Green fill:#2d333b,stroke:#3fb950,color:#e6edf3
+  style Refactor fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
+  style Commit fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
 ```
+<!-- Sources: .please/docs/knowledge/workflow.md:3-39 -->
 
 This is not ceremony — it is how the parsers reached their density of edge-case coverage. When you
 add a SQL verb or a K8s path shape, **write the `assert_eq!` first**, watch it fail, then make it
@@ -279,7 +286,7 @@ the `fmt --check` CI step fails ([ci.yml:30-34](https://github.com/pleaseai/honm
 
 Conventional Commits, one commit per task ([workflow.md:83-87](https://github.com/pleaseai/honmoon/blob/master/.please/docs/knowledge/workflow.md#L83-L87)):
 
-```
+```text
 feat(core): add MERGE to the SQL verb heuristic
 fix(proxy): reject CONNECT targets without a port
 test(core): cover grouped-API K8s subresource paths

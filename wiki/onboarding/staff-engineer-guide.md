@@ -124,7 +124,7 @@ ADR-0001 adopted Pingora on a documentation-derived premise. During Phase 1, tha
 tested against the real Pingora 0.8.1 source and a prototype, and **disproven**: `HttpProxy` is
 reverse-proxy oriented and `allow_connect_method_proxying` does proxy *chaining*, not terminating
 tunnels. ADR-0002 reversed course to ~130 LOC of tokio and deferred the framework to the phase
-that actually terminates TLS ([0002:10-44](https://github.com/pleaseai/honmoon/blob/master/.please/docs/decisions/0002-phase1-connect-proxy-on-tokio.md#L10-L44)).
+that actually terminates TLS ([.please/docs/decisions/0002-phase1-connect-proxy-on-tokio.md:10-44](https://github.com/pleaseai/honmoon/blob/master/.please/docs/decisions/0002-phase1-connect-proxy-on-tokio.md#L10-L44)).
 
 ```mermaid
 sequenceDiagram
