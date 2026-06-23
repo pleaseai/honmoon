@@ -1,0 +1,37 @@
+wiki/.vitepress/theme/index.ts
+  s_361c14ec62aec4::t_19194699f12008 6,16-18,20-23
+wiki/onboarding/product-manager-guide.md
+  s_361c14ec62aec4::t_66caa4d16a5a3a 119
+wiki/deep-dive/architecture.md
+  s_361c14ec62aec4::t_ed7692d7621e05 76
+wiki/getting-started/policy-authoring.md
+  s_361c14ec62aec4::t_1dab703475e6f0 10,13-16
+.github/workflows/deploy-wiki.yml
+  s_361c14ec62aec4::t_86a02ef1c146bc 33
+wiki/onboarding/staff-engineer-guide.md
+  s_361c14ec62aec4::t_f03b8f2c32b493 100-103
+wiki/.vitepress/theme/custom.css
+  s_361c14ec62aec4::t_ebe1d6d9dab2d1 39-40,42,44
+wiki/llms-full.txt
+  s_361c14ec62aec4::t_adc929d0553f71 185-190,454-457,845,958,2304-2307,2478,2481-2484
+wiki/onboarding/contributor-guide.md
+  s_361c14ec62aec4::t_a72e31f81bb1b3 183-188
+wiki/getting-started/quick-start.md
+  s_361c14ec62aec4::t_8e10150fbf3b14 9-12
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.10",
+  "base_commit_sha": "888e33b2a835b3549c54d756f2cd6b3d3b4671c7",
+  "prompts": {},
+  "sessions": {
+    "s_361c14ec62aec4": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "594c8765-b9f0-43e9-a044-11276e40d06e",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
