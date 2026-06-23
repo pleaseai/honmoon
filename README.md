@@ -15,7 +15,7 @@ It unifies two layers of protection:
 2. **Protocol-aware policy engine** — parse protocols such as SQL, Kubernetes, and HTTP at the wire
    level to apply fine-grained rules (`deny` / `approve`) (the [clawpatrol](https://github.com/denoland/clawpatrol) approach)
 
-### The name
+## The name
 
 **Honmoon** (혼문, 魂門) borrows from Korean lore popularized by *KPop Demon Hunters*: a
 protective barrier woven to seal the human world off from the demon world. The metaphor fits —
