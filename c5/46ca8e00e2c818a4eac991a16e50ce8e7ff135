@@ -1,0 +1,44 @@
+apps/dashboard/src/components/Overview.tsx
+  s_5884de9532bf32::t_f5a9c7d0a120e4 32-39
+  s_5884de9532bf32::t_7a9b546f9a44dd 12-13,17-19
+apps/dashboard/src/components/Approvals.tsx
+  s_5884de9532bf32::t_763d69208c9dd9 12
+  s_5884de9532bf32::t_c4164fbca12cff 48
+  s_5884de9532bf32::t_2500efbcad560e 62
+  s_5884de9532bf32::t_2efd9564284089 9-11,13,16-17,22-24,26-30,35
+crates/honmoon-mgmt/build.rs
+  s_5884de9532bf32::t_49361bd48c564d 23-24,28-33
+crates/honmoon-proxy/src/approval.rs
+  s_5884de9532bf32::t_508d8aaf63dcac 61-65,70-76,81-85,89,97-100,104-110,121-128
+  s_5884de9532bf32::t_ccc3aaa1078a11 188-194,210-222,226-227
+crates/honmoon-core/src/audit.rs
+  s_5884de9532bf32::t_ad8c05081e3daf 149-170,175-176
+crates/honmoon-cli/src/main.rs
+  s_5884de9532bf32::t_e321b002d4b8e2 114-126
+apps/dashboard/src/hooks.ts
+  s_5884de9532bf32::t_128f57180a93d6 28-30,32,35,41,46
+crates/honmoon-proxy/src/gateway.rs
+  s_5884de9532bf32::t_3a3f618795e8ae 213,218-230,240-259,261-269
+crates/honmoon-mgmt/src/lib.rs
+  s_5884de9532bf32::t_b312db68c5cc04 140-147
+packages/api/src/audit.ts
+  s_5884de9532bf32::t_0942676bb554fd 59-69
+packages/api/src/index.ts
+  s_5884de9532bf32::t_636af2a4a2ec61 14,20-35,46,51
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.10",
+  "base_commit_sha": "c546ca8e00e2c818a4eac991a16e50ce8e7ff135",
+  "prompts": {},
+  "sessions": {
+    "s_5884de9532bf32": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "b1cc1b71-90c3-46cf-84a0-38ae59069f87",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
