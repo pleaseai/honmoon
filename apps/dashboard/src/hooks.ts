@@ -25,21 +25,25 @@ export function usePolling<T>(fn: () => Promise<T>, intervalMs: number): Polled<
 
   useEffect(() => {
     let alive = true
+    // Guard against overlapping polls: a slow earlier request must not
+    // overwrite newer state with stale data, so only the latest run commits.
+    let latestRun = 0
     const run = () => {
+      const runId = ++latestRun
       fn()
         .then((d) => {
-          if (alive) {
+          if (alive && runId === latestRun) {
             setData(d)
             setError(null)
           }
         })
         .catch((e: unknown) => {
-          if (alive) {
+          if (alive && runId === latestRun) {
             setError(e instanceof Error ? e.message : String(e))
           }
         })
         .finally(() => {
-          if (alive) {
+          if (alive && runId === latestRun) {
             setLoading(false)
           }
         })

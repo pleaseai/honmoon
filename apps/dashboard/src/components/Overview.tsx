@@ -9,11 +9,14 @@ function count(events: AuditEvent[], decision: Decision): number {
 }
 
 export function Overview({ onNavigate }: { onNavigate: (view: string) => void }) {
-  const { data: audit } = usePolling(getAudit, 2000)
-  const { data: approvals } = usePolling(getApprovals, 1500)
+  const { data: audit, error: auditError } = usePolling(getAudit, 2000)
+  const { data: approvals, error: approvalsError } = usePolling(getApprovals, 1500)
 
   const events = audit ?? []
   const pending = approvals?.length ?? 0
+  // Surface fetch failures: without this, a down API renders as zeroes and an
+  // empty feed, which reads as "nothing happening" rather than "can't reach it".
+  const error = auditError ?? approvalsError
 
   const stats = [
     { label: 'Pending approvals', value: pending, accent: pending > 0 },
@@ -25,6 +28,14 @@ export function Overview({ onNavigate }: { onNavigate: (view: string) => void })
   return (
     <section>
       <h2 className="mb-4 text-base font-semibold">Overview</h2>
+
+      {error && (
+        <p className="mb-4 rounded border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-700 dark:border-rose-900 dark:bg-rose-950 dark:text-rose-300">
+          Can’t reach the management API —
+          {' '}
+          {error}
+        </p>
+      )}
 
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
         {stats.map(s => (

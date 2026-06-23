@@ -137,6 +137,14 @@ async fn get_policy(State(s): State<AppState>) -> Json<PolicyResponse> {
 /// routing works (SPA). Returns 404 only when the dashboard was not built in.
 async fn static_handler(uri: Uri) -> Response {
     let path = uri.path().trim_start_matches('/');
+
+    // Never SPA-fallback an unmatched API path — that would mask routing
+    // mistakes (and failed management actions) as a `200 text/html`. Let those
+    // 404 honestly.
+    if path == "api" || path.starts_with("api/") {
+        return (StatusCode::NOT_FOUND, "no such API route").into_response();
+    }
+
     let path = if path.is_empty() { "index.html" } else { path };
 
     if let Some(asset) = Assets::get(path) {

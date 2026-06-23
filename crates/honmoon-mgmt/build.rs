@@ -20,12 +20,17 @@ const PLACEHOLDER: &str = r#"<!doctype html>
 "#;
 
 fn main() {
-    let manifest = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap());
+    let manifest =
+        PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR is not set"));
     let dist = manifest.join("../../apps/dashboard/dist");
     let index = dist.join("index.html");
     if !index.exists() {
-        let _ = std::fs::create_dir_all(&dist);
-        let _ = std::fs::write(&index, PLACEHOLDER);
+        // Fail fast: a swallowed error here would surface later as a confusing
+        // "dashboard not embedded" rather than the real filesystem problem.
+        std::fs::create_dir_all(&dist)
+            .unwrap_or_else(|e| panic!("failed to create {}: {e}", dist.display()));
+        std::fs::write(&index, PLACEHOLDER)
+            .unwrap_or_else(|e| panic!("failed to write {}: {e}", index.display()));
     }
     println!("cargo:rerun-if-changed={}", dist.display());
 }

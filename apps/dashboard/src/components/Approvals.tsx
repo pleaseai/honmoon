@@ -6,20 +6,33 @@ import { usePolling } from '../hooks'
 
 export function Approvals() {
   const { data, error, refresh } = usePolling(getApprovals, 1500)
-  const [busy, setBusy] = useState<number | null>(null)
+  // Track in-flight ids in a Set so concurrent actions don't clear each
+  // other's busy state (a shared single id let a later action re-enable a card
+  // while an earlier one was still pending).
+  const [busyIds, setBusyIds] = useState(() => new Set<number>())
+  const [actionError, setActionError] = useState<string | null>(null)
 
   async function resolve(id: number, action: 'approve' | 'reject') {
-    setBusy(id)
+    setBusyIds(prev => new Set(prev).add(id))
+    setActionError(null)
     try {
       await (action === 'approve' ? approve(id) : reject(id))
       refresh()
     }
+    catch (e: unknown) {
+      setActionError(e instanceof Error ? e.message : String(e))
+    }
     finally {
-      setBusy(null)
+      setBusyIds((prev) => {
+        const next = new Set(prev)
+        next.delete(id)
+        return next
+      })
     }
   }
 
   const pending = data ?? []
+  const message = actionError ?? error
 
   return (
     <section>
@@ -32,7 +45,7 @@ export function Approvals() {
         </span>
       </header>
 
-      {error && <ErrorNote message={error} />}
+      {message && <ErrorNote message={message} />}
 
       {pending.length === 0
         ? (
@@ -46,7 +59,7 @@ export function Approvals() {
                 <ApprovalCard
                   key={p.id}
                   approval={p}
-                  busy={busy === p.id}
+                  busy={busyIds.has(p.id)}
                   onApprove={() => resolve(p.id, 'approve')}
                   onReject={() => resolve(p.id, 'reject')}
                 />

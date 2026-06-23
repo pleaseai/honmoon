@@ -146,30 +146,39 @@ impl AuditLog {
 
     /// Record a decision; returns the stored event (with its assigned id).
     pub fn record(&self, draft: AuditDraft) -> AuditEvent {
-        let mut ring = self.ring.lock().expect("audit ring poisoned");
-        let id = ring.next_id;
-        ring.next_id += 1;
-        let event = AuditEvent {
-            id,
-            timestamp: now_rfc3339(),
-            decision: draft.decision,
-            verdict: draft.verdict,
-            rule: draft.rule,
-            facts: draft.facts,
-            approval_id: draft.approval_id,
+        // Assign the id and update the ring under the lock, then release it
+        // *before* any file I/O. Holding the ring lock across a synchronous
+        // sink write would stall the gateway hot path (and serialize all audit
+        // operations) behind a slow disk.
+        let event = {
+            let mut ring = self.ring.lock().expect("audit ring poisoned");
+            let id = ring.next_id;
+            ring.next_id += 1;
+            let event = AuditEvent {
+                id,
+                timestamp: now_rfc3339(),
+                decision: draft.decision,
+                verdict: draft.verdict,
+                rule: draft.rule,
+                facts: draft.facts,
+                approval_id: draft.approval_id,
+            };
+            ring.events.push_back(event.clone());
+            while ring.events.len() > self.capacity {
+                ring.events.pop_front();
+            }
+            event
         };
 
         if let Some(sink) = &self.sink {
             // A sink write failure must not break enforcement — log and carry on.
+            // The sink has its own lock (writes stay ordered) and no longer
+            // contends with the ring.
             if let Err(e) = append_jsonl(sink, &event) {
                 tracing::warn!(error = %e, "audit sink write failed");
             }
         }
 
-        ring.events.push_back(event.clone());
-        while ring.events.len() > self.capacity {
-            ring.events.pop_front();
-        }
         event
     }
 

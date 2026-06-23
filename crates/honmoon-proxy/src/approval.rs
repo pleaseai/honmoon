@@ -58,18 +58,35 @@ struct Slot {
     tx: oneshot::Sender<ApprovalDecision>,
 }
 
+/// Default cap on simultaneously-held requests. Beyond this, new pauses are
+/// rejected (fail-closed) instead of growing the queue without bound under
+/// pause-heavy or hostile traffic.
+pub const DEFAULT_MAX_PENDING: usize = 1024;
+
 /// In-process registry of requests held pending approval.
-#[derive(Default)]
 pub struct ApprovalRegistry {
     slots: Mutex<HashMap<u64, Slot>>,
     next_id: AtomicU64,
+    max_pending: usize,
+}
+
+impl Default for ApprovalRegistry {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl ApprovalRegistry {
     pub fn new() -> Self {
+        Self::with_max_pending(DEFAULT_MAX_PENDING)
+    }
+
+    /// A registry that holds at most `max_pending` requests at once.
+    pub fn with_max_pending(max_pending: usize) -> Self {
         Self {
             slots: Mutex::new(HashMap::new()),
             next_id: AtomicU64::new(1),
+            max_pending,
         }
     }
 
@@ -77,10 +94,20 @@ impl ApprovalRegistry {
     /// caller can record its id in the audit log) and a receiver that resolves
     /// when the request is approved/rejected — or errors if the registry is
     /// dropped, which the caller should treat as a rejection.
+    ///
+    /// Returns `None` when the pending queue is already at capacity
+    /// ([`max_pending`](Self::with_max_pending)); the caller must then fail
+    /// closed (deny the request) rather than hold it.
     pub fn register(
         &self,
         new: NewApproval,
-    ) -> (PendingApproval, oneshot::Receiver<ApprovalDecision>) {
+    ) -> Option<(PendingApproval, oneshot::Receiver<ApprovalDecision>)> {
+        let mut slots = self.slots.lock().expect("approval registry poisoned");
+        // Check the cap and insert under the same lock so concurrent registers
+        // can't both slip past a near-full queue.
+        if slots.len() >= self.max_pending {
+            return None;
+        }
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         let info = PendingApproval {
             id,
@@ -91,17 +118,14 @@ impl ApprovalRegistry {
             summary: new.summary,
         };
         let (tx, rx) = oneshot::channel();
-        self.slots
-            .lock()
-            .expect("approval registry poisoned")
-            .insert(
-                id,
-                Slot {
-                    info: info.clone(),
-                    tx,
-                },
-            );
-        (info, rx)
+        slots.insert(
+            id,
+            Slot {
+                info: info.clone(),
+                tx,
+            },
+        );
+        Some((info, rx))
     }
 
     /// All currently-pending approvals, oldest first.
@@ -161,11 +185,13 @@ mod tests {
     #[tokio::test]
     async fn resolve_wakes_waiter_with_decision() {
         let reg = ApprovalRegistry::new();
-        let (info, rx) = reg.register(NewApproval {
-            domain: Some("staging.internal".into()),
-            summary: "CONNECT staging.internal".into(),
-            ..Default::default()
-        });
+        let (info, rx) = reg
+            .register(NewApproval {
+                domain: Some("staging.internal".into()),
+                summary: "CONNECT staging.internal".into(),
+                ..Default::default()
+            })
+            .expect("capacity available");
         assert_eq!(info.id, 1);
         assert_eq!(reg.len(), 1);
 
@@ -182,10 +208,23 @@ mod tests {
     }
 
     #[test]
+    fn register_rejects_when_at_capacity() {
+        let reg = ApprovalRegistry::with_max_pending(1);
+        let _first = reg.register(NewApproval::default()).expect("first fits");
+        assert!(
+            reg.register(NewApproval::default()).is_none(),
+            "second register must be refused at capacity"
+        );
+        // Freeing a slot lets a new request register again.
+        reg.cancel(1);
+        assert!(reg.register(NewApproval::default()).is_some());
+    }
+
+    #[test]
     fn pending_is_sorted_by_id() {
         let reg = ApprovalRegistry::new();
-        let (a, _ra) = reg.register(NewApproval::default());
-        let (b, _rb) = reg.register(NewApproval::default());
+        let (a, _ra) = reg.register(NewApproval::default()).unwrap();
+        let (b, _rb) = reg.register(NewApproval::default()).unwrap();
         let pending = reg.pending();
         assert_eq!(pending.len(), 2);
         assert_eq!(pending[0].id, a.id);

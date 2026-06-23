@@ -56,7 +56,17 @@ export function queryAudit(events: AuditEvent[], q: AuditQuery = {}): AuditEvent
     const needle = q.domain.toLowerCase()
     result = result.filter(e => e.facts.domain?.toLowerCase().includes(needle))
   }
-  const sorted = [...result].sort((a, b) => b.id - a.id)
+  // Sort by timestamp, not id: ids are process-local and restart from 1 after
+  // a gateway restart, so a reused JSONL file would otherwise misorder events
+  // and `limit` could hide the genuinely newest entries. id breaks ties.
+  const sorted = [...result].sort((a, b) => {
+    const at = Date.parse(a.timestamp)
+    const bt = Date.parse(b.timestamp)
+    if (!Number.isNaN(at) && !Number.isNaN(bt) && at !== bt) {
+      return bt - at
+    }
+    return b.id - a.id
+  })
   const limit = q.limit && q.limit > 0 ? q.limit : 200
   return sorted.slice(0, limit)
 }

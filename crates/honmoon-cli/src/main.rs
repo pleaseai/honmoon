@@ -111,11 +111,19 @@ fn gateway(
 
     let runtime = tokio::runtime::Runtime::new().context("build tokio runtime")?;
     runtime.block_on(async move {
-        // The proxy accept loop never returns; run the management server alongside.
-        tokio::spawn(async move { honmoon_proxy::gateway::serve(state, proxy_listener).await });
-        honmoon_mgmt::serve(app_state, mgmt_listener)
-            .await
-            .context("management API server failed")
+        // Run both servers and surface unexpected proxy termination — otherwise
+        // the process would keep serving the management API while egress
+        // filtering is silently down.
+        let proxy_task =
+            tokio::spawn(async move { honmoon_proxy::gateway::serve(state, proxy_listener).await });
+        tokio::select! {
+            mgmt = honmoon_mgmt::serve(app_state, mgmt_listener) => {
+                mgmt.context("management API server failed")
+            }
+            proxy = proxy_task => {
+                anyhow::bail!("proxy server task exited unexpectedly: {proxy:?}")
+            }
+        }
     })?;
     Ok(())
 }

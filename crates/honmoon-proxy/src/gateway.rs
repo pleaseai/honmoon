@@ -210,12 +210,24 @@ async fn hold_for_approval(
     summary: FactsSummary,
     rule: Option<String>,
 ) -> std::io::Result<bool> {
-    let (pending, rx) = state.approvals.register(NewApproval {
+    let Some((pending, rx)) = state.approvals.register(NewApproval {
         endpoint: facts.endpoint.clone(),
         domain: facts.domain.clone(),
         rule: rule.clone(),
         summary: summarize(facts, rule.as_deref()),
-    });
+    }) else {
+        // Pending queue is at capacity — fail closed rather than hold.
+        tracing::warn!(domain = ?facts.domain, "approval queue full; rejecting paused request");
+        state.audit.record(AuditDraft {
+            decision: Decision::Rejected,
+            verdict: Verdict::Pause,
+            rule,
+            facts: summary,
+            approval_id: None,
+        });
+        respond(client, 503, "Service Unavailable").await?;
+        return Ok(false);
+    };
     state.audit.record(AuditDraft {
         decision: Decision::Paused,
         verdict: Verdict::Pause,
@@ -225,15 +237,36 @@ async fn hold_for_approval(
     });
     tracing::info!(id = pending.id, domain = ?facts.domain, "request held for approval");
 
-    let decision = match tokio::time::timeout(state.pause_timeout, rx).await {
-        Ok(Ok(d)) => d,
-        // Registry dropped (shutdown) — treat as rejection.
-        Ok(Err(_)) => ApprovalDecision::Reject,
-        // Timed out waiting for a human — drop the slot and reject.
-        Err(_elapsed) => {
+    // Wait for a human decision, the hold timeout, or the client hanging up.
+    // A held CONNECT stays silent until it receives `200`, so racing a read on
+    // the client lets us detect a disconnect (EOF) and free the slot at once,
+    // instead of leaking the pending entry until the timeout fires.
+    let mut probe = [0u8; 1];
+    let decision = tokio::select! {
+        result = tokio::time::timeout(state.pause_timeout, rx) => match result {
+            Ok(Ok(d)) => d,
+            // Registry dropped (shutdown) — treat as rejection.
+            Ok(Err(_)) => ApprovalDecision::Reject,
+            // Timed out waiting for a human — drop the slot and reject.
+            Err(_elapsed) => {
+                state.approvals.cancel(pending.id);
+                tracing::info!(id = pending.id, "approval timed out");
+                ApprovalDecision::Reject
+            }
+        },
+        // Any read event before approval (EOF, or unexpected bytes) means the
+        // client is gone or misbehaving — abandon the hold and free the slot.
+        _ = client.read(&mut probe) => {
             state.approvals.cancel(pending.id);
-            tracing::info!(id = pending.id, "approval timed out");
-            ApprovalDecision::Reject
+            state.audit.record(AuditDraft {
+                decision: Decision::Rejected,
+                verdict: Verdict::Pause,
+                rule: rule.clone(),
+                facts: summary.clone(),
+                approval_id: Some(pending.id),
+            });
+            tracing::info!(id = pending.id, "client disconnected while held; cancelled");
+            return Ok(false);
         }
     };
 
