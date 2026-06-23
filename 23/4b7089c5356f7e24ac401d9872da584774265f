@@ -1,0 +1,31 @@
+README.md
+  s_5884de9532bf32::t_a3faba0180db4b 147-150,156-158
+  s_5884de9532bf32::t_00a6ff8b548538 84-86,89,91
+  s_5884de9532bf32::t_a9eb1f9b4091cd 198-200
+  s_5884de9532bf32::t_1f5b807553d035 181,185-188
+ARCHITECTURE.md
+  s_5884de9532bf32::t_8aab508178f684 142
+  s_5884de9532bf32::t_e3cfa4503c90fc 56-61,67-69
+  s_5884de9532bf32::t_d89bf4b4036ea3 33-34,37-39,41-42,44
+  s_5884de9532bf32::t_57d631b21c1660 125-127,132-135
+  s_5884de9532bf32::t_8bc14061124c7e 79-83,85-86
+docs/roadmap.md
+  s_5884de9532bf32::t_b1a8f870589479 81-101
+  s_5884de9532bf32::t_350ea78506eea5 3
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.10",
+  "base_commit_sha": "234b7089c5356f7e24ac401d9872da584774265f",
+  "prompts": {},
+  "sessions": {
+    "s_5884de9532bf32": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "b1cc1b71-90c3-46cf-84a0-38ae59069f87",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
