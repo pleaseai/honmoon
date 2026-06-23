@@ -18,9 +18,9 @@ against a declarative policy, and returns one of three verdicts — `allow`, `de
 |---------|------------------|--------|
 | What does it protect? | The boundary between AI agents and production systems (APIs, databases, K8s) | [product.md:6-11](https://github.com/pleaseai/honmoon/blob/master/.please/docs/knowledge/product.md#L6-L11) |
 | How does it decide? | A YAML policy: egress allow/deny lists + CEL rules over protocol facts | [policies/agent.yaml](https://github.com/pleaseai/honmoon/blob/master/policies/agent.yaml) |
-| What can it decide? | `allow` · `deny` · `pause` (human approval) | [lib.rs:14-23](https://github.com/pleaseai/honmoon/blob/master/crates/honmoon-core/src/lib.rs#L14-L23) |
-| Default posture | **Fail closed** — default egress verdict is `deny` | [lib.rs:48-60](https://github.com/pleaseai/honmoon/blob/master/crates/honmoon-core/src/lib.rs#L48-L60) |
-| What runs today? | Phase 1–3: CONNECT egress proxy + CEL engine + SQL/K8s parsers | [roadmap.md:32-77](https://github.com/pleaseai/honmoon/blob/master/docs/roadmap.md#L32-L77) |
+| What can it decide? | `allow` · `deny` · `pause` (held for human approval) | [lib.rs:15-25](https://github.com/pleaseai/honmoon/blob/master/crates/honmoon-core/src/lib.rs#L15-L25) |
+| Default posture | **Fail closed** — default egress verdict is `deny` | [lib.rs:50-62](https://github.com/pleaseai/honmoon/blob/master/crates/honmoon-core/src/lib.rs#L50-L62) |
+| What runs today? | Phase 1–4: egress proxy + CEL engine + SQL/K8s parsers + `pause` approval + audit + dashboard | [roadmap.md:32-101](https://github.com/pleaseai/honmoon/blob/master/docs/roadmap.md#L32-L101) |
 
 ## The problem
 
@@ -85,28 +85,33 @@ flowchart TB
     corec["honmoon-core<br>policy model + decide()"]
     cli --> proxy --> corec
   end
-  subgraph cp["Control plane — TypeScript on Bun (scaffold)"]
-    pol["@honmoon/policy<br>types + JSON Schema"]
-    api["@honmoon/api<br>management & audit API"]
-    tcli["@honmoon/cli<br>honmoonctl"]
+  subgraph mg["Management — Rust (honmoon-mgmt, Phase 4)"]
+    mgmt["axum API + embedded dashboard"]
   end
-  subgraph ui["Dashboard — React + Vite (scaffold)"]
+  subgraph cp["Control plane — TypeScript on Bun"]
+    pol["@honmoon/policy<br>types + runtime model"]
+    api["@honmoon/api<br>durable audit query"]
+    tcli["@honmoon/cli<br>honmoonctl (stub)"]
+  end
+  subgraph ui["Dashboard — React + Vite"]
     dash["@honmoon/dashboard"]
   end
   pol --> api
   pol --> tcli
   pol --> dash
-  api -. "serves (planned)" .-> dash
+  cli --> mgmt
+  dash -. "embedded in" .-> mgmt
 
   style cli fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
   style proxy fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
   style corec fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
+  style mgmt fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
   style pol fill:#161b22,stroke:#30363d,color:#e6edf3
   style api fill:#161b22,stroke:#30363d,color:#e6edf3
   style tcli fill:#161b22,stroke:#30363d,color:#e6edf3
   style dash fill:#161b22,stroke:#30363d,color:#e6edf3
 ```
-<!-- Sources: ARCHITECTURE.md:30-45, README.md:65-83, packages/policy/src/index.ts:1-31 -->
+<!-- Sources: ARCHITECTURE.md:30-49, crates/honmoon-mgmt/src/lib.rs:1-16, packages/policy/src/index.ts:33-92 -->
 
 **Invariant:** `honmoon-core` is transport-agnostic — it has no `tokio` or networking
 dependency. The proxy feeds it `Facts` and consumes a `Verdict`. This keeps the policy logic

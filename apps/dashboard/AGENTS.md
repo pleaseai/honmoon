@@ -1,9 +1,9 @@
 # AGENTS.md — Dashboard (`apps/dashboard/`)
 
-The Honmoon management dashboard: a React + Vite + Tailwind SPA. **Scaffold today** — `App.tsx`
-renders a header, a static nav, and a placeholder body. The real surfaces (audit log viewer,
-policy editor, approval queue) are Phase 4. Planned to be embedded into the Rust binary via
-`rust-embed` and served by `@honmoon/api`.
+The Honmoon management dashboard: a React + Vite + Tailwind SPA (Phase 4). `App.tsx` is a tab shell
+over four live views — Overview, Audit Log, Policies (Prism-highlighted), Approvals (approve/deny)
+— polling the management API. Built into `dist/` and **embedded into the Rust binary via
+`rust-embed`**, served by `honmoon-mgmt` (`honmoon gateway`).
 
 ## Build & Run Commands
 
@@ -19,10 +19,10 @@ bun run dashboard:dev
 
 | Path | What |
 |------|------|
-| `src/main.tsx` | React entry point. |
-| `src/App.tsx` | App shell (nav: Overview · Audit Log · Policies · Approvals — placeholder body). |
-| `vite.config.ts` | Vite + Tailwind config. |
-| `tsconfig*.json` | Strict TypeScript config. |
+| `src/main.tsx` / `src/App.tsx` | Entry point; tab shell over the four views. |
+| `src/components/` | `Overview`, `AuditLog`, `PolicyView`, `Approvals`, `DecisionBadge`. |
+| `src/api.ts` / `src/hooks.ts` / `src/format.ts` | Typed management-API client, `usePolling`, formatters. |
+| `vite.config.ts` | Vite + Tailwind; in dev, proxies `/api` → `127.0.0.1:8444` (a running `honmoon gateway`). |
 
 ## Code Style
 

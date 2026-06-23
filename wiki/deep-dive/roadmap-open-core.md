@@ -20,7 +20,7 @@ to that boundary and records the key architecture decisions. Sources:
 | 1 — HTTP egress MVP | CONNECT proxy + domain allowlist | OSS | <span class="status-done">done</span> | [roadmap.md:32-46](https://github.com/pleaseai/honmoon/blob/master/docs/roadmap.md#L32-L46) |
 | 2 — CEL + HTTP facts | `decide()`, CEL engine, `http` facts | OSS | <span class="status-done">done</span> | [roadmap.md:49-60](https://github.com/pleaseai/honmoon/blob/master/docs/roadmap.md#L49-L60) |
 | 3 — SQL / K8s parsers | wire parsers → `sql` / `k8s` facts | OSS | <span class="status-done">done</span> (parsing; live relay = TD-006) | [roadmap.md:63-77](https://github.com/pleaseai/honmoon/blob/master/docs/roadmap.md#L63-L77) |
-| 4 — Verdicts, audit & dashboard | `pause` workflow, audit log, dashboard | OSS | <span class="status-planned">planned</span> | [roadmap.md:81-89](https://github.com/pleaseai/honmoon/blob/master/docs/roadmap.md#L81-L89) |
+| 4 — Verdicts, audit & dashboard | `pause` hold + audit log + embedded dashboard | OSS | <span class="status-done">done</span> | [roadmap.md:81-101](https://github.com/pleaseai/honmoon/blob/master/docs/roadmap.md#L81-L101) |
 | 5 — Isolation modes | hardened `run`, `gateway`, `join` | OSS | <span class="status-planned">planned</span> | [roadmap.md:93-100](https://github.com/pleaseai/honmoon/blob/master/docs/roadmap.md#L93-L100) |
 | 6 — Team / control plane | fleet policy, RBAC/SSO, approval routing | **Paid** | <span class="status-planned">planned</span> | [roadmap.md:104-112](https://github.com/pleaseai/honmoon/blob/master/docs/roadmap.md#L104-L112) |
 | 7 — Hosted SaaS & intelligence | multi-tenant cloud, threat feeds, key isolation | **Paid** | <span class="status-planned">planned</span> | [roadmap.md:116-122](https://github.com/pleaseai/honmoon/blob/master/docs/roadmap.md#L116-L122) |
@@ -38,7 +38,7 @@ flowchart LR
   style p1 fill:#161b22,stroke:#3fb950,color:#e6edf3
   style p2 fill:#161b22,stroke:#3fb950,color:#e6edf3
   style p3 fill:#161b22,stroke:#3fb950,color:#e6edf3
-  style p4 fill:#161b22,stroke:#d29922,color:#e6edf3
+  style p4 fill:#161b22,stroke:#3fb950,color:#e6edf3
   style p5 fill:#161b22,stroke:#d29922,color:#e6edf3
   style p6 fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
   style p7 fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
@@ -155,7 +155,7 @@ Not every layer runs everywhere — scope is kept honest
 
 - [Overview](/getting-started/overview) — the product thesis these phases build toward.
 - [Egress Gateway (Data Plane)](/deep-dive/egress-gateway) — the ADR-0002 decision in code.
-- [Control Plane & Dashboard](/deep-dive/control-plane) — the Phase 4–7 scaffold.
+- [Control Plane & Dashboard](/deep-dive/control-plane) — the Phase 4 management plane (and its paid roadmap).
 
 ## References
 

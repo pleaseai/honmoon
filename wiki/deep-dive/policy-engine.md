@@ -18,9 +18,10 @@ networking dependency by design ([lib.rs:1-4](https://github.com/pleaseai/honmoo
 | `Policy` | struct | `version` + `egress` + `rules` | [lib.rs:25-34](https://github.com/pleaseai/honmoon/blob/master/crates/honmoon-core/src/lib.rs#L25-L34) |
 | `Egress` | struct | default + allow/deny domain lists | [lib.rs:36-60](https://github.com/pleaseai/honmoon/blob/master/crates/honmoon-core/src/lib.rs#L36-L60) |
 | `Rule` | struct | endpoint + CEL condition + verdict | [lib.rs:62-70](https://github.com/pleaseai/honmoon/blob/master/crates/honmoon-core/src/lib.rs#L62-L70) |
-| `Facts` | struct | domain + endpoint + http/sql/k8s facts | [lib.rs:77-89](https://github.com/pleaseai/honmoon/blob/master/crates/honmoon-core/src/lib.rs#L77-L89) |
-| `decide()` | fn | The decision algorithm | [engine.rs:19-28](https://github.com/pleaseai/honmoon/blob/master/crates/honmoon-core/src/engine.rs#L19-L28) |
-| `matches_domain()` | fn | Wildcard domain matcher | [engine.rs:56-64](https://github.com/pleaseai/honmoon/blob/master/crates/honmoon-core/src/engine.rs#L56-L64) |
+| `Facts` | struct | domain + endpoint + http/sql/k8s facts | [lib.rs:79-91](https://github.com/pleaseai/honmoon/blob/master/crates/honmoon-core/src/lib.rs#L79-L91) |
+| `decide_explained()` | fn | The decision algorithm → `Outcome{verdict, rule}` | [engine.rs:38-53](https://github.com/pleaseai/honmoon/blob/master/crates/honmoon-core/src/engine.rs#L38-L53) |
+| `decide()` | fn | Thin wrapper returning just the `Verdict` | [engine.rs:22-24](https://github.com/pleaseai/honmoon/blob/master/crates/honmoon-core/src/engine.rs#L22-L24) |
+| `matches_domain()` | fn | Wildcard domain matcher | [engine.rs:81-89](https://github.com/pleaseai/honmoon/blob/master/crates/honmoon-core/src/engine.rs#L81-L89) |
 
 ## The model
 
@@ -69,8 +70,12 @@ classDiagram
 
 ## The decision algorithm
 
-`decide()` has a strict, two-stage precedence: **rules first, egress second**
-([engine.rs:7-28](https://github.com/pleaseai/honmoon/blob/master/crates/honmoon-core/src/engine.rs#L7-L28)).
+The engine has a strict, two-stage precedence: **rules first, egress second**. Since Phase 4 the
+core entry point is `decide_explained`, which returns an `Outcome { verdict, rule }` — the
+`verdict` plus the **name of the rule that fired** (or `None` for an egress-list decision). This
+is what the audit log records so a human can see *why* a request was held or blocked. `decide()`
+remains as a thin wrapper for callers that only need the verdict
+([engine.rs:7-53](https://github.com/pleaseai/honmoon/blob/master/crates/honmoon-core/src/engine.rs#L7-L53)).
 
 1. Protocol-aware **rules are evaluated in order**. The first rule whose `endpoint` matches and
    whose CEL `condition` evaluates to `true` wins and returns its verdict.

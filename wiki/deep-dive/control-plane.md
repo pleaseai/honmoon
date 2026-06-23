@@ -1,181 +1,192 @@
 ---
-title: Control Plane & Dashboard (Scaffold)
-description: The TypeScript/Bun control plane and React dashboard — what exists today (scaffold) and what each piece will become.
+title: Control Plane & Dashboard
+description: The management API, audit-query service, and React dashboard that observe and operate the data plane (Phase 4).
 ---
 
-# Control Plane & Dashboard (Scaffold)
+# Control Plane & Dashboard
 
-The control plane is the TypeScript half of the monorepo: policy types, a control-plane CLI, a
-management/audit API, and a React dashboard. **Today these are scaffolds.** The data plane
-(Rust) enforces policy; the control plane is where teams will *manage and observe* it, and most
-of that surface is still `TODO`. This page documents what exists, marked honestly, so you can
-tell shipped behavior from intent.
+The control plane is how a human **observes and operates** the data plane: it surfaces the audit
+log, lists requests held for approval, lets an operator approve or reject them, and shows the
+active policy. As of **Phase 4** this is real — not a scaffold. It spans two services and a React
+dashboard, grounded in `crates/honmoon-mgmt`, `packages/api`, and `apps/dashboard`.
 
-::: warning Read this first
-Everything on this page is <span class="status-planned">scaffold / stub</span> unless explicitly
-marked otherwise. The policy **types** are real and used; the API serves only `/healthz`; the
-CLI `validate` does not yet validate; the dashboard is a placeholder shell. The CI JS job runs
-lint/typecheck/build but no tests ([ci.yml:49-70](https://github.com/pleaseai/honmoon/blob/master/.github/workflows/ci.yml#L49-L70)).
+::: tip Two management surfaces, by design
+There are **two** API surfaces, and the split is deliberate:
+- **`honmoon-mgmt`** (Rust, axum) runs **in-process with the data plane** — it can both read the
+  live audit ring and *resolve* held requests (which wakes the waiting connection). It also serves
+  the embedded dashboard. This is what `honmoon gateway` exposes.
+- **`@honmoon/api`** (TypeScript, Bun) is the **durable / historical** query layer over the JSONL
+  audit file the gateway writes — read-only, offline-capable, no approval power.
 :::
 
 ## At a glance
 
-| Package | Purpose | Status | Key file | Source |
-|---------|---------|--------|----------|--------|
-| `@honmoon/policy` | Policy TS types + JSON Schema | <span class="status-done">used</span> (types) · schema not yet enforced in TS | `src/index.ts` | [index.ts](https://github.com/pleaseai/honmoon/blob/master/packages/policy/src/index.ts) |
-| `@honmoon/cli` | `honmoonctl` control-plane CLI | <span class="status-planned">stub</span> | `src/index.ts` | [index.ts](https://github.com/pleaseai/honmoon/blob/master/packages/cli/src/index.ts) |
-| `@honmoon/api` | Management & audit API (Bun.serve) | <span class="status-planned">`/healthz` only</span> | `src/index.ts` | [index.ts](https://github.com/pleaseai/honmoon/blob/master/packages/api/src/index.ts) |
-| `@honmoon/dashboard` | React SPA | <span class="status-planned">scaffold shell</span> | `src/App.tsx` | [App.tsx](https://github.com/pleaseai/honmoon/blob/master/apps/dashboard/src/App.tsx) |
-
-```mermaid
-flowchart LR
-  schema["policy.schema.json"] --> pol["@honmoon/policy<br>types (real)"]
-  pol --> cli["@honmoon/cli<br>honmoonctl (stub)"]
-  pol --> api["@honmoon/api<br>/healthz only"]
-  pol --> dash["@honmoon/dashboard<br>scaffold shell"]
-  api -. "serve audit/policy/approvals (planned)" .-> dash
-  rustcore["honmoon-core (Rust)"] -. "mirror — TD-001" .-> pol
-  style schema fill:#161b22,stroke:#30363d,color:#e6edf3
-  style pol fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
-  style cli fill:#161b22,stroke:#d29922,color:#e6edf3
-  style api fill:#161b22,stroke:#d29922,color:#e6edf3
-  style dash fill:#161b22,stroke:#d29922,color:#e6edf3
-  style rustcore fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
-```
-<!-- Sources: packages/policy/src/index.ts:1-31, packages/api/src/index.ts:1-22, packages/cli/src/index.ts:1-31, apps/dashboard/src/App.tsx:1-38 -->
-
-## `@honmoon/policy` — the one real piece
-
-This package is the TypeScript mirror of the Rust policy model. It exports `Verdict`, `Egress`,
-`Rule`, and `Policy` types plus a `DEFAULT_EGRESS_VERDICT` constant, and ships the canonical
-JSON Schema used by editors and (eventually) by validators
-([index.ts:7-31](https://github.com/pleaseai/honmoon/blob/master/packages/policy/src/index.ts#L7-L31)).
-
-```typescript
-export type Verdict = 'allow' | 'deny' | 'pause'
-
-export interface Rule {
-  name: string
-  endpoint: string
-  condition: string   // CEL, e.g. "sql.verb == 'DROP'"
-  verdict: Verdict
-}
-
-export const DEFAULT_EGRESS_VERDICT: Verdict = 'deny'
-```
-
-::: tip Dual model, kept in sync by hand (TD-001)
-The file's own header says it all: *"Mirrors the Rust model in `crates/honmoon-core`. Keep the
-two in sync."* ([index.ts:1-5](https://github.com/pleaseai/honmoon/blob/master/packages/policy/src/index.ts#L1-L5)).
-The long-term fix is to generate both from the JSON Schema as the single source of truth.
-:::
-
-## `@honmoon/cli` — `honmoonctl` (stub)
-
-`honmoonctl` is the intended control-plane CLI for policy tooling and talking to a running
-gateway's API — distinct from the Rust `honmoon` data-plane binary
-([cli/src/index.ts:1-8](https://github.com/pleaseai/honmoon/blob/master/packages/cli/src/index.ts#L1-L8)). It dispatches one
-command, `validate`, which today reads the file but does **not** parse YAML or check the schema —
-the validation is an explicit `TODO` ([cli/src/index.ts:14-23](https://github.com/pleaseai/honmoon/blob/master/packages/cli/src/index.ts#L14-L23)):
-
-```typescript
-async function validate(path: string | undefined): Promise<void> {
-  // …
-  const text = await Bun.file(path).text()
-  // TODO: parse YAML + validate against @honmoon/policy/schema.
-  const policy = text as unknown as Policy
-  console.log(`validated ${path}`, policy ? '' : '')
-}
-```
-
-## `@honmoon/api` — management & audit API (`/healthz` only)
-
-The API is a Bun-native HTTP server. Its docstring describes its destiny — serve the audit log,
-approval queue, and policy endpoints for the dashboard — but the implementation answers only
-`/healthz`; the real routes are a `TODO`
-([api/src/index.ts:1-20](https://github.com/pleaseai/honmoon/blob/master/packages/api/src/index.ts#L1-L20)):
-
-| Route | Status | Source |
-|-------|--------|--------|
-| `GET /healthz` | <span class="status-done">works</span> → `{status:'ok'}` | [api/src/index.ts:13-15](https://github.com/pleaseai/honmoon/blob/master/packages/api/src/index.ts#L13-L15) |
-| `GET /api/audit` | <span class="status-planned">TODO</span> | [api/src/index.ts:16](https://github.com/pleaseai/honmoon/blob/master/packages/api/src/index.ts#L16) |
-| `GET /api/approvals` | <span class="status-planned">TODO</span> | [api/src/index.ts:16](https://github.com/pleaseai/honmoon/blob/master/packages/api/src/index.ts#L16) |
-| `GET /api/policy` | <span class="status-planned">TODO</span> | [api/src/index.ts:16](https://github.com/pleaseai/honmoon/blob/master/packages/api/src/index.ts#L16) |
-
-The port comes from `HONMOON_API_PORT` (default `8443`)
-([api/src/index.ts:8](https://github.com/pleaseai/honmoon/blob/master/packages/api/src/index.ts#L8)).
-
-## `@honmoon/dashboard` — React SPA (scaffold shell)
-
-The dashboard is a React + Vite + Tailwind SPA. Today `App.tsx` renders a header, a static nav
-(`Overview`, `Audit Log`, `Policies`, `Approvals`), and a placeholder body that literally reads
-*"Scaffold ready. Wire up audit log, policy editor, and approval queue here."*
-([App.tsx:1-36](https://github.com/pleaseai/honmoon/blob/master/apps/dashboard/src/App.tsx#L1-L36)).
+| Component | Purpose | Status | Key file | Source |
+|-----------|---------|--------|----------|--------|
+| `honmoon-mgmt` | In-process axum API + embedded dashboard; audit ring + approval resolution | <span class="status-done">Phase 4, tested</span> | `src/lib.rs` | [lib.rs](https://github.com/pleaseai/honmoon/blob/master/crates/honmoon-mgmt/src/lib.rs) |
+| `@honmoon/policy` | Policy types **+ runtime decision model** (AuditEvent, PendingApproval, Decision) | <span class="status-done">used</span> | `src/index.ts` | [index.ts](https://github.com/pleaseai/honmoon/blob/master/packages/policy/src/index.ts) |
+| `@honmoon/api` | Durable JSONL audit-log query API (`/api/audit`, `/api/audit/stats`) | <span class="status-done">Phase 4, tested</span> | `src/audit.ts` | [audit.ts](https://github.com/pleaseai/honmoon/blob/master/packages/api/src/audit.ts) |
+| `@honmoon/dashboard` | React SPA: Overview, Audit Log, Policies, Approvals | <span class="status-done">Phase 4</span> | `src/App.tsx` | [App.tsx](https://github.com/pleaseai/honmoon/blob/master/apps/dashboard/src/App.tsx) |
+| `@honmoon/cli` | `honmoonctl` — policy validate/lint | <span class="status-planned">`validate` still a TODO stub</span> | `src/index.ts` | [index.ts](https://github.com/pleaseai/honmoon/blob/master/packages/cli/src/index.ts) |
 
 ```mermaid
 flowchart TB
-  app["App.tsx (shell)"] --> header["Header: Honmoon dashboard"]
-  app --> nav["Nav: Overview · Audit Log · Policies · Approvals"]
-  app --> body["Body: 'Scaffold ready…' placeholder"]
-  nav -. "planned" .-> audit["Audit log viewer"]
-  nav -. "planned" .-> editor["Policy editor (Prism)"]
-  nav -. "planned" .-> queue["Approval queue"]
-  style app fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
-  style header fill:#161b22,stroke:#30363d,color:#e6edf3
-  style nav fill:#161b22,stroke:#30363d,color:#e6edf3
-  style body fill:#161b22,stroke:#d29922,color:#e6edf3
-  style audit fill:#161b22,stroke:#d29922,color:#e6edf3
-  style editor fill:#161b22,stroke:#d29922,color:#e6edf3
-  style queue fill:#161b22,stroke:#d29922,color:#e6edf3
+  subgraph dp["Data plane (one process)"]
+    proxy["honmoon-proxy<br>gateway + approval"]
+    mgmt["honmoon-mgmt<br>axum API + embedded dashboard"]
+    state["shared Arc: AuditLog + ApprovalRegistry"]
+    proxy --- state
+    mgmt --- state
+  end
+  jsonl[("audit.jsonl<br>(--audit-log)")]
+  proxy -->|append| jsonl
+  api["@honmoon/api (Bun)<br>durable query layer"]
+  jsonl -->|read| api
+  browser["Browser"] -->|"/api/* + SPA"| mgmt
+  style proxy fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
+  style mgmt fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
+  style state fill:#161b22,stroke:#6d5dfc,color:#e6edf3
+  style jsonl fill:#161b22,stroke:#30363d,color:#e6edf3
+  style api fill:#2d333b,stroke:#3fb950,color:#e6edf3
+  style browser fill:#161b22,stroke:#30363d,color:#e6edf3
 ```
-<!-- Sources: apps/dashboard/src/App.tsx:1-38, .please/docs/knowledge/product-guidelines.md:28-33 -->
+<!-- Sources: crates/honmoon-mgmt/src/lib.rs:1-75, crates/honmoon-proxy/src/gateway.rs:34-59, packages/api/src/index.ts:1-18 -->
 
-The planned UX — audit log viewer, syntax-highlighted policy editor, approval queue, light/dark
-aware, data density over decoration — is documented in
-[product-guidelines.md:28-33](https://github.com/pleaseai/honmoon/blob/master/.please/docs/knowledge/product-guidelines.md#L28-L33).
-The built SPA is planned to be embedded into the Rust binary via `rust-embed` and served by the
-management API (Phase 4, [roadmap.md:81-89](https://github.com/pleaseai/honmoon/blob/master/docs/roadmap.md#L81-L89)).
+## `honmoon-mgmt` — the in-process management API
 
-## How this becomes real (Phase 4)
+`honmoon-mgmt` is a small [axum](https://github.com/tokio-rs/axum) service that runs **in the same
+process as the data plane**, so it can observe decisions and resolve held requests through the
+shared `GatewayState`. `honmoon gateway` runs the proxy and this API on one tokio runtime
+([lib.rs:1-16](https://github.com/pleaseai/honmoon/blob/master/crates/honmoon-mgmt/src/lib.rs#L1-L16), [main.rs:78-128](https://github.com/pleaseai/honmoon/blob/master/crates/honmoon-cli/src/main.rs#L78-L128)).
+
+| Route | Method | Returns | Source |
+|-------|--------|---------|--------|
+| `/api/audit?limit=N` | GET | Recent audit events, newest first (default 200, cap 1000) | [lib.rs:86-93](https://github.com/pleaseai/honmoon/blob/master/crates/honmoon-mgmt/src/lib.rs#L86-L93) |
+| `/api/approvals` | GET | Requests held pending approval | [lib.rs:95-97](https://github.com/pleaseai/honmoon/blob/master/crates/honmoon-mgmt/src/lib.rs#L95-L97) |
+| `/api/approvals/{id}/approve` | POST | Resolve → wakes the held connection | [lib.rs:104-106](https://github.com/pleaseai/honmoon/blob/master/crates/honmoon-mgmt/src/lib.rs#L104-L106) |
+| `/api/approvals/{id}/reject` | POST | Resolve → blocks the held connection | [lib.rs:108-110](https://github.com/pleaseai/honmoon/blob/master/crates/honmoon-mgmt/src/lib.rs#L108-L110) |
+| `/api/policy` | GET | Active policy (raw YAML + parsed) | [lib.rs:129-134](https://github.com/pleaseai/honmoon/blob/master/crates/honmoon-mgmt/src/lib.rs#L129-L134) |
+| `/healthz` | GET | `{status:"ok"}` | [lib.rs:77-79](https://github.com/pleaseai/honmoon/blob/master/crates/honmoon-mgmt/src/lib.rs#L77-L79) |
+| anything else | — | Embedded dashboard (SPA fallback) | [lib.rs:138-168](https://github.com/pleaseai/honmoon/blob/master/crates/honmoon-mgmt/src/lib.rs#L138-L168) |
+
+One careful detail: the SPA fallback **refuses to mask an unmatched `/api/...` path as `200 text/html`**
+— those 404 honestly, so a failed management action is never hidden behind the dashboard shell
+([lib.rs:142-146](https://github.com/pleaseai/honmoon/blob/master/crates/honmoon-mgmt/src/lib.rs#L142-L146)).
+
+## The embedded dashboard pipeline
+
+The dashboard is built by Vite into `apps/dashboard/dist`, then compiled **into the Rust binary**
+with `rust-embed` so a single binary serves both policy enforcement and its UI
+([lib.rs:30-36](https://github.com/pleaseai/honmoon/blob/master/crates/honmoon-mgmt/src/lib.rs#L30-L36)). A `build.rs` drops a
+placeholder `index.html` when `dist/` is absent so a bare `cargo build` always succeeds before the
+dashboard is built ([build.rs:1-36](https://github.com/pleaseai/honmoon/blob/master/crates/honmoon-mgmt/build.rs#L1-L36)).
+
+```mermaid
+flowchart LR
+  src["apps/dashboard/src"] -->|"bun run build (Vite)"| dist["apps/dashboard/dist"]
+  dist -->|"rust-embed (Assets)"| bin["honmoon binary"]
+  bin -->|"honmoon gateway"| serve["mgmt API serves /api + SPA on :8444"]
+  src -. "bun run dev → vite proxy /api → :8444" .-> serve
+  style src fill:#161b22,stroke:#30363d,color:#e6edf3
+  style dist fill:#161b22,stroke:#30363d,color:#e6edf3
+  style bin fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
+  style serve fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
+```
+<!-- Sources: crates/honmoon-mgmt/build.rs:1-36, apps/dashboard/vite.config.ts:1-21, crates/honmoon-mgmt/src/lib.rs:30-36 -->
+
+In `vite dev`, API calls are proxied to a locally-running gateway's management API on
+`127.0.0.1:8444`, so the UI and the binary can iterate independently
+([vite.config.ts:13-20](https://github.com/pleaseai/honmoon/blob/master/apps/dashboard/vite.config.ts#L13-L20)).
+
+## The dashboard — four live views
+
+`App.tsx` is a tab shell over four views, with a live pending-approval count driving a sidebar
+badge (polled every 1.5s) ([App.tsx:9-62](https://github.com/pleaseai/honmoon/blob/master/apps/dashboard/src/App.tsx#L9-L62)):
+
+| View | Shows | Source |
+|------|-------|--------|
+| Overview | Decision counts / activity summary | [Overview.tsx](https://github.com/pleaseai/honmoon/blob/master/apps/dashboard/src/components/Overview.tsx) |
+| Audit Log | Recent `AuditEvent`s | [AuditLog.tsx](https://github.com/pleaseai/honmoon/blob/master/apps/dashboard/src/components/AuditLog.tsx) |
+| Policies | Active policy (Prism-highlighted YAML) | [PolicyView.tsx](https://github.com/pleaseai/honmoon/blob/master/apps/dashboard/src/components/PolicyView.tsx) |
+| Approvals | Held requests with Approve / Deny buttons | [Approvals.tsx](https://github.com/pleaseai/honmoon/blob/master/apps/dashboard/src/components/Approvals.tsx) |
+
+Data flows through a typed client (`api.ts`) and a `usePolling` hook that guards against
+overlapping/stale responses ([api.ts:1-49](https://github.com/pleaseai/honmoon/blob/master/apps/dashboard/src/api.ts#L1-L49), [hooks.ts:18-60](https://github.com/pleaseai/honmoon/blob/master/apps/dashboard/src/hooks.ts#L18-L60)).
 
 ```mermaid
 sequenceDiagram
   autonumber
-  participant DP as Data plane (Rust)
-  participant API as @honmoon/api
-  participant DASH as Dashboard
-  participant Human
-  Note over DP,Human: Phase 4 target flow (not yet built)
-  DP->>API: record verdict → audit log
-  DP->>API: pause → enqueue approval
-  Human->>DASH: open approval queue
-  DASH->>API: GET /api/approvals
-  API-->>DASH: pending requests
-  Human->>DASH: approve / deny
-  DASH->>API: POST decision
-  API-->>DP: release or block held request
+  participant Op as Operator
+  participant UI as Approvals view
+  participant API as honmoon-mgmt
+  participant Reg as ApprovalRegistry
+  participant Conn as Held connection
+  loop poll every 1.5s
+    UI->>API: GET /api/approvals
+    API-->>UI: pending[]
+  end
+  Op->>UI: click Approve on id
+  UI->>API: POST /api/approvals/{id}/approve
+  API->>Reg: resolve(id, Approve)
+  Reg-->>Conn: oneshot → Approve
+  Conn->>Conn: 200 + tunnel
+  API-->>UI: {resolved}
+  UI->>API: refresh GET /api/approvals
 ```
-<!-- Sources: docs/roadmap.md:81-89, packages/api/src/index.ts:16 -->
+<!-- Sources: apps/dashboard/src/components/Approvals.tsx:7-71, crates/honmoon-mgmt/src/lib.rs:104-121, crates/honmoon-proxy/src/approval.rs:148-160 -->
 
-## Engineering conventions (TypeScript)
+## `@honmoon/api` — the durable audit-query layer
 
-| Convention | Value | Source |
-|-----------|-------|--------|
-| Runtime / package manager | Bun 1.x | [tech-stack.md:45-46](https://github.com/pleaseai/honmoon/blob/master/.please/docs/knowledge/tech-stack.md#L45-L46) |
-| Module system | ESM only, `verbatimModuleSyntax` | [product-guidelines.md:38-40](https://github.com/pleaseai/honmoon/blob/master/.please/docs/knowledge/product-guidelines.md#L38-L40) |
-| TS strictness | `strict: true` | [product-guidelines.md:38-40](https://github.com/pleaseai/honmoon/blob/master/.please/docs/knowledge/product-guidelines.md#L38-L40) |
-| Lint | `@pleaseai/eslint-config` + React plugins | [package.json:18-25](https://github.com/pleaseai/honmoon/blob/master/package.json#L18-L25) |
+The Rust management API serves the **live, in-memory** ring (bounded, process-local). For
+durable, historical queries `@honmoon/api` reads the **JSONL file** the gateway writes with
+`--audit-log`. It is pure-function query logic (`audit.ts`) wired to `Bun.serve` (`index.ts`)
+([audit.ts:1-9](https://github.com/pleaseai/honmoon/blob/master/packages/api/src/audit.ts#L1-L9)):
+
+| Route | Filters | Source |
+|-------|---------|--------|
+| `GET /api/audit` | `limit`, `decision`, `since`, `domain` | [audit.ts:43-72](https://github.com/pleaseai/honmoon/blob/master/packages/api/src/audit.ts#L43-L72), [index.ts:45-48](https://github.com/pleaseai/honmoon/blob/master/packages/api/src/index.ts#L45-L48) |
+| `GET /api/audit/stats` | counts by decision | [audit.ts:74-83](https://github.com/pleaseai/honmoon/blob/master/packages/api/src/audit.ts#L74-L83) |
+| `GET /healthz` | — | [index.ts:41-43](https://github.com/pleaseai/honmoon/blob/master/packages/api/src/index.ts#L41-L43) |
+
+Two correctness details worth noting: results are sorted **by timestamp, not id** (ids restart
+from 1 after a gateway restart, so a reused JSONL file would otherwise misorder)
+([audit.ts:59-69](https://github.com/pleaseai/honmoon/blob/master/packages/api/src/audit.ts#L59-L69)), and a 1-second read cache coalesces
+polling bursts ([index.ts:20-34](https://github.com/pleaseai/honmoon/blob/master/packages/api/src/index.ts#L20-L34)). This is the repo's
+**first real TypeScript test suite** — `audit.test.ts` ([audit.test.ts](https://github.com/pleaseai/honmoon/blob/master/packages/api/src/audit.test.ts)).
+
+## `@honmoon/policy` — now carries the runtime model
+
+Beyond the policy types, `@honmoon/policy` now also exports the **runtime decision model** that
+the management API serializes and the dashboard/query layer consume — mirroring
+`honmoon-core::audit` and `honmoon-proxy::approval` ([index.ts:33-92](https://github.com/pleaseai/honmoon/blob/master/packages/policy/src/index.ts#L33-L92)):
+
+| Type | Mirrors (Rust) |
+|------|----------------|
+| `Decision` (`allowed`/`denied`/`paused`/`approved`/`rejected`) | `honmoon_core::audit::Decision` |
+| `AuditEvent`, `FactsSummary`, `HttpFacts`/`SqlFacts`/`K8sFacts` | `honmoon_core::audit::*` |
+| `PendingApproval` | `honmoon_proxy::approval::PendingApproval` |
+
+::: warning Still hand-synced (TD-001)
+The dual model now spans the **runtime types too**, so TD-001 (Rust↔TS sync) covers more surface.
+The JSON Schema remains the intended single source of truth.
+:::
+
+## What's still a stub
+
+`honmoonctl validate` continues to read the file without parsing/validating it — an explicit
+`TODO` ([cli/src/index.ts:14-23](https://github.com/pleaseai/honmoon/blob/master/packages/cli/src/index.ts#L14-L23)). Policy validation in practice happens
+via the editor JSON Schema and the Rust `Policy::from_yaml` loader.
 
 ## Related Pages
 
-- [Architecture](/deep-dive/architecture) — where the control plane sits in the layering.
-- [Policy Authoring](/getting-started/policy-authoring) — the policy types this plane exposes.
-- [Roadmap & Open-Core Model](/deep-dive/roadmap-open-core) — why the control plane is the paid boundary.
+- [Egress Gateway (Data Plane)](/deep-dive/egress-gateway) — where decisions are made, audited, and held.
+- [Policy Model & Decision Engine](/deep-dive/policy-engine) — `decide_explained()` and the audit `Decision`.
+- [Roadmap & Open-Core Model](/deep-dive/roadmap-open-core) — why control-plane scale is the paid boundary.
 
 ## References
 
+- [crates/honmoon-mgmt/src/lib.rs](https://github.com/pleaseai/honmoon/blob/master/crates/honmoon-mgmt/src/lib.rs)
+- [packages/api/src/audit.ts](https://github.com/pleaseai/honmoon/blob/master/packages/api/src/audit.ts)
 - [packages/policy/src/index.ts](https://github.com/pleaseai/honmoon/blob/master/packages/policy/src/index.ts)
-- [packages/cli/src/index.ts](https://github.com/pleaseai/honmoon/blob/master/packages/cli/src/index.ts)
-- [packages/api/src/index.ts](https://github.com/pleaseai/honmoon/blob/master/packages/api/src/index.ts)
 - [apps/dashboard/src/App.tsx](https://github.com/pleaseai/honmoon/blob/master/apps/dashboard/src/App.tsx)
-- [.please/docs/knowledge/tech-stack.md](https://github.com/pleaseai/honmoon/blob/master/.please/docs/knowledge/tech-stack.md)
+- [crates/honmoon-mgmt/build.rs](https://github.com/pleaseai/honmoon/blob/master/crates/honmoon-mgmt/build.rs)

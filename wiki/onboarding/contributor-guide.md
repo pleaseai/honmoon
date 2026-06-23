@@ -14,8 +14,8 @@ Honmoon and get it merged." It is deliberately progressive:
 - **Part III** — getting productive: setup, the test-driven workflow, and how to contribute.
 
 Honmoon is a **policy-based firewall gateway for AI agents**. The data plane is Rust; the control
-plane and dashboard are TypeScript on Bun. It is early-stage — Phases 0–3 are implemented and
-tested, Phases 4–7 are roadmap — so a lot of your value as a contributor is in *extending tested
+plane and dashboard are TypeScript on Bun. It is early-stage — Phases 0–4 are implemented and
+tested, Phases 5–7 are roadmap — so a lot of your value as a contributor is in *extending tested
 foundations*, not rewriting churn.
 
 ---
@@ -135,8 +135,10 @@ here instead of Node + npm. If you know Node, the differences you will touch:
 | `npm install` | `bun install` |
 | `ts-node` | Bun runs `.ts` directly |
 
-The control plane is a scaffold today (see [Control Plane & Dashboard](/deep-dive/control-plane)),
-so most TS contribution is *building out* `TODO`s against the existing `@honmoon/policy` types.
+As of Phase 4 the control plane is real (see [Control Plane & Dashboard](/deep-dive/control-plane)):
+`@honmoon/api` is a tested audit-query service and the React dashboard has live views. The main
+remaining TS stub is `honmoonctl validate`. Note the management API the dashboard talks to is the
+Rust `honmoon-mgmt` (axum), not a TS server.
 
 ---
 
@@ -209,14 +211,15 @@ the wiki and grounded in the [tech-debt tracker](https://github.com/pleaseai/hon
 
 | Area | Status |
 |------|--------|
-| Policy model, `decide()`, CEL, egress matching | <span class="status-done">real & tested</span> |
+| Policy model, `decide_explained()`, CEL, egress matching | <span class="status-done">real & tested</span> |
 | PostgreSQL / SQL / K8s parsers | <span class="status-done">real & tested</span> · <span class="status-planned">not on a live socket (TD-006)</span> |
-| Phase 1 CONNECT proxy + `run` / `gateway` | <span class="status-done">real & tested</span> |
+| CONNECT proxy + `run` / `gateway` | <span class="status-done">real & tested</span> |
+| `pause` approval hold + audit log + dashboard (Phase 4) | <span class="status-done">real & tested</span> (`honmoon-mgmt`, `honmoon-proxy::approval`, `honmoon-core::audit`) |
+| `@honmoon/api` durable audit query | <span class="status-done">real & tested</span> (`audit.test.ts`) |
 | `honmoon run` network isolation | <span class="status-planned">advisory only — env vars (TD-003)</span> |
 | `honmoon join` | <span class="status-planned">stub `bail!`</span> |
-| `@honmoon/api` audit/approvals/policy routes | <span class="status-planned">TODO</span> |
-| `honmoonctl validate` | <span class="status-planned">TODO</span> |
-| Dashboard surfaces | <span class="status-planned">scaffold shell</span> |
+| `honmoonctl validate` | <span class="status-planned">TODO stub</span> |
+| SQL/K8s `pause` over a live socket | <span class="status-planned">parsers tested; live relay TD-006</span> |
 
 ---
 

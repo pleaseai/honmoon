@@ -110,6 +110,7 @@ flowchart TB
   crates --> c1["honmoon-core"]
   crates --> c2["honmoon-proxy"]
   crates --> c3["honmoon-cli"]
+  crates --> c4["honmoon-mgmt"]
   packages --> p1["policy"]
   packages --> p2["cli"]
   packages --> p3["api"]
@@ -138,10 +139,11 @@ CI runs two parallel jobs on every push to `master` and every PR
 | **Rust** | `cargo fmt --check` → `clippy -D warnings` → `cargo llvm-cov` (test + coverage) → Codecov | [ci.yml:16-47](https://github.com/pleaseai/honmoon/blob/master/.github/workflows/ci.yml#L16-L47) |
 | **JS** | `bun install --frozen-lockfile` → `bun run lint` → `bun run typecheck` → `bun run build` | [ci.yml:49-70](https://github.com/pleaseai/honmoon/blob/master/.github/workflows/ci.yml#L49-L70) |
 
-::: tip No JS test suite yet
-The CI JS job runs lint/typecheck/build but **not** `bun test` — there are no TS tests yet
-([ci.yml:70](https://github.com/pleaseai/honmoon/blob/master/.github/workflows/ci.yml#L70)).
-The Rust suite (Phases 1–3) is the meaningful test coverage today.
+::: tip CI runs lint/typecheck/build for JS
+The CI JS job runs lint/typecheck/build but **not** `bun test`
+([ci.yml:70](https://github.com/pleaseai/honmoon/blob/master/.github/workflows/ci.yml#L70)). There is now a
+TypeScript test suite (`@honmoon/api`'s `audit.test.ts`); run it locally with `bun test`. The Rust
+suite remains the broadest coverage (policy, engine, parsers, audit, approval, egress, mgmt e2e).
 :::
 
 ## Before committing

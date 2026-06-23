@@ -40,25 +40,26 @@ flowchart LR
   j1["1 · Write rules<br>(a simple policy file)"] --> j2["2 · Start the guard<br>(run a command / start the gateway)"]
   j2 --> j3["3 · AI agent works<br>behind the guard"]
   j3 --> j4["4 · Every action checked<br>allow / deny / pause"]
-  j4 --> j5["5 · Review what happened<br>(audit + approvals — planned)"]
+  j4 --> j5["5 · Review &amp; approve<br>(audit log + approval dashboard)"]
   style j1 fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
   style j2 fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
   style j3 fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
   style j4 fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
-  style j5 fill:#161b22,stroke:#d29922,color:#e6edf3
+  style j5 fill:#161b22,stroke:#3fb950,color:#e6edf3
 ```
-<!-- Sources: README.md:36-83, docs/roadmap.md:81-89 -->
+<!-- Sources: README.md:36-83, docs/roadmap.md:81-101 -->
 
-Steps 1–4 work today. Step 5 — the visual dashboard for reviewing history and approving paused
-actions — is on the roadmap (next major milestone).
+All five steps work today (Phase 4). The gateway ships with a built-in dashboard for reviewing the
+audit history and approving or rejecting held actions.
 
 ### A day-in-the-life example
 
-> A developer uses an AI coding assistant that can run database commands. They write a rule:
-> "if the AI tries to drop or wipe a table in the production database, pause and ask me first."
-> The AI, mid-task, attempts a destructive cleanup. Honmoon catches it, holds the action, and —
-> once the approval dashboard ships — the developer gets asked to approve or reject. Today, that
-> same dangerous action is **blocked**; the "ask me first" hold is the part still being built.
+> A developer uses an AI coding assistant that can run shell commands. They write a rule:
+> "if the AI tries to reach a sensitive host, pause and ask me first."
+> The AI, mid-task, attempts that connection. Honmoon catches it and **holds** the action; on the
+> dashboard the developer sees it in the approval queue and clicks Approve or Deny — the held
+> action then proceeds or is blocked accordingly. (For database/Kubernetes actions specifically,
+> Honmoon's detection is built and tested, but connecting it to live traffic is the next step.)
 
 ## Feature capability map
 
@@ -66,21 +67,19 @@ actions — is on the roadmap (next major milestone).
 flowchart TB
   subgraph today["What works today"]
     t1["Block/allow which websites<br>an AI can reach"]
-    t2["Rules about database actions<br>(e.g. no 'drop table')"]
-    t3["Rules about cloud actions<br>(e.g. no deleting secrets)"]
     t4["Run one command, or a shared guard"]
+    t5["'Ask a human' approval queue"]
+    t6["History/audit dashboard"]
   end
   subgraph soon["What's coming"]
-    s1["'Ask a human' approval queue"]
-    s2["History/audit dashboard"]
+    s2["Database/cloud rules on live traffic"]
     s3["Stronger isolation"]
     s4["Team management + hosted service"]
   end
   style t1 fill:#161b22,stroke:#3fb950,color:#e6edf3
-  style t2 fill:#161b22,stroke:#3fb950,color:#e6edf3
-  style t3 fill:#161b22,stroke:#3fb950,color:#e6edf3
   style t4 fill:#161b22,stroke:#3fb950,color:#e6edf3
-  style s1 fill:#161b22,stroke:#d29922,color:#e6edf3
+  style t5 fill:#161b22,stroke:#3fb950,color:#e6edf3
+  style t6 fill:#161b22,stroke:#3fb950,color:#e6edf3
   style s2 fill:#161b22,stroke:#d29922,color:#e6edf3
   style s3 fill:#161b22,stroke:#d29922,color:#e6edf3
   style s4 fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
@@ -90,10 +89,10 @@ flowchart TB
 | Feature | Status | Plain meaning |
 |---------|--------|---------------|
 | Website allow/deny | <span class="status-done">works</span> | Restrict where an AI can connect |
-| Database action rules | <span class="status-done">works</span> | Catch dangerous queries like deleting tables |
-| Cloud (Kubernetes) rules | <span class="status-done">works</span> | Catch dangerous cloud actions like deleting secrets |
-| "Pause for approval" | <span class="status-planned">partly</span> | The rule exists; today it blocks. A human-approval hold is being built |
-| Dashboard | <span class="status-planned">planned</span> | A screen to review activity and approve requests |
+| "Pause for approval" | <span class="status-done">works</span> | A flagged action is **held** until a human approves it (300s, else auto-deny) |
+| Dashboard | <span class="status-done">works</span> | Built-in screen to review activity and approve/deny requests |
+| Audit log | <span class="status-done">works</span> | Every decision recorded (optionally to a durable file) |
+| Database / cloud rules | <span class="status-planned">partly</span> | Detection is built & tested; enforcing on **live** DB/cloud traffic is the next step |
 | Team management | <span class="status-planned">planned</span> | Manage many machines and people centrally |
 
 ## Known limitations
@@ -104,9 +103,8 @@ Stated plainly, because honesty is a product principle for a security tool
 | Limitation | What it means for users |
 |-----------|--------------------------|
 | Single-command mode is "advisory" | When guarding one command, a well-behaved AI tool is restricted, but a tool that *deliberately ignores standard settings* could slip past. The stronger, locked-down mode is planned. |
-| Database/cloud rules aren't on live traffic yet | The brains that recognize a dangerous query are built and tested, but not yet connected to real live database/cloud traffic. That connection is the next big step. |
-| The "ask a human" hold isn't built yet | A dangerous action is blocked today rather than held for approval. The approval queue is the next milestone. |
-| No team dashboard yet | Reviewing history and approving requests through a screen is on the roadmap. |
+| Database/cloud rules aren't on live traffic yet | The brains that recognize a dangerous query are built and tested, but not yet connected to real live database/cloud traffic. That connection is the next big step. So the approval/hold works today for **website** rules; database/cloud holding waits on that step. |
+| Approvals are single-node | The approval queue and dashboard run on one machine. Fleet-wide management, routing, and notifications are the (paid) roadmap. |
 | Needs a real computer/server | It can't run on certain lightweight cloud-only platforms; it needs a normal host or container. |
 
 ## Data & privacy overview
@@ -133,8 +131,9 @@ agents, compliance reports, approvals across an organization), not for the core
 ([business-model.md:24-28](https://github.com/pleaseai/honmoon/blob/master/docs/business-model.md#L24-L28)).
 
 **Can I use it in production today?**
-You can use the website-control (gateway) mode now. For locked-down isolation, live database/cloud
-enforcement, and approval workflows, plan around the roadmap — those are the next milestones.
+You can use the gateway mode now — website control, the audit log, and the approve/deny dashboard
+all work on a single machine. For locked-down isolation and live database/cloud enforcement, plan
+around the roadmap — those are the next milestones.
 
 **Who are the competitors?**
 Two open-source projects inspired Honmoon: GitHub's domain-filtering firewall and Deno's

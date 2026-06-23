@@ -31,25 +31,25 @@ targets the gap: fine-grained, protocol-aware enforcement at the network boundar
 
 ```mermaid
 flowchart TB
-  subgraph live["Available today (Phases 1-3)"]
+  subgraph live["Available today (Phases 1-4)"]
     a["HTTP/HTTPS egress filtering<br>(domain allow/deny)"]
     b["Protocol-aware policy engine<br>(CEL over SQL/K8s/HTTP facts)"]
     c["Wire parsers: PostgreSQL, SQL, Kubernetes"]
     d["Process-wrapper + gateway modes"]
+    e["Approval workflow + audit log + dashboard"]
   end
-  subgraph planned["On the roadmap (Phases 4-7)"]
-    e["Approval workflow + audit log"]
-    f["Management dashboard"]
+  subgraph planned["On the roadmap (Phases 5-7)"]
     g["Hardened isolation (netns/tunnel)"]
+    i["SQL/K8s enforcement on live traffic"]
     h["Fleet management, RBAC/SSO, hosted SaaS"]
   end
   style a fill:#161b22,stroke:#3fb950,color:#e6edf3
   style b fill:#161b22,stroke:#3fb950,color:#e6edf3
   style c fill:#161b22,stroke:#3fb950,color:#e6edf3
   style d fill:#161b22,stroke:#3fb950,color:#e6edf3
-  style e fill:#161b22,stroke:#d29922,color:#e6edf3
-  style f fill:#161b22,stroke:#d29922,color:#e6edf3
+  style e fill:#161b22,stroke:#3fb950,color:#e6edf3
   style g fill:#161b22,stroke:#d29922,color:#e6edf3
+  style i fill:#161b22,stroke:#d29922,color:#e6edf3
   style h fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
 ```
 <!-- Sources: docs/roadmap.md:21-122, .please/docs/knowledge/product.md:20-29 -->
@@ -59,26 +59,29 @@ flowchart TB
 | Egress domain filtering | <span class="status-done">working & tested</span> | Enforces over HTTPS via a CONNECT proxy |
 | Protocol policy engine (CEL) | <span class="status-done">working & tested</span> | The differentiating moat |
 | SQL / K8s parsing | <span class="status-done">working & tested</span> | Not yet driven by live traffic (engineering follow-up) |
-| Approval / audit / dashboard | <span class="status-planned">planned (Phase 4)</span> | Scaffold exists |
+| Approval workflow + audit log + dashboard | <span class="status-done">working & tested (Phase 4)</span> | `pause` holds a request for human approval; embedded dashboard |
 | Hardened isolation | <span class="status-planned">planned (Phase 5)</span> | Today's wrapper is advisory, not enforcing |
 | Fleet / enterprise / SaaS | <span class="status-planned">planned (Phase 6-7)</span> | The monetization surface |
 
 ## Maturity, honestly stated
 
-This is an **early-stage project**, and its own guidelines forbid overstating it. Roughly a third
-of the intended product is built: the policy engine and protocol parsers are real, well-tested, and
-safe to build on; the management/approval/dashboard layer and hardened isolation are scaffolds or
-roadmap ([product-guidelines.md:14-17](https://github.com/pleaseai/honmoon/blob/master/.please/docs/knowledge/product-guidelines.md#L14-L17)).
-Two gaps materially affect "is it production-ready":
+This is an **early-stage project**, and its own guidelines forbid overstating it. About half of
+the intended product is built: the policy engine, protocol parsers, and — as of Phase 4 — the
+`pause` approval workflow, audit log, and management dashboard are all real, tested, and safe to
+build on. Hardened isolation and live-traffic protocol enforcement remain roadmap
+([product-guidelines.md:14-17](https://github.com/pleaseai/honmoon/blob/master/.please/docs/knowledge/product-guidelines.md#L14-L17)). Two gaps
+materially affect "is it production-ready":
 
 - **The single-process wrapper is advisory.** It routes a child's traffic by setting proxy
   environment variables; a process that ignores them bypasses the gateway. True enforcement
   (network-namespace isolation) is planned, not shipped.
 - **Protocol rules are engine-validated, not yet traffic-driven.** The parsers are proven by
   tests; connecting them to live database/Kubernetes traffic is the next major data-plane effort.
+  (Host-level `pause` rules over HTTPS *do* fire and hold today.)
 
-The honest read: **adopt the gateway mode for HTTPS egress control today; treat protocol-level
-enforcement and approval workflows as a near-future capability you can influence, not deploy.**
+The honest read: **adopt the gateway mode for HTTPS egress control + approvals + audit today;
+treat live SQL/K8s enforcement and hardened isolation as near-future capabilities you can
+influence, not yet deploy.**
 
 ## Risk assessment
 

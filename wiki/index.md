@@ -15,8 +15,9 @@ Kubernetes, and HTTP facts). The data plane is Rust; the control plane and dashb
 TypeScript on Bun.
 
 ::: tip Maturity
-This is an early-stage project. Phases 0–3 are implemented and tested; Phases 4–7 are roadmap.
-Pages below mark <span class="status-done">implemented</span> vs
+This is an early-stage project. Phases 0–4 are implemented and tested (egress proxy, CEL engine,
+SQL/K8s parsers, the `pause` approval workflow, audit log, and embedded dashboard); Phases 5–7 are
+roadmap. Pages below mark <span class="status-done">implemented</span> vs
 <span class="status-planned">planned / scaffold</span> explicitly. See the
 [Roadmap](/deep-dive/roadmap-open-core) for the full picture.
 :::
@@ -51,7 +52,7 @@ flowchart LR
   core -->|Verdict| gw
   gw -->|allow → tunnel| ext["External World<br>APIs / DB / K8s"]
   gw -.->|deny → 403| agent
-  gw -.->|pause → approval| dash["Dashboard + Audit<br>(scaffold)"]
+  gw -.->|pause → hold| dash["Dashboard + Audit<br>honmoon-mgmt"]
 
   style agent fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
   style gw fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
@@ -71,7 +72,7 @@ flowchart LR
 | **Policy Engine** | `decide()`, egress matching, CEL evaluation | [Policy Model & Decision Engine](/deep-dive/policy-engine) |
 | **Protocol Parsing** | PostgreSQL / SQL / Kubernetes wire parsers | [Protocol-Aware Parsing](/deep-dive/protocol-parsing) |
 | **Data Plane** | CONNECT proxy, `run` / `gateway` wiring | [Egress Gateway](/deep-dive/egress-gateway) |
-| **Control Plane** | TS policy types, API, CLI, dashboard (scaffold) | [Control Plane & Dashboard](/deep-dive/control-plane) |
+| **Control Plane** | Management API, audit query, embedded dashboard (Phase 4) | [Control Plane & Dashboard](/deep-dive/control-plane) |
 | **Roadmap** | Phased plan + open-core business model | [Roadmap & Open-Core](/deep-dive/roadmap-open-core) |
 
 ## Key files
@@ -79,9 +80,12 @@ flowchart LR
 | File | Role | Source |
 |------|------|--------|
 | `crates/honmoon-core/src/lib.rs` | Policy model: `Policy`, `Egress`, `Rule`, `Verdict`, `Facts` | [lib.rs](https://github.com/pleaseai/honmoon/blob/master/crates/honmoon-core/src/lib.rs) |
-| `crates/honmoon-core/src/engine.rs` | `decide()` — CEL rules + egress matching | [engine.rs](https://github.com/pleaseai/honmoon/blob/master/crates/honmoon-core/src/engine.rs) |
+| `crates/honmoon-core/src/engine.rs` | `decide_explained()` — CEL rules + egress matching | [engine.rs](https://github.com/pleaseai/honmoon/blob/master/crates/honmoon-core/src/engine.rs) |
+| `crates/honmoon-core/src/audit.rs` | Audit log (in-memory ring + JSONL sink) | [audit.rs](https://github.com/pleaseai/honmoon/blob/master/crates/honmoon-core/src/audit.rs) |
 | `crates/honmoon-core/src/protocols.rs` | Wire parsers → SQL / K8s facts | [protocols.rs](https://github.com/pleaseai/honmoon/blob/master/crates/honmoon-core/src/protocols.rs) |
-| `crates/honmoon-proxy/src/gateway.rs` | CONNECT egress proxy (tokio) | [gateway.rs](https://github.com/pleaseai/honmoon/blob/master/crates/honmoon-proxy/src/gateway.rs) |
+| `crates/honmoon-proxy/src/gateway.rs` | CONNECT egress proxy + audit + pause hold | [gateway.rs](https://github.com/pleaseai/honmoon/blob/master/crates/honmoon-proxy/src/gateway.rs) |
+| `crates/honmoon-proxy/src/approval.rs` | Pending-approval registry (pause hold) | [approval.rs](https://github.com/pleaseai/honmoon/blob/master/crates/honmoon-proxy/src/approval.rs) |
+| `crates/honmoon-mgmt/src/lib.rs` | Management API + embedded dashboard | [lib.rs](https://github.com/pleaseai/honmoon/blob/master/crates/honmoon-mgmt/src/lib.rs) |
 | `crates/honmoon-cli/src/main.rs` | `honmoon` binary: `run` / `gateway` / `join` | [main.rs](https://github.com/pleaseai/honmoon/blob/master/crates/honmoon-cli/src/main.rs) |
 | `packages/policy/schema/policy.schema.json` | JSON Schema for policy validation | [policy.schema.json](https://github.com/pleaseai/honmoon/blob/master/packages/policy/schema/policy.schema.json) |
 | `policies/agent.yaml` | Example policy | [agent.yaml](https://github.com/pleaseai/honmoon/blob/master/policies/agent.yaml) |
@@ -93,7 +97,7 @@ flowchart LR
 |-------|-----------|-----|
 | Data plane | **Rust** (edition 2024), `tokio`, `cel-interpreter` | Wire-level proxy + parsers; performance & memory safety critical |
 | Control plane | **TypeScript on Bun** | CLI, policy validation, management/audit API |
-| Dashboard | **React 19 + Vite + Tailwind** | SPA; planned to embed into the Rust binary via `rust-embed` |
+| Dashboard | **React 19 + Vite + Tailwind** | SPA embedded into the Rust binary via `rust-embed`, served by `honmoon-mgmt` |
 | Policy | **YAML + JSON Schema + CEL** | Declarative egress; portable CEL conditions for protocol rules |
 
 <!-- Sources: ARCHITECTURE.md:70-80, .please/docs/knowledge/tech-stack.md:9-14, Cargo.toml:9-28, package.json:1-26 -->

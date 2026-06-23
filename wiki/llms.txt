@@ -7,8 +7,9 @@
 > level and evaluates CEL conditions over the extracted facts. The Rust data plane is open source;
 > the control/cloud plane is the future paid surface (open-core).
 
-Maturity: early-stage. Phases 0–3 (CONNECT egress proxy, CEL engine, SQL/K8s parsers) are
-implemented and tested. Phases 4–7 are roadmap. Pages mark implemented vs planned explicitly.
+Maturity: early-stage. Phases 0–4 (CONNECT egress proxy, CEL engine, SQL/K8s parsers, the `pause`
+approval hold, audit log, embedded dashboard) are implemented and tested. Phases 5–7 are roadmap.
+Pages mark implemented vs planned explicitly.
 
 ## Onboarding
 
@@ -22,8 +23,8 @@ implemented and tested. Phases 4–7 are roadmap. Pages mark implemented vs plan
 - [Architecture](/deep-dive/architecture): dependency layers, dual-plane boundary, request lifecycle, invariants.
 - [Policy Model & Decision Engine](/deep-dive/policy-engine): honmoon-core types, decide() precedence, egress matching, CEL evaluation, fail-closed.
 - [Protocol-Aware Parsing](/deep-dive/protocol-parsing): PostgreSQL 'Q' parser, SQL verb/table heuristic, Kubernetes API path → facts.
-- [Egress Gateway (Data Plane)](/deep-dive/egress-gateway): the tokio CONNECT proxy and the honmoon-cli run/gateway wiring.
-- [Control Plane & Dashboard](/deep-dive/control-plane): TS policy types, Bun API, honmoonctl, React dashboard (scaffold).
+- [Egress Gateway (Data Plane)](/deep-dive/egress-gateway): the tokio CONNECT proxy, audit recording, and the pause approval hold.
+- [Control Plane & Dashboard](/deep-dive/control-plane): honmoon-mgmt (axum API + embedded dashboard), @honmoon/api (durable audit query), React dashboard.
 
 ## Getting Started
 

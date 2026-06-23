@@ -44,27 +44,31 @@ flowchart TB
   end
   subgraph seam["The seam"]
     facts["Facts producer<br>protocols.rs"]
-    decide["decide(Policy, Facts) → Verdict<br>engine.rs"]
+    decide["decide_explained(Policy, Facts) → Outcome<br>engine.rs"]
   end
-  subgraph mgmt["Management (scaffold)"]
-    api["@honmoon/api"]
-    dash["dashboard"]
+  subgraph mgmt["Management (Phase 4, real)"]
+    audit["audit log + approval registry"]
+    api["honmoon-mgmt (axum) + dashboard"]
+    tapi["@honmoon/api (durable query)"]
   end
   connect --> facts
   relay --> facts
   tls --> facts
   facts --> decide
   decide --> connect
-  decide -. "audit/pause (Phase 4)" .-> api --> dash
+  decide -. "Outcome → audit / hold" .-> audit
+  audit --> api
+  audit -. "JSONL" .-> tapi
   style connect fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
   style relay fill:#161b22,stroke:#d29922,color:#e6edf3
   style tls fill:#161b22,stroke:#d29922,color:#e6edf3
   style facts fill:#2d333b,stroke:#3fb950,color:#e6edf3
   style decide fill:#2d333b,stroke:#3fb950,color:#e6edf3
-  style api fill:#161b22,stroke:#d29922,color:#e6edf3
-  style dash fill:#161b22,stroke:#d29922,color:#e6edf3
+  style audit fill:#2d333b,stroke:#3fb950,color:#e6edf3
+  style api fill:#2d333b,stroke:#3fb950,color:#e6edf3
+  style tapi fill:#161b22,stroke:#3fb950,color:#e6edf3
 ```
-<!-- Sources: ARCHITECTURE.md:30-49, crates/honmoon-core/src/engine.rs:19-28, crates/honmoon-core/src/protocols.rs:1-8 -->
+<!-- Sources: ARCHITECTURE.md:30-49, crates/honmoon-core/src/engine.rs:38-53, crates/honmoon-mgmt/src/lib.rs:1-16 -->
 
 ## The decision core, as pseudocode
 
@@ -142,11 +146,11 @@ Be precise about maturity when you plan work ([tech-debt-tracker.md:9-14](https:
 
 | Reality | Implication for planning |
 |---------|--------------------------|
-| Parsers are engine-complete but **not on a live socket** (TD-006) | "SQL policy works" is true in the engine, false end-to-end. The next high-leverage data-plane task is the inline relay + per-endpoint listener config. |
+| Parsers are engine-complete but **not on a live socket** (TD-006) | "SQL policy works" is true in the engine, false end-to-end. The next high-leverage data-plane task is the inline relay + per-endpoint listener config. This also gates SQL/K8s `pause` rules. |
 | `honmoon run` is **advisory** (TD-003) | Do not market it as isolation. Real enforcement needs netns/NetworkExtension. |
-| `pause` has **no holding mechanism** over CONNECT | The verdict exists; the approval queue is Phase 4. Anything non-`Allow` is a `403` today. |
+| `pause` **now holds** (Phase 4), but only host-level rules fire | The approval registry + management API are real and tested. Over CONNECT only `http.host`-based pause rules see facts; SQL/K8s pause waits on TD-006. |
 | HTTPS rules are **host-level only** (TD-004) | `http.method`/`path`/`body_size` need TLS termination. Don't write body rules expecting enforcement yet. |
-| Control plane is a **scaffold** | `@honmoon/api` serves `/healthz`; everything else is `TODO`. |
+| Two audit surfaces | The live in-memory ring (Rust `honmoon-mgmt`, can resolve approvals) vs the durable JSONL query layer (`@honmoon/api`, read-only). Don't conflate them. |
 
 ## Scaling & deployment model
 
@@ -171,11 +175,12 @@ as a fixed assumption, not a temporary gap.
 
 ## What I'd watch
 
-- **TD-001 drift.** Two hand-synced policy models in a security product is a latent correctness
-  bug. Schema-generation should land before the policy shape grows.
+- **TD-001 drift.** The hand-synced model now spans the *runtime* types too (audit events,
+  pending approvals), so the drift surface grew with Phase 4. Schema-generation should land before
+  the policy/runtime shape grows further.
 - **Fail-closed observability.** Fail-closed is correct but silent; a buggy CEL rule denies with
-  only a `warn!`. As rule sets grow, you want decision tracing (the audit log, Phase 4) to make
-  silent denials visible.
+  only a `warn!`. The Phase 4 audit log now records every `Outcome` (verdict + rule), so silent
+  denials are at least visible after the fact — wire alerting on top as rule sets grow.
 - **The two-path proxy.** When the TLS-inspection phase lands, resist letting the framework leak
   toward the core. The CONNECT tunnel and the inspected-HTTP path should remain distinct `Facts`
   producers feeding one `decide()`.

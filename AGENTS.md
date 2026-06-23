@@ -2,7 +2,8 @@
 
 Honmoon is a policy-based firewall gateway for AI agents. Polyglot monorepo: a **Rust data
 plane** (`crates/`) and a **TypeScript/Bun control plane + React dashboard** (`packages/`,
-`apps/`). Early-stage: Phases 0–3 implemented and tested; Phases 4–7 are roadmap. See
+`apps/`). Early-stage: Phases 0–4 implemented and tested (egress proxy, CEL engine, SQL/K8s
+parsers, `pause` approval hold, audit log, embedded dashboard); Phases 5–7 are roadmap. See
 `ARCHITECTURE.md` and `wiki/` for the full picture.
 
 ## Build & Run Commands
@@ -34,12 +35,13 @@ cargo run -p honmoon-cli -- gateway --config policies/agent.yaml --addr 127.0.0.
 
 | Path | What |
 |------|------|
-| `crates/honmoon-core/` | Policy model, `decide()` engine, protocol parsers. **Transport-agnostic — no I/O.** |
-| `crates/honmoon-proxy/` | tokio CONNECT egress proxy. |
+| `crates/honmoon-core/` | Policy model, `decide_explained()` engine, `audit` log, protocol parsers. **Transport-agnostic — no I/O.** |
+| `crates/honmoon-proxy/` | tokio CONNECT egress proxy + `approval` registry (pause hold). |
+| `crates/honmoon-mgmt/` | In-process axum management API + embedded dashboard (`rust-embed`). |
 | `crates/honmoon-cli/` | `honmoon` binary (`run` / `gateway` / `join`). |
-| `packages/policy/` | TS policy types + JSON Schema (mirror of the Rust model). |
-| `packages/cli/`, `packages/api/` | `honmoonctl` + management API (scaffolds). |
-| `apps/dashboard/` | React + Vite SPA (scaffold). |
+| `packages/policy/` | TS policy types + runtime decision model + JSON Schema (mirror of the Rust model). |
+| `packages/api/` | Durable JSONL audit-query API (Bun). `packages/cli/` `honmoonctl` (stub). |
+| `apps/dashboard/` | React + Vite SPA (Overview/Audit/Policies/Approvals), embedded into the binary. |
 | `policies/` | Example policies. |
 | `wiki/` | Generated VitePress documentation site. |
 | `.please/docs/` | Knowledge docs, ADRs, tech-debt tracker. |

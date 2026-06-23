@@ -1,8 +1,10 @@
 # AGENTS.md — TypeScript Control Plane (`packages/`)
 
-The TypeScript/Bun control plane: policy types, the control-plane CLI, and the management/audit
-API. **Mostly scaffold today** — `@honmoon/policy` types are real and used; the API serves only
-`/healthz`; `honmoonctl validate` is a stub. See the root `AGENTS.md` for project-wide setup.
+The TypeScript/Bun control plane: policy types, the control-plane CLI, and the durable audit-query
+API. As of Phase 4 `@honmoon/policy` (types + runtime model) and `@honmoon/api` (audit query, with
+tests) are real; `honmoonctl validate` remains a stub. Note the **interactive** management API
+(audit ring + approvals + dashboard) is the Rust `honmoon-mgmt`, not a TS service. See the root
+`AGENTS.md` for project-wide setup.
 
 ## Build & Run Commands
 
@@ -18,14 +20,15 @@ bun --filter @honmoon/api dev    # run the API in watch mode
 
 | Package | Role | Status |
 |---------|------|--------|
-| `@honmoon/policy` | Policy TS types (`Verdict`/`Egress`/`Rule`/`Policy`) + JSON Schema | Types real & used; mirror of the Rust model (TD-001) |
-| `@honmoon/cli` | `honmoonctl` — policy validate/lint, talks to the gateway API | `validate` is a TODO stub |
-| `@honmoon/api` | Management & audit API on `Bun.serve` | Only `GET /healthz`; audit/approvals/policy routes are TODO |
+| `@honmoon/policy` | Policy types **+ runtime model** (`AuditEvent`, `PendingApproval`, `Decision`) + JSON Schema | Real & used; mirror of the Rust model (TD-001) |
+| `@honmoon/api` | Durable JSONL audit-query API (`/api/audit?limit=&decision=&since=&domain=`, `/api/audit/stats`) on `Bun.serve` | Real & tested (`audit.test.ts`) |
+| `@honmoon/cli` | `honmoonctl` — policy validate/lint | `validate` is a TODO stub |
 
 ## Testing
 
-`bun test` — **no tests exist yet** in `packages/*`. CI runs lint/typecheck/build only. If you add
-real behavior here, add `bun test` coverage and re-enable the test step in CI.
+`bun test` runs `@honmoon/api`'s `audit.test.ts` (the repo's first TS suite). CI runs
+lint/typecheck/build but **not** `bun test` yet — run it locally. Add `bun test` coverage for any
+new behavior; keep the pure query functions in `audit.ts` unit-tested.
 
 ## Code Style
 

@@ -15,13 +15,14 @@ architectural invariants the codebase enforces. Everything here is grounded in
 
 | Module | Responsibility | Key file | Plane | Source |
 |--------|----------------|----------|-------|--------|
-| `honmoon-core` | Policy model + `decide()` + protocol parsers | `src/lib.rs` | Data | [lib.rs](https://github.com/pleaseai/honmoon/blob/master/crates/honmoon-core/src/lib.rs) |
-| `honmoon-proxy` | CONNECT egress proxy (tokio) | `src/gateway.rs` | Data | [gateway.rs](https://github.com/pleaseai/honmoon/blob/master/crates/honmoon-proxy/src/gateway.rs) |
+| `honmoon-core` | Policy model + `decide_explained()` + `audit` + protocol parsers | `src/lib.rs` | Data | [lib.rs](https://github.com/pleaseai/honmoon/blob/master/crates/honmoon-core/src/lib.rs) |
+| `honmoon-proxy` | CONNECT egress proxy + `approval` (pause hold) | `src/gateway.rs` | Data | [gateway.rs](https://github.com/pleaseai/honmoon/blob/master/crates/honmoon-proxy/src/gateway.rs) |
+| `honmoon-mgmt` | In-process axum management API + embedded dashboard | `src/lib.rs` | Data | [lib.rs](https://github.com/pleaseai/honmoon/blob/master/crates/honmoon-mgmt/src/lib.rs) |
 | `honmoon-cli` | `honmoon` binary: `run` / `gateway` / `join` | `src/main.rs` | Data | [main.rs](https://github.com/pleaseai/honmoon/blob/master/crates/honmoon-cli/src/main.rs) |
-| `@honmoon/policy` | TS policy types + JSON Schema | `src/index.ts` | Control | [index.ts](https://github.com/pleaseai/honmoon/blob/master/packages/policy/src/index.ts) |
-| `@honmoon/api` | Management & audit API (Bun.serve) | `src/index.ts` | Control | [index.ts](https://github.com/pleaseai/honmoon/blob/master/packages/api/src/index.ts) |
-| `@honmoon/cli` | `honmoonctl` control-plane CLI | `src/index.ts` | Control | [index.ts](https://github.com/pleaseai/honmoon/blob/master/packages/cli/src/index.ts) |
-| `@honmoon/dashboard` | React SPA (audit/policy/approvals) | `src/App.tsx` | UI | [App.tsx](https://github.com/pleaseai/honmoon/blob/master/apps/dashboard/src/App.tsx) |
+| `@honmoon/policy` | TS policy types + runtime decision model + JSON Schema | `src/index.ts` | Control | [index.ts](https://github.com/pleaseai/honmoon/blob/master/packages/policy/src/index.ts) |
+| `@honmoon/api` | Durable JSONL audit-query API (Bun.serve) | `src/audit.ts` | Control | [audit.ts](https://github.com/pleaseai/honmoon/blob/master/packages/api/src/audit.ts) |
+| `@honmoon/cli` | `honmoonctl` control-plane CLI (stub) | `src/index.ts` | Control | [index.ts](https://github.com/pleaseai/honmoon/blob/master/packages/cli/src/index.ts) |
+| `@honmoon/dashboard` | React SPA (overview/audit/policy/approvals) | `src/App.tsx` | UI | [App.tsx](https://github.com/pleaseai/honmoon/blob/master/apps/dashboard/src/App.tsx) |
 
 ## Dependency layers
 
@@ -32,13 +33,13 @@ Dependencies flow **downward only**. Lower layers must not import upper layers
 flowchart TB
   subgraph IF["Interface Layer"]
     cli["honmoon-cli"]
+    mgmt["honmoon-mgmt<br>(axum API + dashboard)"]
     tapi["@honmoon/api"]
     tcli["@honmoon/cli"]
     dash["@honmoon/dashboard"]
   end
   subgraph APP["Application Layer"]
-    proxy["honmoon-proxy<br>(CONNECT proxy + parsers)"]
-    handlers["api handlers (planned)"]
+    proxy["honmoon-proxy<br>(CONNECT proxy + approval)"]
   end
   subgraph DOM["Domain Layer"]
     core["honmoon-core<br>(Policy/Verdict/Facts/CEL)"]
@@ -48,13 +49,18 @@ flowchart TB
     infra["tokio sockets · rust-embed · Bun<br>(Phase 2+) Pingora/TLS · (planned) D1/DO"]
   end
   cli --> proxy
+  cli --> mgmt
+  mgmt --> proxy
+  mgmt --> core
   proxy --> core
   tapi --> tpol
   tcli --> tpol
   dash --> tpol
   core --> infra
   proxy --> infra
+  mgmt --> infra
   style cli fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
+  style mgmt fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
   style proxy fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
   style core fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
   style tpol fill:#161b22,stroke:#30363d,color:#e6edf3
@@ -62,13 +68,12 @@ flowchart TB
   style tcli fill:#161b22,stroke:#30363d,color:#e6edf3
   style dash fill:#161b22,stroke:#30363d,color:#e6edf3
   style infra fill:#161b22,stroke:#30363d,color:#e6edf3
-  style handlers fill:#161b22,stroke:#30363d,color:#e6edf3
 ```
-<!-- Sources: ARCHITECTURE.md:30-45, crates/honmoon-cli/src/main.rs:6-8, crates/honmoon-proxy/src/gateway.rs:16 -->
+<!-- Sources: ARCHITECTURE.md:30-49, crates/honmoon-cli/src/main.rs:9-11, crates/honmoon-mgmt/src/lib.rs:25-27 -->
 
 The critical invariant: **`honmoon-core` is transport-agnostic.** It has no `tokio` or
-networking dependency — its `Cargo.toml` pulls only `serde`, `serde_yaml`, `thiserror`,
-`tracing`, and `cel-interpreter`. The proxy feeds it `Facts` and consumes a `Verdict`. This is
+networking dependency — its `Cargo.toml` pulls only `serde`, `serde_json`, `serde_yaml`,
+`thiserror`, `time`, and `cel-interpreter`. The proxy feeds it `Facts` and consumes a `Verdict`. This is
 what lets the entire policy engine be unit-tested with zero I/O
 ([ARCHITECTURE.md:47-48](https://github.com/pleaseai/honmoon/blob/master/ARCHITECTURE.md#L47-L48), [tech-stack.md:18-19](https://github.com/pleaseai/honmoon/blob/master/.please/docs/knowledge/tech-stack.md#L18-L19)).
 
@@ -184,7 +189,7 @@ These are non-negotiable; violating them breaks the product
 |---------|------|-----------|--------|
 | Error handling | `thiserror` (libs) · `anyhow` (binary); unimplemented modes `bail!` | — | [lib.rs:128-132](https://github.com/pleaseai/honmoon/blob/master/crates/honmoon-core/src/lib.rs#L128-L132), [main.rs:58-60](https://github.com/pleaseai/honmoon/blob/master/crates/honmoon-cli/src/main.rs#L58-L60) |
 | Logging | `tracing` + `tracing-subscriber` (`RUST_LOG`) | `console` / Bun | [main.rs:46-48](https://github.com/pleaseai/honmoon/blob/master/crates/honmoon-cli/src/main.rs#L46-L48) |
-| Testing | inline `#[cfg(test)]` + integration test | `bun test` (none yet) | [engine.rs:93-264](https://github.com/pleaseai/honmoon/blob/master/crates/honmoon-core/src/engine.rs#L93-L264) |
+| Testing | inline `#[cfg(test)]` + integration (`egress.rs`) + e2e (`honmoon-mgmt/tests/e2e.rs`) | `bun test` (`@honmoon/api` audit query) | [engine.rs](https://github.com/pleaseai/honmoon/blob/master/crates/honmoon-core/src/engine.rs), [audit.test.ts](https://github.com/pleaseai/honmoon/blob/master/packages/api/src/audit.test.ts) |
 | Configuration | YAML policy, central `[workspace.dependencies]` | root `package.json` workspaces | [Cargo.toml:16-28](https://github.com/pleaseai/honmoon/blob/master/Cargo.toml#L16-L28) |
 
 ## Quality map
@@ -195,31 +200,35 @@ What is safe to extend versus fragile/incomplete, per
 ```mermaid
 flowchart LR
   subgraph solid["Well-tested — safe to extend"]
-    s1["honmoon-core: policy parsing"]
+    s1["honmoon-core: policy + audit log"]
     s2["honmoon-core: engine + parsers"]
-    s3["honmoon-proxy: CONNECT + egress test"]
+    s3["honmoon-proxy: CONNECT + approval registry"]
+    s4["honmoon-mgmt: pause→approve e2e"]
+    s5["@honmoon/api: audit query"]
   end
   subgraph weak["Fragile / incomplete"]
     w1["honmoon run: no netns isolation (TD-003)"]
     w2["honmoon join: stub (bail!)"]
     w3["SQL/K8s: no live relay (TD-006)"]
-    w4["dashboard + API: scaffolds"]
+    w4["honmoonctl validate: stub"]
   end
   style s1 fill:#161b22,stroke:#3fb950,color:#e6edf3
   style s2 fill:#161b22,stroke:#3fb950,color:#e6edf3
   style s3 fill:#161b22,stroke:#3fb950,color:#e6edf3
+  style s4 fill:#161b22,stroke:#3fb950,color:#e6edf3
+  style s5 fill:#161b22,stroke:#3fb950,color:#e6edf3
   style w1 fill:#161b22,stroke:#f85149,color:#e6edf3
   style w2 fill:#161b22,stroke:#f85149,color:#e6edf3
   style w3 fill:#161b22,stroke:#f85149,color:#e6edf3
   style w4 fill:#161b22,stroke:#f85149,color:#e6edf3
 ```
-<!-- Sources: ARCHITECTURE.md:117-129, .please/docs/tracks/tech-debt-tracker.md:9-14 -->
+<!-- Sources: ARCHITECTURE.md:123-131, .please/docs/tracks/tech-debt-tracker.md:9-14 -->
 
 ## Related Pages
 
 - [Policy Model & Decision Engine](/deep-dive/policy-engine) — the `decide()` algorithm in detail.
 - [Egress Gateway (Data Plane)](/deep-dive/egress-gateway) — the proxy that owns the socket.
-- [Control Plane & Dashboard](/deep-dive/control-plane) — the TS/React scaffold.
+- [Control Plane & Dashboard](/deep-dive/control-plane) — the management API, audit query, and dashboard.
 - [Roadmap & Open-Core Model](/deep-dive/roadmap-open-core) — the layering's monetization rationale.
 
 ## References

@@ -7,9 +7,10 @@
 > level and evaluates CEL conditions over the extracted facts. The Rust data plane is open source
 > (auditability is the trust model); the control/cloud plane is the future paid surface (open-core).
 
-Maturity: early-stage. Phases 0–3 (CONNECT egress proxy, CEL engine, SQL/K8s parsers) are
-implemented and tested. Phases 4–7 (approval workflow, audit dashboard, hardened isolation, fleet
-management, hosted SaaS) are roadmap. Documentation marks implemented vs planned explicitly.
+Maturity: early-stage. Phases 0–4 (CONNECT egress proxy, CEL engine, SQL/K8s parsers, the `pause`
+approval hold, audit log, and embedded dashboard) are implemented and tested. Phases 5–7 (hardened
+isolation, fleet management, hosted SaaS) are roadmap. Documentation marks implemented vs planned
+explicitly.
 
 ## Onboarding
 
@@ -23,8 +24,8 @@ management, hosted SaaS) are roadmap. Documentation marks implemented vs planned
 - [Architecture](wiki/deep-dive/architecture.md): dependency layers, dual-plane boundary, request lifecycle, invariants.
 - [Policy Model & Decision Engine](wiki/deep-dive/policy-engine.md): honmoon-core types, decide() precedence, egress matching, CEL evaluation, fail-closed.
 - [Protocol-Aware Parsing](wiki/deep-dive/protocol-parsing.md): PostgreSQL 'Q' parser, SQL verb/table heuristic, Kubernetes API path → facts.
-- [Egress Gateway (Data Plane)](wiki/deep-dive/egress-gateway.md): the tokio CONNECT proxy and the honmoon-cli run/gateway wiring.
-- [Control Plane & Dashboard](wiki/deep-dive/control-plane.md): TS policy types, Bun API, honmoonctl, React dashboard (scaffold).
+- [Egress Gateway (Data Plane)](wiki/deep-dive/egress-gateway.md): the tokio CONNECT proxy, audit recording, and the pause approval hold.
+- [Control Plane & Dashboard](wiki/deep-dive/control-plane.md): honmoon-mgmt (in-process axum API + embedded dashboard), @honmoon/api (durable audit query), React dashboard.
 
 ## Getting Started
 

@@ -1,8 +1,8 @@
 # AGENTS.md — Rust Data Plane (`crates/`)
 
-The Rust data plane: the performance- and safety-critical components that touch the wire. Three
-crates in a strict dependency chain `honmoon-cli → honmoon-proxy → honmoon-core`. This file covers
-data-plane specifics; see the root `AGENTS.md` for project-wide commands and conventions.
+The Rust data plane: the performance- and safety-critical components that touch the wire. Four
+crates; the dependency chain is `honmoon-cli → honmoon-mgmt → honmoon-proxy → honmoon-core`. This
+file covers data-plane specifics; see the root `AGENTS.md` for project-wide commands and conventions.
 
 ## Build & Run Commands
 
@@ -21,16 +21,18 @@ RUST_LOG=honmoon_proxy=debug cargo run -p honmoon-cli -- gateway --config polici
 
 | Crate | Role | I/O? |
 |-------|------|------|
-| `honmoon-core` | Policy model (`Policy`/`Egress`/`Rule`/`Verdict`/`Facts`), `decide()` engine (CEL + egress matching), protocol parsers (`protocols.rs`) | **None — pure logic** |
-| `honmoon-proxy` | tokio CONNECT egress proxy (`gateway.rs`); builds `Facts`, calls `decide()` | tokio sockets |
-| `honmoon-cli` | `honmoon` binary: `run` / `gateway` / `join` | process + sockets |
+| `honmoon-core` | Policy model, `decide_explained()` engine (CEL + egress), `audit` log, protocol parsers | **None — pure logic** |
+| `honmoon-proxy` | tokio CONNECT egress proxy (`gateway.rs`); builds `Facts`, audits decisions, holds `pause`d requests (`approval.rs`); `GatewayState` shared with the management API | tokio sockets |
+| `honmoon-mgmt` | axum management API (audit query, approval queue, policy) + embedded dashboard (`rust-embed`) | axum + filesystem (embed) |
+| `honmoon-cli` | `honmoon` binary: `run` / `gateway` (proxy + mgmt API) / `join` | process + sockets |
 
 ## Testing
 
-Tests are inline (`#[cfg(test)] mod tests`) plus the integration test
-`honmoon-proxy/tests/egress.rs`. The richest suites are in `honmoon-core/src/engine.rs` (decision
-precedence, CEL, fail-closed) and `honmoon-core/src/protocols.rs` (parser edge cases). Write the
-failing test first; the existing tests are your templates.
+Tests are inline (`#[cfg(test)] mod tests`) plus integration tests: `honmoon-proxy/tests/egress.rs`
+(CONNECT allow/deny) and `honmoon-mgmt/tests/e2e.rs` (`pause` → approve-over-HTTP → tunnel, and
+reject → 403, with audit assertions). The richest unit suites are in `honmoon-core/src/engine.rs`,
+`protocols.rs`, and `audit.rs`, and `honmoon-proxy/src/approval.rs`. Write the failing test first;
+the existing tests are your templates.
 
 ## Code Style
 

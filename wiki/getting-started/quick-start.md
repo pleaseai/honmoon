@@ -61,27 +61,35 @@ sequenceDiagram
 <!-- Sources: crates/honmoon-cli/src/main.rs:66-98, crates/honmoon-proxy/src/gateway.rs:62-112 -->
 
 ::: warning The child must honor proxy env vars
-Isolation is **advisory** in Phase 1: `honmoon run` only sets `http_proxy` / `https_proxy` /
-`all_proxy` (and uppercase variants) for the child
-([main.rs:86-94](https://github.com/pleaseai/honmoon/blob/master/crates/honmoon-cli/src/main.rs#L86-L94)).
+Isolation is **advisory**: `honmoon run` only sets `http_proxy` / `https_proxy` / `all_proxy`
+(and uppercase variants) for the child
+([main.rs:153-161](https://github.com/pleaseai/honmoon/blob/master/crates/honmoon-cli/src/main.rs#L153-L161)).
 A process that ignores those variables bypasses Honmoon entirely. Enforcing network isolation
-(netns / NetworkExtension) is tracked as **TD-003**.
+(netns / NetworkExtension) is tracked as **TD-003** (Phase 5).
 :::
 
-## 2. Run the standalone gateway
+## 2. Run the standalone gateway + dashboard
 
-`honmoon gateway` loads a policy and runs the CONNECT proxy on a fixed address (default
-`127.0.0.1:8443`). Point any client's `https_proxy` at it
-([main.rs:31-37](https://github.com/pleaseai/honmoon/blob/master/crates/honmoon-cli/src/main.rs#L31-L37), [main.rs:53-57](https://github.com/pleaseai/honmoon/blob/master/crates/honmoon-cli/src/main.rs#L53-L57)):
+`honmoon gateway` runs the CONNECT proxy **and** the management API + dashboard on one runtime.
+The proxy defaults to `127.0.0.1:8443`; the management API + dashboard to `127.0.0.1:8444`
+([main.rs:34-47](https://github.com/pleaseai/honmoon/blob/master/crates/honmoon-cli/src/main.rs#L34-L47), [main.rs:78-128](https://github.com/pleaseai/honmoon/blob/master/crates/honmoon-cli/src/main.rs#L78-L128)):
 
 ```bash
-# Terminal A — start the gateway
-cargo run -p honmoon-cli -- gateway --config policies/agent.yaml --addr 127.0.0.1:8443
+# Terminal A — start the gateway (proxy :8443, dashboard :8444, durable audit log)
+cargo run -p honmoon-cli -- gateway --config policies/agent.yaml \
+  --addr 127.0.0.1:8443 --mgmt-addr 127.0.0.1:8444 --audit-log honmoon-audit.jsonl
 
 # Terminal B — route a client through it
 https_proxy=http://127.0.0.1:8443 curl -sS https://github.com
 https_proxy=http://127.0.0.1:8443 curl -sS https://example.com   # blocked (403)
+
+# Open the dashboard (audit log, policy view, approval queue)
+open http://127.0.0.1:8444
 ```
+
+The dashboard is embedded in the binary, so it is served directly by the gateway — no separate
+process. For the durable, queryable audit history over the JSONL file, run `@honmoon/api` (see
+[Control Plane & Dashboard](/deep-dive/control-plane)).
 
 Enable structured logs with `RUST_LOG` (the binary wires `tracing-subscriber` to the env
 filter, [main.rs:46-48](https://github.com/pleaseai/honmoon/blob/master/crates/honmoon-cli/src/main.rs#L46-L48)):
@@ -92,7 +100,7 @@ RUST_LOG=honmoon_proxy=debug cargo run -p honmoon-cli -- gateway --config polici
 
 ## 3. What you'll see — the verdict flow
 
-Every CONNECT request resolves to exactly one of three responses today:
+Every CONNECT request is decided, **recorded to the audit log**, and resolved:
 
 ```mermaid
 stateDiagram-v2
@@ -102,8 +110,11 @@ stateDiagram-v2
   ParseLine --> MethodCheck
   MethodCheck --> NotAllowed: non-CONNECT method
   MethodCheck --> Decide: CONNECT host:port
-  Decide --> Forbidden: verdict != Allow
-  Decide --> Connect: verdict == Allow
+  Decide --> Connect: Allow (audit Allowed)
+  Decide --> Forbidden: Deny (audit Denied)
+  Decide --> Held: Pause (audit Paused)
+  Held --> Connect: approved / (queue full,timeout → reject)
+  Held --> Forbidden: rejected / timeout
   Connect --> Tunnel: upstream OK (200)
   Connect --> BadGateway: upstream connect failed
   BadRequest --> [*]: 400
@@ -112,38 +123,42 @@ stateDiagram-v2
   BadGateway --> [*]: 502
   Tunnel --> [*]: copy_bidirectional
 ```
-<!-- Sources: crates/honmoon-proxy/src/gateway.rs:63-112 -->
+<!-- Sources: crates/honmoon-proxy/src/gateway.rs:112-201 -->
 
 | Outcome | HTTP status | When | Source |
 |---------|------------|------|--------|
-| Tunnel established | `200 Connection Established` | Verdict `Allow`, upstream reachable | [gateway.rs:107-110](https://github.com/pleaseai/honmoon/blob/master/crates/honmoon-proxy/src/gateway.rs#L107-L110) |
-| Forbidden | `403` | Verdict not `Allow` | [gateway.rs:93-96](https://github.com/pleaseai/honmoon/blob/master/crates/honmoon-proxy/src/gateway.rs#L93-L96) |
-| Method not allowed | `405` | Non-CONNECT method | [gateway.rs:76-79](https://github.com/pleaseai/honmoon/blob/master/crates/honmoon-proxy/src/gateway.rs#L76-L79) |
-| Bad request | `400` | Malformed / oversized / truncated head | [gateway.rs:68-74](https://github.com/pleaseai/honmoon/blob/master/crates/honmoon-proxy/src/gateway.rs#L68-L74) |
-| Request timeout | `408` | Head not received within 10s | [gateway.rs:64-67](https://github.com/pleaseai/honmoon/blob/master/crates/honmoon-proxy/src/gateway.rs#L64-L67) |
-| Bad gateway | `502` | Upstream connect failed | [gateway.rs:98-104](https://github.com/pleaseai/honmoon/blob/master/crates/honmoon-proxy/src/gateway.rs#L98-L104) |
+| Tunnel established | `200 Connection Established` | Verdict `Allow` (or approved `pause`), upstream reachable | [gateway.rs:156-161](https://github.com/pleaseai/honmoon/blob/master/crates/honmoon-proxy/src/gateway.rs#L156-L161) |
+| Forbidden | `403` | Verdict `Deny`, or a `pause` rejected/timed out | [gateway.rs:196](https://github.com/pleaseai/honmoon/blob/master/crates/honmoon-proxy/src/gateway.rs#L196) |
+| Held, then resolved | — → `200`/`403` | Verdict `Pause` — held in the approval queue | [gateway.rs:206-271](https://github.com/pleaseai/honmoon/blob/master/crates/honmoon-proxy/src/gateway.rs#L206-L271) |
+| Service unavailable | `503` | `pause` but the approval queue is full (fail closed) | [gateway.rs:218-230](https://github.com/pleaseai/honmoon/blob/master/crates/honmoon-proxy/src/gateway.rs#L218-L230) |
+| Method not allowed | `405` | Non-CONNECT method | [gateway.rs:125-128](https://github.com/pleaseai/honmoon/blob/master/crates/honmoon-proxy/src/gateway.rs#L125-L128) |
+| Bad request / timeout / bad gateway | `400` / `408` / `502` | Malformed head / slowloris / upstream failed | [gateway.rs:113-153](https://github.com/pleaseai/honmoon/blob/master/crates/honmoon-proxy/src/gateway.rs#L113-L153) |
 
-::: tip `pause` does not yet hold a request
-The policy model defines three verdicts, but over the Phase 1 CONNECT proxy anything other
-than `Allow` results in a `403` — there is no approval queue yet. The `pause` → hold-for-approval
-workflow is Phase 4 ([roadmap.md:81-89](https://github.com/pleaseai/honmoon/blob/master/docs/roadmap.md#L81-L89)).
-For SQL/K8s rules (which can return `pause`), the parsers exist and are tested but are not yet
-fed by a live socket (**TD-006**) — see [Protocol-Aware Parsing](/deep-dive/protocol-parsing).
+::: tip `pause` now holds for approval (Phase 4)
+A `pause` verdict **holds the connection** in the approval queue until a human approves it (via the
+dashboard at `:8444`) or it times out (300s → auto-reject). Today only `http.host`-based `pause`
+rules fire over CONNECT; SQL/K8s `pause` rules need the live inline relay + TLS termination
+(**TD-006**) — see [Protocol-Aware Parsing](/deep-dive/protocol-parsing).
 :::
 
 ## 4. Run the tests
 
 ```bash
-# The whole Rust suite (policy model, engine, parsers, hermetic egress test)
+# The whole Rust suite (policy, engine, parsers, audit, approval, egress + mgmt e2e)
 cargo test --workspace
 
-# Just the Phase 1 egress integration test
+# Just the egress integration test, or the Phase 4 pause→approve e2e test
 cargo test -p honmoon-proxy --test egress
+cargo test -p honmoon-mgmt --test e2e
+
+# TypeScript audit-query tests
+bun test
 ```
 
-The integration test stands up an in-process upstream and a hand-rolled CONNECT client over
-loopback, proving an allowed host tunnels (`200`) and a denied host is blocked (`403`) — with no
-external processes ([egress.rs:74-127](https://github.com/pleaseai/honmoon/blob/master/crates/honmoon-proxy/tests/egress.rs#L74-L127)).
+The egress test proves an allowed host tunnels (`200`) and a denied host is blocked (`403`)
+hermetically ([egress.rs:74-127](https://github.com/pleaseai/honmoon/blob/master/crates/honmoon-proxy/tests/egress.rs#L74-L127)); the `honmoon-mgmt`
+e2e test drives a full `pause` → approve-over-HTTP → tunnel (and reject → `403`) cycle
+([e2e.rs](https://github.com/pleaseai/honmoon/blob/master/crates/honmoon-mgmt/tests/e2e.rs)).
 
 ## Related Pages
 
