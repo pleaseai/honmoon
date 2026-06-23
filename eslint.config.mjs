@@ -14,6 +14,10 @@ export default pleaseai({
     '.please/**',
     'crates/**',
     '**/*.toml',
+    // Generated VitePress docs site — self-contained sub-project with its own
+    // toolchain (not a root workspace); its theme uses Vue/VitePress composables
+    // that conflict with the app's React lint rules.
+    'wiki/**',
   ],
 }, {
   // Bun/Node entrypoints: `process` is a legitimate global; CLI/server log to stdout.

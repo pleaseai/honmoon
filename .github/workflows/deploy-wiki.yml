@@ -5,7 +5,7 @@ on:
     branches: [master]
     paths:
       - 'wiki/**'
-      - '.github/workflows/deploy-wiki.yml'
+      - .github/workflows/deploy-wiki.yml
   workflow_dispatch:
 
 permissions:
