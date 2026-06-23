@@ -1,0 +1,33 @@
+wiki/.vitepress/theme/custom.css
+  s_361c14ec62aec4::t_d3f4e5f23e9376 4
+wiki/onboarding/contributor-guide.md
+  s_361c14ec62aec4::t_f6efbebfbd40b4 257-260
+  s_361c14ec62aec4::t_c4c6b8bc229be4 184-187,189-190
+  s_361c14ec62aec4::t_dc6ba771bb9b47 215
+  s_361c14ec62aec4::t_aacc8b6e6de14a 262
+wiki/onboarding/staff-engineer-guide.md
+  s_361c14ec62aec4::t_508ea0cfcbdbda 127
+wiki/index.md
+  s_361c14ec62aec4::t_34748a6c420b2c 104-117
+wiki/llms-full.txt
+  s_361c14ec62aec4::t_bcc938813e2810 186-189,191-192,217,259-262,264,291,488
+.github/workflows/deploy-wiki.yml
+  s_361c14ec62aec4::t_7d357e806fd1d5 52-54
+  s_361c14ec62aec4::t_1135911f7e7649 21-22
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.10",
+  "base_commit_sha": "7aeaa85ccb3a1503f519dcee4245016a8dfd6bb3",
+  "prompts": {},
+  "sessions": {
+    "s_361c14ec62aec4": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "594c8765-b9f0-43e9-a044-11276e40d06e",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
