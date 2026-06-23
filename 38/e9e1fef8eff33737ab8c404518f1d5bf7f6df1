@@ -1,0 +1,21 @@
+.github/workflows/deploy-wiki.yml
+  s_361c14ec62aec4::t_a5b5984e23aeb7 8
+eslint.config.mjs
+  s_361c14ec62aec4::t_252990864bc0f0 17-20
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.10",
+  "base_commit_sha": "38e9e1fef8eff33737ab8c404518f1d5bf7f6df1",
+  "prompts": {},
+  "sessions": {
+    "s_361c14ec62aec4": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "594c8765-b9f0-43e9-a044-11276e40d06e",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
