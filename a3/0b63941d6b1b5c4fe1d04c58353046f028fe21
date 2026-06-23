@@ -1,0 +1,83 @@
+wiki/onboarding/product-manager-guide.md
+  s_361c14ec62aec4::t_4d7ceda7c6d3f5 1-159
+AGENTS.md
+  s_361c14ec62aec4::t_087356f85cfc92 1-71
+apps/dashboard/CLAUDE.md
+  s_361c14ec62aec4::t_ba860d8722f44a 1-5
+wiki/deep-dive/architecture.md
+  s_361c14ec62aec4::t_8fe47765ce2040 1-230
+wiki/deep-dive/roadmap-open-core.md
+  s_361c14ec62aec4::t_a941afeb52a8da 1-166
+wiki/onboarding/staff-engineer-guide.md
+  s_361c14ec62aec4::t_c341f0a7ddc830 1-194
+crates/AGENTS.md
+  s_361c14ec62aec4::t_37bd64cfdf512b 1-52
+wiki/AGENTS.md
+  s_361c14ec62aec4::t_e86b68a0566c94 1-54
+wiki/llms-full.txt
+  s_361c14ec62aec4::t_e0286054fa7c79 1-2687
+wiki/.vitepress/config.mts
+  s_361c14ec62aec4::t_bfc1092fde9e2a 1-13,16-19,23-106
+  s_361c14ec62aec4::t_515cf9bfe9592f 14-15
+  s_361c14ec62aec4::t_027d42205ddf53 20-22
+wiki/package.json
+  s_361c14ec62aec4::t_527a89df85f07b 1-17
+wiki/llms.txt
+  s_361c14ec62aec4::t_c5205a7ae236a2 1-43
+wiki/getting-started/policy-authoring.md
+  s_361c14ec62aec4::t_c7646d46f07c6d 1-189
+wiki/.vitepress/theme/custom.css
+  s_361c14ec62aec4::t_699f3eeeafe4f0 1-132
+wiki/deep-dive/protocol-parsing.md
+  s_361c14ec62aec4::t_787814697d6be5 1-206
+wiki/deep-dive/control-plane.md
+  s_361c14ec62aec4::t_b895668549f3f4 1-181
+wiki/CLAUDE.md
+  s_361c14ec62aec4::t_ba860d8722f44a 1-5
+wiki/getting-started/installation.md
+  s_361c14ec62aec4::t_c9038b36686cb7 1-170
+packages/AGENTS.md
+  s_361c14ec62aec4::t_81bb07a43a5827 1-43
+wiki/onboarding/executive-guide.md
+  s_361c14ec62aec4::t_c6c6120ca79a83 1-172
+wiki/.vitepress/theme/index.ts
+  s_361c14ec62aec4::t_e85c655928c6d4 1-27
+wiki/index.md
+  s_361c14ec62aec4::t_081264ad94f083 1-99
+wiki/getting-started/overview.md
+  s_361c14ec62aec4::t_867d2766aafa10 1-150
+llms.txt
+  s_361c14ec62aec4::t_b1f43a052f81b1 1-54
+wiki/deep-dive/policy-engine.md
+  s_361c14ec62aec4::t_bfed1282bf2e31 1-207
+wiki/.vitepress/gen-llms-full.mjs
+  s_361c14ec62aec4::t_4fad59f7cdd69b 1-49
+wiki/getting-started/quick-start.md
+  s_361c14ec62aec4::t_6b1637e9b2f45b 1-159
+crates/CLAUDE.md
+  s_361c14ec62aec4::t_ba860d8722f44a 1-5
+wiki/deep-dive/egress-gateway.md
+  s_361c14ec62aec4::t_d03137355b3ce0 1-178
+apps/dashboard/AGENTS.md
+  s_361c14ec62aec4::t_ce8d407831723b 1-43
+wiki/onboarding/contributor-guide.md
+  s_361c14ec62aec4::t_17ba749cf455b0 1-348
+packages/CLAUDE.md
+  s_361c14ec62aec4::t_ba860d8722f44a 1-5
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.10",
+  "base_commit_sha": "a30b63941d6b1b5c4fe1d04c58353046f028fe21",
+  "prompts": {},
+  "sessions": {
+    "s_361c14ec62aec4": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "594c8765-b9f0-43e9-a044-11276e40d06e",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
