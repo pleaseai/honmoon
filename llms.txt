@@ -1,0 +1,54 @@
+# Honmoon
+
+> A policy-based firewall gateway guarding the boundary between AI agents and production systems.
+> It intercepts an agent's outbound network traffic and applies declarative policy — allow / deny /
+> pause (human approval) — before requests reach their destination. Honmoon unifies egress domain
+> filtering with a protocol-aware policy engine that parses SQL, Kubernetes, and HTTP at the wire
+> level and evaluates CEL conditions over the extracted facts. The Rust data plane is open source
+> (auditability is the trust model); the control/cloud plane is the future paid surface (open-core).
+
+Maturity: early-stage. Phases 0–3 (CONNECT egress proxy, CEL engine, SQL/K8s parsers) are
+implemented and tested. Phases 4–7 (approval workflow, audit dashboard, hardened isolation, fleet
+management, hosted SaaS) are roadmap. Documentation marks implemented vs planned explicitly.
+
+## Onboarding
+
+- [Contributor Guide](wiki/onboarding/contributor-guide.md): Rust/tokio/CEL/Bun foundations, the codebase, and the test-driven contribution workflow.
+- [Staff Engineer Guide](wiki/onboarding/staff-engineer-guide.md): the core architectural insight (transport-agnostic decision seam), tradeoffs, and decision log.
+- [Executive Guide](wiki/onboarding/executive-guide.md): capability map, risk assessment, investment thesis, cost/scaling model.
+- [Product Manager Guide](wiki/onboarding/product-manager-guide.md): user journeys, capability map, limitations, data/privacy, FAQ (no jargon).
+
+## Architecture
+
+- [Architecture](wiki/deep-dive/architecture.md): dependency layers, dual-plane boundary, request lifecycle, invariants.
+- [Policy Model & Decision Engine](wiki/deep-dive/policy-engine.md): honmoon-core types, decide() precedence, egress matching, CEL evaluation, fail-closed.
+- [Protocol-Aware Parsing](wiki/deep-dive/protocol-parsing.md): PostgreSQL 'Q' parser, SQL verb/table heuristic, Kubernetes API path → facts.
+- [Egress Gateway (Data Plane)](wiki/deep-dive/egress-gateway.md): the tokio CONNECT proxy and the honmoon-cli run/gateway wiring.
+- [Control Plane & Dashboard](wiki/deep-dive/control-plane.md): TS policy types, Bun API, honmoonctl, React dashboard (scaffold).
+
+## Getting Started
+
+- [Overview](wiki/getting-started/overview.md): what Honmoon is, the threat model, the dual-plane design.
+- [Installation & Toolchain](wiki/getting-started/installation.md): mise tasks, Rust + Bun setup, CI.
+- [Quick Start](wiki/getting-started/quick-start.md): honmoon run and gateway; the verdict flow.
+- [Policy Authoring](wiki/getting-started/policy-authoring.md): YAML egress lists + CEL rules + JSON Schema.
+
+## Deep Dive
+
+- [Roadmap & Open-Core Model](wiki/deep-dive/roadmap-open-core.md): phases 0–7, the OSS/paid boundary, ADR-0001/0002, tech debt.
+
+## Source of truth
+
+- [ARCHITECTURE.md](ARCHITECTURE.md): module boundaries and architectural invariants.
+- [crates/honmoon-core/src/engine.rs](crates/honmoon-core/src/engine.rs): the decide() decision engine.
+- [crates/honmoon-core/src/protocols.rs](crates/honmoon-core/src/protocols.rs): the wire-level protocol parsers.
+- [crates/honmoon-proxy/src/gateway.rs](crates/honmoon-proxy/src/gateway.rs): the CONNECT egress proxy.
+- [policies/agent.yaml](policies/agent.yaml): the example policy.
+- [packages/policy/schema/policy.schema.json](packages/policy/schema/policy.schema.json): the policy JSON Schema.
+
+## Optional
+
+- [docs/roadmap.md](docs/roadmap.md): the full phased roadmap with exit criteria.
+- [docs/business-model.md](docs/business-model.md): the open-core business model.
+- [.please/docs/decisions/](.please/docs/decisions/): architecture decision records (ADRs).
+- [.please/docs/tracks/tech-debt-tracker.md](.please/docs/tracks/tech-debt-tracker.md): tracked tech debt (TD-001…TD-006).
