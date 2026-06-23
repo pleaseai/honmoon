@@ -5,10 +5,12 @@
 
 use serde::{Deserialize, Serialize};
 
+pub mod audit;
 pub mod engine;
 pub mod protocols;
 
-pub use engine::decide;
+pub use audit::{AuditDraft, AuditEvent, AuditLog, Decision, FactsSummary};
+pub use engine::{Outcome, decide, decide_explained};
 
 /// The decision the policy engine returns for a given request.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -89,7 +91,7 @@ pub struct Facts {
 }
 
 /// HTTP request facts exposed to CEL as the `http` variable.
-#[derive(Debug, Clone, Default, Serialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct HttpFacts {
     pub method: String,
     pub host: String,
@@ -101,7 +103,7 @@ pub struct HttpFacts {
 ///
 /// `verb` is the leading SQL keyword, uppercased (`SELECT`, `DROP`, `TRUNCATE`,
 /// …). `table` is a best-effort primary table/relation name, lowercased.
-#[derive(Debug, Clone, Default, Serialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct SqlFacts {
     pub verb: String,
     pub table: String,
@@ -111,7 +113,7 @@ pub struct SqlFacts {
 ///
 /// `verb` is the resource action (`get`/`list`/`create`/`update`/`patch`/`delete`),
 /// derived from the HTTP method. `resource` and `namespace` come from the API path.
-#[derive(Debug, Clone, Default, Serialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct K8sFacts {
     pub verb: String,
     pub resource: String,

@@ -4,4 +4,5 @@
 //! and applies the [`Policy`](honmoon_core::Policy) via the policy engine in
 //! `honmoon-core` before forwarding upstream.
 
+pub mod approval;
 pub mod gateway;

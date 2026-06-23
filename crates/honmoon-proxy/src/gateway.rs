@@ -11,15 +11,52 @@
 //!
 //! [ADR-0002]: ../../../.please/docs/decisions/0002-phase1-connect-proxy-on-tokio.md
 
+use std::sync::Arc;
 use std::time::Duration;
 
-use honmoon_core::{Facts, HttpFacts, Policy, Verdict, decide};
+use honmoon_core::{
+    AuditDraft, AuditLog, Decision, Facts, FactsSummary, HttpFacts, Policy, Verdict,
+    decide_explained,
+};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
+
+use crate::approval::{ApprovalDecision, ApprovalRegistry, NewApproval};
 
 const MAX_REQUEST_HEAD: usize = 8 * 1024;
 /// Max time to receive the CONNECT request head before giving up (slowloris guard).
 const HEAD_READ_TIMEOUT: Duration = Duration::from_secs(10);
+/// How long a `pause`d request is held before it is auto-rejected (no approver).
+pub const DEFAULT_PAUSE_TIMEOUT: Duration = Duration::from_secs(300);
+/// In-memory audit ring size for ephemeral (`honmoon run`) proxies.
+const DEFAULT_AUDIT_CAPACITY: usize = 1024;
+
+/// Shared runtime state for the egress proxy.
+///
+/// The data plane (this crate) and the management API (`honmoon-mgmt`) both hold
+/// the same `Arc`s, so a verdict recorded here is visible to the dashboard and an
+/// approval resolved there wakes the held connection here.
+#[derive(Clone)]
+pub struct GatewayState {
+    pub policy: Arc<Policy>,
+    pub audit: Arc<AuditLog>,
+    pub approvals: Arc<ApprovalRegistry>,
+    /// How long to hold a `pause`d request before auto-rejecting it.
+    pub pause_timeout: Duration,
+}
+
+impl GatewayState {
+    /// State for a standalone/ephemeral proxy: in-memory audit, fresh approval
+    /// registry, default pause timeout.
+    pub fn new(policy: Policy) -> Self {
+        Self {
+            policy: Arc::new(policy),
+            audit: Arc::new(AuditLog::new(DEFAULT_AUDIT_CAPACITY)),
+            approvals: Arc::new(ApprovalRegistry::new()),
+            pause_timeout: DEFAULT_PAUSE_TIMEOUT,
+        }
+    }
+}
 
 /// Bind `addr` and run the egress proxy, blocking forever (until process exit).
 pub fn run(policy: Policy, addr: &str) -> ! {
@@ -32,24 +69,36 @@ pub fn run(policy: Policy, addr: &str) -> ! {
 /// Taking a pre-bound listener lets `honmoon run` hand off a socket it bound
 /// itself — no free-port-then-rebind window (no TOCTOU race).
 pub fn serve_listener(policy: Policy, listener: std::net::TcpListener) -> ! {
+    let state = GatewayState::new(policy);
+    serve_listener_with_state(state, listener)
+}
+
+/// Like [`serve_listener`], but with caller-provided shared [`GatewayState`] so
+/// the management API can observe audit events and resolve held requests.
+pub fn serve_listener_with_state(state: GatewayState, listener: std::net::TcpListener) -> ! {
     listener
         .set_nonblocking(true)
         .expect("set listener non-blocking");
     let runtime = tokio::runtime::Runtime::new().expect("build tokio runtime");
-    runtime.block_on(serve(policy, listener))
+    runtime.block_on(serve(state, listener))
 }
 
-async fn serve(policy: Policy, std_listener: std::net::TcpListener) -> ! {
+/// Run the accept loop on an existing tokio runtime (does not return).
+///
+/// Used when the proxy shares a runtime with the management API server.
+pub async fn serve(state: GatewayState, std_listener: std::net::TcpListener) -> ! {
+    std_listener
+        .set_nonblocking(true)
+        .expect("set listener non-blocking");
     let listener = TcpListener::from_std(std_listener).expect("adopt std listener");
     let addr = listener.local_addr().expect("listener addr");
     tracing::info!(%addr, "egress proxy listening");
-    let policy = std::sync::Arc::new(policy);
     loop {
         match listener.accept().await {
             Ok((stream, peer)) => {
-                let policy = policy.clone();
+                let state = state.clone();
                 tokio::spawn(async move {
-                    if let Err(e) = handle(stream, &policy).await {
+                    if let Err(e) = handle(stream, &state).await {
                         tracing::debug!(%peer, error = %e, "connection ended");
                     }
                 });
@@ -60,7 +109,7 @@ async fn serve(policy: Policy, std_listener: std::net::TcpListener) -> ! {
 }
 
 /// Handle one client connection: parse the CONNECT request, apply policy, tunnel.
-async fn handle(mut client: TcpStream, policy: &Policy) -> std::io::Result<()> {
+async fn handle(mut client: TcpStream, state: &GatewayState) -> std::io::Result<()> {
     let head = match tokio::time::timeout(HEAD_READ_TIMEOUT, read_head(&mut client)).await {
         Ok(result) => result?,
         Err(_elapsed) => return respond(&mut client, 408, "Request Timeout").await,
@@ -90,9 +139,10 @@ async fn handle(mut client: TcpStream, policy: &Policy) -> std::io::Result<()> {
         }),
         ..Default::default()
     };
-    if decide(policy, &facts) != Verdict::Allow {
-        tracing::info!(domain = %host, "egress blocked");
-        return respond(&mut client, 403, "Forbidden").await;
+
+    // Decide, record to the audit log, and — for `pause` — hold pending approval.
+    if !authorize(&mut client, state, &facts).await? {
+        return Ok(());
     }
 
     let mut upstream = match TcpStream::connect(&target).await {
@@ -109,6 +159,124 @@ async fn handle(mut client: TcpStream, policy: &Policy) -> std::io::Result<()> {
         .await?;
     tokio::io::copy_bidirectional(&mut client, &mut upstream).await?;
     Ok(())
+}
+
+/// Apply policy to `facts`, record the decision to the audit log, and — for a
+/// `pause` verdict — hold the connection until a human resolves it.
+///
+/// Returns `Ok(true)` if the request may proceed to tunnel, `Ok(false)` if it
+/// was answered (403) and is finished.
+async fn authorize(
+    client: &mut TcpStream,
+    state: &GatewayState,
+    facts: &Facts,
+) -> std::io::Result<bool> {
+    let outcome = decide_explained(&state.policy, facts);
+    let summary = FactsSummary::from(facts);
+    match outcome.verdict {
+        Verdict::Allow => {
+            state.audit.record(AuditDraft {
+                decision: Decision::Allowed,
+                verdict: Verdict::Allow,
+                rule: outcome.rule,
+                facts: summary,
+                approval_id: None,
+            });
+            Ok(true)
+        }
+        Verdict::Deny => {
+            tracing::info!(domain = ?facts.domain, rule = ?outcome.rule, "egress denied");
+            state.audit.record(AuditDraft {
+                decision: Decision::Denied,
+                verdict: Verdict::Deny,
+                rule: outcome.rule,
+                facts: summary,
+                approval_id: None,
+            });
+            respond(client, 403, "Forbidden").await?;
+            Ok(false)
+        }
+        Verdict::Pause => hold_for_approval(client, state, facts, summary, outcome.rule).await,
+    }
+}
+
+/// Hold a `pause`d request in the approval registry until a human approves or
+/// rejects it (or the hold times out → reject). Records both the initial hold
+/// and the final resolution to the audit log.
+async fn hold_for_approval(
+    client: &mut TcpStream,
+    state: &GatewayState,
+    facts: &Facts,
+    summary: FactsSummary,
+    rule: Option<String>,
+) -> std::io::Result<bool> {
+    let (pending, rx) = state.approvals.register(NewApproval {
+        endpoint: facts.endpoint.clone(),
+        domain: facts.domain.clone(),
+        rule: rule.clone(),
+        summary: summarize(facts, rule.as_deref()),
+    });
+    state.audit.record(AuditDraft {
+        decision: Decision::Paused,
+        verdict: Verdict::Pause,
+        rule: rule.clone(),
+        facts: summary.clone(),
+        approval_id: Some(pending.id),
+    });
+    tracing::info!(id = pending.id, domain = ?facts.domain, "request held for approval");
+
+    let decision = match tokio::time::timeout(state.pause_timeout, rx).await {
+        Ok(Ok(d)) => d,
+        // Registry dropped (shutdown) — treat as rejection.
+        Ok(Err(_)) => ApprovalDecision::Reject,
+        // Timed out waiting for a human — drop the slot and reject.
+        Err(_elapsed) => {
+            state.approvals.cancel(pending.id);
+            tracing::info!(id = pending.id, "approval timed out");
+            ApprovalDecision::Reject
+        }
+    };
+
+    match decision {
+        ApprovalDecision::Approve => {
+            state.audit.record(AuditDraft {
+                decision: Decision::Approved,
+                verdict: Verdict::Pause,
+                rule,
+                facts: summary,
+                approval_id: Some(pending.id),
+            });
+            Ok(true)
+        }
+        ApprovalDecision::Reject => {
+            state.audit.record(AuditDraft {
+                decision: Decision::Rejected,
+                verdict: Verdict::Pause,
+                rule,
+                facts: summary,
+                approval_id: Some(pending.id),
+            });
+            respond(client, 403, "Forbidden").await?;
+            Ok(false)
+        }
+    }
+}
+
+/// A short human description of a held request, for the approval queue.
+fn summarize(facts: &Facts, rule: Option<&str>) -> String {
+    let what = if let Some(sql) = &facts.sql {
+        format!("SQL {} {}", sql.verb, sql.table).trim().to_string()
+    } else if let Some(k8s) = &facts.k8s {
+        format!("k8s {} {} in {}", k8s.verb, k8s.resource, k8s.namespace)
+    } else if let Some(domain) = &facts.domain {
+        format!("CONNECT {domain}")
+    } else {
+        "request".to_string()
+    };
+    match rule {
+        Some(r) => format!("{what} (rule: {r})"),
+        None => what,
+    }
 }
 
 /// Read the request head up to the blank line, without consuming tunnel bytes.
