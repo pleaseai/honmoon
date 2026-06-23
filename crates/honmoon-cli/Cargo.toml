@@ -14,6 +14,8 @@ path = "src/main.rs"
 [dependencies]
 honmoon-core.workspace = true
 honmoon-proxy.workspace = true
+honmoon-mgmt.workspace = true
+tokio.workspace = true
 clap.workspace = true
 anyhow.workspace = true
 tracing.workspace = true

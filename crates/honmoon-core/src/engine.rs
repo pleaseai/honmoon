@@ -4,7 +4,26 @@ use cel_interpreter::{Context, Program, Value};
 
 use crate::{Facts, Policy, Verdict};
 
+/// A decision plus the reason it was reached.
+///
+/// `rule` names the protocol rule that fired (if any); when `None`, the verdict
+/// came from the egress allow/deny lists or the egress default. This is what the
+/// audit log records so a human can see *why* a request was held or blocked.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Outcome {
+    pub verdict: Verdict,
+    /// Name of the matched [`Rule`](crate::Rule), or `None` for an egress decision.
+    pub rule: Option<String>,
+}
+
 /// Decide the [`Verdict`] for `facts` under `policy`.
+///
+/// Thin wrapper over [`decide_explained`] for callers that only need the verdict.
+pub fn decide(policy: &Policy, facts: &Facts) -> Verdict {
+    decide_explained(policy, facts).verdict
+}
+
+/// Decide the [`Outcome`] (verdict + matched rule) for `facts` under `policy`.
 ///
 /// Precedence:
 /// 1. Protocol-aware [`Rule`](crate::Rule)s are evaluated **in order**. The first
@@ -16,15 +35,21 @@ use crate::{Facts, Policy, Verdict};
 /// Fail-closed: a rule whose condition fails to compile or references unknown
 /// facts simply does not match (it cannot turn a deny into an allow), and the
 /// egress default is `deny`.
-pub fn decide(policy: &Policy, facts: &Facts) -> Verdict {
+pub fn decide_explained(policy: &Policy, facts: &Facts) -> Outcome {
     for rule in &policy.rules {
         if endpoint_matches(&rule.endpoint, facts.endpoint.as_deref())
             && eval_condition(&rule.condition, facts)
         {
-            return rule.verdict;
+            return Outcome {
+                verdict: rule.verdict,
+                rule: Some(rule.name.clone()),
+            };
         }
     }
-    egress_verdict(policy, facts)
+    Outcome {
+        verdict: egress_verdict(policy, facts),
+        rule: None,
+    }
 }
 
 fn egress_verdict(policy: &Policy, facts: &Facts) -> Verdict {

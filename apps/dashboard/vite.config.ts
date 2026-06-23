@@ -10,4 +10,12 @@ export default defineConfig({
   build: {
     outDir: 'dist',
   },
+  // In `vite dev`, forward API calls to a locally-running management API
+  // (`honmoon gateway --mgmt-addr 127.0.0.1:8444`).
+  server: {
+    proxy: {
+      '/api': 'http://127.0.0.1:8444',
+      '/healthz': 'http://127.0.0.1:8444',
+    },
+  },
 })
