@@ -1,0 +1,50 @@
+apps/dashboard/src/components/AuditLog.tsx
+  s_5884de9532bf32::t_fe5c606a6107dc 1-68
+apps/dashboard/vite.config.ts
+  s_5884de9532bf32::t_fea9345e5a4107 13-20
+apps/dashboard/src/format.ts
+  s_5884de9532bf32::t_a2395729bd1d18 5-19,26-28
+  s_5884de9532bf32::t_2c7d4cee34d6d7 1-4,20-25,29-30
+apps/dashboard/src/components/PolicyView.tsx
+  s_5884de9532bf32::t_a838dfe46c6213 1-74
+packages/api/src/audit.test.ts
+  s_5884de9532bf32::t_a776ecbc88b00d 1-88
+packages/policy/src/index.ts
+  s_5884de9532bf32::t_36515669adc30c 32-91
+apps/dashboard/src/hooks.ts
+  s_5884de9532bf32::t_3768e8027562bd 1-13,17-21,23,25-26,54-56
+  s_5884de9532bf32::t_78b1e685d076f6 14-16,22,24,27-53
+apps/dashboard/src/components/Overview.tsx
+  s_5884de9532bf32::t_2b030706697e4e 1-67
+apps/dashboard/src/components/DecisionBadge.tsx
+  s_5884de9532bf32::t_5d1843c95cd1fd 1-19
+packages/api/src/audit.ts
+  s_5884de9532bf32::t_15097a3efdb4db 1-29,33-45,49-50,54-67,71-78,82,86,90,94-99,103-104
+  s_5884de9532bf32::t_ae5e513ebfdffa 30-32,46-48,51-53,68-70,79-81,83-85,87-89,91-93,100-102
+packages/api/src/index.ts
+  s_5884de9532bf32::t_f0463a53ffc950 2,4-12,14,16-17,21,23,27-37,42-44
+apps/dashboard/src/App.tsx
+  s_5884de9532bf32::t_1442561cdbf4b6 1-8,10,13-17,32-48,55-58
+apps/dashboard/src/components/Approvals.tsx
+  s_5884de9532bf32::t_f0463a53ffc950 5
+  s_5884de9532bf32::t_3ee080b38eeace 1-4,6-117
+apps/dashboard/src/api.ts
+  s_5884de9532bf32::t_03097c23b2732c 1-16,20-24,28-49
+  s_5884de9532bf32::t_a58545f6819d45 17-19,25-27
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.10",
+  "base_commit_sha": "c8d2395fb2687af22df21df4fd0c3bf7ad6af1e1",
+  "prompts": {},
+  "sessions": {
+    "s_5884de9532bf32": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "b1cc1b71-90c3-46cf-84a0-38ae59069f87",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
