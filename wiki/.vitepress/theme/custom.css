@@ -1,0 +1,134 @@
+/* Daytona-inspired dark theme for the Honmoon wiki.
+   Inter for prose, JetBrains Mono for code. */
+
+@import 'https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap';
+
+:root {
+  --vp-c-brand-1: #8b7dff;
+  --vp-c-brand-2: #6d5dfc;
+  --vp-c-brand-3: #5a49e0;
+  --vp-c-brand-soft: rgba(109, 93, 252, 0.16);
+
+  --vp-font-family-base: 'Inter', ui-sans-serif, system-ui, sans-serif;
+  --vp-font-family-mono: 'JetBrains Mono', ui-monospace, 'SF Mono', monospace;
+}
+
+/* Force the dark palette to read like Daytona/GitHub-dark. */
+.dark {
+  --vp-c-bg: #0d1117;
+  --vp-c-bg-alt: #161b22;
+  --vp-c-bg-elv: #161b22;
+  --vp-c-bg-soft: #161b22;
+  --vp-c-divider: #30363d;
+  --vp-c-border: #30363d;
+  --vp-c-text-1: #e6edf3;
+  --vp-c-text-2: #aab1bb;
+  --vp-c-text-3: #8b949e;
+  --vp-code-block-bg: #0b0f14;
+}
+
+/* Brand gradient on the hero name / site title. */
+.VPNavBarTitle .title {
+  background: linear-gradient(120deg, #8b7dff, #6d5dfc 60%, #4f9cff);
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+  font-weight: 700;
+}
+
+/* Tables: denser, security-tool feel. Keep VitePress's block+overflow so wide
+   tables scroll horizontally on narrow viewports instead of overflowing. */
+.vp-doc table {
+  display: block;
+  width: 100%;
+  overflow-x: auto;
+  font-size: 0.9em;
+}
+.vp-doc th {
+  background: var(--vp-c-bg-alt);
+  font-weight: 600;
+}
+
+/* Mermaid diagrams: framed, centered, zoomable. */
+.vp-doc .mermaid {
+  background: #161b22;
+  border: 1px solid #30363d;
+  border-radius: 10px;
+  padding: 1.1rem;
+  margin: 1.4rem 0;
+  text-align: center;
+  overflow-x: auto;
+}
+.vp-doc .mermaid svg {
+  max-width: 100%;
+  height: auto;
+}
+
+/* Click-to-zoom overlay for diagrams. */
+.diagram-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 9999;
+  display: none;
+  background: rgba(13, 17, 23, 0.94);
+  backdrop-filter: blur(3px);
+}
+.diagram-overlay.is-open {
+  display: block;
+}
+.diagram-overlay__stage {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  cursor: grab;
+  touch-action: none;
+}
+.diagram-overlay__stage:active {
+  cursor: grabbing;
+}
+.diagram-overlay__stage svg {
+  width: min(90vw, 1400px);
+  height: auto;
+  transform-origin: center center;
+  will-change: transform;
+}
+.diagram-overlay__hint {
+  position: absolute;
+  top: 1rem;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 1;
+  font-family: var(--vp-font-family-mono);
+  font-size: 0.74rem;
+  color: #8b949e;
+  background: #161b22;
+  border: 1px solid #30363d;
+  border-radius: 999px;
+  padding: 0.35rem 0.9rem;
+}
+
+/* Status pills used inline in prose (✅ done / 🚧 planned / ⚠️ caveat). */
+.status-done,
+.status-planned,
+.status-caveat {
+  font-family: var(--vp-font-family-mono);
+  font-size: 0.78em;
+  padding: 0.05em 0.5em;
+  border-radius: 5px;
+  white-space: nowrap;
+}
+.status-done {
+  color: #3fb950;
+  background: rgba(63, 185, 80, 0.12);
+}
+.status-planned {
+  color: #d29922;
+  background: rgba(210, 153, 34, 0.12);
+}
+.status-caveat {
+  color: #f85149;
+  background: rgba(248, 81, 73, 0.12);
+}

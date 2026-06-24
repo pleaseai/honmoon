@@ -1,0 +1,44 @@
+# Honmoon
+
+> A policy-based firewall gateway guarding the boundary between AI agents and production systems.
+> It intercepts an agent's outbound network traffic and applies declarative policy — allow / deny /
+> pause (human approval) — before requests reach their destination. Honmoon unifies egress domain
+> filtering with a protocol-aware policy engine that parses SQL, Kubernetes, and HTTP at the wire
+> level and evaluates CEL conditions over the extracted facts. The Rust data plane is open source;
+> the control/cloud plane is the future paid surface (open-core).
+
+Maturity: early-stage. Phases 0–4 (CONNECT egress proxy, CEL engine, SQL/K8s parsers, the `pause`
+approval hold, audit log, embedded dashboard) are implemented and tested. Phases 5–7 are roadmap.
+Pages mark implemented vs planned explicitly.
+
+## Onboarding
+
+- [Contributor Guide](/onboarding/contributor-guide): Rust/tokio/CEL/Bun foundations, the codebase, and the test-driven contribution workflow.
+- [Staff Engineer Guide](/onboarding/staff-engineer-guide): the core architectural insight (transport-agnostic decision seam), tradeoffs, and decision log.
+- [Executive Guide](/onboarding/executive-guide): capability map, risk assessment, investment thesis, cost/scaling model.
+- [Product Manager Guide](/onboarding/product-manager-guide): user journeys, capability map, limitations, data/privacy, FAQ (no jargon).
+
+## Architecture
+
+- [Architecture](/deep-dive/architecture): dependency layers, dual-plane boundary, request lifecycle, invariants.
+- [Policy Model & Decision Engine](/deep-dive/policy-engine): honmoon-core types, decide() precedence, egress matching, CEL evaluation, fail-closed.
+- [Protocol-Aware Parsing](/deep-dive/protocol-parsing): PostgreSQL 'Q' parser, SQL verb/table heuristic, Kubernetes API path → facts.
+- [Egress Gateway (Data Plane)](/deep-dive/egress-gateway): the tokio CONNECT proxy, audit recording, and the pause approval hold.
+- [Control Plane & Dashboard](/deep-dive/control-plane): honmoon-mgmt (axum API + embedded dashboard), @honmoon/api (durable audit query), React dashboard.
+
+## Getting Started
+
+- [Overview](/getting-started/overview): what Honmoon is, the threat model, the dual-plane design.
+- [Installation & Toolchain](/getting-started/installation): mise tasks, Rust + Bun setup, CI.
+- [Quick Start](/getting-started/quick-start): honmoon run and gateway; the verdict flow.
+- [Policy Authoring](/getting-started/policy-authoring): YAML egress lists + CEL rules + JSON Schema.
+
+## Deep Dive
+
+- [Roadmap & Open-Core Model](/deep-dive/roadmap-open-core): phases 0–7, the OSS/paid boundary, ADR-0001/0002, tech debt.
+
+## Optional
+
+- [docs/roadmap.md](https://github.com/pleaseai/honmoon/blob/master/docs/roadmap.md): the full phased roadmap with exit criteria.
+- [docs/business-model.md](https://github.com/pleaseai/honmoon/blob/master/docs/business-model.md): the open-core business model.
+- [ARCHITECTURE.md](https://github.com/pleaseai/honmoon/blob/master/ARCHITECTURE.md): module boundaries and invariants.
