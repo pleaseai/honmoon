@@ -102,11 +102,11 @@ precision (a false positive blocks legitimate traffic).
 Every source is normalized into one JSONL schema (`datasets/pii/schema.json`). One document
 per line:
 
-```json
+```jsonc
 {
   "id": "kdpii-test-00042",
-  "source": "kdpii",          // kdpii | ko-pii-synth | honmoon-synth | honmoon-negative
-  "surface": "prose",         // prose | http-json | http-form | url-query | sql | header
+  "source": "kdpii", // kdpii | ko-pii-synth | honmoon-synth | honmoon-negative
+  "surface": "prose", // prose | http-json | http-form | url-query | sql | header
   "lang": "ko",
   "text": "제 주민번호는 900101-1234567 이고 ...",
   "spans": [
@@ -134,7 +134,7 @@ per line:
 **(a) Payload surfaces.** KDPII / ko-pii are prose; Honmoon inspects HTTP JSON bodies, forms,
 URL queries, SQL values. Re-wrap the same PII into those surfaces so the eval reflects reality:
 
-```json
+```text
 {"surface":"http-json","text":"{\"user\":{\"rrn\":\"900101-1234567\"}}","spans":[...]}
 {"surface":"sql","text":"INSERT INTO members(name,ssn) VALUES ('홍길동','900101-1234567')","spans":[...]}
 ```
