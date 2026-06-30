@@ -68,3 +68,42 @@ jobs:
       - name: Build
         run: bun run build
         # No JS test suite yet — re-add `bun test` here once packages/* have tests.
+
+  pii-benchmark:
+    name: PII — Tier-1 benchmark gate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: jdx/mise-action@v2
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Build PII scan bridge
+        run: cargo build -p honmoon-core --example pii_scan
+
+      # Gold sets are seeded/deterministic, so CI regenerates them — no vendored
+      # corpora. KDPII (download-only, CC-BY) is excluded from the gate.
+      - name: Generate gold sets
+        run: |
+          mkdir -p target/pii
+          bun datasets/pii/build/gen_synth.ts    > target/pii/synth.jsonl
+          bun datasets/pii/build/gen_negative.ts > target/pii/negative.jsonl
+
+      - name: Predict
+        run: |
+          ./target/debug/examples/pii_scan < target/pii/synth.jsonl    > target/pii/synth.pred.jsonl
+          ./target/debug/examples/pii_scan < target/pii/negative.jsonl > target/pii/negative.pred.jsonl
+
+      - name: Gate — AC1 (synth per-label F1 floor)
+        run: bun datasets/pii/gate.ts synth target/pii/synth.jsonl target/pii/synth.pred.jsonl
+
+      - name: Gate — AC3 (hard-negative FP budget)
+        run: bun datasets/pii/gate.ts negative target/pii/negative.jsonl target/pii/negative.pred.jsonl
