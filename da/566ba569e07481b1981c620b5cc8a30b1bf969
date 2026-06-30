@@ -1,0 +1,70 @@
+datasets/pii/build/gen_synth.ts
+  s_3f16ecda7377f7::t_eb91ca4493c115 26-32,34
+  s_3f16ecda7377f7::t_63a547115c2f78 1-7,11-13,15,18-24,33,35-51,57-66
+  s_3f16ecda7377f7::t_999795e8f798ce 8-10,14,16-17,25,52-56
+eslint.config.mjs
+  s_3f16ecda7377f7::t_b94d17e1f996d1 24
+datasets/pii/build/synth_values.ts
+  s_3f16ecda7377f7::t_7544fbfaf0091b 45-46,49-56
+  s_3f16ecda7377f7::t_108be3678f7a00 63-71
+  s_3f16ecda7377f7::t_d973866bc5748d 1-8,11-31,35-44,47-48,57-60,62,72-85
+  s_3f16ecda7377f7::t_7f025ff2b3e754 32-34
+  s_3f16ecda7377f7::t_999795e8f798ce 61,86-88
+  s_3f16ecda7377f7::t_dbc4804e00b867 9-10
+datasets/pii/score.ts
+  s_3f16ecda7377f7::t_b9decf00ae1dad 1-8,10,12-14,17-18,22-26,32-40,49-61,64-65,68-73,75,78-85,89-90,94-113
+  s_3f16ecda7377f7::t_c982119808a4f2 66-67
+  s_3f16ecda7377f7::t_c513f3d32b3061 19-21,27-31,41-48
+  s_3f16ecda7377f7::t_80e3be5cd1c9e7 86-88,91-93
+  s_3f16ecda7377f7::t_ac534f63311080 114-116
+  s_3f16ecda7377f7::t_999795e8f798ce 9,11,15-16,62-63,74,76-77
+datasets/pii/README.md
+  s_3f16ecda7377f7::t_d4a5765cf13c30 1-54
+datasets/pii/build/types.ts
+  s_3f16ecda7377f7::t_c1e8891919a037 86,88-89,91-92,94
+  s_3f16ecda7377f7::t_b8da2d80dea2bb 1-5,8-29,31-53,57-63,70-78,85,95-100,102-105,107
+  s_3f16ecda7377f7::t_e47e4c538eb620 54,56
+  s_3f16ecda7377f7::t_999795e8f798ce 6-7,30,64-69,79-84,101,106
+  s_3f16ecda7377f7::t_a1c4b5959b6308 87,90,93
+  s_3f16ecda7377f7::t_cfd0b6f5fbbff9 55
+datasets/pii/build/normalize_kdpii.ts
+  s_3f16ecda7377f7::t_1b629d40ae9bbe 1-8,12,15-22,24-30,35-40,46-53
+  s_3f16ecda7377f7::t_999795e8f798ce 9,11,13-14,41-45
+  s_3f16ecda7377f7::t_6d9e41eafd20b4 23
+  s_3f16ecda7377f7::t_9dfcb0b6167db2 31-34
+  s_3f16ecda7377f7::t_e22595e6c4262d 10
+datasets/pii/.gitignore
+  s_3f16ecda7377f7::t_aacd8b0d249b16 1-4
+datasets/pii/labels.yaml
+  s_3f16ecda7377f7::t_99a6124e2c217e 29,37,45,53,61,69,77,85,93,101,109,117,127,135,143,151,159,167,175,183,191,199,207,217,225,233,241,249,257-265,273,281,289,295
+  s_3f16ecda7377f7::t_9ef028a57e400c 16,18,103,129,136-142,184-190,192-198,200-206,218-224,227,234-235,237-238,243,266-269,271-272,274-277,279-280,282-288,293,299-300
+  s_3f16ecda7377f7::t_8710009305d634 270,278
+package.json
+  s_3f16ecda7377f7::t_ce7e4fcdeb467f 24-25
+datasets/pii/build/gen_negative.ts
+  s_3f16ecda7377f7::t_afa0540d5ac9f2 1-5,9-13,15,24-37,39-47,53-61
+  s_3f16ecda7377f7::t_999795e8f798ce 6-8,14,16-23,48-52
+  s_3f16ecda7377f7::t_7d8cfc811a77bf 38
+docs/pii-benchmark-goals.md
+  s_3f16ecda7377f7::t_6b80799a5c3042 75-76,78-79
+  s_3f16ecda7377f7::t_b0cff77a617aab 40
+  s_3f16ecda7377f7::t_373482cb4c3d7f 245-247
+bun.lock
+  s_3f16ecda7377f7::t_b408b539d9ec79 14
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.3",
+  "base_commit_sha": "da566ba569e07481b1981c620b5cc8a30b1bf969",
+  "prompts": {},
+  "sessions": {
+    "s_3f16ecda7377f7": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "2af2c422-6eec-4f36-a8dd-fc8c1d4dcea4",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
