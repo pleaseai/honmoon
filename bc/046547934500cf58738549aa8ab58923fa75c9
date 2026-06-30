@@ -1,0 +1,36 @@
+datasets/pii/score.ts
+  s_3f16ecda7377f7::t_b7490a0d8255df 11
+  s_3f16ecda7377f7::t_c1a73293c11346 132-137
+  s_3f16ecda7377f7::t_1b8bad3c9ef3a2 62-78,101-111
+  s_3f16ecda7377f7::t_9f58ea9f23b3ba 112
+datasets/pii/labels.yaml
+  s_3f16ecda7377f7::t_941ce20852f95c 273
+datasets/pii/build/gen_negative.ts
+  s_3f16ecda7377f7::t_0ace53ec262fbe 30
+  s_3f16ecda7377f7::t_1632fd9404bdd7 7,14-27,33,37
+README.md
+  s_3f16ecda7377f7::t_3cc8838d900ad1 210-211
+datasets/pii/build/types.ts
+  s_3f16ecda7377f7::t_bd5c962eb8e39e 119-141
+  s_3f16ecda7377f7::t_58fb0f6988c7c6 57-68
+datasets/pii/build/normalize_kdpii.ts
+  s_3f16ecda7377f7::t_52865173f14054 56
+  s_3f16ecda7377f7::t_99d813c532fd92 11
+  s_3f16ecda7377f7::t_243141ff66702a 19,22-29
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.3",
+  "base_commit_sha": "bc046547934500cf58738549aa8ab58923fa75c9",
+  "prompts": {},
+  "sessions": {
+    "s_3f16ecda7377f7": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "2af2c422-6eec-4f36-a8dd-fc8c1d4dcea4",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
