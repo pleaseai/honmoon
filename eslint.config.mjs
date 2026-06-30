@@ -21,7 +21,7 @@ export default pleaseai({
   ],
 }, {
   // Bun/Node entrypoints: `process` is a legitimate global; CLI/server log to stdout.
-  files: ['packages/**/*.ts'],
+  files: ['packages/**/*.ts', 'datasets/**/*.ts'],
   rules: {
     'node/prefer-global/process': 'off',
     'no-console': 'off',

@@ -37,7 +37,7 @@ scanner. This constraint dominates tool choice and targets.
 
 | Dataset | Size | Language | License | Role |
 |---------|------|----------|---------|------|
-| **KDPII** (Yonsei Hansaem Kim Lab, IEEE Access 2024, Zenodo `10968609`) | ~53.7K dialogues · official `train`/`valid`/`test` (test = 4,891 docs) | Korean (dialogic) | CC-BY-4.0 | **Primary eval set** (real-data lineage) — use official splits as-is |
+| **KDPII** (Yonsei Hansaem Kim Lab, IEEE Access 2024, Zenodo `10968609`) | official `train`/`valid`/`test`; test = 4,891 docs / 2,211 gold spans / 33 labels | Korean (dialogic) | CC-BY-4.0 | **Primary eval set** (real-data lineage) — use official splits as-is |
 | **ko-pii synthetic eval** (`generated_eval.jsonl`) | 540 docs / 3,635 gold spans / 26 labels | Korean (administrative/form style) | MIT | Per-label & regression |
 | ko-pii extended (`generated_eval_large.jsonl`) | 1,938 docs | Korean | MIT | Stability & bulk regression |
 | **PII-Bench** (Fudan, arXiv 2502.18545) | Test-Hard 200 + Test-Distract 200 (2,842 total) | English | Unknown (unconfirmed) | **Future** query-aware masking reference |
@@ -72,9 +72,11 @@ complaint numbers, date of birth / age.
 → Needs anchor context. Variable precision.
 
 **Tier 3 — Quasi-identifiers / context-dependent: needs NER/heuristics**
-person name (PERSON), address (ADDRESS), nationality, education, position, etc.
+person name (PERSON), nickname, address (ADDRESS), affiliation (workplace/department/club),
+education, position, nationality, religion, gender, military.
 → **The hard part.** Even ko-pii scores PERSON F1 0.135, ADDRESS 0.241. Inline rules alone
-   are insufficient → NER assist layer.
+   are insufficient → NER assist layer. These default to `audit` (de-id / comparability value),
+   not block.
 
 ## 5. Evaluation metrics
 
@@ -240,9 +242,9 @@ Korean open-source SOTA. Honmoon aims for "ko-pii parity or better, while keepin
 
 ## 10. Open questions
 
-- Acquire KDPII from Zenodo (`10968609`) and inventory the actual label codes in `test.json`
-  (its scheme, e.g. `OG_WORKPLACE`, differs from ko-pii) → fill the `kdpii:` column in
-  `labels.yaml` and finalize the KDPII ↔ ko-pii ↔ Honmoon label-mapping table.
+- ✅ KDPII inventoried from Zenodo `test.json` (33 labels, all mapped in `labels.yaml`).
+  Remaining: confirm **ko-pii's own KDPII label mapping** matches ours so the micro-F1 numbers
+  are truly apples-to-apples (ko-pii folds KDPII into its 33 categories its own way).
 - Default block policy: which tiers/labels default to `deny` vs `pause` vs `audit`.
 - Whether to adopt PII-Bench-style **query-aware masking** (preserve needed info) as a
   long-term goal.
