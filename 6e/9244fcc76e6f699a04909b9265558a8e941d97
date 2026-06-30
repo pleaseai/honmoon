@@ -1,0 +1,19 @@
+datasets/pii/build/types.ts
+  s_3f16ecda7377f7::t_c674aa521bda08 135-136,138
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.5",
+  "base_commit_sha": "6e9244fcc76e6f699a04909b9265558a8e941d97",
+  "prompts": {},
+  "sessions": {
+    "s_3f16ecda7377f7": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "2af2c422-6eec-4f36-a8dd-fc8c1d4dcea4",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
