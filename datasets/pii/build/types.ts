@@ -132,8 +132,10 @@ export function assertValidRecords(records: EvalRecord[], cfg: LabelConfig): voi
       if (s.end > r.text.length) {
         throw new Error(`${r.id}: span end ${s.end} exceeds text length ${r.text.length}`)
       }
+      // Redact the values: error messages land in CI/build logs, and the
+      // payloads are PII. Report only id, offsets, and lengths.
       if (r.text.slice(s.start, s.end) !== s.text) {
-        throw new Error(`${r.id}: span.text "${s.text}" != text.slice(${s.start}, ${s.end}) "${r.text.slice(s.start, s.end)}"`)
+        throw new Error(`${r.id}: span.text (len ${s.text.length}) != text.slice(${s.start}, ${s.end}) (len ${s.end - s.start}) — values redacted`)
       }
       const def = cfg.labels.get(s.label)
       if (!def) {
