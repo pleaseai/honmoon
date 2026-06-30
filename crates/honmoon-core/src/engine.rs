@@ -111,10 +111,11 @@ fn eval_condition(condition: &str, facts: &Facts) -> bool {
             ctx.add_variable_from_value("k8s", value);
         }
     }
-    if let Some(pii) = &facts.pii {
-        if let Ok(value) = cel_interpreter::to_value(pii) {
-            ctx.add_variable_from_value("pii", value);
-        }
+    // Always register `pii` (default = empty) so absence conditions like
+    // `pii.count == 0` are expressible, not just `pii.count > 0`.
+    let pii = facts.pii.clone().unwrap_or_default();
+    if let Ok(value) = cel_interpreter::to_value(&pii) {
+        ctx.add_variable_from_value("pii", value);
     }
 
     matches!(program.execute(&ctx), Ok(Value::Bool(true)))
@@ -290,6 +291,24 @@ mod tests {
         let clean = Facts {
             endpoint: Some("api-egress".into()),
             pii: detect_pii(r#"{"order":"ORD-1234567890"}"#),
+            ..Default::default()
+        };
+        assert_eq!(super::decide(&policy, &clean), Verdict::Allow);
+    }
+
+    /// `pii` is always bound (default empty), so absence conditions like
+    /// `pii.count == 0` are expressible even when no detection ran.
+    #[test]
+    fn pii_absence_condition_is_expressible() {
+        let policy = Policy::from_yaml(
+            "egress:\n  default: deny\nrules:\n  \
+             - name: allow-clean\n    endpoint: api-egress\n    condition: \"pii.count == 0\"\n    verdict: allow\n",
+        )
+        .unwrap();
+
+        let clean = Facts {
+            endpoint: Some("api-egress".into()),
+            pii: None, // no PII facts at all
             ..Default::default()
         };
         assert_eq!(super::decide(&policy, &clean), Verdict::Allow);

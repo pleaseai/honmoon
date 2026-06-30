@@ -49,7 +49,7 @@ struct Detector {
 
 // Candidate matchers. Kept deliberately permissive — `validate` is the gate.
 static RRN_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\b\d{6}-?\d{7}\b").unwrap());
-static FRN_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\b\d{6}-\d{7}\b").unwrap());
+static FRN_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\b\d{6}-?\d{7}\b").unwrap());
 static BRN_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\b\d{3}-?\d{2}-?\d{5}\b").unwrap());
 static CARD_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"\b\d{4}[- ]?\d{4}[- ]?\d{4}[- ]?\d{1,7}\b").unwrap());
@@ -145,18 +145,35 @@ fn always(_: &str) -> bool {
     true
 }
 
-// 주민등록번호: 13 digits, gender digit (7th) 1–4, weighted mod-11 checksum.
-fn is_valid_rrn(s: &str) -> bool {
-    let d = digits(s);
-    d.len() == 13 && matches!(d[6], 1..=4) && rrn_checksum_ok(&d)
+// Calendar-plausible YYMMDD prefix (century-agnostic). Rejects impossible dates
+// like month 13, so a checksum/position match on a random numeric id is not
+// promoted to a high-severity finding that could deny clean traffic.
+fn valid_yymmdd(d: &[u8]) -> bool {
+    let month = d[2] * 10 + d[3];
+    let day = d[4] * 10 + d[5];
+    let days_in_month = match month {
+        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+        4 | 6 | 9 | 11 => 30,
+        2 => 29, // century-agnostic: allow Feb 29
+        _ => return false,
+    };
+    (1..=days_in_month).contains(&day)
 }
 
-// 외국인등록번호: 13 digits, gender digit (7th) 5–8. Post-2020 issuances dropped
-// the check digit, so we gate on the hyphenated `NNNNNN-NNNNNNN` shape (enforced
-// by FRN_RE) plus the position digit rather than a checksum.
+// 주민등록번호: 13 digits, valid YYMMDD, gender digit (7th) 1–4, mod-11 checksum.
+fn is_valid_rrn(s: &str) -> bool {
+    let d = digits(s);
+    d.len() == 13 && valid_yymmdd(&d) && matches!(d[6], 1..=4) && rrn_checksum_ok(&d)
+}
+
+// 외국인등록번호: 13 digits, valid YYMMDD, gender digit (7th) 5–8. Post-2020
+// issuances dropped the check digit, so we gate on the date + position rather
+// than a checksum (a strict checksum would miss every modern FRN). The optional
+// hyphen in FRN_RE also lets unhyphenated FRNs be caught, which RRN's validator
+// rejects (its position digit is 1–4).
 fn is_valid_frn(s: &str) -> bool {
     let d = digits(s);
-    d.len() == 13 && matches!(d[6], 5..=8)
+    d.len() == 13 && valid_yymmdd(&d) && matches!(d[6], 5..=8)
 }
 
 fn rrn_checksum_ok(d: &[u8]) -> bool {
@@ -180,10 +197,14 @@ fn is_valid_brn(s: &str) -> bool {
     u32::from(d[9]) == check
 }
 
-// Credit card: Luhn over 13–19 digits.
+// Credit card: Luhn over 13–19 digits. A 13-digit Korean id (RRN/FRN) can pass
+// Luhn by coincidence (~1 in 10); exclude those so it is not double-counted as a card.
 fn is_luhn_valid(s: &str) -> bool {
     let d = digits(s);
     if !(13..=19).contains(&d.len()) {
+        return false;
+    }
+    if is_valid_rrn(s) || is_valid_frn(s) {
         return false;
     }
     let mut sum = 0u32;
@@ -206,10 +227,23 @@ fn is_valid_ipv4(s: &str) -> bool {
     parts.len() == 4 && parts.iter().all(|p| p.parse::<u8>().is_ok())
 }
 
-// Korean phone: 9–11 digits beginning with 0 (mobile or landline).
+// Korean phone: 9–11 digits whose prefix is a real mobile/landline/service code.
+// Gating on the allowed prefix set (not just a leading 0) keeps a precision-first
+// detector from flagging impossible numbers like `000-0000-0000`.
 fn is_valid_phone(s: &str) -> bool {
     let d = digits(s);
-    (9..=11).contains(&d.len()) && d[0] == 0
+    if !(9..=11).contains(&d.len()) {
+        return false;
+    }
+    let ds: String = d.iter().map(|&x| char::from(b'0' + x)).collect();
+    const PREFIXES: &[&str] = &[
+        // mobile
+        "010", "011", "016", "017", "018", "019", // Seoul + area codes
+        "02", "031", "032", "033", "041", "042", "043", "044", "051", "052", "053", "054", "055",
+        "061", "062", "063", "064", // service numbers (VoIP / toll-free / personal)
+        "070", "080", "0303", "0505", "0506", "0507",
+    ];
+    PREFIXES.iter().any(|p| ds.starts_with(p))
 }
 
 #[cfg(test)]
@@ -243,6 +277,33 @@ mod tests {
     fn detects_frn_by_position_digit() {
         // 7th digit 7 → foreigner registration number.
         assert_eq!(facts("001026-7084708").types, vec!["FRN"]);
+    }
+
+    #[test]
+    fn detects_frn_without_hyphen() {
+        // Unhyphenated FRN must still be caught (not silently missed).
+        assert_eq!(facts("0010267084708").types, vec!["FRN"]);
+    }
+
+    #[test]
+    fn rejects_impossible_birthdate() {
+        // Month 99 → not a real RRN/FRN even if position/checksum-shaped.
+        assert!(!is_valid_frn("009913-5000000"));
+        assert!(!is_valid_rrn("009913-1000004"));
+    }
+
+    #[test]
+    fn rejects_all_zero_phone() {
+        assert!(detect_pii("000-0000-0000").is_none());
+    }
+
+    #[test]
+    fn valid_kr_id_is_not_also_a_card() {
+        // A 13-digit RRN/FRN must never be double-counted as CREDIT_CARD.
+        for s in ["6701251230644", "0010267084708"] {
+            let t = facts(s).types;
+            assert!(!t.contains(&"CREDIT_CARD".to_string()), "{s} → {t:?}");
+        }
     }
 
     #[test]
