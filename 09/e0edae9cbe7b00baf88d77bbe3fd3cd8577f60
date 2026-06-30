@@ -1,0 +1,33 @@
+crates/honmoon-core/examples/pii_scan.rs
+  s_3f16ecda7377f7::t_749daa129982af 31
+  s_3f16ecda7377f7::t_aeb2b9961dae03 1-30,32-35
+docs/roadmap.md
+  s_3f16ecda7377f7::t_e84df533a06693 124-125
+crates/honmoon-core/src/pii.rs
+  s_3f16ecda7377f7::t_c24dfdb87cf0c8 355-380
+  s_3f16ecda7377f7::t_4a29cd906d56b3 33-46
+  s_3f16ecda7377f7::t_54b4b502986ca3 140-143,147-157,161-162,164-168,171-176,179,184-189
+  s_3f16ecda7377f7::t_830f7e04cd847b 65-79,81-84,86-92
+  s_3f16ecda7377f7::t_4f057b5fbcbe97 190
+crates/honmoon-core/src/lib.rs
+  s_3f16ecda7377f7::t_40e02463779ab4 15
+docs/pii-benchmark-goals.md
+  s_3f16ecda7377f7::t_69fac59d87cdeb 237-239
+  s_3f16ecda7377f7::t_f979f0a4f40802 245-275
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.5",
+  "base_commit_sha": "09e0edae9cbe7b00baf88d77bbe3fd3cd8577f60",
+  "prompts": {},
+  "sessions": {
+    "s_3f16ecda7377f7": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "2af2c422-6eec-4f36-a8dd-fc8c1d4dcea4",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
