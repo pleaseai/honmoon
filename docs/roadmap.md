@@ -102,7 +102,34 @@ live inline relay + TLS termination (TD-006).
 
 ---
 
-## Phase 5 — Isolation modes `OSS`
+## Phase 5 — Content-aware PII / DLP `OSS`
+
+Close the exfiltration gap: inspect *what* leaves, not just where / which protocol. Korean-first
+PII detection over request bodies, surfaced as CEL facts. Detection is OSS; fleet-wide DLP
+management and compliance reporting are Paid (Phase 7).
+
+> **Prerequisite — TLS termination / body access** (deferred since Phase 1, see TD-006). Over a
+> raw CONNECT tunnel only `http.host` is visible; PII detection needs the decrypted body. This
+> phase owns that milestone, which also unblocks body-level SQL/K8s facts.
+
+- [ ] TLS termination in the data plane (Pingora revisited — [ADR-0001](../.please/docs/decisions/0001-adopt-pingora-http-data-plane.md)/[ADR-0002](../.please/docs/decisions/0002-phase1-connect-proxy-on-tokio.md)) so request/response bodies reach the engine
+- [ ] Tier-1 deterministic PII detector in `honmoon-core` (Rust regex + checksum): RRN, FRN,
+  business / corporate reg. no., passport, driver license, card (Luhn), email, IP, phone, account
+- [ ] Tier-2 format / dictionary detectors (postal code, medical IDs, DOB / age, …)
+- [ ] Expose `pii.types` / `pii.count` / `pii.max_severity` as CEL facts; wire to `allow`/`deny`/`pause`
+- [ ] Detect (audit-only) vs block (enforcing) modes — precision-first block, recall-first audit
+- [ ] (optional) NER assist layer for PERSON / ADDRESS, kept **off** the inline path (audit / async)
+- [ ] Benchmark harness + CI regression gate ([`pii-benchmark-goals.md`](./pii-benchmark-goals.md))
+
+**Exit criteria**: a request body carrying a valid-checksum RRN to a non-allowlisted host is
+caught by policy (`deny`/`pause`), measured against the targets in
+[`pii-benchmark-goals.md`](./pii-benchmark-goals.md) — Tier-1 F1 ≥ 0.98, payload-surface micro-F1
+≥ 0.80, rule-layer p99 ≤ 2 ms/doc.
+Note: fleet-wide DLP policy management and compliance / exfil reporting are Paid (Phase 7).
+
+---
+
+## Phase 6 — Isolation modes `OSS`
 
 - [ ] `honmoon gateway` — standalone central proxy loading policy, accepting clients
 - [ ] `honmoon run` hardened isolation (Linux netns / macOS NetworkExtension)
@@ -113,19 +140,19 @@ live inline relay + TLS termination (TD-006).
 
 ---
 
-## Phase 6 — Team / control plane `Paid`
+## Phase 7 — Team / control plane `Paid`
 
 The open-core boundary. Monetization begins where single-node becomes fleet.
 
 - [ ] Centralized policy management across multiple nodes/agents
 - [ ] RBAC / SSO / SAML
 - [ ] Approval routing + Slack notifications
-- [ ] Long-term audit retention & search; compliance/exfil reports
+- [ ] Long-term audit retention & search; compliance/exfil reports (incl. PII/DLP findings from Phase 5)
 - [ ] `packages/enterprise/` under a commercial license (BSL/FSL)
 
 ---
 
-## Phase 7 — Hosted SaaS & intelligence `Paid`
+## Phase 8 — Hosted SaaS & intelligence `Paid`
 
 - [ ] Hosted management plane (`apps/cloud/`), multi-tenant
 - [ ] Managed allowlists + threat-intel feeds
@@ -136,7 +163,7 @@ The open-core boundary. Monetization begins where single-node becomes fleet.
 
 ## Cross-cutting (ongoing)
 
-- **Licensing**: move core to Apache-2.0; add `LICENSE.enterprise` (BSL/FSL) when Phase 6 lands.
+- **Licensing**: move core to Apache-2.0; add `LICENSE.enterprise` (BSL/FSL) when Phase 7 lands.
 - **Tech debt**: TD-001 (dual policy model → generate from JSON Schema), TD-002 (`serde_yaml`).
 - **CI/CD**: set up `cargo test`/`clippy`/`fmt` + `bun test`/`lint` gates once a remote exists.
 - **Optional Squid backend**: `deploy/squid/` as an alternate HTTP egress backend.

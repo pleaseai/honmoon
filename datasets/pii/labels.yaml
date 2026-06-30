@@ -1,0 +1,300 @@
+# Honmoon canonical PII label set + source mapping
+#
+# Honmoon owns the canonical label keys. Every dataset source (KDPII, ko-pii, Presidio output)
+# is absorbed into these keys via the `map:` blocks below. Unmapped source labels are scored as
+# `O` (excluded) and listed in `unmapped:`. See docs/pii-benchmark-goals.md §6.4.
+#
+# Fields per label:
+#   tier            1 deterministic (checksum/structure) | 2 format/dictionary | 3 quasi-identifier
+#   severity        high | medium | low   — blocking value (drives default_action)
+#   method          how Tier-1/2 detect it: checksum | luhn | regex | regex+keyword | dictionary | ner
+#   default_action  TENTATIVE policy default: deny | pause | audit  (finalize in open questions)
+#   ref_f1          ko-pii measured F1 on KDPII (BENCHMARK.md), for target tracking; null if unpublished
+#   map:
+#     ko_pii        ko-pii category (MIT) — confirmed from README/BENCHMARK
+#     presidio      Presidio entity (MIT) — confirmed from supported_entities.md; null = not supported
+#     kdpii         KDPII label code(s) — confirmed from test.json (Zenodo 10968609, 4,891 docs / 2,211 spans / 33 labels)
+#
+# version: 0.2.0 (draft) — KDPII column filled from Zenodo test.json inventory; all 33 KDPII labels mapped.
+
+labels:
+  # ── Tier 1 — deterministic / high blocking value ───────────────────────────
+  RRN:
+    desc: 주민등록번호 (resident registration number)
+    tier: 1
+    severity: high
+    method: checksum
+    default_action: deny
+    ref_f1: 1.000
+    map: {ko_pii: RRN, presidio: KR_RRN, kdpii: QT_RESIDENT_NUMBER}
+  FRN:
+    desc: 외국인등록번호 (foreign registration number)
+    tier: 1
+    severity: high
+    method: checksum
+    default_action: deny
+    ref_f1: 1.000
+    map: {ko_pii: FRN, presidio: KR_FRN, kdpii: QT_ALIEN_NUMBER}
+  BUSINESS_REG_NO:
+    desc: 사업자등록번호 (business registration number)
+    tier: 1
+    severity: high
+    method: checksum
+    default_action: pause
+    ref_f1: null
+    map: {ko_pii: 사업자등록번호, presidio: KR_BRN, kdpii: null}
+  CORP_REG_NO:
+    desc: 법인등록번호 (corporate registration number)
+    tier: 1
+    severity: high
+    method: checksum
+    default_action: pause
+    ref_f1: null
+    map: {ko_pii: 법인등록번호, presidio: null, kdpii: null}
+  DRIVER_LICENSE:
+    desc: 운전면허번호 (driver's license number)
+    tier: 1
+    severity: high
+    method: regex
+    default_action: deny
+    ref_f1: null
+    map: {ko_pii: 운전면허번호, presidio: KR_DRIVER_LICENSE, kdpii: QT_DRIVER_NUMBER}
+  PASSPORT:
+    desc: 여권번호 (passport number)
+    tier: 1
+    severity: high
+    method: regex
+    default_action: deny
+    ref_f1: 0.909
+    map: {ko_pii: PASSPORT, presidio: KR_PASSPORT, kdpii: QT_PASSPORT_NUMBER}
+  CREDIT_CARD:
+    desc: 신용카드번호 (BIN + Luhn)
+    tier: 1
+    severity: high
+    method: luhn
+    default_action: deny
+    ref_f1: null
+    map: {ko_pii: 신용카드, presidio: CREDIT_CARD, kdpii: QT_CARD_NUMBER}
+  ACCOUNT:
+    desc: 계좌번호 (bank account number)
+    tier: 1
+    severity: high
+    method: regex+keyword
+    default_action: pause
+    ref_f1: 0.819
+    map: {ko_pii: 계좌번호, presidio: null, kdpii: QT_ACCOUNT_NUMBER}
+  EMAIL:
+    desc: 이메일 주소 (email address)
+    tier: 1
+    severity: medium
+    method: regex
+    default_action: audit
+    ref_f1: 1.000
+    map: {ko_pii: EMAIL, presidio: EMAIL_ADDRESS, kdpii: TMI_EMAIL}
+  IP:
+    desc: IP 주소 (IPv4/IPv6)
+    tier: 1
+    severity: low
+    method: regex
+    default_action: audit
+    ref_f1: 1.000
+    map: {ko_pii: IP, presidio: IP_ADDRESS, kdpii: QT_IP}
+  PHONE:
+    desc: 전화번호 / 휴대폰 (phone / mobile)
+    tier: 1
+    severity: medium
+    method: regex
+    default_action: audit
+    ref_f1: 0.992
+    map: {ko_pii: PHONE, presidio: PHONE_NUMBER, kdpii: [QT_PHONE, QT_MOBILE]}
+  VEHICLE:
+    desc: 차량번호 (vehicle plate)
+    tier: 1
+    severity: low
+    method: regex
+    default_action: audit
+    ref_f1: 0.980
+    map: {ko_pii: VEHICLE, presidio: null, kdpii: QT_PLATE_NUMBER}
+
+  # ── Tier 2 — format / dictionary, keyword-anchored ─────────────────────────
+  POSTAL_CODE:
+    desc: 우편번호 (postal code)
+    tier: 2
+    severity: low
+    method: regex
+    default_action: audit
+    ref_f1: null
+    map: {ko_pii: 우편번호, presidio: null, kdpii: null}
+  URL:
+    desc: URL / 개인 사이트
+    tier: 2
+    severity: low
+    method: regex
+    default_action: audit
+    ref_f1: null
+    map: {ko_pii: URL, presidio: URL, kdpii: TMI_SITE}
+  ONLINE_ID:
+    desc: 온라인 아이디 (account username / handle)
+    tier: 2
+    severity: medium
+    method: regex+keyword
+    default_action: audit
+    ref_f1: null
+    map: {ko_pii: null, presidio: null, kdpii: PS_ID}
+  MEDICAL_ID:
+    desc: 의료 식별자 (건강보험증 / 처방번호 / 의약품코드)
+    tier: 2
+    severity: high
+    method: regex+keyword
+    default_action: pause
+    ref_f1: null
+    map: {ko_pii: [건강보험증, 처방번호, 의약품코드], presidio: null, kdpii: null}
+  EMPLOYEE_ID:
+    desc: 사번 (employee id)
+    tier: 2
+    severity: medium
+    method: regex+keyword
+    default_action: audit
+    ref_f1: null
+    map: {ko_pii: 사번, presidio: null, kdpii: null}
+  CASE_NO:
+    desc: 사건번호 / 민원번호 (case / civil-complaint number)
+    tier: 2
+    severity: medium
+    method: regex+keyword
+    default_action: audit
+    ref_f1: null
+    map: {ko_pii: [사건번호, 민원번호], presidio: null, kdpii: null}
+  DOB:
+    desc: 생년월일 (date of birth)
+    tier: 2
+    severity: medium
+    method: regex
+    default_action: audit
+    ref_f1: null
+    map: {ko_pii: 생년월일, presidio: DATE_TIME, kdpii: DT_BIRTH}
+  AGE:
+    desc: 나이 (age)
+    tier: 2
+    severity: low
+    method: regex+keyword
+    default_action: audit
+    ref_f1: 0.893
+    map: {ko_pii: 나이, presidio: null, kdpii: QT_AGE}
+  HEIGHT:
+    desc: 신장 (height)
+    tier: 2
+    severity: low
+    method: regex+keyword
+    default_action: audit
+    ref_f1: 0.935
+    map: {ko_pii: HEIGHT, presidio: null, kdpii: QT_LENGTH}
+  WEIGHT:
+    desc: 체중 (weight)
+    tier: 2
+    severity: low
+    method: regex+keyword
+    default_action: audit
+    ref_f1: 0.952
+    map: {ko_pii: WEIGHT, presidio: null, kdpii: QT_WEIGHT}
+  BLOOD_TYPE:
+    desc: 혈액형 (blood type)
+    tier: 2
+    severity: low
+    method: regex+keyword
+    default_action: audit
+    ref_f1: null
+    map: {ko_pii: null, presidio: null, kdpii: TM_BLOOD_TYPE}
+
+  # ── Tier 3 — quasi-identifiers / context-dependent (NER assist) ─────────────
+  PERSON:
+    desc: 인명 (person name)
+    tier: 3
+    severity: medium
+    method: ner
+    default_action: audit
+    ref_f1: 0.135
+    map: {ko_pii: PERSON, presidio: PERSON, kdpii: PS_NAME}
+  NICKNAME:
+    desc: 별명 / 닉네임 (nickname)
+    tier: 3
+    severity: low
+    method: ner
+    default_action: audit
+    ref_f1: null
+    map: {ko_pii: null, presidio: null, kdpii: PS_NICKNAME}
+  ADDRESS:
+    desc: 주소 / 지명 / 국가 (address / place / country)
+    tier: 3
+    severity: high
+    method: ner
+    default_action: pause
+    ref_f1: 0.241
+    map: {ko_pii: ADDRESS, presidio: LOCATION, kdpii: [LC_ADDRESS, LC_PLACE, LCP_COUNTRY]}
+  AFFILIATION:
+    desc: 소속 (workplace / department / club / organization)
+    tier: 3
+    severity: medium
+    method: ner
+    default_action: audit
+    ref_f1: null
+    map: {ko_pii: null, presidio: null, kdpii: [OG_WORKPLACE, OG_DEPARTMENT, OGG_CLUB]}
+  EDUCATION:
+    desc: 학력 / 학교 / 전공 / 학년 (education / school / major / grade)
+    tier: 3
+    severity: low
+    method: dictionary
+    default_action: audit
+    ref_f1: null
+    map: {ko_pii: [EDUCATION, MAJOR], presidio: null, kdpii: [OGG_EDUCATION, FD_MAJOR, QT_GRADE]}
+  POSITION:
+    desc: 직책 (job position / title)
+    tier: 3
+    severity: low
+    method: dictionary
+    default_action: audit
+    ref_f1: null
+    map: {ko_pii: POSITION, presidio: null, kdpii: CV_POSITION}
+  NATIONALITY:
+    desc: 국적 (nationality)
+    tier: 3
+    severity: low
+    method: dictionary
+    default_action: audit
+    ref_f1: null
+    map: {ko_pii: NATIONALITY, presidio: NRP, kdpii: null}
+  RELIGION:
+    desc: 종교 (religion — sensitive)
+    tier: 3
+    severity: medium
+    method: dictionary
+    default_action: audit
+    ref_f1: null
+    map: {ko_pii: null, presidio: null, kdpii: OGG_RELIGION} # Presidio NRP → NATIONALITY (kept 1:1)
+  GENDER:
+    desc: 성별 (gender)
+    tier: 3
+    severity: low
+    method: dictionary
+    default_action: audit
+    ref_f1: null
+    map: {ko_pii: null, presidio: null, kdpii: CV_SEX}
+  MILITARY:
+    desc: 군사정보 (military unit / camp — sensitive)
+    tier: 3
+    severity: medium
+    method: ner
+    default_action: audit
+    ref_f1: null
+    map: {ko_pii: null, presidio: null, kdpii: CV_MILITARY_CAMP}
+
+# Source labels intentionally NOT mapped to a canonical key (scored as O / excluded).
+unmapped:
+  ko_pii: [PNU, 팩스번호, 공문서번호]
+  presidio: []
+  kdpii: [] # all 33 KDPII test.json labels are mapped above
+
+# Open mapping work (mirror of docs/pii-benchmark-goals.md §10):
+#   - Ratify default_action per label (deny vs pause vs audit).
+#   - Decide MEDICAL_ID / EDUCATION granularity (split vs merged).
+#   - For ko-pii↔KDPII micro-F1 comparability, confirm ko-pii's own KDPII label mapping matches this table.

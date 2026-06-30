@@ -1,0 +1,4 @@
+# Downloaded source corpora (KDPII etc.) — large, redistribute from upstream (CC-BY), not vendored.
+raw/
+# Build outputs (regenerate via build/ scripts).
+eval/
