@@ -1,0 +1,93 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://honmoon.dev/schemas/pii-eval-record.json",
+  "title": "Honmoon PII evaluation record",
+  "description": "One document per line (JSONL). The single normalized format every dataset source is converted into and the only format the scorer consumes. See docs/pii-benchmark-goals.md §6.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["id", "source", "surface", "lang", "text", "spans"],
+  "properties": {
+    "id": {
+      "type": "string",
+      "description": "Stable unique id, conventionally '<source>-<split>-<seq>'.",
+      "minLength": 1
+    },
+    "source": {
+      "type": "string",
+      "description": "Origin of the document.",
+      "enum": ["kdpii", "ko-pii-synth", "honmoon-synth", "honmoon-negative"]
+    },
+    "surface": {
+      "type": "string",
+      "description": "The wire surface the text imitates. 'prose' = free text; the rest mirror what Honmoon actually inspects.",
+      "enum": ["prose", "http-json", "http-form", "url-query", "sql", "header"]
+    },
+    "lang": {
+      "type": "string",
+      "description": "BCP-47-ish language tag. Korean-first benchmark; 'en' kept for regression only.",
+      "enum": ["ko", "en"]
+    },
+    "text": {
+      "type": "string",
+      "description": "The raw document text exactly as inspected. span offsets index into this string."
+    },
+    "spans": {
+      "type": "array",
+      "description": "Gold PII spans. Empty array ⇒ a negative document (precision probe).",
+      "items": { "$ref": "#/$defs/span" }
+    },
+    "meta": {
+      "type": "object",
+      "description": "Optional non-scored metadata.",
+      "additionalProperties": true,
+      "properties": {
+        "split": {
+          "type": "string",
+          "enum": ["dev", "test"],
+          "description": "Evaluation split. 'test' is frozen and never inspected."
+        },
+        "difficulty": {
+          "type": "string",
+          "enum": ["easy", "medium", "hard"]
+        },
+        "domain": {
+          "type": "string",
+          "description": "Free-form provenance tag (e.g. 'chat', 'admin-form', 'api-body')."
+        }
+      }
+    }
+  },
+  "$defs": {
+    "span": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["start", "end", "label", "text", "tier"],
+      "properties": {
+        "start": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Inclusive UTF-16 code-unit start offset into `text` (JS String semantics)."
+        },
+        "end": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Exclusive end offset; must be > start."
+        },
+        "label": {
+          "type": "string",
+          "description": "A Honmoon canonical label key defined in labels.yaml.",
+          "pattern": "^[A-Z][A-Z0-9_]*$"
+        },
+        "text": {
+          "type": "string",
+          "description": "The surface form of the PII, equal to text.slice(start, end). Carried for the substring/position-insensitive matcher."
+        },
+        "tier": {
+          "type": "integer",
+          "description": "Detection tier (1 deterministic, 2 format/dictionary, 3 quasi-identifier). Mirrors labels.yaml; carried for per-tier scoring.",
+          "enum": [1, 2, 3]
+        }
+      }
+    }
+  }
+}
