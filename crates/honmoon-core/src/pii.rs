@@ -30,6 +30,20 @@ pub struct PiiFacts {
     pub max_severity: i64,
 }
 
+/// A single located PII finding. Offsets are **UTF-16 code units** (JS `String`
+/// semantics) so they line up with the benchmark schema (`datasets/pii/schema.json`)
+/// and the TS scorer; `text` is always `payload[start..end]`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PiiSpan {
+    pub start: i64,
+    pub end: i64,
+    /// Canonical label key (matches `datasets/pii/labels.yaml`).
+    pub label: String,
+    pub text: String,
+    /// Detection tier (always 1 here — deterministic detectors).
+    pub tier: i64,
+}
+
 // Severity scale (mirrors labels.yaml high/medium/low).
 const SEV_HIGH: i64 = 3;
 const SEV_MEDIUM: i64 = 2;
@@ -48,17 +62,34 @@ struct Detector {
 }
 
 // Candidate matchers. Kept deliberately permissive — `validate` is the gate.
-static RRN_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\b\d{6}-?\d{7}\b").unwrap());
-static FRN_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\b\d{6}-?\d{7}\b").unwrap());
-static BRN_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\b\d{3}-?\d{2}-?\d{5}\b").unwrap());
+//
+// Boundaries use `(?-u:\b)` (ASCII word boundary) rather than the default
+// Unicode `\b`. In Korean conversational text, PII is often written flush
+// against Hangul ("이메일은abc@x.com입니다"); a Unicode `\b` sees Hangul as a
+// word char and never fires, silently dropping the match. ASCII boundaries
+// treat Hangul as non-word, so the boundary lands at the ASCII/Hangul seam.
+static RRN_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?-u:\b)\d{6}-?\d{7}(?-u:\b)").unwrap());
+static FRN_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?-u:\b)\d{6}-?\d{7}(?-u:\b)").unwrap());
+// Business reg no requires its hyphens (NNN-NN-NNNNN): the checksum is a single
+// digit (~10% coincidence), so a bare 10-digit run is too weak a signal — bare
+// numbers fall to keyword-anchored Tier-2 detection.
+static BRN_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?-u:\b)\d{3}-\d{2}-\d{5}(?-u:\b)").unwrap());
 static CARD_RE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"\b\d{4}[- ]?\d{4}[- ]?\d{4}[- ]?\d{1,7}\b").unwrap());
-static EMAIL_RE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b").unwrap());
+    LazyLock::new(|| Regex::new(r"(?-u:\b)\d{4}[- ]?\d{4}[- ]?\d{4}[- ]?\d{1,7}(?-u:\b)").unwrap());
+static EMAIL_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?-u:\b)[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}(?-u:\b)").unwrap()
+});
 static IPV4_RE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"\b(?:\d{1,3}\.){3}\d{1,3}\b").unwrap());
-static PHONE_RE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"\b0\d{1,2}-\d{3,4}-\d{4}\b|\b01[0-9]\d{7,8}\b").unwrap());
+    LazyLock::new(|| Regex::new(r"(?-u:\b)(?:\d{1,3}\.){3}\d{1,3}(?-u:\b)").unwrap());
+// Hyphenated landline/mobile, OR an unhyphenated 010 mobile (11 digits). Legacy
+// unhyphenated prefixes (011/016-019, discontinued ~2010) are accepted only when
+// hyphenated, so bare order-ref digits don't masquerade as phone numbers.
+static PHONE_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?-u:\b)0\d{1,2}-\d{3,4}-\d{4}(?-u:\b)|(?-u:\b)010\d{8}(?-u:\b)").unwrap()
+});
 
 // Order matters only for readability; detection is order-independent.
 static DETECTORS: &[Detector] = &[
@@ -106,31 +137,55 @@ static DETECTORS: &[Detector] = &[
     },
 ];
 
-/// Scan `payload` for Tier-1 PII. Returns `None` when nothing is found, mirroring
-/// the `Option<…Facts>` convention of the protocol parsers.
-pub fn detect_pii(payload: &str) -> Option<PiiFacts> {
-    let mut labels = BTreeSet::new();
-    let mut count = 0i64;
-    let mut max_severity = 0i64;
-
+/// Scan `payload` for Tier-1 PII spans (with UTF-16 offsets). Order is by
+/// detector, not position; the entity-level scorer is position-insensitive.
+pub fn detect_spans(payload: &str) -> Vec<PiiSpan> {
+    let mut spans = Vec::new();
     for det in DETECTORS {
         for m in det.re.find_iter(payload) {
             if (det.validate)(m.as_str()) {
-                labels.insert(det.label.to_string());
-                count += 1;
-                max_severity = max_severity.max(det.severity);
+                let text = m.as_str().to_string();
+                // regex gives byte offsets; convert the prefix to UTF-16 units.
+                let start = payload[..m.start()].encode_utf16().count() as i64;
+                let end = start + text.encode_utf16().count() as i64;
+                spans.push(PiiSpan {
+                    start,
+                    end,
+                    label: det.label.to_string(),
+                    text,
+                    tier: 1,
+                });
             }
         }
     }
+    spans
+}
 
-    if count == 0 {
+/// Scan `payload` for Tier-1 PII and summarize. Returns `None` when nothing is
+/// found, mirroring the `Option<…Facts>` convention of the protocol parsers.
+pub fn detect_pii(payload: &str) -> Option<PiiFacts> {
+    let spans = detect_spans(payload);
+    if spans.is_empty() {
         return None;
+    }
+    let mut labels = BTreeSet::new();
+    let mut max_severity = 0i64;
+    for sp in &spans {
+        labels.insert(sp.label.clone());
+        max_severity = max_severity.max(severity_for_label(&sp.label));
     }
     Some(PiiFacts {
         types: labels.into_iter().collect(),
-        count,
+        count: spans.len() as i64,
         max_severity,
     })
+}
+
+fn severity_for_label(label: &str) -> i64 {
+    DETECTORS
+        .iter()
+        .find(|d| d.label == label)
+        .map_or(0, |d| d.severity)
 }
 
 /// Extract ASCII digits from a candidate (drops hyphens/spaces).
@@ -295,6 +350,32 @@ mod tests {
     #[test]
     fn rejects_all_zero_phone() {
         assert!(detect_pii("000-0000-0000").is_none());
+    }
+
+    #[test]
+    fn detects_pii_flush_against_hangul() {
+        // Korean conversational text attaches particles directly to PII; ASCII
+        // word boundaries must still catch it (regression for Unicode `\b`).
+        let f = facts("제 이메일은a.b@x.com이고 번호는010-4005-3175로 연락주세요");
+        assert!(f.types.contains(&"EMAIL".to_string()));
+        assert!(f.types.contains(&"PHONE".to_string()));
+    }
+
+    #[test]
+    fn business_reg_no_requires_hyphens() {
+        // Hyphenated → detected; the same digits bare → too weak (bare 10-digit
+        // order ids pass the 1-digit checksum ~10% of the time).
+        assert_eq!(facts("220-81-62517").types, vec!["BUSINESS_REG_NO"]);
+        assert!(detect_pii("2208162517").is_none());
+    }
+
+    #[test]
+    fn unhyphenated_mobile_only_modern_010() {
+        // 010 + 8 digits (modern, 11 total) → detected.
+        assert_eq!(facts("01040053175").types, vec!["PHONE"]);
+        // Legacy unhyphenated prefixes (discontinued ~2010) are not, so bare
+        // order-ref digits don't masquerade as phone numbers.
+        assert!(detect_pii("0113811398").is_none());
     }
 
     #[test]

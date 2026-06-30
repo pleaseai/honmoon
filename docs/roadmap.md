@@ -121,7 +121,8 @@ management and compliance reporting are Paid (Phase 7).
   (`Facts.pii`, registered in `engine::eval_condition`, carried in the audit `FactsSummary`)
 - [ ] Detect (audit-only) vs block (enforcing) modes — precision-first block, recall-first audit
 - [ ] (optional) NER assist layer for PERSON / ADDRESS, kept **off** the inline path (audit / async)
-- [ ] Benchmark harness + CI regression gate ([`pii-benchmark-goals.md`](./pii-benchmark-goals.md))
+- [~] Benchmark harness ([`pii-benchmark-goals.md`](./pii-benchmark-goals.md)) — `pii_scan` bridge +
+  `score.ts` measurement loop in place (Tier-1 F1 1.000 on `honmoon-synth`, §9.1); CI regression gate TODO
 
 **Exit criteria**: a request body carrying a valid-checksum RRN to a non-allowlisted host is
 caught by policy (`deny`/`pause`), measured against the targets in

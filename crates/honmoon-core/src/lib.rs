@@ -12,7 +12,7 @@ pub mod protocols;
 
 pub use audit::{AuditDraft, AuditEvent, AuditLog, Decision, FactsSummary};
 pub use engine::{Outcome, decide, decide_explained};
-pub use pii::{PiiFacts, detect_pii};
+pub use pii::{PiiFacts, PiiSpan, detect_pii, detect_spans};
 
 /// The decision the policy engine returns for a given request.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
