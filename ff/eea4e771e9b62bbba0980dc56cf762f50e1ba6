@@ -1,0 +1,37 @@
+crates/honmoon-core/src/audit.rs
+  s_3f16ecda7377f7::t_e9487356cd2332 55-56,67
+  s_3f16ecda7377f7::t_42863fd95ada3a 20
+Cargo.toml
+  s_3f16ecda7377f7::t_1532afdb40cb8d 36
+crates/honmoon-core/src/lib.rs
+  s_3f16ecda7377f7::t_9905300099000a 10,15
+  s_3f16ecda7377f7::t_2b6ae0acb9d884 93-94
+crates/honmoon-core/src/engine.rs
+  s_3f16ecda7377f7::t_2310c8cecbd357 114-118
+  s_3f16ecda7377f7::t_a08c6b27e5327e 269-297
+docs/roadmap.md
+  s_3f16ecda7377f7::t_f8e67b9c479b44 116-118,120-121
+crates/honmoon-core/src/pii.rs
+  s_3f16ecda7377f7::t_ea21c644fe8437 1-64,107-128,134-137,142-275,280-296
+  s_3f16ecda7377f7::t_48016c75b04164 65-106,129-133,138-141,276-279
+Cargo.lock
+  s_3f16ecda7377f7::t_1dadd61dbf87db 426
+crates/honmoon-core/Cargo.toml
+  s_3f16ecda7377f7::t_4dacb727b84816 12
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.5",
+  "base_commit_sha": "ffeea4e771e9b62bbba0980dc56cf762f50e1ba6",
+  "prompts": {},
+  "sessions": {
+    "s_3f16ecda7377f7": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "2af2c422-6eec-4f36-a8dd-fc8c1d4dcea4",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
