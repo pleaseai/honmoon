@@ -8,7 +8,7 @@
 
 import type { EvalRecord, Span } from './build/types.ts'
 import { readFileSync } from 'node:fs'
-import { fromJsonl } from './build/types.ts'
+import { assertValidRecords, fromJsonl, loadLabels } from './build/types.ts'
 
 const PERSON_MIN_LENGTH = 3
 
@@ -59,7 +59,23 @@ function prf(tp: number, fp: number, fn: number): LabelScore {
 }
 
 export function score(gold: EvalRecord[], pred: EvalRecord[]): ScoreReport {
-  const predById = new Map(pred.map(r => [r.id, r]))
+  // Build id-keyed maps that fail loud on duplicates — a duplicate id would
+  // otherwise be silently dropped and let a malformed file score better than it should.
+  const goldIds = new Set<string>()
+  for (const r of gold) {
+    if (goldIds.has(r.id)) {
+      throw new Error(`duplicate gold id: ${r.id}`)
+    }
+    goldIds.add(r.id)
+  }
+  const predById = new Map<string, EvalRecord>()
+  for (const r of pred) {
+    if (predById.has(r.id)) {
+      throw new Error(`duplicate prediction id: ${r.id}`)
+    }
+    predById.set(r.id, r)
+  }
+
   const agg = new Map<string, { tp: number, fp: number, fn: number }>()
   const bump = (label: string, k: 'tp' | 'fp' | 'fn', n: number) => {
     const a = agg.get(label) ?? { tp: 0, fp: 0, fn: 0 }
@@ -82,6 +98,18 @@ export function score(gold: EvalRecord[], pred: EvalRecord[]): ScoreReport {
     }
   }
 
+  // Prediction records with no matching gold id are pure false positives —
+  // counting them prevents precision from being inflated by over-detection
+  // outside the eval set.
+  for (const p of pred) {
+    if (goldIds.has(p.id)) {
+      continue
+    }
+    for (const s of p.spans.filter(keep)) {
+      bump(s.label, 'fp', 1)
+    }
+  }
+
   const perLabel = new Map<string, LabelScore>()
   let TP = 0
   let FP = 0
@@ -101,7 +129,12 @@ function main() {
     console.error('usage: bun score.ts <gold.jsonl> <pred.jsonl>')
     process.exit(1)
   }
-  const rep = score(fromJsonl(readFileSync(goldPath, 'utf8')), fromJsonl(readFileSync(predPath, 'utf8')))
+  const cfg = loadLabels()
+  const gold = fromJsonl(readFileSync(goldPath, 'utf8'))
+  const pred = fromJsonl(readFileSync(predPath, 'utf8'))
+  assertValidRecords(gold, cfg)
+  assertValidRecords(pred, cfg)
+  const rep = score(gold, pred)
   const rows = [...rep.perLabel.entries()].sort((a, b) => b[1].f1 - a[1].f1)
   console.log('label\t\tF1\tP\tR\tTP\tFP\tFN')
   for (const [label, s] of rows) {

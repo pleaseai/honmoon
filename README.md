@@ -207,7 +207,8 @@ Full phased roadmap (OSS / paid boundary, exit criteria): [`docs/roadmap.md`](./
 - [x] **Phase 4** — `pause` approval workflow + audit log + dashboard
 - [ ] **Phase 5** — content-aware PII / DLP: body inspection + Korean-first PII detection ([benchmark goals](./docs/pii-benchmark-goals.md))
 - [ ] **Phase 6** — isolation modes (`run` / `gateway` / `join`)
-- [ ] **Phase 7+** — team control plane & hosted SaaS (paid)
+- [ ] **Phase 7** — team control plane (paid)
+- [ ] **Phase 8** — hosted SaaS & intelligence (paid)
 
 ---
 

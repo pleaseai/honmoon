@@ -8,7 +8,7 @@
 
 import type { EvalRecord, Span } from './types.ts'
 import { readFileSync } from 'node:fs'
-import { loadLabels, toJsonl } from './types.ts'
+import { assertValidRecords, loadLabels, toJsonl } from './types.ts'
 
 interface KdpiiPii { form: string, label: string, begin: number, end: number }
 interface KdpiiRec { sent_idx: string, sentence: string, PII_set: KdpiiPii[] }
@@ -16,10 +16,17 @@ interface KdpiiRec { sent_idx: string, sentence: string, PII_set: KdpiiPii[] }
 function main() {
   const [file, split = 'test'] = process.argv.slice(2)
   if (!file) {
-    console.error('usage: bun normalize_kdpii.ts <kdpii.json> [split]')
+    console.error('usage: bun normalize_kdpii.ts <kdpii.json> [test|valid]')
     process.exit(1)
   }
-  const { fromKdpii, labels } = loadLabels()
+  // Reject unknown splits — silently coercing e.g. `train` to `test` would
+  // contaminate the frozen test set.
+  if (split !== 'test' && split !== 'valid') {
+    console.error(`unsupported KDPII split: ${split} (expected "test" or "valid")`)
+    process.exit(1)
+  }
+  const cfg = loadLabels()
+  const { fromKdpii, labels } = cfg
   const recs = JSON.parse(readFileSync(file, 'utf8')) as KdpiiRec[]
 
   const out: EvalRecord[] = []
@@ -46,6 +53,7 @@ function main() {
       meta: { split: split === 'valid' ? 'dev' : 'test', domain: 'chat' },
     })
   }
+  assertValidRecords(out, cfg)
   process.stdout.write(toJsonl(out))
   console.error(`[normalize_kdpii] ${out.length} docs, ${out.reduce((a, r) => a + r.spans.length, 0)} spans, ${dropped} unmapped spans dropped`)
 }

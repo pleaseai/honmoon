@@ -54,7 +54,18 @@ function asArray(v: unknown): string[] {
   if (v == null) {
     return []
   }
-  return Array.isArray(v) ? (v as string[]) : [String(v)]
+  if (Array.isArray(v)) {
+    return v.map((item) => {
+      if (typeof item !== 'string') {
+        throw new TypeError(`labels.yaml mapping entries must be strings, got ${typeof item}`)
+      }
+      return item
+    })
+  }
+  if (typeof v === 'string') {
+    return [v]
+  }
+  throw new TypeError(`labels.yaml mapping value must be a string or string[], got ${typeof v}`)
 }
 
 /** Load and index labels.yaml (the single source of truth for canonical labels + mapping). */
@@ -104,4 +115,27 @@ export function toJsonl(records: EvalRecord[]): string {
 /** Parse JSONL into records. */
 export function fromJsonl(text: string): EvalRecord[] {
   return text.split('\n').filter(l => l.trim()).map(l => JSON.parse(l) as EvalRecord)
+}
+
+/**
+ * Enforce the canonical record contract that JSON Schema cannot express
+ * (cross-field `end > start`, and `label`/`tier` consistency with labels.yaml).
+ * Throws on the first violation so malformed data fails fast instead of
+ * silently poisoning offset-based scoring.
+ */
+export function assertValidRecords(records: EvalRecord[], cfg: LabelConfig): void {
+  for (const r of records) {
+    for (const s of r.spans) {
+      if (!(s.start >= 0 && s.end > s.start)) {
+        throw new Error(`${r.id}: invalid span offsets {start:${s.start}, end:${s.end}}`)
+      }
+      const def = cfg.labels.get(s.label)
+      if (!def) {
+        throw new Error(`${r.id}: unknown canonical label "${s.label}" (not in labels.yaml)`)
+      }
+      if (def.tier !== s.tier) {
+        throw new Error(`${r.id}: tier ${s.tier} disagrees with labels.yaml (${s.label} is tier ${def.tier})`)
+      }
+    }
+  }
 }

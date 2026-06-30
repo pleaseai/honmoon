@@ -270,7 +270,7 @@ labels:
     method: dictionary
     default_action: audit
     ref_f1: null
-    map: {ko_pii: null, presidio: NRP, kdpii: OGG_RELIGION}
+    map: {ko_pii: null, presidio: null, kdpii: OGG_RELIGION} # Presidio NRP → NATIONALITY (kept 1:1)
   GENDER:
     desc: 성별 (gender)
     tier: 3
