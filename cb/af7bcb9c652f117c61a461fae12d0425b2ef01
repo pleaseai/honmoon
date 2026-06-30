@@ -1,0 +1,22 @@
+.github/workflows/ci.yml
+  s_3f16ecda7377f7::t_062c77af68cab2 71-109
+datasets/pii/gate.ts
+  s_3f16ecda7377f7::t_f635c2d893b2f8 1-16,18-77
+  s_3f16ecda7377f7::t_afe1b98b77a69f 17
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.5",
+  "base_commit_sha": "cbaf7bcb9c652f117c61a461fae12d0425b2ef01",
+  "prompts": {},
+  "sessions": {
+    "s_3f16ecda7377f7": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "2af2c422-6eec-4f36-a8dd-fc8c1d4dcea4",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
