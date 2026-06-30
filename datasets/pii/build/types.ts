@@ -129,6 +129,12 @@ export function assertValidRecords(records: EvalRecord[], cfg: LabelConfig): voi
       if (!(s.start >= 0 && s.end > s.start)) {
         throw new Error(`${r.id}: invalid span offsets {start:${s.start}, end:${s.end}}`)
       }
+      if (s.end > r.text.length) {
+        throw new Error(`${r.id}: span end ${s.end} exceeds text length ${r.text.length}`)
+      }
+      if (r.text.slice(s.start, s.end) !== s.text) {
+        throw new Error(`${r.id}: span.text "${s.text}" != text.slice(${s.start}, ${s.end}) "${r.text.slice(s.start, s.end)}"`)
+      }
       const def = cfg.labels.get(s.label)
       if (!def) {
         throw new Error(`${r.id}: unknown canonical label "${s.label}" (not in labels.yaml)`)
