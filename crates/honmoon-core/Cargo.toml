@@ -9,6 +9,7 @@ description = "Honmoon policy engine, CEL evaluation, and protocol facts model"
 
 [dependencies]
 cel-interpreter = "0.10"
+regex.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 serde_yaml.workspace = true

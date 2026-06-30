@@ -17,7 +17,7 @@ use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
 use time::format_description::well_known::Rfc3339;
 
-use crate::{Facts, HttpFacts, K8sFacts, SqlFacts, Verdict};
+use crate::{Facts, HttpFacts, K8sFacts, PiiFacts, SqlFacts, Verdict};
 
 /// The final disposition of a request, as recorded in the audit log.
 ///
@@ -52,6 +52,8 @@ pub struct FactsSummary {
     pub sql: Option<SqlFacts>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub k8s: Option<K8sFacts>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pii: Option<PiiFacts>,
 }
 
 impl From<&Facts> for FactsSummary {
@@ -62,6 +64,7 @@ impl From<&Facts> for FactsSummary {
             http: f.http.clone(),
             sql: f.sql.clone(),
             k8s: f.k8s.clone(),
+            pii: f.pii.clone(),
         }
     }
 }

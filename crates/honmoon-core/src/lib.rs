@@ -7,10 +7,12 @@ use serde::{Deserialize, Serialize};
 
 pub mod audit;
 pub mod engine;
+pub mod pii;
 pub mod protocols;
 
 pub use audit::{AuditDraft, AuditEvent, AuditLog, Decision, FactsSummary};
 pub use engine::{Outcome, decide, decide_explained};
+pub use pii::{PiiFacts, detect_pii};
 
 /// The decision the policy engine returns for a given request.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -88,6 +90,8 @@ pub struct Facts {
     pub sql: Option<SqlFacts>,
     /// Kubernetes API request facts.
     pub k8s: Option<K8sFacts>,
+    /// Content-aware PII detection summary (Tier-1; see [`crate::pii`]).
+    pub pii: Option<PiiFacts>,
 }
 
 /// HTTP request facts exposed to CEL as the `http` variable.
