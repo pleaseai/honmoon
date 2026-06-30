@@ -1,0 +1,21 @@
+docs/pii-benchmark-goals.md
+  s_3f16ecda7377f7::t_88ac06fd1f2e7a 108-109
+  s_3f16ecda7377f7::t_dfd320e7871652 137
+  s_3f16ecda7377f7::t_330d3d87183630 105
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.3",
+  "base_commit_sha": "9d7a4803f08ed13eda6229e06de7f9e5fbc23f92",
+  "prompts": {},
+  "sessions": {
+    "s_3f16ecda7377f7": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "2af2c422-6eec-4f36-a8dd-fc8c1d4dcea4",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
