@@ -1,0 +1,49 @@
+datasets/pii/labels.yaml
+  s_3f16ecda7377f7::t_d72759b7b4650e 227
+  s_3f16ecda7377f7::t_d73f371b5d11b0 16
+  s_3f16ecda7377f7::t_ecf602f97167b7 224
+  s_3f16ecda7377f7::t_c77626f64d6c3e 1-15,17-223,225-226,228-229
+docs/pii-benchmark-goals.md
+  s_3f16ecda7377f7::t_1a731192c94a28 223-226
+  s_3f16ecda7377f7::t_5ad0975bf1f63a 1,8-39,41-51,58-91,191-197,205-216,218-222,227-229,231,233-240,242,246-251,256
+  s_3f16ecda7377f7::t_428f754599b20b 40
+  s_3f16ecda7377f7::t_833df57d8e8bbc 232
+  s_3f16ecda7377f7::t_366c872b72ec1d 125
+  s_3f16ecda7377f7::t_385df6f9a78ac0 198-204
+  s_3f16ecda7377f7::t_429d6bee94a679 52-57
+  s_3f16ecda7377f7::t_f1157a53c26a59 150-173
+  s_3f16ecda7377f7::t_142815b67e6d61 241
+  s_3f16ecda7377f7::t_5623e3d20cff58 2-4,252-255,257
+  s_3f16ecda7377f7::t_d0ff08742112da 243-245
+  s_3f16ecda7377f7::t_01a9344a435c69 92-124,126-147,149,174-190
+  s_3f16ecda7377f7::t_cabc67a29e88ff 230
+  s_3f16ecda7377f7::t_1a39e23eb51e31 148
+  s_3f16ecda7377f7::t_e1fa679c5c5c25 5-7
+  s_3f16ecda7377f7::t_24380aeaa87a01 217
+README.md
+  s_3f16ecda7377f7::t_f32657b262d457 208-210
+docs/roadmap.md
+  s_3f16ecda7377f7::t_e724f829160a96 105-132
+  s_3f16ecda7377f7::t_3ac466588e4d4c 143
+  s_3f16ecda7377f7::t_a1baf3671a5249 155
+  s_3f16ecda7377f7::t_728e1a966b8106 166
+  s_3f16ecda7377f7::t_2a7a1021858226 150
+datasets/pii/schema.json
+  s_3f16ecda7377f7::t_cf6a19548f1fbb 1-93
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.3",
+  "base_commit_sha": "3626b6761ac4452740d8c0cb6202b339a5eddf44",
+  "prompts": {},
+  "sessions": {
+    "s_3f16ecda7377f7": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "2af2c422-6eec-4f36-a8dd-fc8c1d4dcea4",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
