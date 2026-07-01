@@ -14,7 +14,10 @@ permissions:
 
 concurrency:
   group: codspeed-${{ github.ref }}
-  cancel-in-progress: true
+  # Cancel superseded PR runs, but never cancel base-branch (master) runs so that
+  # CodSpeed's regression baseline stays continuous — every master run must complete
+  # and upload its results.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   benchmarks:
