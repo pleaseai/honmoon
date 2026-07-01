@@ -1,0 +1,27 @@
+.github/workflows/codspeed.yml
+  s_3f16ecda7377f7::t_348089de2def25 1-45
+crates/honmoon-core/Cargo.toml
+  s_3f16ecda7377f7::t_348089de2def25 19-25
+crates/honmoon-core/benches/policy_engine.rs
+  s_3f16ecda7377f7::t_348089de2def25 1-136
+README.md
+  s_3f16ecda7377f7::t_348089de2def25 5
+Cargo.lock
+  s_3f16ecda7377f7::t_e8bf16d69fb7e2 87-95,214-223,255-260,291,312-371,378-392,428-444,461-466,519-535,567,700-708,738-743,822-833,927-935,954-959,992-997,1038-1050,1177-1182,1215-1224,1248-1257,1365-1394,1628-1636
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.5",
+  "base_commit_sha": "f10eee346dd45d41d6859bfed4f5bc9453806bd0",
+  "prompts": {},
+  "sessions": {
+    "s_3f16ecda7377f7": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "2af2c422-6eec-4f36-a8dd-fc8c1d4dcea4",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
