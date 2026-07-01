@@ -565,6 +565,7 @@ version = "0.1.0"
 dependencies = [
  "cel-interpreter",
  "codspeed-divan-compat",
+ "regex",
  "serde",
  "serde_json",
  "serde_yaml",

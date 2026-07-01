@@ -113,13 +113,16 @@ management and compliance reporting are Paid (Phase 7).
 > phase owns that milestone, which also unblocks body-level SQL/K8s facts.
 
 - [ ] TLS termination in the data plane (Pingora revisited — [ADR-0001](../.please/docs/decisions/0001-adopt-pingora-http-data-plane.md)/[ADR-0002](../.please/docs/decisions/0002-phase1-connect-proxy-on-tokio.md)) so request/response bodies reach the engine
-- [ ] Tier-1 deterministic PII detector in `honmoon-core` (Rust regex + checksum): RRN, FRN,
-  business / corporate reg. no., passport, driver license, card (Luhn), email, IP, phone, account
+- [x] Tier-1 deterministic PII detector in `honmoon-core::pii` (Rust regex + checksum/Luhn):
+  RRN, FRN, business reg. no., card (Luhn), email, IPv4, phone. (passport / driver / account /
+  vehicle deferred — loose-format / keyword-anchored, precision risk)
 - [ ] Tier-2 format / dictionary detectors (postal code, medical IDs, DOB / age, …)
-- [ ] Expose `pii.types` / `pii.count` / `pii.max_severity` as CEL facts; wire to `allow`/`deny`/`pause`
+- [x] Expose `pii.types` / `pii.count` / `pii.max_severity` as CEL facts; wire to `allow`/`deny`/`pause`
+  (`Facts.pii`, registered in `engine::eval_condition`, carried in the audit `FactsSummary`)
 - [ ] Detect (audit-only) vs block (enforcing) modes — precision-first block, recall-first audit
 - [ ] (optional) NER assist layer for PERSON / ADDRESS, kept **off** the inline path (audit / async)
-- [ ] Benchmark harness + CI regression gate ([`pii-benchmark-goals.md`](./pii-benchmark-goals.md))
+- [~] Benchmark harness ([`pii-benchmark-goals.md`](./pii-benchmark-goals.md)) — `pii_scan` bridge +
+  `score.ts` measurement loop in place (Tier-1 F1 1.000 on `honmoon-synth`, §9.1); CI regression gate TODO
 
 **Exit criteria**: a request body carrying a valid-checksum RRN to a non-allowlisted host is
 caught by policy (`deny`/`pause`), measured against the targets in

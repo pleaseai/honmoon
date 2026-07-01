@@ -111,6 +111,12 @@ fn eval_condition(condition: &str, facts: &Facts) -> bool {
             ctx.add_variable_from_value("k8s", value);
         }
     }
+    // Always register `pii` (default = empty) so absence conditions like
+    // `pii.count == 0` are expressible, not just `pii.count > 0`.
+    let pii = facts.pii.clone().unwrap_or_default();
+    if let Ok(value) = cel_interpreter::to_value(&pii) {
+        ctx.add_variable_from_value("pii", value);
+    }
 
     matches!(program.execute(&ctx), Ok(Value::Bool(true)))
 }
@@ -259,6 +265,53 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(super::decide(&policy, &safe), Verdict::Allow);
+    }
+
+    /// Phase 5 exit criterion: a request body carrying a valid-checksum RRN is
+    /// caught by a `pii.*` rule, while a clean body falls through to allow.
+    #[test]
+    fn pii_findings_drive_policy_end_to_end() {
+        use crate::detect_pii;
+
+        let policy = Policy::from_yaml(
+            "egress:\n  default: allow\nrules:\n  \
+             - name: block-high-severity-pii\n    endpoint: api-egress\n    condition: \"pii.count > 0 && pii.max_severity >= 3\"\n    verdict: deny\n",
+        )
+        .unwrap();
+
+        // Body with a valid RRN → high severity → deny.
+        let leak = Facts {
+            endpoint: Some("api-egress".into()),
+            pii: detect_pii(r#"{"user":{"rrn":"670125-1230644"}}"#),
+            ..Default::default()
+        };
+        assert_eq!(super::decide(&policy, &leak), Verdict::Deny);
+
+        // Body with no PII → no facts → rule cannot match → egress default (allow).
+        let clean = Facts {
+            endpoint: Some("api-egress".into()),
+            pii: detect_pii(r#"{"order":"ORD-1234567890"}"#),
+            ..Default::default()
+        };
+        assert_eq!(super::decide(&policy, &clean), Verdict::Allow);
+    }
+
+    /// `pii` is always bound (default empty), so absence conditions like
+    /// `pii.count == 0` are expressible even when no detection ran.
+    #[test]
+    fn pii_absence_condition_is_expressible() {
+        let policy = Policy::from_yaml(
+            "egress:\n  default: deny\nrules:\n  \
+             - name: allow-clean\n    endpoint: api-egress\n    condition: \"pii.count == 0\"\n    verdict: allow\n",
+        )
+        .unwrap();
+
+        let clean = Facts {
+            endpoint: Some("api-egress".into()),
+            pii: None, // no PII facts at all
+            ..Default::default()
+        };
+        assert_eq!(super::decide(&policy, &clean), Verdict::Allow);
     }
 
     /// Guards the shipped example policy against parser/condition drift: the
