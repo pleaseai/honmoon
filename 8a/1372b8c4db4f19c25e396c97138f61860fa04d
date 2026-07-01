@@ -1,0 +1,31 @@
+.please/docs/decisions/0002-phase1-connect-proxy-on-tokio.md
+  s_3f16ecda7377f7::t_7477da7b75ebdc 7-9
+.please/docs/decisions/0003-adopt-hudsucker-for-tls-termination.md
+  s_3f16ecda7377f7::t_f1dc8037bee42b 1-105
+.please/docs/knowledge/tech-stack.md
+  s_3f16ecda7377f7::t_913eada2c4cb68 11
+  s_3f16ecda7377f7::t_c318e3acd5f694 20-25
+docs/pii-benchmark-goals.md
+  s_3f16ecda7377f7::t_5747fa03007140 256-261
+docs/roadmap.md
+  s_3f16ecda7377f7::t_806e70437e415b 41
+  s_3f16ecda7377f7::t_3f889766207197 123-124
+  s_3f16ecda7377f7::t_9777986f4ad854 111-114
+  s_3f16ecda7377f7::t_1fc77f5ccd3e04 116
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.8",
+  "base_commit_sha": "8a1372b8c4db4f19c25e396c97138f61860fa04d",
+  "prompts": {},
+  "sessions": {
+    "s_3f16ecda7377f7": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "2af2c422-6eec-4f36-a8dd-fc8c1d4dcea4",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
