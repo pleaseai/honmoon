@@ -111,17 +111,22 @@ fn allowed_host_tunnels_through_to_upstream() {
     assert!(body.trim_end().ends_with("ok"), "upstream body: {body:?}");
 }
 
+/// Cleartext `http://` forward-proxy requests are also subject to the egress
+/// allowlist — a request to a denied host must be blocked, not silently
+/// forwarded (no bypass by skipping CONNECT). Since adopting hudsucker the proxy
+/// handles plain HTTP too, so the Phase 1 `405` is replaced by this stronger
+/// property.
 #[test]
-fn non_connect_method_is_rejected() {
-    let proxy = start_proxy(allow_policy("127.0.0.1"));
+fn plain_http_to_denied_host_is_blocked_with_403() {
+    let proxy = start_proxy(allow_policy("allowed.example"));
 
     let mut s = connect_to_proxy(proxy);
-    s.write_all(b"GET http://127.0.0.1/ HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n")
+    s.write_all(b"GET http://blocked.example/ HTTP/1.1\r\nHost: blocked.example\r\n\r\n")
         .unwrap();
     let resp = read_head(&mut s);
 
     assert!(
-        resp.starts_with("HTTP/1.1 405"),
-        "expected 405, got: {resp:?}"
+        resp.starts_with("HTTP/1.1 403"),
+        "expected 403, got: {resp:?}"
     );
 }

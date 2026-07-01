@@ -8,7 +8,8 @@ use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use honmoon_core::{AuditLog, Policy};
 use honmoon_mgmt::AppState;
-use honmoon_proxy::gateway::{DEFAULT_PAUSE_TIMEOUT, GatewayState};
+use honmoon_proxy::ca::CaMaterial;
+use honmoon_proxy::gateway::{DEFAULT_PAUSE_TIMEOUT, GatewayState, InterceptPolicy};
 
 #[derive(Parser)]
 #[command(
@@ -44,6 +45,17 @@ enum Command {
         /// Append every verdict to this JSONL audit log (default: in-memory only).
         #[arg(long, value_name = "FILE")]
         audit_log: Option<PathBuf>,
+        /// Terminate TLS (MITM) to inspect request bodies for PII. Agents must
+        /// trust the CA certificate. Detect-only: findings are audited, not blocked.
+        #[arg(long)]
+        tls_intercept: bool,
+        /// CA certificate path (PEM). Auto-generated on first run if missing.
+        /// Install this in agents' trust store to enable TLS termination.
+        #[arg(long, value_name = "FILE")]
+        ca_cert: Option<PathBuf>,
+        /// CA private key path (PEM). Auto-generated on first run if missing.
+        #[arg(long, value_name = "FILE")]
+        ca_key: Option<PathBuf>,
     },
     /// Join a gateway and route host traffic through it.
     Join {
@@ -65,22 +77,57 @@ fn main() -> Result<()> {
             addr,
             mgmt_addr,
             audit_log,
-        } => gateway(config, addr, mgmt_addr, audit_log),
+            tls_intercept,
+            ca_cert,
+            ca_key,
+        } => gateway(GatewayArgs {
+            config,
+            addr,
+            mgmt_addr,
+            audit_log,
+            tls_intercept,
+            ca_cert,
+            ca_key,
+        }),
         Command::Join { gateway } => {
             anyhow::bail!("`join` not yet implemented (gateway: {gateway})");
         }
     }
 }
 
-/// `honmoon gateway` — run the egress proxy and the management API (audit query,
-/// approval queue, embedded dashboard) together, sharing one runtime and one set
-/// of audit/approval state so held requests can be approved from the dashboard.
-fn gateway(
+/// Parsed `honmoon gateway` arguments.
+struct GatewayArgs {
     config: PathBuf,
     addr: String,
     mgmt_addr: String,
     audit_log: Option<PathBuf>,
-) -> Result<()> {
+    tls_intercept: bool,
+    ca_cert: Option<PathBuf>,
+    ca_key: Option<PathBuf>,
+}
+
+/// Default directory for persisted CA material (`$HOME/.honmoon`, else `.honmoon`).
+fn default_ca_dir() -> PathBuf {
+    match std::env::var_os("HOME") {
+        Some(home) => PathBuf::from(home).join(".honmoon"),
+        None => PathBuf::from(".honmoon"),
+    }
+}
+
+/// `honmoon gateway` — run the egress proxy and the management API (audit query,
+/// approval queue, embedded dashboard) together, sharing one runtime and one set
+/// of audit/approval state so held requests can be approved from the dashboard.
+fn gateway(args: GatewayArgs) -> Result<()> {
+    let GatewayArgs {
+        config,
+        addr,
+        mgmt_addr,
+        audit_log,
+        tls_intercept,
+        ca_cert,
+        ca_key,
+    } = args;
+
     let policy_yaml = std::fs::read_to_string(&config)
         .with_context(|| format!("reading policy {}", config.display()))?;
     let policy = Policy::from_yaml(&policy_yaml)?;
@@ -94,11 +141,27 @@ fn gateway(
         None => Arc::new(AuditLog::new(1024)),
     };
 
+    let ca_cert_path = ca_cert.unwrap_or_else(|| default_ca_dir().join("ca.cer"));
+    let ca_key_path = ca_key.unwrap_or_else(|| default_ca_dir().join("ca.key"));
+    let ca = CaMaterial::load_or_generate(&ca_cert_path, &ca_key_path)
+        .with_context(|| format!("loading CA from {}", ca_cert_path.display()))?;
+    let intercept = if tls_intercept {
+        tracing::info!(
+            ca_cert = %ca_cert_path.display(),
+            "TLS termination enabled (detect-only); agents must trust this CA certificate"
+        );
+        InterceptPolicy::All
+    } else {
+        InterceptPolicy::None
+    };
+
     let state = GatewayState {
         policy: Arc::new(policy),
         audit,
         approvals: Arc::new(honmoon_proxy::approval::ApprovalRegistry::new()),
         pause_timeout: DEFAULT_PAUSE_TIMEOUT,
+        ca: Arc::new(ca),
+        intercept,
     };
 
     // Bind both listeners up front so a bind error is reported before we spawn.

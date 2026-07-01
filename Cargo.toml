@@ -29,6 +29,9 @@ thiserror = "2"
 clap = { version = "4", features = ["derive"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+# TLS termination (MITM) data plane — see ADR-0003.
+hudsucker = { version = "0.24", features = ["http2"] }
+http-body-util = "0.1"
 axum = "0.8"
 rust-embed = "8"
 mime_guess = "2"

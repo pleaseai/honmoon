@@ -13,3 +13,10 @@ tokio.workspace = true
 serde.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
+hudsucker.workspace = true
+http-body-util.workspace = true
+
+[dev-dependencies]
+# TLS client for the MITM loopback test (trusts the local CA).
+tokio-rustls = "0.26"
+rustls-pemfile = "2"

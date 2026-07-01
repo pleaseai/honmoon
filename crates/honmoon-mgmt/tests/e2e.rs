@@ -17,7 +17,8 @@ use std::time::{Duration, Instant};
 use honmoon_core::{AuditLog, Decision, Policy};
 use honmoon_mgmt::AppState;
 use honmoon_proxy::approval::ApprovalRegistry;
-use honmoon_proxy::gateway::GatewayState;
+use honmoon_proxy::ca::CaMaterial;
+use honmoon_proxy::gateway::{GatewayState, InterceptPolicy};
 
 /// In-process HTTP upstream that answers `200 OK / "ok"`.
 fn start_upstream() -> u16 {
@@ -50,6 +51,8 @@ fn start_gateway(policy_yaml: &str) -> Gateway {
         audit: audit.clone(),
         approvals: Arc::new(ApprovalRegistry::new()),
         pause_timeout: Duration::from_secs(10),
+        ca: Arc::new(CaMaterial::generate().unwrap()),
+        intercept: InterceptPolicy::None,
     };
 
     let proxy_listener = TcpListener::bind("127.0.0.1:0").unwrap();
