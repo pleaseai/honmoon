@@ -102,8 +102,8 @@ jobs:
           ./target/debug/examples/pii_scan < target/pii/synth.jsonl    > target/pii/synth.pred.jsonl
           ./target/debug/examples/pii_scan < target/pii/negative.jsonl > target/pii/negative.pred.jsonl
 
-      - name: Gate — AC1 (synth per-label F1 floor)
+      - name: Gate — AC1 (synth per-label F1 + precision floor)
         run: bun datasets/pii/gate.ts synth target/pii/synth.jsonl target/pii/synth.pred.jsonl
 
-      - name: Gate — AC3 (hard-negative FP budget)
+      - name: Gate — FR6 (hard-negative FP budget)
         run: bun datasets/pii/gate.ts negative target/pii/negative.jsonl target/pii/negative.pred.jsonl

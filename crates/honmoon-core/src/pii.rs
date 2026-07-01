@@ -30,9 +30,12 @@ pub struct PiiFacts {
     pub max_severity: i64,
 }
 
-/// A single located PII finding. Offsets are **UTF-16 code units** (JS `String`
-/// semantics) so they line up with the benchmark schema (`datasets/pii/schema.json`)
-/// and the TS scorer; `text` is always `payload[start..end]`.
+/// A single located PII finding. `text` is the matched surface form (the exact
+/// substring the detector saw). `start`/`end` are **UTF-16 code units** (JS
+/// `String` semantics), so `text` equals the JS `payload.slice(start, end)` — not
+/// the Rust `payload[start..end]`, which is byte-indexed. This alignment lets the
+/// span round-trip through the benchmark schema (`datasets/pii/schema.json`) and
+/// the TS scorer.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PiiSpan {
     pub start: i64,
@@ -282,23 +285,32 @@ fn is_valid_ipv4(s: &str) -> bool {
     parts.len() == 4 && parts.iter().all(|p| p.parse::<u8>().is_ok())
 }
 
-// Korean phone: 9–11 digits whose prefix is a real mobile/landline/service code.
-// Gating on the allowed prefix set (not just a leading 0) keeps a precision-first
-// detector from flagging impossible numbers like `000-0000-0000`.
+// Korean phone: 9–11 digits whose area/carrier code is real. The first
+// hyphen-delimited segment must match a prefix *exactly* — a prefix `starts_with`
+// would accept impossible codes that merely begin with a valid one (e.g.
+// `0705-…` slipping through on `070`). PHONE_RE's first group is `0\d{1,2}`, so
+// only 2–3 digit codes are reachable here.
 fn is_valid_phone(s: &str) -> bool {
     let d = digits(s);
     if !(9..=11).contains(&d.len()) {
         return false;
     }
-    let ds: String = d.iter().map(|&x| char::from(b'0' + x)).collect();
     const PREFIXES: &[&str] = &[
         // mobile
         "010", "011", "016", "017", "018", "019", // Seoul + area codes
         "02", "031", "032", "033", "041", "042", "043", "044", "051", "052", "053", "054", "055",
-        "061", "062", "063", "064", // service numbers (VoIP / toll-free / personal)
-        "070", "080", "0303", "0505", "0506", "0507",
+        "061", "062", "063", "064", // service numbers (VoIP / toll-free)
+        "070", "080",
     ];
-    PREFIXES.iter().any(|p| ds.starts_with(p))
+    match s.split_once('-') {
+        // Hyphenated: the first segment identifies the area/carrier code.
+        Some((head, _)) => {
+            let head: String = head.chars().filter(char::is_ascii_digit).collect();
+            PREFIXES.contains(&head.as_str())
+        }
+        // Unhyphenated: PHONE_RE only admits a modern 010 mobile (010 + 8 digits).
+        None => d.len() == 11 && s.starts_with("010"),
+    }
 }
 
 #[cfg(test)]
@@ -367,6 +379,14 @@ mod tests {
         // order ids pass the 1-digit checksum ~10% of the time).
         assert_eq!(facts("220-81-62517").types, vec!["BUSINESS_REG_NO"]);
         assert!(detect_pii("2208162517").is_none());
+    }
+
+    #[test]
+    fn phone_first_segment_matched_exactly() {
+        // Legacy prefix, hyphenated → accepted (exact first segment).
+        assert_eq!(facts("011-381-1398").types, vec!["PHONE"]);
+        // A code that merely *starts with* a valid one (021 vs 02) → rejected.
+        assert!(detect_pii("021-234-5678").is_none());
     }
 
     #[test]
