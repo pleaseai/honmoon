@@ -1,0 +1,19 @@
+.github/workflows/codspeed.yml
+  s_5d978b69e73657::t_04cfe95f06fac2 17-20
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.5",
+  "base_commit_sha": "e8641f02540c6e96989c2c7bb6186e135bcd8932",
+  "prompts": {},
+  "sessions": {
+    "s_5d978b69e73657": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "27289504-c552-4d4c-b767-70beb633a115",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
