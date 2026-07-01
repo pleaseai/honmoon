@@ -16,3 +16,10 @@ serde_yaml.workspace = true
 thiserror.workspace = true
 time.workspace = true
 tracing.workspace = true
+
+[dev-dependencies]
+divan = { version = "5.0.1", package = "codspeed-divan-compat" }
+
+[[bench]]
+name = "policy_engine"
+harness = false
