@@ -1,0 +1,30 @@
+.github/workflows/ci.yml
+  s_3f16ecda7377f7::t_fe1ad3f9f47097 105,108
+crates/honmoon-core/src/pii.rs
+  s_3f16ecda7377f7::t_a88e40dbd5d91a 385-391
+  s_3f16ecda7377f7::t_67df1ae1192448 302
+  s_3f16ecda7377f7::t_b235146b7a5c80 33-38
+  s_3f16ecda7377f7::t_5e074e35da9af4 288-292,303,305-313
+  s_3f16ecda7377f7::t_6fddbfe7d9ad71 384
+docs/pii-benchmark-goals.md
+  s_3f16ecda7377f7::t_c5fe71af428053 259
+datasets/pii/gate.ts
+  s_3f16ecda7377f7::t_570e5b443e7569 51,53-62,65,67
+  s_3f16ecda7377f7::t_177c3c68b6d0bb 18-20,22,26-27
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.5",
+  "base_commit_sha": "b6d0dff39bbd27d05b08ce9f9d08d36e4795e568",
+  "prompts": {},
+  "sessions": {
+    "s_3f16ecda7377f7": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "2af2c422-6eec-4f36-a8dd-fc8c1d4dcea4",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
