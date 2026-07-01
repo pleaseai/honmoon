@@ -253,6 +253,12 @@ target/debug/examples/pii_scan < <gold>.jsonl > <pred>.jsonl   # rewrites only `
 bun datasets/pii/score.ts <gold>.jsonl <pred>.jsonl
 ```
 
+> **Live path (Phase 5).** This section measures the detector offline against gold corpora. Since
+> [ADR-0003](../.please/docs/decisions/0003-adopt-hudsucker-for-tls-termination.md) the data plane
+> also feeds `detect_pii` from **decrypted request bodies** over terminated TLS
+> (`honmoon gateway --tls-intercept`, detect-only), recording findings to the audit log — proven
+> end-to-end by `crates/honmoon-proxy/tests/mitm.rs`.
+
 | Set | Labels | Result |
 | --- | --- | --- |
 | **honmoon-synth** (valid checksums, payload surfaces) | RRN, CREDIT_CARD, PHONE, EMAIL, IP | **F1 = 1.000** each (P 1.0 / R 1.0) — **meets AC1 (≥ 0.98)** |

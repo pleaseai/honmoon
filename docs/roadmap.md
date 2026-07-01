@@ -38,7 +38,7 @@ The first vertical slice: `honmoon run` actually enforces a domain allowlist.
 - [x] `honmoon run --policy p.yaml -- <cmd>`: ephemeral proxy, set `https_proxy`/`http_proxy` for the child, exec, propagate exit code
 - [x] `honmoon gateway --config p.yaml --addr ...` runs the proxy standalone
 - [x] Hermetic integration test: allowed host tunnels to a local upstream, denied host blocked with 403
-- [ ] (deferred to Phase 2) TLS termination — needed only for body/HTTP-level rules; Pingora revisited there
+- [x] (done in Phase 5) TLS termination — needed for body/HTTP-level rules; delivered with hudsucker ([ADR-0003](../.please/docs/decisions/0003-adopt-hudsucker-for-tls-termination.md))
 
 **Exit criteria**: ✅ proven by `crates/honmoon-proxy/tests/egress.rs` — an allowed host tunnels
 through to an in-process upstream (`200`), a denied host is blocked (`403`), hermetically over loopback.
@@ -108,18 +108,20 @@ Close the exfiltration gap: inspect *what* leaves, not just where / which protoc
 PII detection over request bodies, surfaced as CEL facts. Detection is OSS; fleet-wide DLP
 management and compliance reporting are Paid (Phase 7).
 
-> **Prerequisite — TLS termination / body access** (deferred since Phase 1, see TD-006). Over a
-> raw CONNECT tunnel only `http.host` is visible; PII detection needs the decrypted body. This
-> phase owns that milestone, which also unblocks body-level SQL/K8s facts.
+> **Prerequisite — TLS termination / body access** (✅ done, [ADR-0003](../.please/docs/decisions/0003-adopt-hudsucker-for-tls-termination.md)). Over a
+> raw CONNECT tunnel only `http.host` is visible; PII detection needs the decrypted body. The data
+> plane now terminates TLS (hudsucker MITM, opt-in local CA) and scans decrypted bodies
+> (detect-only), which also unblocks body-level SQL/K8s facts (TD-006).
 
-- [ ] TLS termination in the data plane (Pingora revisited — [ADR-0001](../.please/docs/decisions/0001-adopt-pingora-http-data-plane.md)/[ADR-0002](../.please/docs/decisions/0002-phase1-connect-proxy-on-tokio.md)) so request/response bodies reach the engine
+- [x] TLS termination in the data plane (**hudsucker**, not Pingora — [ADR-0003](../.please/docs/decisions/0003-adopt-hudsucker-for-tls-termination.md)) so request bodies reach the engine. Detect-only: decrypted bodies are scanned and findings audited (`--tls-intercept`, opt-in local CA). Proven by `crates/honmoon-proxy/tests/mitm.rs`.
 - [x] Tier-1 deterministic PII detector in `honmoon-core::pii` (Rust regex + checksum/Luhn):
   RRN, FRN, business reg. no., card (Luhn), email, IPv4, phone. (passport / driver / account /
   vehicle deferred — loose-format / keyword-anchored, precision risk)
 - [ ] Tier-2 format / dictionary detectors (postal code, medical IDs, DOB / age, …)
 - [x] Expose `pii.types` / `pii.count` / `pii.max_severity` as CEL facts; wire to `allow`/`deny`/`pause`
   (`Facts.pii`, registered in `engine::eval_condition`, carried in the audit `FactsSummary`)
-- [ ] Detect (audit-only) vs block (enforcing) modes — precision-first block, recall-first audit
+- [~] Detect (audit-only) vs block (enforcing) modes — precision-first block, recall-first audit.
+  Detect-only over terminated TLS is live ([ADR-0003](../.please/docs/decisions/0003-adopt-hudsucker-for-tls-termination.md)); enforcing (deny/pause on `pii`) is the fast follow.
 - [ ] (optional) NER assist layer for PERSON / ADDRESS, kept **off** the inline path (audit / async)
 - [~] Benchmark harness ([`pii-benchmark-goals.md`](./pii-benchmark-goals.md)) — `pii_scan` bridge +
   `score.ts` measurement loop in place (Tier-1 F1 1.000 on `honmoon-synth`, §9.1); CI regression gate TODO
