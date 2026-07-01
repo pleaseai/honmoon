@@ -2,6 +2,7 @@
 
 [![CI](https://github.com/pleaseai/honmoon/actions/workflows/ci.yml/badge.svg)](https://github.com/pleaseai/honmoon/actions/workflows/ci.yml)
 [![codecov](https://codecov.io/gh/pleaseai/honmoon/branch/master/graph/badge.svg)](https://codecov.io/gh/pleaseai/honmoon)
+[![CodSpeed](https://img.shields.io/endpoint?url=https://codspeed.io/badge.json)](https://app.codspeed.io/pleaseai/honmoon?utm_source=badge)
 
 > A **policy-based firewall gateway** guarding the boundary between AI agents and production systems.
 
