@@ -256,7 +256,7 @@ bun datasets/pii/score.ts <gold>.jsonl <pred>.jsonl
 | Set | Labels | Result |
 | --- | --- | --- |
 | **honmoon-synth** (valid checksums, payload surfaces) | RRN, CREDIT_CARD, PHONE, EMAIL, IP | **F1 = 1.000** each (P 1.0 / R 1.0) — **meets AC1 (≥ 0.98)** |
-| **honmoon-negative** (2 000 hard negatives) | — | **3 false positives total** (all FRN-shaped bare 13-digit refs); P ≈ 1.0 — **supports FR6** (no FP blow-up on empty-gold docs) |
+| **honmoon-negative** (2 000 hard negatives) | — | **3 false positives total** (all FRN-shaped bare 13-digit refs) — 1 997 / 2 000 docs clean. Precision is undefined on a negative-only set (no true positives); the metric is the raw FP count. **Supports FR6** (no FP blow-up on empty-gold docs) |
 | **KDPII** (conversational) | EMAIL, IP, FRN | **F1 = 1.000** |
 | **KDPII** | PHONE | F1 0.888 (R 0.80) — remaining misses are spaced / legacy formats |
 | **KDPII** | RRN, CREDIT_CARD | F1 ≈ 0.10 — see caveat |
