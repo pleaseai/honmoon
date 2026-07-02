@@ -1,0 +1,21 @@
+.claude/agent-memory/review-review-pr-test-analyzer/mitm_test_harness.md
+  s_e5f652904b57b5::t_5466f89d7567ba 1-35
+.claude/agent-memory/review-review-pr-test-analyzer/MEMORY.md
+  s_e5f652904b57b5::t_fe797b0b7b5eff 1
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.9",
+  "base_commit_sha": "50243549591518bcd7c36f98208124b8acf14586",
+  "prompts": {},
+  "sessions": {
+    "s_e5f652904b57b5": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d0d269ca-7aa2-4a46-901a-60dffe4b855f",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
