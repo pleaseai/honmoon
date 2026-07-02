@@ -1,0 +1,1 @@
+- [Framing deliberate skips](feedback_framing_deliberate_skips.md) — a skip marked "do not flag" can still hide a flaggable gap (e.g. missing logging) in a stated sub-guarantee.
