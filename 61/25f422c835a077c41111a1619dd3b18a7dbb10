@@ -1,0 +1,24 @@
+.claude/agent-memory/review-review-code-reviewer/project_agents_md_rules.md
+  s_e5f652904b57b5::t_850ba1ff5c6733 1-17
+  s_e5f652904b57b5::t_5a438e86e2a632 18
+.claude/agent-memory/review-review-code-reviewer/feedback_trust_the_header_regression_pattern.md
+  s_e5f652904b57b5::t_4e6bc58eecb111 1-17
+.claude/agent-memory/review-review-code-reviewer/MEMORY.md
+  s_e5f652904b57b5::t_59ceff17b4ecf7 1-2
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.9",
+  "base_commit_sha": "6125f422c835a077c41111a1619dd3b18a7dbb10",
+  "prompts": {},
+  "sessions": {
+    "s_e5f652904b57b5": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d0d269ca-7aa2-4a46-901a-60dffe4b855f",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
