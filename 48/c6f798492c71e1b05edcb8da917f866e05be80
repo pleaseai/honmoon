@@ -1,0 +1,29 @@
+crates/honmoon-proxy/src/body.rs
+  s_e5f652904b57b5::t_70886f72ffea6a 1-21,23-106,111-179,184-231,236-240,245-298
+  s_e5f652904b57b5::t_0f8162476229f7 22
+  s_e5f652904b57b5::t_e988e970c4fe48 107-110,180-183,232-235,241-244
+crates/honmoon-proxy/tests/mitm.rs
+  s_e5f652904b57b5::t_607a6c441079b3 222-238
+crates/honmoon-proxy/src/mitm.rs
+  s_e5f652904b57b5::t_e988e970c4fe48 46-48
+  s_e5f652904b57b5::t_4fe1c8c700f2fe 26-28
+  s_e5f652904b57b5::t_7c4ef51467c8b9 321-322,325
+crates/honmoon-proxy/src/lib.rs
+  s_e5f652904b57b5::t_f5a8374cb610ba 8
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.9",
+  "base_commit_sha": "48c6f798492c71e1b05edcb8da917f866e05be80",
+  "prompts": {},
+  "sessions": {
+    "s_e5f652904b57b5": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d0d269ca-7aa2-4a46-901a-60dffe4b855f",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
