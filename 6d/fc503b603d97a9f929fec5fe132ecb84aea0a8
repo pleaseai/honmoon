@@ -1,0 +1,51 @@
+crates/honmoon-proxy/src/mitm.rs
+  s_e5f652904b57b5::t_b3eb7215ead5a8 95-122
+  s_e5f652904b57b5::t_a91e6fa162b154 139-140,145-148
+  s_e5f652904b57b5::t_46ca85c2984025 228-237,249
+  s_e5f652904b57b5::t_188279ff5dd3b4 279,290-293,301-314
+  s_e5f652904b57b5::t_caf2a88ee21713 361
+  s_e5f652904b57b5::t_69d2a107b87826 13-14,17-22
+  s_e5f652904b57b5::t_566acbb7695ea1 419-531
+  s_e5f652904b57b5::t_25788c67eded9b 365-368,373-380
+  s_e5f652904b57b5::t_b237db172c60da 31-36,40,42,49-52,55-93
+  s_e5f652904b57b5::t_2bb3850ade0c6b 23,94
+docs/roadmap.md
+  s_e5f652904b57b5::t_5c494e29b24555 30
+  s_e5f652904b57b5::t_ba9650aa6fa03c 125
+  s_e5f652904b57b5::t_c1d114513a1fb8 128
+  s_e5f652904b57b5::t_16b87f6d7f2966 17-19
+  s_e5f652904b57b5::t_2a9768cb7fae8f 144
+crates/honmoon-proxy/tests/mitm.rs
+  s_e5f652904b57b5::t_1f811661387f0b 90-93,135,142,144,149-175,177-178
+.please/docs/decisions/0003-adopt-hudsucker-for-tls-termination.md
+  s_e5f652904b57b5::t_ab14bd33d50efa 54-55
+crates/honmoon-proxy/tests/egress.rs
+  s_e5f652904b57b5::t_9ac1149f947469 133-168
+crates/honmoon-cli/src/main.rs
+  s_e5f652904b57b5::t_c748483165f103 156-160,165,167-173
+  s_e5f652904b57b5::t_caf2a88ee21713 55-60,64-69
+  s_e5f652904b57b5::t_e0f2e55fbd9902 54,63
+crates/honmoon-proxy/src/ca.rs
+  s_e5f652904b57b5::t_ef0be6a3db2bf4 191-200,205-231
+  s_e5f652904b57b5::t_5a9c7d95509a50 123,133
+  s_e5f652904b57b5::t_ee405f37e72258 201-204
+  s_e5f652904b57b5::t_d8f3aee625f5a1 42-46,49,52-64,75-77,79
+  s_e5f652904b57b5::t_9e3367a1281790 131-132,142-152
+  s_e5f652904b57b5::t_72c217722c3e27 153
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.9",
+  "base_commit_sha": "6dfc503b603d97a9f929fec5fe132ecb84aea0a8",
+  "prompts": {},
+  "sessions": {
+    "s_e5f652904b57b5": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d0d269ca-7aa2-4a46-901a-60dffe4b855f",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
