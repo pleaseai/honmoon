@@ -219,3 +219,20 @@ fn detects_pii_when_encoding_is_mislabeled() {
         "expected an RRN PII finding for a plaintext body mislabeled as gzip"
     );
 }
+
+/// An *unsupported* encoding we can't decode (`br`) must not skip the scan for
+/// a plaintext body either — the raw bytes are scanned, so mislabeling with an
+/// unknown codec can't evade detection.
+#[test]
+fn detects_pii_under_unsupported_encoding_label() {
+    let body = format!("plaintext with rrn={VALID_RRN} claiming brotli");
+    let request = format!(
+        "POST /submit HTTP/1.1\r\nHost: localhost\r\nContent-Encoding: br\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+        body.len(),
+        body
+    );
+    assert!(
+        rrn_audited_for(request.into_bytes()),
+        "expected an RRN PII finding for a plaintext body labeled Content-Encoding: br"
+    );
+}
