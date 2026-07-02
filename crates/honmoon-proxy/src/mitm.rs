@@ -24,8 +24,11 @@
 //! Content inspection is **detect-only**: PII findings are surfaced to the audit
 //! log but do not block the request. Enforcing content rules is a follow-up.
 //! Bodies with a supported `Content-Encoding` (`gzip`, `deflate`) are decoded —
-//! inflated output capped at [`MAX_INSPECT_BODY`] — before scanning; unsupported
-//! encodings (e.g. `br`) skip the scan and are forwarded untouched.
+//! inflated output capped at [`MAX_INSPECT_BODY`] — before scanning; a declared
+//! encoding that fails to decode falls back to scanning the raw bytes (the
+//! header is untrusted — mislabeling must not evade the scan); unsupported
+//! encodings (e.g. `br`) skip the scan. The forwarded body is always the
+//! original (still-encoded) bytes.
 //!
 //! Whether a tunnel is TLS-terminated is decided by
 //! [`should_intercept`](HonmoonHandler::should_intercept) from the gateway's
@@ -333,7 +336,7 @@ impl HonmoonHandler {
             .and_then(|raw| decode_for_inspection(content_encoding.as_deref(), raw));
         let pii = decoded
             .as_deref()
-            .and_then(|b| std::str::from_utf8(b).ok())
+            .and_then(utf8_prefix)
             .and_then(detect_pii);
 
         // Only record when something was found — every request would otherwise
@@ -452,6 +455,11 @@ fn request_host(req: &Request<Body>) -> String {
 /// inflated (capped at [`MAX_INSPECT_BODY`]) for `gzip`/`deflate` — or `None`
 /// for encodings we can't decode, which skips the scan. Detect-only either
 /// way: the original (still-encoded) bytes are what gets forwarded.
+///
+/// A declared `gzip`/`deflate` body that *fails* to decode falls back to the
+/// raw bytes: the header is untrusted client input, and skipping would let a
+/// plaintext body evade the scan by merely claiming to be compressed. Raw
+/// bytes that really are compressed harmlessly fail the UTF-8 check later.
 fn decode_for_inspection<'a>(
     encoding: Option<&str>,
     raw: &'a [u8],
@@ -459,20 +467,39 @@ fn decode_for_inspection<'a>(
     use std::borrow::Cow;
 
     let token = encoding.map(|e| e.trim().to_ascii_lowercase());
-    match token.as_deref() {
-        None | Some("") | Some("identity") => Some(Cow::Borrowed(raw)),
-        Some("gzip") | Some("x-gzip") => {
-            inflate_capped(flate2::read::MultiGzDecoder::new(raw)).map(Cow::Owned)
-        }
+    let inflated = match token.as_deref() {
+        None | Some("") | Some("identity") => return Some(Cow::Borrowed(raw)),
+        Some("gzip") | Some("x-gzip") => inflate_capped(flate2::read::MultiGzDecoder::new(raw)),
         // HTTP `deflate` is zlib-wrapped (RFC 9110 §8.4.1), but some senders
         // ship raw DEFLATE — try zlib first, then fall back to raw.
         Some("deflate") => inflate_capped(flate2::read::ZlibDecoder::new(raw))
-            .or_else(|| inflate_capped(flate2::read::DeflateDecoder::new(raw)))
-            .map(Cow::Owned),
+            .or_else(|| inflate_capped(flate2::read::DeflateDecoder::new(raw))),
         Some(other) => {
             tracing::debug!(encoding = %other, "unsupported content-encoding; body not scanned");
-            None
+            return None;
         }
+    };
+    match inflated {
+        Some(out) => Some(Cow::Owned(out)),
+        None => {
+            tracing::debug!(
+                encoding = ?token,
+                "declared content-encoding failed to decode; scanning raw bytes"
+            );
+            Some(Cow::Borrowed(raw))
+        }
+    }
+}
+
+/// The longest valid-UTF-8 prefix of `b`, tolerating only a *trailing*
+/// incomplete sequence (a capped inflate can cut a multi-byte character in
+/// half — that must not throw away the whole scan). Interior invalid bytes
+/// still mean "not text": return `None` and skip the scan.
+fn utf8_prefix(b: &[u8]) -> Option<&str> {
+    match std::str::from_utf8(b) {
+        Ok(s) => Some(s),
+        Err(e) if e.error_len().is_none() => std::str::from_utf8(&b[..e.valid_up_to()]).ok(),
+        Err(_) => None,
     }
 }
 
@@ -582,6 +609,11 @@ mod tests {
         let compressed = gzip(b"rrn=670125-1230644");
         let decoded = decode_for_inspection(Some("gzip"), &compressed).expect("decode gzip");
         assert_eq!(&decoded[..], b"rrn=670125-1230644");
+        // Token normalization (case/whitespace) and the legacy alias.
+        let decoded = decode_for_inspection(Some(" GZIP "), &compressed).expect("decode GZIP");
+        assert_eq!(&decoded[..], b"rrn=670125-1230644");
+        let decoded = decode_for_inspection(Some("x-gzip"), &compressed).expect("decode x-gzip");
+        assert_eq!(&decoded[..], b"rrn=670125-1230644");
     }
 
     #[test]
@@ -610,8 +642,33 @@ mod tests {
     fn decode_unsupported_encoding_skips_scan() {
         assert!(decode_for_inspection(Some("br"), b"anything").is_none());
         assert!(decode_for_inspection(Some("gzip, br"), b"anything").is_none());
-        // Corrupt gzip stream — nothing reliable to scan.
-        assert!(decode_for_inspection(Some("gzip"), b"not gzip at all").is_none());
+    }
+
+    #[test]
+    fn mislabeled_encoding_falls_back_to_raw_bytes() {
+        // The header is untrusted: a plaintext body claiming to be compressed
+        // must still be scanned (as-is), not skipped.
+        let plain = b"plaintext rrn=670125-1230644";
+        assert_eq!(
+            decode_for_inspection(Some("gzip"), plain).as_deref(),
+            Some(&plain[..])
+        );
+        // Neither zlib nor raw DEFLATE — the deflate chain falls back too.
+        assert_eq!(
+            decode_for_inspection(Some("deflate"), plain).as_deref(),
+            Some(&plain[..])
+        );
+    }
+
+    #[test]
+    fn utf8_prefix_tolerates_only_trailing_truncation() {
+        assert_eq!(utf8_prefix(b"plain ascii"), Some("plain ascii"));
+        // "한" (3 bytes) cut after 2 bytes — the valid prefix is scanned.
+        let mut cut = b"rrn ends with ".to_vec();
+        cut.extend_from_slice(&"한".as_bytes()[..2]);
+        assert_eq!(utf8_prefix(&cut), Some("rrn ends with "));
+        // Interior invalid bytes mean "not text" — no scan.
+        assert_eq!(utf8_prefix(b"bad \xFF\xFF middle"), None);
     }
 
     #[test]
@@ -622,6 +679,39 @@ mod tests {
         assert!(bomb.len() < MAX_INSPECT_BODY, "bomb should compress small");
         let decoded = decode_for_inspection(Some("gzip"), &bomb).expect("decode bomb");
         assert_eq!(decoded.len(), MAX_INSPECT_BODY, "inflate must stop at cap");
+    }
+
+    #[tokio::test]
+    async fn forwarded_body_stays_encoded_after_inspection() {
+        // Only the scan sees decoded bytes — the forwarded body must be the
+        // original (still-encoded) bytes, or every gzip request would break.
+        let policy =
+            honmoon_core::Policy::from_yaml("egress:\n  default: allow\n").expect("policy");
+        let handler = HonmoonHandler::new(GatewayState::new(policy));
+
+        let compressed = gzip(b"rrn=670125-1230644");
+        let req = Request::builder()
+            .method("POST")
+            .uri("https://localhost/submit")
+            .header(header::CONTENT_ENCODING, "gzip")
+            .header(header::CONTENT_LENGTH, compressed.len().to_string())
+            .body(Body::from(compressed.clone()))
+            .expect("build request");
+
+        let RequestOrResponse::Request(forwarded) = handler.inspect_body(req).await else {
+            panic!("detect-only inspection must forward the request");
+        };
+        let body = forwarded
+            .into_body()
+            .collect()
+            .await
+            .expect("collect forwarded body")
+            .to_bytes();
+        assert_eq!(
+            &body[..],
+            &compressed[..],
+            "forwarded body must stay encoded"
+        );
     }
 
     #[tokio::test]

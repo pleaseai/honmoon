@@ -202,3 +202,20 @@ fn detects_pii_in_gzip_compressed_body() {
         "expected an RRN PII finding for a gzip-compressed body"
     );
 }
+
+/// The `Content-Encoding` header is untrusted client input: a *plaintext* body
+/// mislabeled as gzip must not evade the scan — decode failure falls back to
+/// scanning the raw bytes.
+#[test]
+fn detects_pii_when_encoding_is_mislabeled() {
+    let body = format!("plaintext with rrn={VALID_RRN} but a lying header");
+    let request = format!(
+        "POST /submit HTTP/1.1\r\nHost: localhost\r\nContent-Encoding: gzip\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+        body.len(),
+        body
+    );
+    assert!(
+        rrn_audited_for(request.into_bytes()),
+        "expected an RRN PII finding for a plaintext body mislabeled as gzip"
+    );
+}
