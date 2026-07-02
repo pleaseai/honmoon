@@ -8,7 +8,7 @@ Honmoon is a monorepo that separates languages by responsibility.
 
 | Layer | Language / Tool | Why |
 |-------|-----------------|-----|
-| Data plane | **Rust** (edition 2024) | Wire-level proxy, protocol parsers, TLS, CEL eval — performance & memory safety critical. Single-binary deploy. Phase 1 egress is a tokio CONNECT proxy; Pingora deferred to the TLS-inspection phase ([ADR-0002](../decisions/0002-phase1-connect-proxy-on-tokio.md)). |
+| Data plane | **Rust** (edition 2024) | Wire-level proxy, protocol parsers, TLS, CEL eval — performance & memory safety critical. Single-binary deploy. The egress proxy runs on **hudsucker** (MITM HTTP/S on hyper + rustls + rcgen) for TLS termination + content inspection ([ADR-0003](../decisions/0003-adopt-hudsucker-for-tls-termination.md)); Pingora was evaluated and rejected ([ADR-0002](../decisions/0002-phase1-connect-proxy-on-tokio.md)). |
 | Control plane | **TypeScript on Bun** | CLI, policy compiler/validation, management & audit API. Fast iteration, ESM, native HTTP server. |
 | Dashboard | **React 19 + Vite 8 + Tailwind 4** | SPA embedded into the Rust binary via `rust-embed`. Mirrors clawpatrol for component reuse. |
 | Egress backend (optional) | **Squid (Docker)** | Battle-tested HTTP proxy + SSL Bump as an alternate backend. |
@@ -17,10 +17,12 @@ Honmoon is a monorepo that separates languages by responsibility.
 
 - `honmoon-core` — policy model (`Policy`/`Egress`/`Rule`/`Verdict`/`Facts` + `HttpFacts`/`SqlFacts`/`K8sFacts`), YAML parsing, the decision `engine` (`decide()`: CEL + egress matching), and `protocols` (PostgreSQL `'Q'` + SQL + Kubernetes API parsers). Transport-agnostic.
   - deps: `serde`, `serde_yaml` (⚠️ deprecated, see TD-002), `thiserror`, `tracing`, `cel-interpreter`
-- `honmoon-proxy` — terminating `CONNECT` egress proxy (`gateway`, raw tokio) + `evaluate()`; SQL/K8s parsers later.
-  - deps: `honmoon-core`, `tokio`, `serde`, `thiserror`, `tracing`
-  - Phase 1 enforces a host-level allowlist over the CONNECT tunnel. Pingora is **deferred** to the
-    TLS-terminating HTTP-inspection phase. See [ADR-0002](../decisions/0002-phase1-connect-proxy-on-tokio.md).
+- `honmoon-proxy` — egress proxy on **hudsucker** (`gateway` + `mitm` handler + `ca`) enforcing the
+  host allowlist and, when `--tls-intercept` is set, terminating TLS to scan request bodies
+  (detect-only). SQL/K8s wire parsers later.
+  - deps: `honmoon-core`, `tokio`, `hudsucker`, `http-body-util`, `serde`, `thiserror`, `tracing`
+  - Host-level allowlist applies to every tunnel (intercepted or raw); TLS termination (MITM) uses a
+    local rcgen CA agents must trust. See [ADR-0003](../decisions/0003-adopt-hudsucker-for-tls-termination.md).
 - `honmoon-cli` — `honmoon` binary (`run` / `gateway` / `join`).
   - deps: `honmoon-core`, `honmoon-proxy`, `tokio`, `clap`, `anyhow`, `tracing`, `tracing-subscriber`
 

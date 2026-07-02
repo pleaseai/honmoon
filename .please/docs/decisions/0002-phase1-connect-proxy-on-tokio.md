@@ -4,7 +4,9 @@
 
 Accepted
 
-(Supersedes the implementation choice in [ADR-0001](0001-adopt-pingora-http-data-plane.md).)
+(Supersedes the implementation choice in [ADR-0001](0001-adopt-pingora-http-data-plane.md). The
+TLS-terminating framework this ADR deferred is chosen in
+[ADR-0003](0003-adopt-hudsucker-for-tls-termination.md): hudsucker, not Pingora.)
 
 ## Context
 
