@@ -1,0 +1,21 @@
+.claude/agent-memory/review-review-silent-failure-hunter/feedback_framing_deliberate_skips.md
+  s_e5f652904b57b5::t_cabe0cec4753f2 1-33
+.claude/agent-memory/review-review-silent-failure-hunter/MEMORY.md
+  s_e5f652904b57b5::t_e5f4c0e1afc300 1
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.9",
+  "base_commit_sha": "a4e2aba20823d49b4bfdaa18e2e9f0e245f5e174",
+  "prompts": {},
+  "sessions": {
+    "s_e5f652904b57b5": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d0d269ca-7aa2-4a46-901a-60dffe4b855f",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
