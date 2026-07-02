@@ -51,10 +51,22 @@ enum Command {
         tls_intercept: bool,
         /// CA certificate path (PEM). Auto-generated on first run if missing.
         /// Install this in agents' trust store to enable TLS termination.
-        #[arg(long, value_name = "FILE")]
+        /// Must be given together with --ca-key and --tls-intercept.
+        #[arg(
+            long,
+            value_name = "FILE",
+            requires = "ca_key",
+            requires = "tls_intercept"
+        )]
         ca_cert: Option<PathBuf>,
         /// CA private key path (PEM). Auto-generated on first run if missing.
-        #[arg(long, value_name = "FILE")]
+        /// Must be given together with --ca-cert and --tls-intercept.
+        #[arg(
+            long,
+            value_name = "FILE",
+            requires = "ca_cert",
+            requires = "tls_intercept"
+        )]
         ca_key: Option<PathBuf>,
     },
     /// Join a gateway and route host traffic through it.
@@ -141,18 +153,24 @@ fn gateway(args: GatewayArgs) -> Result<()> {
         None => Arc::new(AuditLog::new(1024)),
     };
 
-    let ca_cert_path = ca_cert.unwrap_or_else(|| default_ca_dir().join("ca.cer"));
-    let ca_key_path = ca_key.unwrap_or_else(|| default_ca_dir().join("ca.key"));
-    let ca = CaMaterial::load_or_generate(&ca_cert_path, &ca_key_path)
-        .with_context(|| format!("loading CA from {}", ca_cert_path.display()))?;
-    let intercept = if tls_intercept {
+    let (ca, intercept) = if tls_intercept {
+        let ca_cert_path = ca_cert.unwrap_or_else(|| default_ca_dir().join("ca.cer"));
+        let ca_key_path = ca_key.unwrap_or_else(|| default_ca_dir().join("ca.key"));
+        let ca = CaMaterial::load_or_generate(&ca_cert_path, &ca_key_path)
+            .with_context(|| format!("loading CA from {}", ca_cert_path.display()))?;
         tracing::info!(
             ca_cert = %ca_cert_path.display(),
             "TLS termination enabled (detect-only); agents must trust this CA certificate"
         );
-        InterceptPolicy::All
+        (ca, InterceptPolicy::All)
     } else {
-        InterceptPolicy::None
+        // No interception → no tunnel is ever terminated, so don't create (or
+        // depend on) persisted CA files; an ephemeral in-memory CA satisfies
+        // the proxy builder, same as `GatewayState::new`.
+        (
+            CaMaterial::generate().context("generate ephemeral CA")?,
+            InterceptPolicy::None,
+        )
     };
 
     let state = GatewayState {

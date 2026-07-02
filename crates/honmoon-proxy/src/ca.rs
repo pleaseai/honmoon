@@ -39,13 +39,29 @@ impl CaMaterial {
     /// Load the CA from `cert_path`/`key_path`, generating and persisting a new
     /// one if either file is missing.
     ///
-    /// The key file is created with `0600` permissions on Unix.
+    /// The key file is created with `0600` permissions on Unix; a pre-existing
+    /// key with looser permissions is tightened back to `0600` on load. Loaded
+    /// material is validated (the pair must build an authority) so corrupt or
+    /// partially-written files fail startup with an error instead of panicking
+    /// later at [`authority`](Self::authority).
     pub fn load_or_generate(cert_path: &Path, key_path: &Path) -> io::Result<Self> {
         if cert_path.exists() && key_path.exists() {
-            return Ok(Self {
+            let material = Self {
                 cert_pem: fs::read_to_string(cert_path)?,
                 key_pem: fs::read_to_string(key_path)?,
-            });
+            };
+            material.authority().map_err(|e| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!(
+                        "invalid CA material in {} / {}: {e} (delete both files to regenerate)",
+                        cert_path.display(),
+                        key_path.display()
+                    ),
+                )
+            })?;
+            enforce_secret_permissions(key_path)?;
+            return Ok(material);
         }
 
         let material =
@@ -56,8 +72,11 @@ impl CaMaterial {
         if let Some(parent) = key_path.parent() {
             fs::create_dir_all(parent)?;
         }
-        fs::write(cert_path, &material.cert_pem)?;
+        // Key first: if the process dies between the two writes, the missing
+        // cert makes the next start regenerate the pair instead of loading a
+        // half-written one.
         write_secret(key_path, &material.key_pem)?;
+        fs::write(cert_path, &material.cert_pem)?;
         Ok(material)
     }
 
@@ -101,7 +120,7 @@ impl CaMaterial {
 #[cfg(unix)]
 fn write_secret(path: &Path, contents: &str) -> io::Result<()> {
     use std::io::Write;
-    use std::os::unix::fs::OpenOptionsExt;
+    use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 
     let mut file = fs::OpenOptions::new()
         .write(true)
@@ -109,12 +128,27 @@ fn write_secret(path: &Path, contents: &str) -> io::Result<()> {
         .truncate(true)
         .mode(0o600)
         .open(path)?;
+    // `mode` only applies to newly-created files; a pre-existing key with
+    // looser permissions must be tightened explicitly.
+    file.set_permissions(fs::Permissions::from_mode(0o600))?;
     file.write_all(contents.as_bytes())
 }
 
 #[cfg(not(unix))]
 fn write_secret(path: &Path, contents: &str) -> io::Result<()> {
     fs::write(path, contents)
+}
+
+/// Force owner-only permissions (`0600`) on an existing secret file (Unix).
+#[cfg(unix)]
+fn enforce_secret_permissions(path: &Path) -> io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    fs::set_permissions(path, fs::Permissions::from_mode(0o600))
+}
+
+#[cfg(not(unix))]
+fn enforce_secret_permissions(_path: &Path) -> io::Result<()> {
+    Ok(())
 }
 
 #[cfg(test)]
@@ -150,6 +184,47 @@ mod tests {
         let second = CaMaterial::load_or_generate(&cert, &key).expect("second load");
         assert_eq!(first.cert_pem, second.cert_pem);
         assert_eq!(first.key_pem, second.key_pem);
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn load_rejects_corrupt_material() {
+        let dir = scratch_dir("corrupt");
+        let cert = dir.join("ca.cer");
+        let key = dir.join("ca.key");
+        CaMaterial::load_or_generate(&cert, &key).expect("generate");
+
+        // Simulate a partial write (process killed between cert and key): an
+        // empty key must fail the load with an error, not panic later.
+        fs::write(&key, "").expect("truncate key");
+        // (No `expect_err`: CaMaterial deliberately has no Debug — secret key.)
+        let Err(err) = CaMaterial::load_or_generate(&cert, &key) else {
+            panic!("corrupt key must fail the load");
+        };
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn existing_key_permissions_are_tightened_on_load() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = scratch_dir("tighten");
+        let cert = dir.join("ca.cer");
+        let key = dir.join("ca.key");
+        CaMaterial::load_or_generate(&cert, &key).expect("generate");
+
+        // Loosen the key, then reload: the load path must restore 0600.
+        fs::set_permissions(&key, fs::Permissions::from_mode(0o644)).expect("loosen");
+        CaMaterial::load_or_generate(&cert, &key).expect("reload");
+        let mode = fs::metadata(&key)
+            .expect("key metadata")
+            .permissions()
+            .mode();
+        assert_eq!(mode & 0o777, 0o600, "reload must tighten key to 0600");
 
         let _ = fs::remove_dir_all(&dir);
     }

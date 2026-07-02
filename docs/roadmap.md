@@ -14,7 +14,9 @@ Greenfield monorepo, scaffolded and building:
 - Bun workspace (`@honmoon/policy`, `@honmoon/cli`, `@honmoon/api`) + React/Vite/Tailwind dashboard.
 - Policy model (YAML + JSON Schema), example policy, `evaluate()` with domain matching.
 - `honmoon run/gateway/join` are CLI stubs (`bail!`).
-- Decided: Pingora for the HTTP data plane ([ADR-0001](../.please/docs/decisions/0001-adopt-pingora-http-data-plane.md)).
+- Decided: Pingora for the HTTP data plane ([ADR-0001](../.please/docs/decisions/0001-adopt-pingora-http-data-plane.md)) —
+  since superseded: the data plane runs on raw tokio ([ADR-0002](../.please/docs/decisions/0002-phase1-connect-proxy-on-tokio.md))
+  and hudsucker for TLS termination ([ADR-0003](../.please/docs/decisions/0003-adopt-hudsucker-for-tls-termination.md)).
 
 ---
 
@@ -25,7 +27,7 @@ Greenfield monorepo, scaffolded and building:
 | Monorepo scaffold (Cargo + Bun + dashboard) | ✅ |
 | Policy model + JSON Schema + example policy | ✅ |
 | Knowledge docs, ARCHITECTURE.md, business model | ✅ |
-| ADR-0001 (Pingora) | ✅ |
+| ADR-0001 (Pingora — superseded by ADR-0002/0003) | ✅ |
 
 ---
 
@@ -120,10 +122,10 @@ management and compliance reporting are Paid (Phase 7).
 - [ ] Tier-2 format / dictionary detectors (postal code, medical IDs, DOB / age, …)
 - [x] Expose `pii.types` / `pii.count` / `pii.max_severity` as CEL facts; wire to `allow`/`deny`/`pause`
   (`Facts.pii`, registered in `engine::eval_condition`, carried in the audit `FactsSummary`)
-- [~] Detect (audit-only) vs block (enforcing) modes — precision-first block, recall-first audit.
+- [ ] Detect (audit-only) vs block (enforcing) modes — precision-first block, recall-first audit.
   Detect-only over terminated TLS is live ([ADR-0003](../.please/docs/decisions/0003-adopt-hudsucker-for-tls-termination.md)); enforcing (deny/pause on `pii`) is the fast follow.
 - [ ] (optional) NER assist layer for PERSON / ADDRESS, kept **off** the inline path (audit / async)
-- [~] Benchmark harness ([`pii-benchmark-goals.md`](./pii-benchmark-goals.md)) — `pii_scan` bridge +
+- [ ] Benchmark harness ([`pii-benchmark-goals.md`](./pii-benchmark-goals.md)) — `pii_scan` bridge +
   `score.ts` measurement loop in place (Tier-1 F1 1.000 on `honmoon-synth`, §9.1); CI regression gate TODO
 
 **Exit criteria**: a request body carrying a valid-checksum RRN to a non-allowlisted host is
@@ -139,7 +141,7 @@ Note: fleet-wide DLP policy management and compliance / exfil reporting are Paid
 - [ ] `honmoon gateway` — standalone central proxy loading policy, accepting clients
 - [ ] `honmoon run` hardened isolation (Linux netns / macOS NetworkExtension)
 - [ ] `honmoon join` — route host traffic to a gateway via tunnel (WireGuard)
-- [ ] Policy hot-reload via Pingora graceful reload
+- [ ] Policy hot-reload (graceful reload without dropping tunnels)
 
 **Exit criteria**: all three modes work end-to-end on Linux; documented setup.
 

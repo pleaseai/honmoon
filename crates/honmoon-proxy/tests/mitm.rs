@@ -87,8 +87,10 @@ fn client_config(ca_cert_pem: &str) -> ClientConfig {
         .with_no_client_auth()
 }
 
-#[test]
-fn terminates_tls_and_detects_pii_in_body() {
+/// Run an intercepted HTTPS request through the proxy (CONNECT to `localhost`,
+/// real TLS handshake against the minted leaf, send `request` raw) and return
+/// whether the audit log recorded an RRN PII finding for it.
+fn rrn_audited_for(request: String) -> bool {
     let audit = Arc::new(AuditLog::new(1024));
     let policy =
         Policy::from_yaml("egress:\n  default: deny\n  allow:\n    - localhost\n").unwrap();
@@ -130,29 +132,49 @@ fn terminates_tls_and_detects_pii_in_body() {
             .await
             .expect("TLS handshake through the terminating proxy");
 
-        // 3. Send an HTTPS request whose body carries a valid RRN.
-        let body = format!("form field with rrn={VALID_RRN} inside");
-        let request = format!(
-            "POST /submit HTTP/1.1\r\nHost: localhost\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
-            body.len(),
-            body
-        );
+        // 3. Send the request over the decrypted channel.
         tls.write_all(request.as_bytes()).await.unwrap();
         // Drain whatever the proxy returns (a 502 once the upstream leg fails).
         let mut sink = Vec::new();
         let _ = tls.read_to_end(&mut sink).await;
     });
 
-    // The decrypted body must have produced an RRN finding in the audit log.
+    // Did the decrypted body produce an RRN finding in the audit log?
     let events = audit.recent(50);
-    let found = events.iter().any(|e| {
+    events.iter().any(|e| {
         e.facts
             .pii
             .as_ref()
             .is_some_and(|p| p.count > 0 && p.types.iter().any(|t| t == "RRN"))
-    });
+    })
+}
+
+#[test]
+fn terminates_tls_and_detects_pii_in_body() {
+    let body = format!("form field with rrn={VALID_RRN} inside");
+    let request = format!(
+        "POST /submit HTTP/1.1\r\nHost: localhost\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+        body.len(),
+        body
+    );
     assert!(
-        found,
-        "expected an audit event with an RRN PII finding; got {events:?}"
+        rrn_audited_for(request),
+        "expected an audit event with an RRN PII finding"
+    );
+}
+
+/// Omitting `Content-Length` (chunked transfer encoding) must not bypass the
+/// scan: unknown-length bodies are buffered up to the cap and inspected too.
+#[test]
+fn detects_pii_in_chunked_body_without_content_length() {
+    let body = format!("form field with rrn={VALID_RRN} inside");
+    let request = format!(
+        "POST /submit HTTP/1.1\r\nHost: localhost\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n{:x}\r\n{}\r\n0\r\n\r\n",
+        body.len(),
+        body
+    );
+    assert!(
+        rrn_audited_for(request),
+        "expected an RRN PII finding for a chunked body (no Content-Length)"
     );
 }

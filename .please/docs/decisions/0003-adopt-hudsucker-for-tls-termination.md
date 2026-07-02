@@ -51,7 +51,8 @@ Adopt **hudsucker** as the TLS-termination engine for `honmoon-proxy`.
   egress allowlist keeps working for every tunnel — intercepted or not — and cannot be bypassed by
   skipping CONNECT. `403`/`pause`-hold semantics are preserved.
 - **Selective termination** via `InterceptPolicy` (`should_intercept`): `None` (raw tunnel — the
-  default and the Phase 1 behavior), `All`, or a host set. Cert-pinned hosts stay pass-through.
+  default and the Phase 1 behavior), `All`, or a host set. Cert-pinned hosts must be configured
+  as pass-through (excluded from the intercepted set) — there is no automatic pin detection.
 - **Detect-only v1**: decrypted request bodies are scanned with `detect_pii` and findings are
   recorded to the audit log (`verdict` carries the would-be decision), but content does **not**
   block yet. Enforcing content rules is a fast follow.

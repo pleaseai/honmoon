@@ -130,3 +130,39 @@ fn plain_http_to_denied_host_is_blocked_with_403() {
         "expected 403, got: {resp:?}"
     );
 }
+
+/// An absolute-form `https://` request sent *without* a prior CONNECT must not
+/// skip the host gate: the scheme alone doesn't prove the tunnel was authorized
+/// (hudsucker forwards such requests like any other), so trusting it would let
+/// a client bypass the egress allowlist.
+#[test]
+fn absolute_form_https_without_connect_is_blocked_with_403() {
+    let proxy = start_proxy(allow_policy("allowed.example"));
+
+    let mut s = connect_to_proxy(proxy);
+    s.write_all(b"GET https://blocked.example/ HTTP/1.1\r\nHost: blocked.example\r\n\r\n")
+        .unwrap();
+    let resp = read_head(&mut s);
+
+    assert!(
+        resp.starts_with("HTTP/1.1 403"),
+        "expected 403, got: {resp:?}"
+    );
+}
+
+/// Origin-form requests (`GET /`) carry their destination only in the `Host`
+/// header; the gate must fall back to it rather than evaluating an empty host.
+#[test]
+fn origin_form_request_is_gated_via_host_header() {
+    let proxy = start_proxy(allow_policy("allowed.example"));
+
+    let mut s = connect_to_proxy(proxy);
+    s.write_all(b"GET / HTTP/1.1\r\nHost: blocked.example\r\n\r\n")
+        .unwrap();
+    let resp = read_head(&mut s);
+
+    assert!(
+        resp.starts_with("HTTP/1.1 403"),
+        "expected 403, got: {resp:?}"
+    );
+}
