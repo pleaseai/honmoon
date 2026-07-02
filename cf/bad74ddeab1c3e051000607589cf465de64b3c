@@ -1,0 +1,35 @@
+crates/honmoon-proxy/Cargo.toml
+  s_e5f652904b57b5::t_beb0d4aaef814b 18-19,25-26
+crates/honmoon-proxy/src/mitm.rs
+  s_e5f652904b57b5::t_3f7baaacfca86c 563-626
+  s_e5f652904b57b5::t_ff6c447a1a9a78 291-296
+  s_e5f652904b57b5::t_dad0804737145b 327-334
+  s_e5f652904b57b5::t_8fff5281ac5b80 26-28
+  s_e5f652904b57b5::t_edbc085ddf8447 450-491
+crates/honmoon-proxy/tests/mitm.rs
+  s_e5f652904b57b5::t_f235016854c1bb 177,181-202
+  s_e5f652904b57b5::t_06b24642f5ee37 161
+  s_e5f652904b57b5::t_d13f5824c32a42 93
+  s_e5f652904b57b5::t_fd1f57c7f62ad3 136
+  s_e5f652904b57b5::t_b32ee868c28d92 203-204
+Cargo.toml
+  s_e5f652904b57b5::t_ef8e6f734a2327 35-36
+Cargo.lock
+  s_e5f652904b57b5::t_7e86edee505508 1036
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.9",
+  "base_commit_sha": "cfbad74ddeab1c3e051000607589cf465de64b3c",
+  "prompts": {},
+  "sessions": {
+    "s_e5f652904b57b5": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d0d269ca-7aa2-4a46-901a-60dffe4b855f",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
