@@ -15,8 +15,12 @@ thiserror.workspace = true
 tracing.workspace = true
 hudsucker.workspace = true
 http-body-util.workspace = true
+# Decode gzip/deflate request bodies for PII inspection (#12).
+flate2.workspace = true
 
 [dev-dependencies]
 # TLS client for the MITM loopback test (trusts the local CA).
 tokio-rustls = "0.26"
 rustls-pemfile = "2"
+# Compress test bodies for the Content-Encoding inspection tests.
+flate2.workspace = true

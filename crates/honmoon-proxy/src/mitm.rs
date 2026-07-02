@@ -23,6 +23,9 @@
 //!
 //! Content inspection is **detect-only**: PII findings are surfaced to the audit
 //! log but do not block the request. Enforcing content rules is a follow-up.
+//! Bodies with a supported `Content-Encoding` (`gzip`, `deflate`) are decoded —
+//! inflated output capped at [`MAX_INSPECT_BODY`] — before scanning; unsupported
+//! encodings (e.g. `br`) skip the scan and are forwarded untouched.
 //!
 //! Whether a tunnel is TLS-terminated is decided by
 //! [`should_intercept`](HonmoonHandler::should_intercept) from the gateway's
@@ -285,6 +288,12 @@ impl HonmoonHandler {
             .and_then(|v| v.to_str().ok())
             .and_then(|v| v.parse::<usize>().ok());
 
+        let content_encoding = req
+            .headers()
+            .get(header::CONTENT_ENCODING)
+            .and_then(|v| v.to_str().ok())
+            .map(str::to_owned);
+
         let (parts, body) = req.into_parts();
 
         // Buffer small bodies for scanning; stream anything larger than
@@ -315,7 +324,14 @@ impl HonmoonHandler {
             },
         };
 
-        let pii = scanned
+        // Compressed bodies must not evade the scan: decode supported
+        // `Content-Encoding`s (inflated output capped at `MAX_INSPECT_BODY`)
+        // before scanning. Only the scan sees the decoded bytes — the original
+        // (still-encoded) body is what gets forwarded.
+        let decoded = scanned
+            .as_deref()
+            .and_then(|raw| decode_for_inspection(content_encoding.as_deref(), raw));
+        let pii = decoded
             .as_deref()
             .and_then(|b| std::str::from_utf8(b).ok())
             .and_then(detect_pii);
@@ -431,6 +447,48 @@ fn request_host(req: &Request<Body>) -> String {
         .unwrap_or_default()
 }
 
+/// Decode a buffered request body for inspection according to its
+/// `Content-Encoding`. Returns the bytes to scan — borrowed for identity,
+/// inflated (capped at [`MAX_INSPECT_BODY`]) for `gzip`/`deflate` — or `None`
+/// for encodings we can't decode, which skips the scan. Detect-only either
+/// way: the original (still-encoded) bytes are what gets forwarded.
+fn decode_for_inspection<'a>(
+    encoding: Option<&str>,
+    raw: &'a [u8],
+) -> Option<std::borrow::Cow<'a, [u8]>> {
+    use std::borrow::Cow;
+
+    let token = encoding.map(|e| e.trim().to_ascii_lowercase());
+    match token.as_deref() {
+        None | Some("") | Some("identity") => Some(Cow::Borrowed(raw)),
+        Some("gzip") | Some("x-gzip") => {
+            inflate_capped(flate2::read::MultiGzDecoder::new(raw)).map(Cow::Owned)
+        }
+        // HTTP `deflate` is zlib-wrapped (RFC 9110 §8.4.1), but some senders
+        // ship raw DEFLATE — try zlib first, then fall back to raw.
+        Some("deflate") => inflate_capped(flate2::read::ZlibDecoder::new(raw))
+            .or_else(|| inflate_capped(flate2::read::DeflateDecoder::new(raw)))
+            .map(Cow::Owned),
+        Some(other) => {
+            tracing::debug!(encoding = %other, "unsupported content-encoding; body not scanned");
+            None
+        }
+    }
+}
+
+/// Inflate at most [`MAX_INSPECT_BODY`] bytes (decompression-bomb guard) —
+/// output beyond the cap is truncated, so the scan sees the capped prefix.
+/// Returns `None` for a corrupt stream (nothing reliable to scan).
+fn inflate_capped<R: std::io::Read>(reader: R) -> Option<Vec<u8>> {
+    use std::io::Read;
+
+    let mut out = Vec::new();
+    match reader.take(MAX_INSPECT_BODY as u64).read_to_end(&mut out) {
+        Ok(_) => Some(out),
+        Err(_) => None,
+    }
+}
+
 /// Result of buffering an unknown-length body up to a cap.
 enum Buffered {
     /// The body ended within the cap — fully buffered (trailers dropped, like
@@ -501,6 +559,70 @@ impl HttpBody for PrefixedBody {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn gzip(data: &[u8]) -> Vec<u8> {
+        use std::io::Write;
+        let mut enc = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        enc.write_all(data).expect("gzip write");
+        enc.finish().expect("gzip finish")
+    }
+
+    #[test]
+    fn decode_identity_passes_bytes_through() {
+        let raw = b"plain body";
+        assert_eq!(decode_for_inspection(None, raw).as_deref(), Some(&raw[..]));
+        assert_eq!(
+            decode_for_inspection(Some("identity"), raw).as_deref(),
+            Some(&raw[..])
+        );
+    }
+
+    #[test]
+    fn decode_gzip_inflates_body() {
+        let compressed = gzip(b"rrn=670125-1230644");
+        let decoded = decode_for_inspection(Some("gzip"), &compressed).expect("decode gzip");
+        assert_eq!(&decoded[..], b"rrn=670125-1230644");
+    }
+
+    #[test]
+    fn decode_deflate_handles_zlib_and_raw() {
+        use std::io::Write;
+
+        let mut zlib = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::default());
+        zlib.write_all(b"zlib-wrapped").unwrap();
+        let zlib = zlib.finish().unwrap();
+        assert_eq!(
+            decode_for_inspection(Some("deflate"), &zlib).as_deref(),
+            Some(&b"zlib-wrapped"[..])
+        );
+
+        let mut raw =
+            flate2::write::DeflateEncoder::new(Vec::new(), flate2::Compression::default());
+        raw.write_all(b"raw-deflate").unwrap();
+        let raw = raw.finish().unwrap();
+        assert_eq!(
+            decode_for_inspection(Some("deflate"), &raw).as_deref(),
+            Some(&b"raw-deflate"[..])
+        );
+    }
+
+    #[test]
+    fn decode_unsupported_encoding_skips_scan() {
+        assert!(decode_for_inspection(Some("br"), b"anything").is_none());
+        assert!(decode_for_inspection(Some("gzip, br"), b"anything").is_none());
+        // Corrupt gzip stream — nothing reliable to scan.
+        assert!(decode_for_inspection(Some("gzip"), b"not gzip at all").is_none());
+    }
+
+    #[test]
+    fn decompression_bomb_is_capped() {
+        // Highly compressible payload far over the cap: a few KiB compressed,
+        // 4× MAX_INSPECT_BODY inflated. The decoder must stop at the cap.
+        let bomb = gzip(&vec![0u8; MAX_INSPECT_BODY * 4]);
+        assert!(bomb.len() < MAX_INSPECT_BODY, "bomb should compress small");
+        let decoded = decode_for_inspection(Some("gzip"), &bomb).expect("decode bomb");
+        assert_eq!(decoded.len(), MAX_INSPECT_BODY, "inflate must stop at cap");
+    }
 
     #[tokio::test]
     async fn unknown_length_body_within_cap_is_fully_buffered() {
