@@ -129,9 +129,9 @@ caller (session salt + ordered secrets)
 
 ## Tasks
 
-- [ ] T001 Module scaffold: ASCII placeholder format + `SecretTokenizer` construction (session salt + order-preserving deduped secrets), `HMAC-SHA256(salt, secret)` placeholder minting, redacted `Debug` and no `Serialize` on secret-bearing types (file: crates/honmoon-core/src/secret_tokenizer.rs)
+- [x] T001 Module scaffold: ASCII placeholder format + `SecretTokenizer` construction (session salt + order-preserving deduped secrets), `HMAC-SHA256(salt, secret)` placeholder minting, redacted `Debug` and no `Serialize` on secret-bearing types (file: crates/honmoon-core/src/secret_tokenizer.rs)
   STOP: if the MAC construction uses the salt as hashed data rather than the MAC key (or a non-keyed hash is substituted), the confused-deputy property fails — stop before anything depends on it.
-- [ ] T002 Implement `tokenize` via `aho-corasick` leftmost-longest (ties by registration order), referential idempotence skip, mapping holds only substituted secrets (file: crates/honmoon-core/src/secret_tokenizer.rs) (depends on T001)
+- [x] T002 Implement `tokenize` via `aho-corasick` leftmost-longest (ties by registration order), referential idempotence skip, mapping holds only substituted secrets (file: crates/honmoon-core/src/secret_tokenizer.rs) (depends on T001)
   STOP: if leftmost-longest / registration-order tie-break can't be reproduced in a test with the chosen matcher, stop and revisit the matcher.
 - [ ] T003 Implement `StreamingDetokenizer` (push/finish): bounded cross-chunk buffer (max placeholder length) with re-scan on invalidated false-start, provenance-bound substitution (mapping placeholders only), fail-safe flush of partial/unknown tokens as verbatim text (file: crates/honmoon-core/src/secret_tokenizer.rs) (depends on T002)
 - [ ] T004 Whole-text `detokenize` as a `push`+`finish` wrapper over T003; round-trip + idempotence property tests over an adversarial corpus (file: crates/honmoon-core/src/secret_tokenizer.rs) (depends on T002, T003)
@@ -247,6 +247,7 @@ overlap/idempotence (SC-005) are exercised by the corpus sweeps in T004/T005.
 
 - [x] (2026-07-07 KST) T001 Module scaffold: ASCII placeholder format + `SecretTokenizer` construction (session salt + order-preserving deduped secrets), `HMAC-SHA256(salt, secret)` placeholder minting, redacted `Debug` and no `Serialize` on secret-bearing types
 - [x] (2026-07-07 20:30 KST) T002 Implement `tokenize` via `aho-corasick` leftmost-longest (ties by registration order), referential idempotence skip, mapping holds only substituted secrets
+- [x] (2026-07-07 21:15 KST) T003 Implement `StreamingDetokenizer` (push/finish): bounded cross-chunk buffer with re-scan on invalidated false-start, provenance-bound substitution, fail-safe flush of partial/unknown tokens as verbatim text
 
 ## Decision Log
 
@@ -280,3 +281,21 @@ overlap/idempotence (SC-005) are exercised by the corpus sweeps in T004/T005.
   text for anyone auditing the dependency graph later.
   Evidence: `grep -n "hmac" Cargo.lock` returned no matches prior to this task; after `cargo build`,
   `Cargo.lock` gained a `name = "hmac"` / `version = "0.12.1"` entry.
+
+- Observation (T003): a naive "found `PLACEHOLDER_PREFIX`, take the next `MAX_PLACEHOLDER_LEN`
+  bytes as the candidate" step can panic on adversarial (non-ASCII) input: if the buffer already
+  has a full candidate window but a multi-byte UTF-8 character straddles the byte offset
+  `p + MAX_PLACEHOLDER_LEN`, slicing at that offset is not a valid `char` boundary. Fixed by
+  gating the candidate slice on `buffer.is_char_boundary(MAX_PLACEHOLDER_LEN)` and treating a
+  non-boundary the same as "not a real placeholder" (fail closed, flush-and-rescan) — this can
+  never be a real minted placeholder anyway, since real placeholders are pure ASCII. Also found:
+  the same single "flush exactly one byte, then re-scan the whole buffer" step used for the
+  false-start case (Architecture Decision) also correctly and byte-identically covers the
+  separate "unknown/forged placeholder-shaped token → verbatim" requirement (AC-013/AC-014) —
+  one mechanism, not two — since re-scanning after each one-byte flush naturally cascades through
+  an entire non-matching shaped token as literal bytes unless a genuine new prefix appears inside
+  it. No STOP triggered; the bound (NFR-003) holds throughout because `drain` never leaves more
+  than `MAX_PLACEHOLDER_LEN - 1` buffered bytes when more input may still arrive.
+  Evidence: `streaming_forged_placeholder_mid_stream_never_leaks_secret` and
+  `streaming_unknown_placeholder_shaped_token_passes_through_verbatim` (both green); reasoned
+  through the ASCII-byte-boundary argument inline in the `drain` doc comments.
