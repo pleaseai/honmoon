@@ -1,0 +1,31 @@
+crates/honmoon-core/src/secret_tokenizer/mod.rs
+  s_df9c087491fcf2::t_32875793f4c2fe 379-397
+  s_df9c087491fcf2::t_21eb447d38b704 112-118
+crates/honmoon-core/src/secret_tokenizer/streaming.rs
+  s_df9c087491fcf2::t_8bf400416e7a58 104-116,119-129
+  s_d74121ad90f88b::t_3c7f307da783e9 256-289
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "b520c049e1f6118d2785dff42fb76051d7134859",
+  "prompts": {},
+  "sessions": {
+    "s_d74121ad90f88b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "41945b34-8cf4-4624-8df6-3ac00f3d1439",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    },
+    "s_df9c087491fcf2": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "251b0917-9750-4c4d-b77f-2ab80e36f9dc",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
