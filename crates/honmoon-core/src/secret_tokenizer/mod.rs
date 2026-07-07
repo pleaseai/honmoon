@@ -109,6 +109,13 @@ impl SecretTokenizer {
         let mut seen: HashSet<String> = HashSet::new();
         for secret in secrets {
             let secret = secret.into();
+            // An empty secret is meaningless and dangerous: an empty
+            // aho-corasick pattern matches at every position, which would
+            // splice a placeholder between every byte (or wedge the match
+            // loop). Skip it defensively rather than trusting the caller.
+            if secret.is_empty() {
+                continue;
+            }
             if !seen.insert(secret.clone()) {
                 continue;
             }
@@ -367,6 +374,25 @@ mod tests {
         let t = SecretTokenizer::new(b"fixed-salt".to_vec(), Vec::<String>::new());
         assert!(t.is_empty());
         assert_eq!(t.len(), 0);
+    }
+
+    #[test]
+    fn empty_secret_is_skipped_and_never_splices_placeholders() {
+        // Regression (gemini-code-assist review of PR #15): an empty secret
+        // would register an empty aho-corasick pattern that matches at every
+        // position. It must be dropped at construction, and the surrounding
+        // real secrets must still tokenize normally.
+        let t = SecretTokenizer::new(b"fixed-salt".to_vec(), vec!["", "sk-real", ""]);
+        assert_eq!(t.len(), 1);
+        assert_eq!(t.placeholder_for(""), None);
+
+        let (out, mapping) = t.tokenize("plain text with sk-real inside");
+        // No placeholder was spliced between every byte: the only substitution
+        // is the genuine secret, so the non-secret text is untouched.
+        assert!(out.starts_with("plain text with "));
+        assert!(out.ends_with(" inside"));
+        assert!(!out.contains("sk-real"));
+        assert_eq!(mapping.len(), 1);
     }
 
     // --- T002: tokenize ---------------------------------------------------

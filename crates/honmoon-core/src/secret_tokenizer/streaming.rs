@@ -101,21 +101,32 @@ impl<'a> StreamingDetokenizer<'a> {
                 && self.buffer.is_char_boundary(MAX_PLACEHOLDER_LEN);
 
             if !has_full_candidate {
-                if !is_final && self.buffer.len() < MAX_PLACEHOLDER_LEN {
-                    // Might still complete with the next chunk: hold it
-                    // back, already bounded to under MAX_PLACEHOLDER_LEN
-                    // bytes (AC-006/NFR-003).
+                if self.buffer.len() < MAX_PLACEHOLDER_LEN {
+                    if !is_final {
+                        // Might still complete with the next chunk: hold it
+                        // back, already bounded to under MAX_PLACEHOLDER_LEN
+                        // bytes (AC-006/NFR-003).
+                        break;
+                    }
+                    // Finalized mid-placeholder with fewer than a full
+                    // window of bytes buffered: no full placeholder can hide
+                    // in a sub-`MAX_PLACEHOLDER_LEN` tail, so fail closed and
+                    // emit the remainder verbatim, never a secret (AC-007).
+                    output.push_str(&self.buffer);
+                    self.buffer.clear();
                     break;
                 }
-                // Either finalized mid-placeholder (AC-007), or enough
-                // bytes are present but they straddle a non-ASCII
-                // character partway through the would-be hex/suffix region
-                // — a real placeholder is pure ASCII, so this can never
-                // resolve into one. Fail closed: emit verbatim, never a
-                // secret (NFR-006).
-                output.push_str(&self.buffer);
-                self.buffer.clear();
-                break;
+                // There ARE at least MAX_PLACEHOLDER_LEN bytes, but the
+                // window straddles a non-ASCII character at its end — a real
+                // placeholder is pure ASCII, so this window can never resolve
+                // into one. Do NOT flush the whole buffer (a genuine
+                // placeholder may follow later in it): emit one leading byte
+                // and re-scan, exactly like the false-start case below. Byte
+                // 0 is `PLACEHOLDER_PREFIX`'s leading ASCII byte, always a
+                // valid char boundary.
+                output.push_str(&self.buffer[..1]);
+                self.buffer.drain(..1);
+                continue;
             }
 
             let candidate = &self.buffer[..MAX_PLACEHOLDER_LEN];
@@ -240,6 +251,40 @@ mod tests {
         // is still matched and substituted.
         assert_eq!(out, format!("{PLACEHOLDER_PREFIX}{secret}"));
         assert!(!out.contains(&placeholder));
+    }
+
+    #[test]
+    fn streaming_non_ascii_in_prefix_window_does_not_drop_a_following_placeholder() {
+        // Regression (gemini-code-assist review of PR #15): a `<<hs:` false
+        // start whose MAX_PLACEHOLDER_LEN window straddles a multi-byte UTF-8
+        // char must NOT flush-and-clear the whole buffer — a genuine
+        // placeholder later in the buffer would be lost, breaking AC-005.
+        let (mapping, placeholder, secret) = one_entry_mapping();
+        // `<<hs:` (5 ASCII bytes) + 20×"가" (3 bytes each) → byte 39 lands
+        // mid-character, so `is_char_boundary(MAX_PLACEHOLDER_LEN)` is false
+        // while the buffer already holds ≥ MAX_PLACEHOLDER_LEN bytes.
+        let filler = "가".repeat(20);
+        let text = format!("{PLACEHOLDER_PREFIX}{filler}{placeholder}");
+        let expected = format!("{PLACEHOLDER_PREFIX}{filler}{secret}");
+
+        // Whole push, and every char-boundary split, must all round-trip.
+        let mut d = StreamingDetokenizer::new(&mapping);
+        let mut out = d.push(&text);
+        out.push_str(&d.finish());
+        assert_eq!(out, expected);
+        assert!(out.contains(secret));
+        assert!(!out.contains(&placeholder));
+
+        for split in 0..=text.len() {
+            if !text.is_char_boundary(split) {
+                continue;
+            }
+            let mut d = StreamingDetokenizer::new(&mapping);
+            let mut o = d.push(&text[..split]);
+            o.push_str(&d.push(&text[split..]));
+            o.push_str(&d.finish());
+            assert_eq!(o, expected, "split at byte {split} dropped the placeholder");
+        }
     }
 
     #[test]
