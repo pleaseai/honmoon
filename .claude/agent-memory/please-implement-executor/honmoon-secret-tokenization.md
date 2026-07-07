@@ -59,6 +59,40 @@ the RED-GREEN-REFACTOR work and skip `TaskUpdate` calls that 404, relying on
 the plan's `## Progress` section (see [[honmoon-plan-living-document]]) as
 the durable completion record instead.
 
+**T005 (final task of this track)**: exporting a module's public API and
+splitting an oversized file are best done as one structural pass, verified
+by an *external* integration test (`tests/foo_public_api.rs`, its own
+compilation unit) rather than another inline `#[cfg(test)]` module — an
+inline test can still see private/internal paths even without the `pub use`,
+so it can't prove the crate-root re-export is what makes the surface
+reachable. Wrote that integration test first (RED: `error[E0432]: unresolved
+imports honmoon_core::...`) before adding the `pub use` line, confirming the
+re-export was the fix, not a coincidence.
+
+**Splitting an oversized single-file module** (937 lines here, over the
+project's ~500-LOC convention): converting `foo.rs` → `foo/mod.rs` +
+`foo/submodule.rs` is *pure structural* work — `git mv`/recreate plus a
+`pub mod submodule; pub use submodule::{...};` line in `mod.rs` preserves
+every external and `#[cfg(test)]` path. Used `sed -n '<start>,<end>p' src >
+dest` to extract exact line ranges into the new files instead of hand
+retyping — for large or test-heavy files this avoids transcription slips
+that a full-file rewrite risks, and `cargo test` immediately proves nothing
+was dropped (all 26 prior module tests still passed post-split, same names,
+now nested one level deeper as `secret_tokenizer::tests::*` and
+`secret_tokenizer::streaming::tests::*`).
+
+**Isolating an orchestrator-owned hunk already sitting in the working tree**:
+mid-track, `plan.md`'s `## Tasks` section had an uncommitted checkbox flip
+(T004 `[ ]`→`[x]`) left over from a prior session/process — not something
+this task's `Files:` scope covered, and `## Tasks` is explicitly
+orchestrator-owned. Hand-crafting a patch with `git apply --cached` and
+copied `@@` hunk headers is fragile (line-number drift after an edit already
+landed causes "corrupt patch" errors); `printf 'n\ny\n' | git add -p <file>`
+interactively answering per-hunk (`n` to skip the foreign hunk, `y` to stage
+only mine) is the reliable way to commit just the `## Progress` addition
+while leaving the pre-existing foreign edit untouched and uncommitted in the
+tree, exactly as found.
+
 **T004 confirmed the wrapper design holds in practice**: `detokenize(text,
 &Mapping)` is a literal `push(text)` + `finish()` two-liner over
 `StreamingDetokenizer` — no independent matching logic needed. The property
