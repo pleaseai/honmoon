@@ -389,6 +389,24 @@ impl<'a> StreamingDetokenizer<'a> {
     }
 }
 
+/// Whole-text detokenization (FR-003): reconstruct the original text from
+/// `text` (placeholder-bearing) and the `mapping` produced for it.
+///
+/// This is a thin wrapper over `StreamingDetokenizer` — `push(text)` then
+/// `finish()` — rather than a second, independently written matching
+/// implementation, so whole-text and streaming detokenization share one
+/// engine and can never drift apart from each other (AC-008 by
+/// construction). It inherits `StreamingDetokenizer`'s provenance binding
+/// (only placeholders present in `mapping` are substituted, AC-013) and
+/// fail-safe behavior (a mutated near-match or unknown placeholder-shaped
+/// span passes through verbatim, never yielding a secret, AC-014).
+pub fn detokenize(text: &str, mapping: &Mapping) -> String {
+    let mut detokenizer = StreamingDetokenizer::new(mapping);
+    let mut output = detokenizer.push(text);
+    output.push_str(&detokenizer.finish());
+    output
+}
+
 /// Length of the longest suffix of `buffer` that is also a proper prefix of
 /// `PLACEHOLDER_PREFIX` — the longest trailing fragment that could still
 /// grow into a full `PLACEHOLDER_PREFIX` match given more input.
@@ -739,5 +757,181 @@ mod tests {
         assert_eq!(d.buffered_len(), PLACEHOLDER_PREFIX.len());
         assert_eq!(d.push(""), "");
         assert_eq!(d.buffered_len(), PLACEHOLDER_PREFIX.len());
+    }
+
+    // --- T004: whole-text `detokenize` + round-trip/equivalence corpus -----
+
+    /// An adversarial corpus of (name, tokenizer, original text) triples,
+    /// covering secrets at the start/middle/end/adjacent, repeated and
+    /// overlapping secrets, secrets containing regex/sentinel-ish
+    /// characters, multi-byte UTF-8 around secrets, empty text, and text
+    /// with no secrets present. Fixed salts and secrets only — no
+    /// randomness, so the sweep is fully deterministic.
+    fn corpus() -> Vec<(&'static str, SecretTokenizer, String)> {
+        vec![
+            (
+                "secret_at_start",
+                SecretTokenizer::new(b"salt-start".to_vec(), vec!["sk-start-secret"]),
+                "sk-start-secret and then the rest of the text".to_string(),
+            ),
+            (
+                "secret_at_end",
+                SecretTokenizer::new(b"salt-end".to_vec(), vec!["sk-end-secret"]),
+                "the text leads up to sk-end-secret".to_string(),
+            ),
+            (
+                "secret_in_middle",
+                SecretTokenizer::new(b"salt-middle".to_vec(), vec!["sk-middle-secret"]),
+                "before sk-middle-secret after".to_string(),
+            ),
+            (
+                "adjacent_secrets_no_separator",
+                SecretTokenizer::new(b"salt-adjacent".to_vec(), vec!["sk-a", "sk-b"]),
+                "sk-ask-b".to_string(),
+            ),
+            (
+                "repeated_secret",
+                SecretTokenizer::new(b"salt-repeat".to_vec(), vec!["sk-repeat-me"]),
+                "sk-repeat-me and sk-repeat-me and sk-repeat-me".to_string(),
+            ),
+            (
+                "overlapping_secrets_leftmost_longest",
+                SecretTokenizer::new(b"salt-overlap".to_vec(), vec!["A", "AB"]),
+                "AB A AB BA A".to_string(),
+            ),
+            (
+                "secret_with_regex_special_chars",
+                SecretTokenizer::new(b"salt-regex".to_vec(), vec!["sk-.*+?()[]{}"]),
+                "value=sk-.*+?()[]{} end".to_string(),
+            ),
+            (
+                "secret_containing_sentinel_ish_chars",
+                SecretTokenizer::new(b"salt-sentinel".to_vec(), vec!["<<hs:notreal>>"]),
+                "text <<hs:notreal>> more".to_string(),
+            ),
+            (
+                "multibyte_utf8_around_secret",
+                SecretTokenizer::new(b"salt-utf8".to_vec(), vec!["sk-multibyte"]),
+                "префикс sk-multibyte 한글단어 emoji😀 sk-multibyte 结尾".to_string(),
+            ),
+            (
+                "empty_text",
+                SecretTokenizer::new(b"salt-empty".to_vec(), vec!["sk-unused"]),
+                String::new(),
+            ),
+            (
+                "no_secrets_present",
+                SecretTokenizer::new(b"salt-absent".to_vec(), vec!["sk-not-here"]),
+                "just plain text, nothing to redact".to_string(),
+            ),
+        ]
+    }
+
+    /// Every way to split `text` into two pieces at a char boundary
+    /// (including the empty-first/empty-last splits), plus a handful of
+    /// 3-/4-way splits at evenly spaced char boundaries — an exhaustive
+    /// sweep over single-split boundaries, with a few multi-split
+    /// partitions layered on top.
+    fn all_partitions(text: &str) -> Vec<Vec<&str>> {
+        let boundaries: Vec<usize> = (0..=text.len())
+            .filter(|&i| text.is_char_boundary(i))
+            .collect();
+
+        let mut partitions: Vec<Vec<&str>> = boundaries
+            .iter()
+            .map(|&split| vec![&text[..split], &text[split..]])
+            .collect();
+
+        if boundaries.len() >= 4 {
+            let n = boundaries.len();
+            let mut points = vec![boundaries[n / 4], boundaries[n / 2], boundaries[3 * n / 4]];
+            points.sort_unstable();
+            points.dedup();
+            let mut pieces = Vec::with_capacity(points.len() + 1);
+            let mut prev = 0;
+            for &p in &points {
+                pieces.push(&text[prev..p]);
+                prev = p;
+            }
+            pieces.push(&text[prev..]);
+            partitions.push(pieces);
+        }
+
+        partitions
+    }
+
+    /// Feed `partition`'s pieces through a fresh `StreamingDetokenizer` in
+    /// order and return the concatenated output.
+    fn feed_partition(partition: &[&str], mapping: &Mapping) -> String {
+        let mut d = StreamingDetokenizer::new(mapping);
+        let mut out = String::new();
+        for chunk in partition {
+            out.push_str(&d.push(chunk));
+        }
+        out.push_str(&d.finish());
+        out
+    }
+
+    #[test]
+    fn detokenize_round_trips_tokenize_output_across_corpus() {
+        for (name, tokenizer, text) in corpus() {
+            let (tokenized, mapping) = tokenizer.tokenize(&text);
+            let restored = detokenize(&tokenized, &mapping);
+            assert_eq!(restored, text, "round-trip failed for case: {name}");
+        }
+    }
+
+    #[test]
+    fn streaming_output_matches_whole_text_detokenize_for_every_partition() {
+        let mut total_partitions = 0usize;
+        for (name, tokenizer, text) in corpus() {
+            let (tokenized, mapping) = tokenizer.tokenize(&text);
+            let expected = detokenize(&tokenized, &mapping);
+            for partition in all_partitions(&tokenized) {
+                total_partitions += 1;
+                let actual = feed_partition(&partition, &mapping);
+                assert_eq!(
+                    actual, expected,
+                    "case {name} partition {partition:?} diverged from whole-text detokenize"
+                );
+            }
+        }
+        // Sanity: the sweep actually exercised a meaningful number of
+        // boundary partitions, not just a handful of trivial cases.
+        assert!(
+            total_partitions >= 50,
+            "expected a broad boundary sweep, only exercised {total_partitions} partitions"
+        );
+    }
+
+    #[test]
+    fn detokenize_leaves_mutated_placeholder_near_match_unchanged() {
+        // AC-014: a mutated near-match of a real placeholder must be left
+        // unchanged in whole-text `detokenize`, and never yield the secret.
+        let tokenizer = SecretTokenizer::new(b"salt-mutation".to_vec(), vec!["sk-mutation-secret"]);
+        let placeholder = tokenizer
+            .placeholder_for("sk-mutation-secret")
+            .unwrap()
+            .to_string();
+        let mut mapping = Mapping::new();
+        mapping.insert(placeholder.clone(), "sk-mutation-secret");
+
+        let mut forged = placeholder.clone();
+        let mutate_at = PLACEHOLDER_PREFIX.len();
+        let mutated_byte = if forged.as_bytes()[mutate_at] == b'0' {
+            b'1'
+        } else {
+            b'0'
+        };
+        // Replace one ASCII hex byte in-place (safe: single-byte ASCII).
+        unsafe {
+            forged.as_bytes_mut()[mutate_at] = mutated_byte;
+        }
+        assert_ne!(forged, placeholder);
+
+        let text = format!("start {forged} end");
+        let out = detokenize(&text, &mapping);
+        assert_eq!(out, text);
+        assert!(!out.contains("sk-mutation-secret"));
     }
 }
