@@ -1,0 +1,139 @@
+//! Cross-cutting sweep over `secret_tokenizer`'s PUBLIC re-exported surface
+//! (T005): proves the crate-root exports (`honmoon_core::{SecretTokenizer,
+//! Mapping, StreamingDetokenizer, detokenize, MAX_PLACEHOLDER_LEN,
+//! PLACEHOLDER_PREFIX, PLACEHOLDER_SUFFIX}`) are reachable and complete, by
+//! exercising determinism (AC-009), streaming == whole-text equivalence
+//! (SC-003), and the overlap/idempotence properties (SC-005) entirely
+//! through `use honmoon_core::...` — never the internal module path. This
+//! is a separate integration test (its own compilation unit) specifically
+//! so it can only see `pub` items, unlike the crate's own inline
+//! `#[cfg(test)]` modules which can also see private/internal paths.
+
+use honmoon_core::{
+    MAX_PLACEHOLDER_LEN, Mapping, PLACEHOLDER_PREFIX, PLACEHOLDER_SUFFIX, SecretTokenizer,
+    StreamingDetokenizer, detokenize,
+};
+
+/// An adversarial corpus exercised entirely through the public path, mirroring
+/// the internal T004 sweep but proving the *exported* names are the complete
+/// public surface needed to reproduce it outside the crate.
+fn corpus() -> Vec<(&'static str, SecretTokenizer, String)> {
+    vec![
+        (
+            "secret_at_start",
+            SecretTokenizer::new(b"pub-salt-start".to_vec(), vec!["sk-pub-start"]),
+            "sk-pub-start and then the rest of the text".to_string(),
+        ),
+        (
+            "repeated_secret",
+            SecretTokenizer::new(b"pub-salt-repeat".to_vec(), vec!["sk-pub-repeat"]),
+            "sk-pub-repeat and sk-pub-repeat and sk-pub-repeat".to_string(),
+        ),
+        (
+            "overlapping_secrets_leftmost_longest",
+            SecretTokenizer::new(b"pub-salt-overlap".to_vec(), vec!["A", "AB"]),
+            "AB A AB BA A".to_string(),
+        ),
+        (
+            "multibyte_utf8_around_secret",
+            SecretTokenizer::new(b"pub-salt-utf8".to_vec(), vec!["sk-pub-multibyte"]),
+            "префикс sk-pub-multibyte 한글단어 emoji😀 sk-pub-multibyte 结尾".to_string(),
+        ),
+        (
+            "no_secrets_present",
+            SecretTokenizer::new(b"pub-salt-absent".to_vec(), vec!["sk-pub-not-here"]),
+            "just plain text, nothing to redact".to_string(),
+        ),
+    ]
+}
+
+/// Every char-boundary single-split point of `text`, as `(prefix, suffix)`.
+fn all_single_splits(text: &str) -> Vec<(&str, &str)> {
+    (0..=text.len())
+        .filter(|&i| text.is_char_boundary(i))
+        .map(|split| (&text[..split], &text[split..]))
+        .collect()
+}
+
+#[test]
+fn public_path_determinism_same_salt_and_secrets_yield_identical_placeholders() {
+    // AC-009: identical inputs (salt + secrets) yield identical placeholders
+    // and identical output on every run, reachable only via `honmoon_core::`.
+    let a = SecretTokenizer::new(b"pub-determinism-salt".to_vec(), vec!["sk-a", "sk-b"]);
+    let b = SecretTokenizer::new(b"pub-determinism-salt".to_vec(), vec!["sk-a", "sk-b"]);
+    assert_eq!(a.placeholder_for("sk-a"), b.placeholder_for("sk-a"));
+    assert_eq!(a.placeholder_for("sk-b"), b.placeholder_for("sk-b"));
+
+    let (out_a, _) = a.tokenize("sk-a then sk-b");
+    let (out_b, _) = b.tokenize("sk-a then sk-b");
+    assert_eq!(out_a, out_b);
+}
+
+#[test]
+fn public_path_placeholder_shape_matches_documented_sentinel_constants() {
+    let t = SecretTokenizer::new(b"pub-shape-salt".to_vec(), vec!["sk-pub-shape"]);
+    let placeholder = t.placeholder_for("sk-pub-shape").unwrap();
+    assert!(placeholder.starts_with(PLACEHOLDER_PREFIX));
+    assert!(placeholder.ends_with(PLACEHOLDER_SUFFIX));
+    assert_eq!(placeholder.len(), MAX_PLACEHOLDER_LEN);
+}
+
+#[test]
+fn public_path_round_trip_and_streaming_equivalence_across_corpus() {
+    // SC-003/SC-005 exercised end-to-end through the public re-exports only.
+    let mut total_splits = 0usize;
+    for (name, tokenizer, text) in corpus() {
+        let (tokenized, mapping) = tokenizer.tokenize(&text);
+
+        // Whole-text detokenize round-trips (SC-001/AC-002).
+        let whole = detokenize(&tokenized, &mapping);
+        assert_eq!(whole, text, "case {name}: round-trip failed");
+
+        // Streaming, fed through every single-split boundary, must match the
+        // whole-text detokenize output byte-for-byte (SC-003).
+        for (prefix, suffix) in all_single_splits(&tokenized) {
+            total_splits += 1;
+            let mut d = StreamingDetokenizer::new(&mapping);
+            let mut streamed = d.push(prefix);
+            streamed.push_str(&d.push(suffix));
+            streamed.push_str(&d.finish());
+            assert_eq!(
+                streamed,
+                whole,
+                "case {name}: streaming split at {} diverged from whole-text detokenize",
+                prefix.len()
+            );
+        }
+
+        // Re-tokenizing the tokenized output is a no-op (SC-005 idempotence).
+        let (retokenized, remapping) = tokenizer.tokenize(&tokenized);
+        assert_eq!(
+            retokenized, tokenized,
+            "case {name}: re-tokenize was not a no-op"
+        );
+        assert!(
+            remapping.is_empty(),
+            "case {name}: re-tokenize minted new entries"
+        );
+    }
+    assert!(
+        total_splits >= 20,
+        "expected a meaningful public-path boundary sweep, only exercised {total_splits} splits"
+    );
+}
+
+#[test]
+fn public_path_overlap_leftmost_longest_and_provenance_binding() {
+    // SC-005 overlap resolution, reachable only via `honmoon_core::`.
+    let t = SecretTokenizer::new(b"pub-overlap-salt".to_vec(), vec!["A", "AB"]);
+    let (out, mapping) = t.tokenize("AB");
+    let placeholder_ab = t.placeholder_for("AB").unwrap();
+    assert_eq!(out, placeholder_ab);
+    assert_eq!(mapping.len(), 1);
+
+    // Provenance binding (AC-013): an empty mapping never substitutes an
+    // unrelated placeholder-shaped token, even via the public path.
+    let unrelated_mapping = Mapping::new();
+    let untouched = detokenize(placeholder_ab, &unrelated_mapping);
+    assert_eq!(untouched, placeholder_ab);
+}

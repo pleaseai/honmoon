@@ -37,3 +37,6 @@ rust-embed = "8"
 mime_guess = "2"
 time = { version = "0.3", features = ["formatting", "macros"] }
 regex = "1"
+aho-corasick = "1"
+hmac = "0.12"
+sha2 = "0.10"

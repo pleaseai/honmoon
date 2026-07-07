@@ -8,11 +8,14 @@ rust-version.workspace = true
 description = "Honmoon policy engine, CEL evaluation, and protocol facts model"
 
 [dependencies]
+aho-corasick.workspace = true
 cel-interpreter = "0.10"
+hmac.workspace = true
 regex.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 serde_yaml.workspace = true
+sha2.workspace = true
 thiserror.workspace = true
 time.workspace = true
 tracing.workspace = true
