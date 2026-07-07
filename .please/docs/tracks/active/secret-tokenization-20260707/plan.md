@@ -249,6 +249,7 @@ overlap/idempotence (SC-005) are exercised by the corpus sweeps in T004/T005.
 - [x] (2026-07-07 20:30 KST) T002 Implement `tokenize` via `aho-corasick` leftmost-longest (ties by registration order), referential idempotence skip, mapping holds only substituted secrets
 - [x] (2026-07-07 21:15 KST) T003 Implement `StreamingDetokenizer` (push/finish): bounded cross-chunk buffer with re-scan on invalidated false-start, provenance-bound substitution, fail-safe flush of partial/unknown tokens as verbatim text
 - [x] (2026-07-07 22:05 KST) T004 Whole-text `detokenize` as a `push`+`finish` wrapper over T003; round-trip + idempotence property tests over an adversarial corpus
+- [x] (2026-07-07 23:10 KST) T005 Exported public API from `honmoon-core` (`pub use secret_tokenizer::{...}`); split `secret_tokenizer.rs` (937 LOC) into `secret_tokenizer/{mod,streaming}.rs` (~460/~490 LOC, both under the ~500-LOC convention); added `tests/secret_tokenizer_public_api.rs` sweeping determinism (AC-009), streaming/whole-text equivalence (SC-003), and overlap/idempotence (SC-005) through the public path only
 
 ## Decision Log
 
