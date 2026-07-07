@@ -133,7 +133,7 @@ caller (session salt + ordered secrets)
   STOP: if the MAC construction uses the salt as hashed data rather than the MAC key (or a non-keyed hash is substituted), the confused-deputy property fails — stop before anything depends on it.
 - [x] T002 Implement `tokenize` via `aho-corasick` leftmost-longest (ties by registration order), referential idempotence skip, mapping holds only substituted secrets (file: crates/honmoon-core/src/secret_tokenizer.rs) (depends on T001)
   STOP: if leftmost-longest / registration-order tie-break can't be reproduced in a test with the chosen matcher, stop and revisit the matcher.
-- [ ] T003 Implement `StreamingDetokenizer` (push/finish): bounded cross-chunk buffer (max placeholder length) with re-scan on invalidated false-start, provenance-bound substitution (mapping placeholders only), fail-safe flush of partial/unknown tokens as verbatim text (file: crates/honmoon-core/src/secret_tokenizer.rs) (depends on T002)
+- [x] T003 Implement `StreamingDetokenizer` (push/finish): bounded cross-chunk buffer (max placeholder length) with re-scan on invalidated false-start, provenance-bound substitution (mapping placeholders only), fail-safe flush of partial/unknown tokens as verbatim text (file: crates/honmoon-core/src/secret_tokenizer.rs) (depends on T002)
 - [ ] T004 Whole-text `detokenize` as a `push`+`finish` wrapper over T003; round-trip + idempotence property tests over an adversarial corpus (file: crates/honmoon-core/src/secret_tokenizer.rs) (depends on T002, T003)
 - [ ] T005 Export the module and public API from `honmoon-core` (`pub mod` + `pub use`), add cross-cutting determinism/streaming-equivalence sweep; if the file exceeds the project ~500-LOC convention, split into a `secret_tokenizer/` submodule (`mod.rs` + `streaming.rs` + tests) (file: crates/honmoon-core/src/lib.rs) (depends on T004)
 
@@ -248,6 +248,7 @@ overlap/idempotence (SC-005) are exercised by the corpus sweeps in T004/T005.
 - [x] (2026-07-07 KST) T001 Module scaffold: ASCII placeholder format + `SecretTokenizer` construction (session salt + order-preserving deduped secrets), `HMAC-SHA256(salt, secret)` placeholder minting, redacted `Debug` and no `Serialize` on secret-bearing types
 - [x] (2026-07-07 20:30 KST) T002 Implement `tokenize` via `aho-corasick` leftmost-longest (ties by registration order), referential idempotence skip, mapping holds only substituted secrets
 - [x] (2026-07-07 21:15 KST) T003 Implement `StreamingDetokenizer` (push/finish): bounded cross-chunk buffer with re-scan on invalidated false-start, provenance-bound substitution, fail-safe flush of partial/unknown tokens as verbatim text
+- [x] (2026-07-07 22:05 KST) T004 Whole-text `detokenize` as a `push`+`finish` wrapper over T003; round-trip + idempotence property tests over an adversarial corpus
 
 ## Decision Log
 
