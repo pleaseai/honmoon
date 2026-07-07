@@ -1,0 +1,21 @@
+.claude/agent-memory/please-implement-executor/MEMORY.md
+  s_df9c087491fcf2::t_0891fc6f55a579 1
+.claude/agent-memory/please-implement-executor/honmoon-secret-tokenization.md
+  s_df9c087491fcf2::t_e7f71102874096 1-60
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "a797c19259da6926822b0d129d934421d17dd855",
+  "prompts": {},
+  "sessions": {
+    "s_df9c087491fcf2": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "251b0917-9750-4c4d-b77f-2ab80e36f9dc",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
