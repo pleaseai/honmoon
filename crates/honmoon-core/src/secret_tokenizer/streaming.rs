@@ -74,65 +74,77 @@ impl<'a> StreamingDetokenizer<'a> {
     /// a placeholder) is left in `self.buffer` rather than emitted.
     fn drain(&mut self, is_final: bool) -> String {
         let mut output = String::new();
-        loop {
-            let Some(p) = self.buffer.find(PLACEHOLDER_PREFIX) else {
-                // No placeholder start anywhere in the buffer. The only
-                // bytes that might still matter are a trailing fragment
-                // that could grow into `PLACEHOLDER_PREFIX` with more
-                // input; everything else is safe to emit now.
+        let mut i = 0;
+        // Scan position into `self.buffer`; bytes in `[0, i)` are already
+        // resolved into `output`. We advance `i` rather than draining from
+        // the front each step: a front `drain(..1)` memmoves the whole tail
+        // (O(len)), so the one-byte-at-a-time false-start rescan was O(len^2)
+        // on adversarial input (a large chunk densely packed with `<<hs:`
+        // false starts). Scanning by index keeps total work linear, and the
+        // buffer is compacted exactly once — after the loop — to the retained
+        // remainder. `i` only ever lands on a char boundary (it advances by a
+        // prefix match offset, by one ASCII byte of `PLACEHOLDER_PREFIX`, or
+        // by a boundary-checked `MAX_PLACEHOLDER_LEN`).
+        let keep_from = loop {
+            let Some(rel) = self.buffer[i..].find(PLACEHOLDER_PREFIX) else {
+                // No placeholder start in the remaining bytes. The only bytes
+                // that might still matter are a trailing fragment that could
+                // grow into `PLACEHOLDER_PREFIX` with more input; everything
+                // else is safe to emit now.
+                let rest = &self.buffer[i..];
                 let keep = if is_final {
                     0
                 } else {
-                    partial_prefix_suffix_len(&self.buffer)
+                    partial_prefix_suffix_len(rest)
                 };
                 let flush_to = self.buffer.len() - keep;
-                output.push_str(&self.buffer[..flush_to]);
-                self.buffer.drain(..flush_to);
-                break;
+                output.push_str(&self.buffer[i..flush_to]);
+                break flush_to;
             };
 
             // Everything before the match start can never be part of a
             // placeholder (this is the leftmost occurrence), so it is
             // always safe to emit now.
-            output.push_str(&self.buffer[..p]);
-            self.buffer.drain(..p);
+            let p = i + rel;
+            output.push_str(&self.buffer[i..p]);
+            i = p;
 
-            let has_full_candidate = self.buffer.len() >= MAX_PLACEHOLDER_LEN
-                && self.buffer.is_char_boundary(MAX_PLACEHOLDER_LEN);
+            let remaining = self.buffer.len() - i;
+            let has_full_candidate = remaining >= MAX_PLACEHOLDER_LEN
+                && self.buffer.is_char_boundary(i + MAX_PLACEHOLDER_LEN);
 
             if !has_full_candidate {
-                if self.buffer.len() < MAX_PLACEHOLDER_LEN {
+                if remaining < MAX_PLACEHOLDER_LEN {
                     if !is_final {
                         // Might still complete with the next chunk: hold it
                         // back, already bounded to under MAX_PLACEHOLDER_LEN
                         // bytes (AC-006/NFR-003).
-                        break;
+                        break i;
                     }
                     // Finalized mid-placeholder with fewer than a full
                     // window of bytes buffered: no full placeholder can hide
                     // in a sub-`MAX_PLACEHOLDER_LEN` tail, so fail closed and
                     // emit the remainder verbatim, never a secret (AC-007).
-                    output.push_str(&self.buffer);
-                    self.buffer.clear();
-                    break;
+                    output.push_str(&self.buffer[i..]);
+                    break self.buffer.len();
                 }
                 // There ARE at least MAX_PLACEHOLDER_LEN bytes, but the
                 // window straddles a non-ASCII character at its end — a real
                 // placeholder is pure ASCII, so this window can never resolve
                 // into one. Do NOT flush the whole buffer (a genuine
                 // placeholder may follow later in it): emit one leading byte
-                // and re-scan, exactly like the false-start case below. Byte
-                // 0 is `PLACEHOLDER_PREFIX`'s leading ASCII byte, always a
+                // and re-scan, exactly like the false-start case below. That
+                // byte is `PLACEHOLDER_PREFIX`'s leading ASCII byte, always a
                 // valid char boundary.
-                output.push_str(&self.buffer[..1]);
-                self.buffer.drain(..1);
+                output.push_str(&self.buffer[i..i + 1]);
+                i += 1;
                 continue;
             }
 
-            let candidate = &self.buffer[..MAX_PLACEHOLDER_LEN];
+            let candidate = &self.buffer[i..i + MAX_PLACEHOLDER_LEN];
             if let Some(secret) = self.mapping.get(candidate) {
                 output.push_str(secret);
-                self.buffer.drain(..MAX_PLACEHOLDER_LEN);
+                i += MAX_PLACEHOLDER_LEN;
                 continue;
             }
 
@@ -143,12 +155,17 @@ impl<'a> StreamingDetokenizer<'a> {
             // `<<hs:<<hs:{valid}>>`). Flush exactly the leading byte as
             // literal text — always a lone ASCII byte of
             // `PLACEHOLDER_PREFIX` itself, hence always a valid char
-            // boundary — and re-scan the remaining buffer from scratch, so
-            // a genuine placeholder start later in this window is still
-            // found (Architecture Decision: false-start re-scan).
-            output.push_str(&self.buffer[..1]);
-            self.buffer.drain(..1);
-        }
+            // boundary — and re-scan the remaining buffer, so a genuine
+            // placeholder start later in this window is still found
+            // (Architecture Decision: false-start re-scan).
+            output.push_str(&self.buffer[i..i + 1]);
+            i += 1;
+        };
+
+        // Single compaction: drop everything resolved into `output`, keeping
+        // only the undecidable remainder (≤ MAX_PLACEHOLDER_LEN-1 bytes when
+        // more input may still arrive; empty when finalized).
+        self.buffer.drain(..keep_from);
         output
     }
 }
@@ -285,6 +302,34 @@ mod tests {
             o.push_str(&d.finish());
             assert_eq!(o, expected, "split at byte {split} dropped the placeholder");
         }
+    }
+
+    #[test]
+    fn streaming_large_false_start_heavy_input_stays_correct_and_linear() {
+        // A big chunk densely packed with `<<hs:` false starts around a single
+        // genuine placeholder. This is the adversarial shape that made the old
+        // front-`drain(..1)` rescan O(N^2); the index-scan rewrite must both
+        // stay fast and detokenize correctly. We assert correctness (matching
+        // whole-text `detokenize`) — the linearity is what keeps it from
+        // timing out on this ~50 KB input.
+        let (mapping, placeholder, secret) = one_entry_mapping();
+        let noise = PLACEHOLDER_PREFIX.repeat(10_000); // 50 KB of false starts
+        let text = format!("{noise}{placeholder}{noise}");
+        let expected = format!("{noise}{secret}{noise}");
+
+        // Whole-text path.
+        assert_eq!(detokenize(&text, &mapping), expected);
+
+        // Streamed in fixed-size chunks (crosses many false-start boundaries).
+        let bytes = text.as_bytes();
+        let mut d = StreamingDetokenizer::new(&mapping);
+        let mut out = String::new();
+        for chunk in bytes.chunks(7) {
+            out.push_str(&d.push(std::str::from_utf8(chunk).unwrap()));
+        }
+        out.push_str(&d.finish());
+        assert_eq!(out, expected);
+        assert!(!out.contains(&placeholder));
     }
 
     #[test]
