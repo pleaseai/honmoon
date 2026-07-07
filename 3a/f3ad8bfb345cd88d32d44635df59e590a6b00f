@@ -1,0 +1,19 @@
+.please/docs/knowledge/tech-stack.md
+  s_df9c087491fcf2::t_e4b026512abad9 18-19
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "3af3ad8bfb345cd88d32d44635df59e590a6b00f",
+  "prompts": {},
+  "sessions": {
+    "s_df9c087491fcf2": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "251b0917-9750-4c4d-b77f-2ab80e36f9dc",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
