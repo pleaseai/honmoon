@@ -245,7 +245,7 @@ overlap/idempotence (SC-005) are exercised by the corpus sweeps in T004/T005.
 
 ## Progress
 
-_(updated during implementation)_
+- [x] (2026-07-07 KST) T001 Module scaffold: ASCII placeholder format + `SecretTokenizer` construction (session salt + order-preserving deduped secrets), `HMAC-SHA256(salt, secret)` placeholder minting, redacted `Debug` and no `Serialize` on secret-bearing types
 
 ## Decision Log
 
@@ -270,4 +270,12 @@ _(updated during implementation)_
 
 ## Surprises & Discoveries
 
-_(updated during implementation)_
+- Observation: the plan's framing that `hmac` is "already resolved transitively in the workspace
+  lockfile, so this adds no new crate to the build graph" does not hold — `hmac` was absent from
+  `Cargo.lock` before T001 (`sha2`/`digest`/`aho-corasick` were already present transitively, but
+  `hmac` was not pulled in by anything). Adding it as a direct `honmoon-core` dependency does add
+  one new crate (`hmac v0.12.1`) to the build graph; it is a small, pure-CPU crate with no
+  transitive I/O deps, so it does not affect NFR-001. Not a blocker, just a correction to the plan
+  text for anyone auditing the dependency graph later.
+  Evidence: `grep -n "hmac" Cargo.lock` returned no matches prior to this task; after `cargo build`,
+  `Cargo.lock` gained a `name = "hmac"` / `version = "0.12.1"` entry.
