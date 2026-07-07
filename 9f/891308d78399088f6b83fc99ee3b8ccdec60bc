@@ -1,0 +1,20 @@
+.please/docs/tracks/active/secret-tokenization-20260707/plan.md
+  s_df9c087491fcf2::t_5701c86a0753b1 273-281
+  s_df9c087491fcf2::t_4e36891c59e822 248
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "9f891308d78399088f6b83fc99ee3b8ccdec60bc",
+  "prompts": {},
+  "sessions": {
+    "s_df9c087491fcf2": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "251b0917-9750-4c4d-b77f-2ab80e36f9dc",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
