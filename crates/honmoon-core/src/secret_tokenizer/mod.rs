@@ -286,7 +286,6 @@ mod tests {
             assert!(placeholder.starts_with(PLACEHOLDER_PREFIX));
             assert!(placeholder.ends_with(PLACEHOLDER_SUFFIX));
             assert_eq!(placeholder.len(), MAX_PLACEHOLDER_LEN);
-            assert!(placeholder.len() <= MAX_PLACEHOLDER_LEN);
         }
         // The two distinct secrets must not collide on the same placeholder.
         let p1 = t.placeholder_for("sk-secret-1").unwrap();
