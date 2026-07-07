@@ -14,6 +14,10 @@ pub mod secret_tokenizer;
 pub use audit::{AuditDraft, AuditEvent, AuditLog, Decision, FactsSummary};
 pub use engine::{Outcome, decide, decide_explained};
 pub use pii::{PiiFacts, PiiSpan, detect_pii, detect_spans};
+pub use secret_tokenizer::{
+    MAX_PLACEHOLDER_LEN, Mapping, PLACEHOLDER_PREFIX, PLACEHOLDER_SUFFIX, SecretTokenizer,
+    StreamingDetokenizer, detokenize,
+};
 
 /// The decision the policy engine returns for a given request.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
