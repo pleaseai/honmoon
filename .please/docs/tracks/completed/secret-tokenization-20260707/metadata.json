@@ -1,11 +1,12 @@
 {
   "track_id": "secret-tokenization-20260707",
   "type": "feature",
-  "status": "in_progress",
+  "status": "completed",
   "created_at": "2026-07-07T00:00:00Z",
-  "updated_at": "2026-07-07T00:00:00Z",
+  "updated_at": "2026-07-07T12:00:00Z",
   "issue": "#14",
-  "pr": "",
+  "pr": "#15",
+  "code_pr": "#15",
   "project": "",
   "project_item_id": "",
   "code_branch": "amondnet/secret"

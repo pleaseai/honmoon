@@ -301,3 +301,31 @@ overlap/idempotence (SC-005) are exercised by the corpus sweeps in T004/T005.
   Evidence: `streaming_forged_placeholder_mid_stream_never_leaks_secret` and
   `streaming_unknown_placeholder_shaped_token_passes_through_verbatim` (both green); reasoned
   through the ASCII-byte-boundary argument inline in the `drain` doc comments.
+
+## Outcomes & Retrospective
+
+### What Was Shipped
+The transport-agnostic `honmoon-core::secret_tokenizer` primitive: `SecretTokenizer` (HMAC-SHA256
+keyed placeholders `<<hs:{32-hex}>>`, order-preserving dedup, aho-corasick leftmost-longest
+`tokenize`), `StreamingDetokenizer` (bounded buffer, false-start re-scan, provenance-bound,
+fail-closed, UTF-8-safe), and whole-text `detokenize` as a thin wrapper. Public API re-exported
+from `honmoon_core`. 30 module tests + 4 public-API integration tests; 97 workspace tests green.
+
+### What Went Well
+- The two multi-persona review gates paid for themselves: the plan review caught a **P0** — the
+  first plan's `DefaultHasher` placeholder was forgeable (SipHash fixed keys `(0,0)`), fixed to
+  HMAC-SHA256 before any code was written — and the `regex` leftmost-first vs leftmost-longest
+  trap, fixed to `aho-corasick`.
+- Stream-first single engine made AC-008 (streaming == whole-text) hold by construction rather
+  than by a second, drift-prone implementation.
+
+### What Could Improve
+- The plan asserted `hmac`/`sha2`/`aho-corasick` were "already resolved transitively" — only
+  `sha2`/`aho-corasick` were; `hmac` was genuinely new (small, pure-CPU). Verify lockfile claims
+  before writing them into a plan's constraints.
+- Executor agent-memory files (`.claude/agent-memory/...`) landed in the branch/PR; consider
+  gitignoring them so product PRs stay code-only.
+
+### Tech Debt Created
+None. Follow-up tracks (proxy wiring, policy action, JSON/SSE parsing, encoded-variant matching,
+secret persistence/at-rest hardening, TS policy mirror) are scoped-out by design, not debt.
