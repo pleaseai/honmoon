@@ -134,8 +134,8 @@ caller (session salt + ordered secrets)
 - [x] T002 Implement `tokenize` via `aho-corasick` leftmost-longest (ties by registration order), referential idempotence skip, mapping holds only substituted secrets (file: crates/honmoon-core/src/secret_tokenizer.rs) (depends on T001)
   STOP: if leftmost-longest / registration-order tie-break can't be reproduced in a test with the chosen matcher, stop and revisit the matcher.
 - [x] T003 Implement `StreamingDetokenizer` (push/finish): bounded cross-chunk buffer (max placeholder length) with re-scan on invalidated false-start, provenance-bound substitution (mapping placeholders only), fail-safe flush of partial/unknown tokens as verbatim text (file: crates/honmoon-core/src/secret_tokenizer.rs) (depends on T002)
-- [ ] T004 Whole-text `detokenize` as a `push`+`finish` wrapper over T003; round-trip + idempotence property tests over an adversarial corpus (file: crates/honmoon-core/src/secret_tokenizer.rs) (depends on T002, T003)
-- [ ] T005 Export the module and public API from `honmoon-core` (`pub mod` + `pub use`), add cross-cutting determinism/streaming-equivalence sweep; if the file exceeds the project ~500-LOC convention, split into a `secret_tokenizer/` submodule (`mod.rs` + `streaming.rs` + tests) (file: crates/honmoon-core/src/lib.rs) (depends on T004)
+- [x] T004 Whole-text `detokenize` as a `push`+`finish` wrapper over T003; round-trip + idempotence property tests over an adversarial corpus (file: crates/honmoon-core/src/secret_tokenizer.rs) (depends on T002, T003)
+- [x] T005 Export the module and public API from `honmoon-core` (`pub mod` + `pub use`), add cross-cutting determinism/streaming-equivalence sweep; if the file exceeds the project ~500-LOC convention, split into a `secret_tokenizer/` submodule (`mod.rs` + `streaming.rs` + tests) (file: crates/honmoon-core/src/lib.rs) (depends on T004)
 
 ## Dependencies
 

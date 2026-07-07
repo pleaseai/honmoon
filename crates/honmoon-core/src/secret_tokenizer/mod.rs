@@ -307,11 +307,19 @@ mod tests {
         let salt_b = SecretTokenizer::new(b"salt-b".to_vec(), vec!["sk-shared-secret"]);
         let placeholder_a = salt_a.placeholder_for("sk-shared-secret").unwrap();
         let placeholder_b = salt_b.placeholder_for("sk-shared-secret").unwrap();
-        // Same secret, different salts → different placeholders.
+        // Same secret, different salts → different placeholders. This is the
+        // observable signature of the salt being an HMAC *key*: a non-keyed
+        // hash of the secret alone would collide here, so this assertion is
+        // what catches a regression to a forgeable (salt-independent) token.
         assert_ne!(placeholder_a, placeholder_b);
-        // A placeholder computed under the wrong salt never equals the real
-        // one minted for the correct session salt.
-        assert_ne!(placeholder_a, placeholder_b);
+        // And the placeholder is stable under its own salt (not accidentally
+        // salt-independent the other way): re-minting under salt-a reproduces
+        // placeholder_a, so the difference above is genuinely salt-driven.
+        let salt_a_again = SecretTokenizer::new(b"salt-a".to_vec(), vec!["sk-shared-secret"]);
+        assert_eq!(
+            placeholder_a,
+            salt_a_again.placeholder_for("sk-shared-secret").unwrap()
+        );
     }
 
     #[test]
