@@ -9,6 +9,7 @@ pub mod audit;
 pub mod engine;
 pub mod pii;
 pub mod protocols;
+pub mod secret_tokenizer;
 
 pub use audit::{AuditDraft, AuditEvent, AuditLog, Decision, FactsSummary};
 pub use engine::{Outcome, decide, decide_explained};
