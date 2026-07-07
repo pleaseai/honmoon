@@ -3,9 +3,10 @@
 //! and placeholder forms in text.
 //!
 //! This is the transport-agnostic primitive described in
-//! `.please/docs/tracks/active/secret-tokenization-20260707/spec.md`. T001
-//! (this scaffold) covers only registration and placeholder minting;
-//! `tokenize`/`detokenize`/streaming land in later tasks of the same track.
+//! `.please/docs/tracks/active/secret-tokenization-20260707/spec.md`.
+//! Registration, placeholder minting, and `tokenize` (secret → placeholder)
+//! are implemented here; `detokenize`/streaming land in later tasks of the
+//! same track.
 //!
 //! Placeholders are `HMAC-SHA256(key = session_salt, message = secret)`,
 //! truncated and hex-encoded inside a fixed ASCII sentinel. The salt is used
@@ -24,6 +25,7 @@ use std::collections::HashMap;
 use std::collections::HashSet;
 use std::fmt;
 
+use aho_corasick::{AhoCorasick, MatchKind};
 use hmac::{Hmac, Mac};
 use sha2::Sha256;
 
@@ -84,6 +86,13 @@ struct Entry {
 pub struct SecretTokenizer {
     salt: Vec<u8>,
     entries: Vec<Entry>,
+    /// Multi-literal matcher over `entries`' secrets, in registration order,
+    /// built once at construction (`tokenize`, T002). `LeftmostLongest`
+    /// gives leftmost-longest overlap resolution with registration-order
+    /// tie-breaking directly (FR-005/AC-010) — see the module-level
+    /// `matcher_tie_break_by_registration_order_for_equal_length_duplicate_patterns`
+    /// test for the verified underlying guarantee.
+    matcher: AhoCorasick,
 }
 
 impl SecretTokenizer {
@@ -109,12 +118,22 @@ impl SecretTokenizer {
                 placeholder,
             });
         }
-        Self { salt, entries }
+        let patterns: Vec<&str> = entries.iter().map(|e| e.secret.as_str()).collect();
+        let matcher = AhoCorasick::builder()
+            .match_kind(MatchKind::LeftmostLongest)
+            .build(&patterns)
+            .expect("registered secrets are finite UTF-8 strings; the automaton always builds");
+        Self {
+            salt,
+            entries,
+            matcher,
+        }
     }
 
     /// Registered secrets paired with their minted placeholder, in
-    /// registration order. Consumed by `tokenize`'s matcher (T002); until
-    /// that lands, only this module's own tests exercise it outside `cfg(test)`.
+    /// registration order. Only this module's own tests exercise it outside
+    /// `cfg(test)` — `tokenize`'s matcher is built directly from `entries`
+    /// at construction, not through this accessor.
     #[allow(dead_code)]
     pub(crate) fn entries(&self) -> impl Iterator<Item = (&str, &str)> {
         self.entries
@@ -138,6 +157,44 @@ impl SecretTokenizer {
     /// Whether no secrets are registered.
     pub fn is_empty(&self) -> bool {
         self.entries.is_empty()
+    }
+
+    /// Replace every occurrence of a registered secret in `text` with its
+    /// placeholder (FR-002), and return a `Mapping` of only the placeholders
+    /// actually substituted (AC-004) — a registered secret absent from
+    /// `text` mints no entry.
+    ///
+    /// Overlapping/substring secrets resolve by leftmost-longest match, with
+    /// equal-length ties broken by registration order (FR-005/AC-010), via
+    /// `matcher`'s `MatchKind::LeftmostLongest`.
+    ///
+    /// Idempotence (FR-006/AC-011) is referential, not structural: this
+    /// matches registered secret **literals** only, never placeholder
+    /// shapes, so re-tokenizing already-tokenized text does not re-enter a
+    /// minted placeholder unless a registered secret's own bytes happen to
+    /// recur inside it — and even then, substituting is the correct,
+    /// no-leak behavior (AC-003/SC-002), not a bug. A purely structural skip
+    /// of anything shaped like `<<hs:...>>` would instead let a coincidental
+    /// sentinel-shaped span in the input suppress a real secret's
+    /// substitution, which this deliberately does not do.
+    pub fn tokenize(&self, text: &str) -> (String, Mapping) {
+        if self.entries.is_empty() {
+            return (text.to_string(), Mapping::new());
+        }
+
+        let mut output = String::with_capacity(text.len());
+        let mut mapping = Mapping::new();
+        let mut last_end = 0;
+        for m in self.matcher.find_iter(text) {
+            output.push_str(&text[last_end..m.start()]);
+            let entry = &self.entries[m.pattern().as_usize()];
+            output.push_str(&entry.placeholder);
+            mapping.insert(entry.placeholder.clone(), entry.secret.clone());
+            last_end = m.end();
+        }
+        output.push_str(&text[last_end..]);
+
+        (output, mapping)
     }
 }
 
@@ -299,5 +356,103 @@ mod tests {
         let t = SecretTokenizer::new(b"fixed-salt".to_vec(), Vec::<String>::new());
         assert!(t.is_empty());
         assert_eq!(t.len(), 0);
+    }
+
+    // --- T002: tokenize ---------------------------------------------------
+
+    #[test]
+    fn tokenize_happy_path_replaces_all_occurrences_and_mints_one_mapping_entry() {
+        let t = SecretTokenizer::new(b"fixed-salt".to_vec(), vec!["sk-secret-1"]);
+        let (out, mapping) = t.tokenize("key=sk-secret-1 again sk-secret-1 end");
+        let placeholder = t.placeholder_for("sk-secret-1").unwrap();
+        assert_eq!(out, format!("key={placeholder} again {placeholder} end"));
+        assert_eq!(mapping.len(), 1);
+        assert_eq!(mapping.get(placeholder), Some("sk-secret-1"));
+    }
+
+    #[test]
+    fn tokenize_output_never_contains_registered_secret_bytes() {
+        let t = SecretTokenizer::new(b"fixed-salt".to_vec(), vec!["sk-secret-1", "sk-secret-2"]);
+        let (out, _mapping) = t.tokenize("sk-secret-1 and sk-secret-2 travel together");
+        assert!(!out.contains("sk-secret-1"));
+        assert!(!out.contains("sk-secret-2"));
+    }
+
+    #[test]
+    fn tokenize_leaves_unused_secret_unmapped_and_text_unchanged() {
+        let t = SecretTokenizer::new(b"fixed-salt".to_vec(), vec!["sk-unused"]);
+        let (out, mapping) = t.tokenize("no secrets here");
+        assert_eq!(out, "no secrets here");
+        assert!(mapping.is_empty());
+    }
+
+    #[test]
+    fn tokenize_overlap_prefers_leftmost_longest_match() {
+        // "A" is a substring of "AB"; registered shorter-first.
+        let t = SecretTokenizer::new(b"fixed-salt".to_vec(), vec!["A", "AB"]);
+        let (out, mapping) = t.tokenize("AB");
+        let placeholder_ab = t.placeholder_for("AB").unwrap();
+        assert_eq!(out, placeholder_ab);
+        assert_eq!(mapping.len(), 1);
+        assert_eq!(mapping.get(placeholder_ab), Some("AB"));
+    }
+
+    #[test]
+    fn matcher_tie_break_by_registration_order_for_equal_length_duplicate_patterns() {
+        // STOP-condition verification (T002): confirm the underlying
+        // aho-corasick automaton resolves an equal-length tie by the
+        // earliest-registered pattern index. `SecretTokenizer::new` dedups
+        // identical secret values (T001), so this exact tie can never reach
+        // the automaton through the public API — this test exercises
+        // `aho-corasick` directly to prove the tie-break rule FR-005/AC-010
+        // depends on actually holds, independent of that dedup.
+        use aho_corasick::{AhoCorasick, MatchKind};
+
+        let ac = AhoCorasick::builder()
+            .match_kind(MatchKind::LeftmostLongest)
+            .build(["dup", "dup"])
+            .expect("two equal-length literal patterns build fine");
+        let matches: Vec<usize> = ac
+            .find_iter("dup")
+            .map(|m| m.pattern().as_usize())
+            .collect();
+        // Only one match is reported for the single occurrence, and it must
+        // resolve to pattern index 0 (the earlier-registered one).
+        assert_eq!(matches, vec![0]);
+    }
+
+    #[test]
+    fn tokenize_is_referentially_idempotent_on_its_own_output() {
+        let t = SecretTokenizer::new(b"fixed-salt".to_vec(), vec!["sk-secret-1"]);
+        let (once, mapping_once) = t.tokenize("value=sk-secret-1;");
+        let (twice, mapping_twice) = t.tokenize(&once);
+        // Re-tokenizing already-tokenized text is a no-op: the secret is no
+        // longer present in `once`, so nothing new is substituted.
+        assert_eq!(twice, once);
+        assert!(mapping_twice.is_empty());
+        assert_eq!(mapping_once.len(), 1);
+    }
+
+    #[test]
+    fn tokenize_still_substitutes_secret_inside_a_coincidental_sentinel_shaped_span() {
+        // Regression guard: a structural (sentinel-shape) skip would leak the
+        // secret here. The registered secret's bytes happen to appear inside
+        // a span of the *input* that merely looks like a placeholder
+        // sentinel (but was never minted by this tokenizer). Idempotence is
+        // enforced referentially (matching secret literals, never placeholder
+        // shapes), so this must still be substituted (AC-003/SC-002).
+        let t = SecretTokenizer::new(b"fixed-salt".to_vec(), vec!["hs:deadbeef"]);
+        let input = "prefix <<hs:deadbeef>> suffix";
+        let (out, mapping) = t.tokenize(input);
+        assert!(!out.contains("hs:deadbeef"));
+        assert_eq!(mapping.len(), 1);
+    }
+
+    #[test]
+    fn tokenize_with_zero_secrets_returns_input_unchanged_with_empty_mapping() {
+        let t = SecretTokenizer::new(b"fixed-salt".to_vec(), Vec::<String>::new());
+        let (out, mapping) = t.tokenize("nothing registered, nothing to do");
+        assert_eq!(out, "nothing registered, nothing to do");
+        assert!(mapping.is_empty());
     }
 }

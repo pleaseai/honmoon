@@ -246,6 +246,7 @@ overlap/idempotence (SC-005) are exercised by the corpus sweeps in T004/T005.
 ## Progress
 
 - [x] (2026-07-07 KST) T001 Module scaffold: ASCII placeholder format + `SecretTokenizer` construction (session salt + order-preserving deduped secrets), `HMAC-SHA256(salt, secret)` placeholder minting, redacted `Debug` and no `Serialize` on secret-bearing types
+- [x] (2026-07-07 20:30 KST) T002 Implement `tokenize` via `aho-corasick` leftmost-longest (ties by registration order), referential idempotence skip, mapping holds only substituted secrets
 
 ## Decision Log
 
