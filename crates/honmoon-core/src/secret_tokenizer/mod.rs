@@ -24,6 +24,7 @@
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::fmt;
+use std::fmt::Write as _;
 
 use aho_corasick::{AhoCorasick, MatchKind};
 use hmac::{Hmac, Mac};
@@ -59,11 +60,16 @@ fn mint_placeholder(salt: &[u8], secret: &[u8]) -> String {
         <HmacSha256 as Mac>::new_from_slice(salt).expect("HMAC accepts a key of any length");
     mac.update(secret);
     let digest = mac.finalize().into_bytes();
-    let hex: String = digest[..PLACEHOLDER_HEX_LEN / 2]
-        .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect();
-    format!("{PLACEHOLDER_PREFIX}{hex}{PLACEHOLDER_SUFFIX}")
+    // Build the whole placeholder in a single allocation: prefix, the
+    // hex-encoded truncated digest written byte-by-byte (no per-byte
+    // `String`), then suffix. Writing into a `String` is infallible.
+    let mut placeholder = String::with_capacity(MAX_PLACEHOLDER_LEN);
+    placeholder.push_str(PLACEHOLDER_PREFIX);
+    for byte in &digest[..PLACEHOLDER_HEX_LEN / 2] {
+        let _ = write!(placeholder, "{byte:02x}");
+    }
+    placeholder.push_str(PLACEHOLDER_SUFFIX);
+    placeholder
 }
 
 /// One registered secret and the placeholder minted for it.
