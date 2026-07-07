@@ -1,0 +1,23 @@
+.please/docs/tracks/completed/secret-tokenization-20260707/metadata.json
+  s_df9c087491fcf2::t_703ee0329ef93f 4-9
+.please/docs/tracks/completed/secret-tokenization-20260707/plan.md
+  s_df9c087491fcf2::t_ae1c37d613af5f 304-331
+.please/docs/tracks.jsonl
+  s_df9c087491fcf2::t_cbe421731b9d56 3
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "0529a9438f03c8d187d512c92989ca139522163b",
+  "prompts": {},
+  "sessions": {
+    "s_df9c087491fcf2": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "251b0917-9750-4c4d-b77f-2ab80e36f9dc",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
