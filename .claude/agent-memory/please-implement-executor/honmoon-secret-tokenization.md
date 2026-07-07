@@ -51,10 +51,25 @@ token (delimiters + fixed body length) over arbitrary UTF-8 input.
 ---
 
 **Tool quirk observed**: on this track, the `TaskUpdate` tool returned "Task
-not found" for a plan-native task ID (e.g. `T003`) when no `TaskCreate` had
-registered that ID in the current session's task list — this is expected
-when the orchestrator dispatches by plan task ID without pre-seeding the
-task-tracking tool. Not an error to retry; just proceed with the
-RED-GREEN-REFACTOR work and skip `TaskUpdate` calls that 404, relying on the
-plan's `## Progress` section (see [[honmoon-plan-living-document]]) as the
-durable completion record instead.
+not found" for a plan-native task ID (e.g. `T003`, `T004`) when no
+`TaskCreate` had registered that ID in the current session's task list —
+this is expected when the orchestrator dispatches by plan task ID without
+pre-seeding the task-tracking tool. Not an error to retry; just proceed with
+the RED-GREEN-REFACTOR work and skip `TaskUpdate` calls that 404, relying on
+the plan's `## Progress` section (see [[honmoon-plan-living-document]]) as
+the durable completion record instead.
+
+**T004 confirmed the wrapper design holds in practice**: `detokenize(text,
+&Mapping)` is a literal `push(text)` + `finish()` two-liner over
+`StreamingDetokenizer` — no independent matching logic needed. The property
+test worth reusing on similar streaming-vs-whole-text primitives: build a
+small adversarial corpus (secret at start/mid/end/adjacent-no-separator,
+repeated, overlapping/substring like `"A"`/`"AB"`, regex-special chars,
+sentinel-shaped-but-literal secret text, multi-byte UTF-8 neighbors, empty
+input, no-match input), then for each corpus case enumerate every
+char-boundary single-split point of the *tokenized* text (not just a
+sampled few) plus a couple of 3-/4-way splits, feed each partition through a
+fresh `StreamingDetokenizer`, and assert byte-equality against the
+whole-text wrapper's output. This exercises hundreds of boundary partitions
+per corpus case for free and is the actual anti-drift proof for AC-008/
+SC-003 — a handful of hand-picked split points is not equivalent.
