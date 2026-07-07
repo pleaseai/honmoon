@@ -1,12 +1,12 @@
 //! Reversible secret tokenization: register secrets, mint stable and
-//! unforgeable placeholders for them, and (later) substitute between secret
-//! and placeholder forms in text.
+//! unforgeable placeholders for them, and substitute between secret and
+//! placeholder forms in text.
 //!
-//! This is the transport-agnostic primitive described in
-//! `.please/docs/tracks/active/secret-tokenization-20260707/spec.md`.
-//! Registration, placeholder minting, and `tokenize` (secret → placeholder)
-//! are implemented here; `detokenize`/streaming land in later tasks of the
-//! same track.
+//! This is the transport-agnostic primitive described in the
+//! `secret-tokenization-20260707` track spec. Registration, placeholder
+//! minting, `tokenize` (secret → placeholder), whole-text `detokenize`, and a
+//! boundary-safe [`StreamingDetokenizer`] are all implemented here. Wiring
+//! into the proxy and a policy action are deferred to follow-up tracks.
 //!
 //! Placeholders are `HMAC-SHA256(key = session_salt, message = secret)`,
 //! truncated and hex-encoded inside a fixed ASCII sentinel. The salt is used
@@ -101,14 +101,35 @@ pub struct SecretTokenizer {
     matcher: AhoCorasick,
 }
 
+/// Error constructing a [`SecretTokenizer`].
+#[derive(Debug, thiserror::Error, PartialEq, Eq)]
+pub enum SecretTokenizerError {
+    /// The session salt was empty. The salt is the HMAC **key** that makes
+    /// placeholders unforgeable (FR-007); an empty key makes every placeholder
+    /// publicly reproducible for a known secret, so construction fails closed
+    /// rather than mint forgeable tokens.
+    #[error("session salt must not be empty")]
+    EmptySalt,
+}
+
 impl SecretTokenizer {
-    /// Register `secrets` (in order) under `salt`.
-    pub fn new<I, S>(salt: impl Into<Vec<u8>>, secrets: I) -> Self
+    /// Register `secrets` (in order) under `salt`, failing closed when `salt`
+    /// is empty.
+    ///
+    /// The salt is the HMAC key behind placeholder unforgeability (FR-007), so
+    /// an empty salt is rejected with [`SecretTokenizerError::EmptySalt`]
+    /// instead of silently minting publicly-reproducible placeholders. (Salt
+    /// *entropy* is the caller's responsibility, NFR-002; this only rejects
+    /// the degenerate empty case the type system can catch.)
+    pub fn try_new<I, S>(salt: impl Into<Vec<u8>>, secrets: I) -> Result<Self, SecretTokenizerError>
     where
         I: IntoIterator<Item = S>,
         S: Into<String>,
     {
         let salt = salt.into();
+        if salt.is_empty() {
+            return Err(SecretTokenizerError::EmptySalt);
+        }
         let mut entries: Vec<Entry> = Vec::new();
         // `seen` only accelerates duplicate detection; storage order (and
         // thus later tie-breaking) comes solely from `entries`, a `Vec`.
@@ -136,11 +157,25 @@ impl SecretTokenizer {
             .match_kind(MatchKind::LeftmostLongest)
             .build(&patterns)
             .expect("registered secrets are finite UTF-8 strings; the automaton always builds");
-        Self {
+        Ok(Self {
             salt,
             entries,
             matcher,
-        }
+        })
+    }
+
+    /// Register `secrets` (in order) under `salt`.
+    ///
+    /// Convenience wrapper over [`try_new`](Self::try_new) for callers with a
+    /// known-valid (non-empty) salt. **Panics** if `salt` is empty; use
+    /// `try_new` to handle that as a recoverable error (e.g. a config fault in
+    /// the data plane).
+    pub fn new<I, S>(salt: impl Into<Vec<u8>>, secrets: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        Self::try_new(salt, secrets).expect("session salt must not be empty")
     }
 
     /// Registered secrets paired with their minted placeholder, in
@@ -379,6 +414,24 @@ mod tests {
         let t = SecretTokenizer::new(b"fixed-salt".to_vec(), Vec::<String>::new());
         assert!(t.is_empty());
         assert_eq!(t.len(), 0);
+    }
+
+    #[test]
+    fn try_new_rejects_an_empty_salt_but_accepts_a_non_empty_one() {
+        // Regression (coderabbit review of PR #15): an empty HMAC key makes
+        // placeholders publicly reproducible for a known secret, defeating
+        // FR-007 unforgeability. Construction must fail closed.
+        assert_eq!(
+            SecretTokenizer::try_new(Vec::<u8>::new(), vec!["sk-secret-1"]).unwrap_err(),
+            SecretTokenizerError::EmptySalt
+        );
+        assert!(SecretTokenizer::try_new(b"fixed-salt".to_vec(), vec!["sk-secret-1"]).is_ok());
+    }
+
+    #[test]
+    #[should_panic(expected = "session salt must not be empty")]
+    fn new_panics_on_empty_salt() {
+        let _ = SecretTokenizer::new(Vec::<u8>::new(), vec!["sk-secret-1"]);
     }
 
     #[test]
