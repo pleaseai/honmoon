@@ -1,0 +1,22 @@
+.please/docs/tracks/active/secret-tokenization-20260707/plan.md
+  s_df9c087491fcf2::t_7930fad5ce8672 138
+  s_df9c087491fcf2::t_f7add16f764468 137
+crates/honmoon-core/src/secret_tokenizer/mod.rs
+  s_df9c087491fcf2::t_80b79c027c589b 310-313,315-322
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "d2f9f89dff40892307016d42cc6fec152873e3d3",
+  "prompts": {},
+  "sessions": {
+    "s_df9c087491fcf2": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "251b0917-9750-4c4d-b77f-2ab80e36f9dc",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
