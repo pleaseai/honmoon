@@ -253,6 +253,153 @@ impl Mapping {
     }
 }
 
+/// A streaming reverse-substitution engine (FR-004): accepts ordered chunks
+/// of placeholder-bearing text and emits detokenized output, buffering only
+/// the bounded trailing fragment needed to recognize a placeholder split
+/// across a chunk boundary (AC-005).
+///
+/// Provenance-bound (FR-008/AC-013): only placeholders present in the
+/// `Mapping` supplied at construction are substituted; anything else that is
+/// placeholder-shaped — unknown, forged, or a mutated near-match — passes
+/// through verbatim (AC-013/AC-014/SC-004). Fail-safe (NFR-006): while
+/// chunks are still arriving, no prefix of an incomplete placeholder is ever
+/// emitted as final output (AC-006); on `finish`, a buffered-but-never-
+/// completed placeholder fragment is emitted verbatim, never a secret
+/// (AC-007).
+///
+/// `detokenize` (T004) is implemented as `push(text)` + `finish()` over this
+/// same engine, so whole-text and streaming detokenization can never drift
+/// apart from one another (AC-008 by construction) — this is the only
+/// reverse-substitution state machine in the module.
+pub struct StreamingDetokenizer<'a> {
+    mapping: &'a Mapping,
+    /// Bytes not yet safely emitted. Bounded to under `MAX_PLACEHOLDER_LEN`
+    /// bytes whenever more chunks may still arrive (NFR-003): any run at
+    /// least that long has already been resolved — matched, invalidated, or
+    /// flushed — by `drain` before `push`/`finish` returns.
+    buffer: String,
+}
+
+impl<'a> StreamingDetokenizer<'a> {
+    /// Begin a streaming detokenization bound to `mapping`: only
+    /// placeholders `mapping` actually holds will ever be substituted
+    /// (FR-008).
+    pub fn new(mapping: &'a Mapping) -> Self {
+        Self {
+            mapping,
+            buffer: String::new(),
+        }
+    }
+
+    /// Current byte length of the cross-chunk buffer. Exposed only to this
+    /// module's tests, to assert the NFR-003 bound directly.
+    #[cfg(test)]
+    fn buffered_len(&self) -> usize {
+        self.buffer.len()
+    }
+
+    /// Accept the next chunk (in stream order) and return whatever output
+    /// is safe to emit now. An empty chunk is a no-op.
+    pub fn push(&mut self, chunk: &str) -> String {
+        if chunk.is_empty() {
+            return String::new();
+        }
+        self.buffer.push_str(chunk);
+        self.drain(false)
+    }
+
+    /// Finalize the stream: flush all buffered bytes. A remaining fragment
+    /// that never completed into a placeholder is emitted verbatim as
+    /// literal text — never as a secret (AC-007/NFR-006).
+    pub fn finish(mut self) -> String {
+        self.drain(true)
+    }
+
+    /// Resolve as much of `self.buffer` as is currently decidable, moving
+    /// resolved bytes into the returned output. Unless `is_final`, an
+    /// undecidable bounded remainder (a fragment that might still grow into
+    /// a placeholder) is left in `self.buffer` rather than emitted.
+    fn drain(&mut self, is_final: bool) -> String {
+        let mut output = String::new();
+        loop {
+            let Some(p) = self.buffer.find(PLACEHOLDER_PREFIX) else {
+                // No placeholder start anywhere in the buffer. The only
+                // bytes that might still matter are a trailing fragment
+                // that could grow into `PLACEHOLDER_PREFIX` with more
+                // input; everything else is safe to emit now.
+                let keep = if is_final {
+                    0
+                } else {
+                    partial_prefix_suffix_len(&self.buffer)
+                };
+                let flush_to = self.buffer.len() - keep;
+                output.push_str(&self.buffer[..flush_to]);
+                self.buffer.drain(..flush_to);
+                break;
+            };
+
+            // Everything before the match start can never be part of a
+            // placeholder (this is the leftmost occurrence), so it is
+            // always safe to emit now.
+            output.push_str(&self.buffer[..p]);
+            self.buffer.drain(..p);
+
+            let has_full_candidate = self.buffer.len() >= MAX_PLACEHOLDER_LEN
+                && self.buffer.is_char_boundary(MAX_PLACEHOLDER_LEN);
+
+            if !has_full_candidate {
+                if !is_final && self.buffer.len() < MAX_PLACEHOLDER_LEN {
+                    // Might still complete with the next chunk: hold it
+                    // back, already bounded to under MAX_PLACEHOLDER_LEN
+                    // bytes (AC-006/NFR-003).
+                    break;
+                }
+                // Either finalized mid-placeholder (AC-007), or enough
+                // bytes are present but they straddle a non-ASCII
+                // character partway through the would-be hex/suffix region
+                // — a real placeholder is pure ASCII, so this can never
+                // resolve into one. Fail closed: emit verbatim, never a
+                // secret (NFR-006).
+                output.push_str(&self.buffer);
+                self.buffer.clear();
+                break;
+            }
+
+            let candidate = &self.buffer[..MAX_PLACEHOLDER_LEN];
+            if let Some(secret) = self.mapping.get(candidate) {
+                output.push_str(secret);
+                self.buffer.drain(..MAX_PLACEHOLDER_LEN);
+                continue;
+            }
+
+            // A false start: `PLACEHOLDER_PREFIX` matched here, but the
+            // full candidate window is not a placeholder this session
+            // minted — unknown/forged (AC-013/AC-014), or another
+            // delimiter run beginning inside this window (e.g.
+            // `<<hs:<<hs:{valid}>>`). Flush exactly the leading byte as
+            // literal text — always a lone ASCII byte of
+            // `PLACEHOLDER_PREFIX` itself, hence always a valid char
+            // boundary — and re-scan the remaining buffer from scratch, so
+            // a genuine placeholder start later in this window is still
+            // found (Architecture Decision: false-start re-scan).
+            output.push_str(&self.buffer[..1]);
+            self.buffer.drain(..1);
+        }
+        output
+    }
+}
+
+/// Length of the longest suffix of `buffer` that is also a proper prefix of
+/// `PLACEHOLDER_PREFIX` — the longest trailing fragment that could still
+/// grow into a full `PLACEHOLDER_PREFIX` match given more input.
+fn partial_prefix_suffix_len(buffer: &str) -> usize {
+    let max_check = buffer.len().min(PLACEHOLDER_PREFIX.len() - 1);
+    (1..=max_check)
+        .rev()
+        .find(|&len| buffer.ends_with(&PLACEHOLDER_PREFIX[..len]))
+        .unwrap_or(0)
+}
+
 impl fmt::Debug for Mapping {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Mapping")
@@ -454,5 +601,143 @@ mod tests {
         let (out, mapping) = t.tokenize("nothing registered, nothing to do");
         assert_eq!(out, "nothing registered, nothing to do");
         assert!(mapping.is_empty());
+    }
+
+    // --- T003: StreamingDetokenizer ----------------------------------------
+
+    /// Build a one-entry `Mapping` plus the real placeholder/secret pair, so
+    /// tests can assemble adversarial byte sequences around a genuine entry.
+    fn one_entry_mapping() -> (Mapping, String, &'static str) {
+        let t = SecretTokenizer::new(b"fixed-salt".to_vec(), vec!["sk-stream-secret"]);
+        let placeholder = t.placeholder_for("sk-stream-secret").unwrap().to_string();
+        let mut mapping = Mapping::new();
+        mapping.insert(placeholder.clone(), "sk-stream-secret");
+        (mapping, placeholder, "sk-stream-secret")
+    }
+
+    #[test]
+    fn streaming_happy_path_recognizes_placeholder_split_across_every_boundary() {
+        let (mapping, placeholder, secret) = one_entry_mapping();
+        let text = format!("before {placeholder} after");
+        let expected = format!("before {secret} after");
+
+        for split in 0..=text.len() {
+            if !text.is_char_boundary(split) {
+                continue;
+            }
+            let mut d = StreamingDetokenizer::new(&mapping);
+            let mut out = d.push(&text[..split]);
+            out.push_str(&d.push(&text[split..]));
+            out.push_str(&d.finish());
+            assert_eq!(out, expected, "split at byte {split} failed");
+        }
+    }
+
+    #[test]
+    fn streaming_no_partial_prefix_emitted_while_chunks_arrive() {
+        let (mapping, placeholder, _secret) = one_entry_mapping();
+        let mut d = StreamingDetokenizer::new(&mapping);
+        // Feed everything except the last byte of the placeholder: nothing
+        // about an as-yet-incomplete placeholder may be emitted (AC-006).
+        let out = d.push(&placeholder[..placeholder.len() - 1]);
+        assert_eq!(out, "");
+    }
+
+    #[test]
+    fn streaming_finish_flushes_incomplete_placeholder_verbatim_no_secret() {
+        let (mapping, placeholder, secret) = one_entry_mapping();
+        let mut d = StreamingDetokenizer::new(&mapping);
+        let partial = &placeholder[..placeholder.len() - 1];
+        let mut out = d.push(partial);
+        assert_eq!(out, "");
+        out.push_str(&d.finish());
+        // The buffered prefix is emitted verbatim; no secret ever appears.
+        assert_eq!(out, partial);
+        assert!(!out.contains(secret));
+    }
+
+    #[test]
+    fn streaming_false_start_still_recognizes_genuine_placeholder_after_rescan() {
+        let (mapping, placeholder, secret) = one_entry_mapping();
+        // A false start (`PLACEHOLDER_PREFIX`) immediately followed by a
+        // genuine placeholder in the same buffered window.
+        let text = format!("{PLACEHOLDER_PREFIX}{placeholder}");
+        let mut d = StreamingDetokenizer::new(&mapping);
+        let mut out = d.push(&text);
+        out.push_str(&d.finish());
+        // The invalidated false start is literal text; the real placeholder
+        // is still matched and substituted.
+        assert_eq!(out, format!("{PLACEHOLDER_PREFIX}{secret}"));
+        assert!(!out.contains(&placeholder));
+    }
+
+    #[test]
+    fn streaming_unknown_placeholder_shaped_token_passes_through_verbatim() {
+        // Placeholder-shaped (right prefix/length/suffix) but never minted
+        // into any mapping — provenance binding must leave it untouched
+        // (AC-013/FR-008).
+        let unknown = format!("{PLACEHOLDER_PREFIX}{}{PLACEHOLDER_SUFFIX}", "0".repeat(32));
+        assert_eq!(unknown.len(), MAX_PLACEHOLDER_LEN);
+        let mapping = Mapping::new();
+        let mut d = StreamingDetokenizer::new(&mapping);
+        let mut out = d.push(&format!("prefix {unknown} suffix"));
+        out.push_str(&d.finish());
+        assert_eq!(out, format!("prefix {unknown} suffix"));
+    }
+
+    #[test]
+    fn streaming_forged_placeholder_mid_stream_never_leaks_secret() {
+        let (mapping, placeholder, secret) = one_entry_mapping();
+        // Mutate one hex character of the real placeholder: a near-match
+        // that must not resolve to the real secret (AC-014/SC-004).
+        let mut forged = placeholder.clone();
+        let mutate_at = PLACEHOLDER_PREFIX.len();
+        let mutated_char = if forged.as_bytes()[mutate_at] == b'0' {
+            b'1'
+        } else {
+            b'0'
+        };
+        // Replace one ASCII hex byte in-place (safe: single-byte ASCII).
+        unsafe {
+            forged.as_bytes_mut()[mutate_at] = mutated_char;
+        }
+        assert_ne!(forged, placeholder);
+
+        let mut d = StreamingDetokenizer::new(&mapping);
+        let mut out = d.push(&format!("start {forged} end"));
+        out.push_str(&d.finish());
+        assert_eq!(out, format!("start {forged} end"));
+        assert!(!out.contains(secret));
+    }
+
+    #[test]
+    fn streaming_buffer_never_exceeds_max_placeholder_len_bound() {
+        let (mapping, _placeholder, _secret) = one_entry_mapping();
+        let mut d = StreamingDetokenizer::new(&mapping);
+        // A long run of never-completing partial-placeholder-like prefixes:
+        // each push adds another `PLACEHOLDER_PREFIX` with no valid hex/
+        // suffix ever following, so nothing ever resolves into a match.
+        for _ in 0..200 {
+            let _ = d.push(PLACEHOLDER_PREFIX);
+            assert!(
+                d.buffered_len() <= MAX_PLACEHOLDER_LEN,
+                "buffer grew past the bound: {} bytes",
+                d.buffered_len()
+            );
+        }
+    }
+
+    #[test]
+    fn streaming_empty_chunk_push_is_a_no_op() {
+        let (mapping, _placeholder, _secret) = one_entry_mapping();
+        let mut d = StreamingDetokenizer::new(&mapping);
+        assert_eq!(d.push(""), "");
+        assert_eq!(d.buffered_len(), 0);
+
+        // Also a no-op mid-stream, without disturbing buffered state.
+        let _ = d.push("<<hs:");
+        assert_eq!(d.buffered_len(), PLACEHOLDER_PREFIX.len());
+        assert_eq!(d.push(""), "");
+        assert_eq!(d.buffered_len(), PLACEHOLDER_PREFIX.len());
     }
 }
