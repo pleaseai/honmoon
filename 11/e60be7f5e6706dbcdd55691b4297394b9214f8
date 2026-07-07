@@ -1,0 +1,22 @@
+crates/honmoon-core/src/secret_tokenizer/streaming.rs
+  s_df9c087491fcf2::t_c8115c0c91509a 77
+  s_df9c087491fcf2::t_e7dc1f76ffa866 78-94,98,101-102,108-110,112-114,117,122,128-129,136-137,139-140,144,147,158-168
+  s_df9c087491fcf2::t_49928b82bd4446 308-334
+  s_df9c087491fcf2::t_c26fc086046c8d 307
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "11e60be7f5e6706dbcdd55691b4297394b9214f8",
+  "prompts": {},
+  "sessions": {
+    "s_df9c087491fcf2": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "251b0917-9750-4c4d-b77f-2ab80e36f9dc",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
