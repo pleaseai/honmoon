@@ -97,27 +97,33 @@ pub(crate) enum Buffered {
     /// The body ended within the cap — fully buffered (trailers dropped, like
     /// the `Content-Length` buffered path).
     Complete(Bytes),
-    /// The cap was hit: `prefix` holds the bytes read so far, `rest` the
-    /// unread remainder of the stream.
+    /// The cap was hit: `prefix` holds exactly `limit` bytes, `rest` the
+    /// remainder of the stream (including any unread tail of the frame that
+    /// crossed the cap).
     Overflow { prefix: Bytes, rest: Body },
 }
 
-/// Read data frames from `body` until it ends or more than `limit` bytes have
-/// been buffered.
+/// Read data frames from `body` until it ends or `limit` bytes have been
+/// buffered. Never buffers more than `limit` bytes: a frame that crosses the
+/// cap is split, with the unread tail pushed back into `rest` so forwarding
+/// stays lossless.
 pub(crate) async fn buffer_up_to(
     mut body: Body,
     limit: usize,
 ) -> Result<Buffered, hudsucker::Error> {
     let mut buf: Vec<u8> = Vec::new();
     while let Some(frame) = body.frame().await {
-        if let Some(data) = frame?.data_ref() {
-            buf.extend_from_slice(data);
-            if buf.len() > limit {
+        if let Ok(mut data) = frame?.into_data() {
+            if buf.len() + data.len() > limit {
+                let take = limit - buf.len();
+                buf.extend_from_slice(&data[..take]);
+                let tail = data.split_off(take);
                 return Ok(Buffered::Overflow {
                     prefix: Bytes::from(buf),
-                    rest: body,
+                    rest: prefixed_body(tail, body),
                 });
             }
+            buf.extend_from_slice(&data);
         }
     }
     Ok(Buffered::Complete(Bytes::from(buf)))
@@ -285,6 +291,9 @@ mod tests {
         match buffer_up_to(body, MAX_INSPECT_BODY).await.expect("read") {
             Buffered::Complete(_) => panic!("oversized body must overflow"),
             Buffered::Overflow { prefix, rest } => {
+                // The buffered prefix must be bounded at the cap even when a
+                // single frame crosses it (the tail is pushed back into rest).
+                assert_eq!(prefix.len(), MAX_INSPECT_BODY);
                 // Nothing may be lost: prefix + rest must equal the original.
                 let rest_bytes = prefixed_body(prefix, rest)
                     .collect()
