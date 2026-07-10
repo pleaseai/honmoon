@@ -23,6 +23,9 @@
 //!
 //! Content inspection is **detect-only**: PII findings are surfaced to the audit
 //! log but do not block the request. Enforcing content rules is a follow-up.
+//! Request-body buffering and `Content-Encoding` decoding live in
+//! [`crate::body`]; the forwarded body is always the original (still-encoded)
+//! bytes — only the scanner sees decoded output.
 //!
 //! Whether a tunnel is TLS-terminated is decided by
 //! [`should_intercept`](HonmoonHandler::should_intercept) from the gateway's
@@ -30,27 +33,20 @@
 
 use std::collections::HashMap;
 use std::net::SocketAddr;
-use std::pin::Pin;
 use std::sync::{Arc, Mutex};
-use std::task::Poll;
 
 use honmoon_core::{
     AuditDraft, Decision, Facts, FactsSummary, HttpFacts, Verdict, decide_explained, detect_pii,
 };
-use http_body_util::combinators::BoxBody;
 use http_body_util::{BodyExt, Full};
-use hudsucker::hyper::body::{Body as HttpBody, Bytes, Frame, SizeHint};
 use hudsucker::hyper::{Method, Request, Response, StatusCode, header};
 use hudsucker::{Body, HttpContext, HttpHandler, RequestOrResponse};
 
 use crate::approval::{ApprovalDecision, NewApproval};
+use crate::body::{
+    Buffered, MAX_INSPECT_BODY, buffer_up_to, decode_for_inspection, prefixed_body, utf8_prefix,
+};
 use crate::gateway::{GatewayState, InterceptPolicy, canonical_host};
-
-/// Max request-body bytes buffered in memory for PII inspection. Bodies larger
-/// than this (whether declared by `Content-Length` or discovered while reading
-/// an unknown-length body) are streamed through un-buffered and left unscanned,
-/// so a large upload can never exhaust memory.
-const MAX_INSPECT_BODY: usize = 2 * 1024 * 1024;
 
 /// Backstop cap on tracked tunnels. Entries are overwritten per client socket
 /// but never individually removed (hudsucker exposes no close event), so this
@@ -285,6 +281,12 @@ impl HonmoonHandler {
             .and_then(|v| v.to_str().ok())
             .and_then(|v| v.parse::<usize>().ok());
 
+        let content_encoding = req
+            .headers()
+            .get(header::CONTENT_ENCODING)
+            .and_then(|v| v.to_str().ok())
+            .map(str::to_owned);
+
         let (parts, body) = req.into_parts();
 
         // Buffer small bodies for scanning; stream anything larger than
@@ -315,9 +317,15 @@ impl HonmoonHandler {
             },
         };
 
-        let pii = scanned
+        // Compressed bodies must not evade the scan: decode supported
+        // `Content-Encoding`s (capped) before scanning. Only the scan sees the
+        // decoded bytes — the original (still-encoded) body is forwarded.
+        let decoded = scanned
             .as_deref()
-            .and_then(|b| std::str::from_utf8(b).ok())
+            .map(|raw| decode_for_inspection(content_encoding.as_deref(), raw));
+        let pii = decoded
+            .as_deref()
+            .and_then(utf8_prefix)
             .and_then(detect_pii);
 
         // Only record when something was found — every request would otherwise
@@ -431,101 +439,47 @@ fn request_host(req: &Request<Body>) -> String {
         .unwrap_or_default()
 }
 
-/// Result of buffering an unknown-length body up to a cap.
-enum Buffered {
-    /// The body ended within the cap — fully buffered (trailers dropped, like
-    /// the `Content-Length` buffered path).
-    Complete(Bytes),
-    /// The cap was hit: `prefix` holds the bytes read so far, `rest` the
-    /// unread remainder of the stream.
-    Overflow { prefix: Bytes, rest: Body },
-}
-
-/// Read data frames from `body` until it ends or more than `limit` bytes have
-/// been buffered.
-async fn buffer_up_to(mut body: Body, limit: usize) -> Result<Buffered, hudsucker::Error> {
-    let mut buf: Vec<u8> = Vec::new();
-    while let Some(frame) = body.frame().await {
-        if let Some(data) = frame?.data_ref() {
-            buf.extend_from_slice(data);
-            if buf.len() > limit {
-                return Ok(Buffered::Overflow {
-                    prefix: Bytes::from(buf),
-                    rest: body,
-                });
-            }
-        }
-    }
-    Ok(Buffered::Complete(Bytes::from(buf)))
-}
-
-/// Re-assemble a body from an already-read prefix followed by the unread rest.
-fn prefixed_body(prefix: Bytes, rest: Body) -> Body {
-    Body::from(BoxBody::new(PrefixedBody {
-        prefix: Some(prefix),
-        rest,
-    }))
-}
-
-/// An [`HttpBody`] that yields one prefix chunk, then delegates to `rest`.
-struct PrefixedBody {
-    prefix: Option<Bytes>,
-    rest: Body,
-}
-
-impl HttpBody for PrefixedBody {
-    type Data = Bytes;
-    type Error = hudsucker::Error;
-
-    fn poll_frame(
-        mut self: Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-    ) -> Poll<Option<Result<Frame<Self::Data>, Self::Error>>> {
-        if let Some(prefix) = self.prefix.take() {
-            return Poll::Ready(Some(Ok(Frame::data(prefix))));
-        }
-        Pin::new(&mut self.rest).poll_frame(cx)
-    }
-
-    fn size_hint(&self) -> SizeHint {
-        let mut hint = self.rest.size_hint();
-        let prefix_len = self.prefix.as_ref().map(|p| p.len() as u64).unwrap_or(0);
-        hint.set_lower(hint.lower() + prefix_len);
-        if let Some(upper) = hint.upper() {
-            hint.set_upper(upper + prefix_len);
-        }
-        hint
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    #[tokio::test]
-    async fn unknown_length_body_within_cap_is_fully_buffered() {
-        let body = Body::from(b"small body".to_vec());
-        match buffer_up_to(body, MAX_INSPECT_BODY).await.expect("read") {
-            Buffered::Complete(bytes) => assert_eq!(&bytes[..], b"small body"),
-            Buffered::Overflow { .. } => panic!("small body must not overflow"),
-        }
+    fn gzip(data: &[u8]) -> Vec<u8> {
+        use std::io::Write;
+        let mut enc = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        enc.write_all(data).expect("gzip write");
+        enc.finish().expect("gzip finish")
     }
 
     #[tokio::test]
-    async fn oversized_unknown_length_body_streams_through_intact() {
-        let big = vec![b'a'; MAX_INSPECT_BODY + 10];
-        let body = Body::from(big.clone());
-        match buffer_up_to(body, MAX_INSPECT_BODY).await.expect("read") {
-            Buffered::Complete(_) => panic!("oversized body must overflow"),
-            Buffered::Overflow { prefix, rest } => {
-                // Nothing may be lost: prefix + rest must equal the original.
-                let rest_bytes = prefixed_body(prefix, rest)
-                    .collect()
-                    .await
-                    .expect("collect reassembled body")
-                    .to_bytes();
-                assert_eq!(&rest_bytes[..], &big[..]);
-            }
-        }
+    async fn forwarded_body_stays_encoded_after_inspection() {
+        // Only the scan sees decoded bytes — the forwarded body must be the
+        // original (still-encoded) bytes, or every gzip request would break.
+        let policy =
+            honmoon_core::Policy::from_yaml("egress:\n  default: allow\n").expect("policy");
+        let handler = HonmoonHandler::new(GatewayState::new(policy));
+
+        let compressed = gzip(b"rrn=670125-1230644");
+        let req = Request::builder()
+            .method("POST")
+            .uri("https://localhost/submit")
+            .header(header::CONTENT_ENCODING, "gzip")
+            .header(header::CONTENT_LENGTH, compressed.len().to_string())
+            .body(Body::from(compressed.clone()))
+            .expect("build request");
+
+        let RequestOrResponse::Request(forwarded) = handler.inspect_body(req).await else {
+            panic!("detect-only inspection must forward the request");
+        };
+        let body = forwarded
+            .into_body()
+            .collect()
+            .await
+            .expect("collect forwarded body")
+            .to_bytes();
+        assert_eq!(
+            &body[..],
+            &compressed[..],
+            "forwarded body must stay encoded"
+        );
     }
 }

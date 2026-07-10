@@ -5,6 +5,7 @@
 //! `honmoon-core` before forwarding upstream.
 
 pub mod approval;
+pub mod body;
 pub mod ca;
 pub mod gateway;
 pub mod mitm;

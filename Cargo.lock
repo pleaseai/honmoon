@@ -1046,6 +1046,7 @@ dependencies = [
 name = "honmoon-proxy"
 version = "0.1.0"
 dependencies = [
+ "flate2",
  "honmoon-core",
  "http-body-util",
  "hudsucker",

@@ -32,6 +32,8 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 # TLS termination (MITM) data plane — see ADR-0003.
 hudsucker = { version = "0.24", features = ["http2"] }
 http-body-util = "0.1"
+# Decode gzip/deflate request bodies for PII inspection (#12).
+flate2 = "1"
 axum = "0.8"
 rust-embed = "8"
 mime_guess = "2"

@@ -90,7 +90,7 @@ fn client_config(ca_cert_pem: &str) -> ClientConfig {
 /// Run an intercepted HTTPS request through the proxy (CONNECT to `localhost`,
 /// real TLS handshake against the minted leaf, send `request` raw) and return
 /// whether the audit log recorded an RRN PII finding for it.
-fn rrn_audited_for(request: String) -> bool {
+fn rrn_audited_for(request: Vec<u8>) -> bool {
     let audit = Arc::new(AuditLog::new(1024));
     let policy =
         Policy::from_yaml("egress:\n  default: deny\n  allow:\n    - localhost\n").unwrap();
@@ -133,7 +133,7 @@ fn rrn_audited_for(request: String) -> bool {
             .expect("TLS handshake through the terminating proxy");
 
         // 3. Send the request over the decrypted channel.
-        tls.write_all(request.as_bytes()).await.unwrap();
+        tls.write_all(&request).await.unwrap();
         // Drain whatever the proxy returns (a 502 once the upstream leg fails).
         let mut sink = Vec::new();
         let _ = tls.read_to_end(&mut sink).await;
@@ -158,7 +158,7 @@ fn terminates_tls_and_detects_pii_in_body() {
         body
     );
     assert!(
-        rrn_audited_for(request),
+        rrn_audited_for(request.into_bytes()),
         "expected an audit event with an RRN PII finding"
     );
 }
@@ -174,7 +174,65 @@ fn detects_pii_in_chunked_body_without_content_length() {
         body
     );
     assert!(
-        rrn_audited_for(request),
+        rrn_audited_for(request.into_bytes()),
         "expected an RRN PII finding for a chunked body (no Content-Length)"
+    );
+}
+
+/// Compressing the body (`Content-Encoding: gzip`) must not bypass the scan:
+/// supported encodings are decoded (capped) before PII detection.
+#[test]
+fn detects_pii_in_gzip_compressed_body() {
+    use std::io::Write as _;
+
+    let body = format!("form field with rrn={VALID_RRN} inside");
+    let mut enc = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+    enc.write_all(body.as_bytes()).unwrap();
+    let compressed = enc.finish().unwrap();
+
+    let mut request = format!(
+        "POST /submit HTTP/1.1\r\nHost: localhost\r\nContent-Encoding: gzip\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        compressed.len()
+    )
+    .into_bytes();
+    request.extend_from_slice(&compressed);
+
+    assert!(
+        rrn_audited_for(request),
+        "expected an RRN PII finding for a gzip-compressed body"
+    );
+}
+
+/// The `Content-Encoding` header is untrusted client input: a *plaintext* body
+/// mislabeled as gzip must not evade the scan — decode failure falls back to
+/// scanning the raw bytes.
+#[test]
+fn detects_pii_when_encoding_is_mislabeled() {
+    let body = format!("plaintext with rrn={VALID_RRN} but a lying header");
+    let request = format!(
+        "POST /submit HTTP/1.1\r\nHost: localhost\r\nContent-Encoding: gzip\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+        body.len(),
+        body
+    );
+    assert!(
+        rrn_audited_for(request.into_bytes()),
+        "expected an RRN PII finding for a plaintext body mislabeled as gzip"
+    );
+}
+
+/// An *unsupported* encoding we can't decode (`br`) must not skip the scan for
+/// a plaintext body either — the raw bytes are scanned, so mislabeling with an
+/// unknown codec can't evade detection.
+#[test]
+fn detects_pii_under_unsupported_encoding_label() {
+    let body = format!("plaintext with rrn={VALID_RRN} claiming brotli");
+    let request = format!(
+        "POST /submit HTTP/1.1\r\nHost: localhost\r\nContent-Encoding: br\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+        body.len(),
+        body
+    );
+    assert!(
+        rrn_audited_for(request.into_bytes()),
+        "expected an RRN PII finding for a plaintext body labeled Content-Encoding: br"
     );
 }

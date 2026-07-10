@@ -1,0 +1,1 @@
+- [mitm-test-harness](mitm_test_harness.md) — honmoon-proxy's tests/mitm.rs upstream always drops the connection, so forwarded-byte content (detect-only invariant) is never test-asserted, only audit-log findings are.
