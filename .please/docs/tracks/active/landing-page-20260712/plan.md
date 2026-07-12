@@ -97,20 +97,20 @@ apps/web/
 
 ## Tasks
 
-- [ ] T001 `apps/web` 스캐폴드 생성 — package.json(@honmoon/web) · vite.config.ts(react+tailwind, proxy 없음) · tsconfig 3종 · index.html · src/main.tsx · 빈 App.tsx · src/styles/globals.css(`@import "tailwindcss";` 스텁) (files: apps/web/package.json, apps/web/vite.config.ts, apps/web/tsconfig.json, apps/web/tsconfig.app.json, apps/web/tsconfig.node.json, apps/web/index.html, apps/web/src/main.tsx, apps/web/src/App.tsx, apps/web/src/styles/globals.css)
+- [x] T001 `apps/web` 스캐폴드 생성 — package.json(@honmoon/web) · vite.config.ts(react+tailwind, proxy 없음) · tsconfig 3종 · index.html · src/main.tsx · 빈 App.tsx · src/styles/globals.css(`@import "tailwindcss";` 스텁) (files: apps/web/package.json, apps/web/vite.config.ts, apps/web/tsconfig.json, apps/web/tsconfig.app.json, apps/web/tsconfig.node.json, apps/web/index.html, apps/web/src/main.tsx, apps/web/src/App.tsx, apps/web/src/styles/globals.css)
   STOP: 루트 package.json workspaces가 `apps/*` glob이 아니면 `apps/web` 자동 편입이 안 되므로 멈추고 보고한다.
-- [ ] T002 원본 디자인 토큰·전역 스타일 이관 — 원본 `<style>`의 `:root` oklch 토큰·reset·layout primitives·type·chrome 등 전역 스타일을 globals.css로 원문 이관, `@import "tailwindcss";`를 파일 최상단에 두고 원본 스타일을 그 뒤에 배치(preflight를 원본 reset이 덮어쓰도록). AC-003(토큰·타이포·간격 재현) 검증 기준점. (file: apps/web/src/styles/globals.css) (depends on T001)
-- [ ] T003 [P] TopNav 섹션 + 내비 프로스트/스무스 스크롤 — 로고·nav·GitHub 아이콘·Get started 버튼, `useScrollFlag`로 scrollY>24 시 `.scrolled` 토글. TopNav의 "Get started" 버튼 → #policy 스무스 스크롤. #policy 스크롤은 공용 앵커 핸들러(예: 작은 `scrollToPolicy` 유틸)로 두어 Hero의 "See the policy engine"(T004 소유)이 재사용하게 한다 — 로직 중복 금지. (files: apps/web/src/sections/TopNav.tsx, apps/web/src/hooks/useScrollFlag.ts) (depends on T002)
-- [ ] T004 [P] Hero 섹션 — eyebrow·h1·lead·CTA 2종. "See the policy engine"는 T003의 공용 #policy 앵커 핸들러 재사용(내부 스크롤), "GitHub ↗"는 외부 링크. 카피는 원본 문자 그대로(AC-002). (file: apps/web/src/sections/Hero.tsx) (depends on T002)
-- [ ] T005 [P] Membrane 배경 canvas — 전체화면 **고정(fixed) 레이어**로 렌더(콘텐츠 뒤 배경, in-flow 섹션 박스 아님), `useMembrane` 훅(rAF 루프·pointermove 반응·resize·cleanup). reduced-motion 시: 원본과 동일하게 `draw(0)` 정적 프레임 1회 + `scroll → draw(0)` 재드로우 리스너를 유지해 배경이 스크롤에 따라 갱신되게 한다(단순 정지 아님). 원본의 미사용 경로(`.session-card` 콘솔, 미호출 `emitHero`/hero-particle)는 이관하지 않는다 — 대시보드 strict tsconfig(noUnusedLocals/Parameters)에서 dead code는 빌드 실패. (files: apps/web/src/sections/Membrane.tsx, apps/web/src/hooks/useMembrane.ts) (depends on T002)
+- [x] T002 원본 디자인 토큰·전역 스타일 이관 — 원본 `<style>`의 `:root` oklch 토큰·reset·layout primitives·type·chrome 등 전역 스타일을 globals.css로 원문 이관, `@import "tailwindcss";`를 파일 최상단에 두고 원본 스타일을 그 뒤에 배치(preflight를 원본 reset이 덮어쓰도록). AC-003(토큰·타이포·간격 재현) 검증 기준점. (file: apps/web/src/styles/globals.css) (depends on T001)
+- [x] T003 [P] TopNav 섹션 + 내비 프로스트/스무스 스크롤 — 로고·nav·GitHub 아이콘·Get started 버튼, `useScrollFlag`로 scrollY>24 시 `.scrolled` 토글. TopNav의 "Get started" 버튼 → #policy 스무스 스크롤. #policy 스크롤은 공용 앵커 핸들러(예: 작은 `scrollToPolicy` 유틸)로 두어 Hero의 "See the policy engine"(T004 소유)이 재사용하게 한다 — 로직 중복 금지. (files: apps/web/src/sections/TopNav.tsx, apps/web/src/hooks/useScrollFlag.ts) (depends on T002)
+- [x] T004 [P] Hero 섹션 — eyebrow·h1·lead·CTA 2종. "See the policy engine"는 T003의 공용 #policy 앵커 핸들러 재사용(내부 스크롤), "GitHub ↗"는 외부 링크. 카피는 원본 문자 그대로(AC-002). (file: apps/web/src/sections/Hero.tsx) (depends on T002)
+- [x] T005 [P] Membrane 배경 canvas — 전체화면 **고정(fixed) 레이어**로 렌더(콘텐츠 뒤 배경, in-flow 섹션 박스 아님), `useMembrane` 훅(rAF 루프·pointermove 반응·resize·cleanup). reduced-motion 시: 원본과 동일하게 `draw(0)` 정적 프레임 1회 + `scroll → draw(0)` 재드로우 리스너를 유지해 배경이 스크롤에 따라 갱신되게 한다(단순 정지 아님). 원본의 미사용 경로(`.session-card` 콘솔, 미호출 `emitHero`/hero-particle)는 이관하지 않는다 — 대시보드 strict tsconfig(noUnusedLocals/Parameters)에서 dead code는 빌드 실패. (files: apps/web/src/sections/Membrane.tsx, apps/web/src/hooks/useMembrane.ts) (depends on T002)
   STOP: 원본 canvas 로직을 React로 옮길 때 시각 결과가 원본과 눈에 띄게 달라지면(파문·튕김·흡수 거동 상실) 즉흥 재작성하지 말고 멈추고 보고한다.
-- [ ] T006 [P] Barrier 섹션 + gate-scene 스크롤 애니메이션 — 5개 요청 행(allow·mask·deny·deny·pause)의 요청자·명령·verdict·rule·result 원본 카피(AC-002), `useGateScene`로 스크롤 구동 판정 애니메이션. reduced-motion 분기를 이 훅에 개별 이관(원본대로 판정 진행도를 최종 상태로 고정하고 scroll 리스너 미등록) — 전역 처리에 의존하지 말 것. (files: apps/web/src/sections/Barrier.tsx, apps/web/src/hooks/useGateScene.ts) (depends on T002)
-- [ ] T007 [P] Threat·HowItWorks 섹션 — 위험 명령 밴드, 2-layer flow 다이어그램 + facts-strip (files: apps/web/src/sections/Threat.tsx, apps/web/src/sections/HowItWorks.tsx) (depends on T002)
-- [ ] T008 [P] Policy 섹션 + CEL YAML 코드 카드 + Copy — verdict 목록(allow/deny/pause), agent.yaml 정책 예시(CEL 표현식 포함 YAML) 구문 강조, Copy 버튼 → `navigator.clipboard`로 정책 전문 복사 (file: apps/web/src/sections/Policy.tsx) (depends on T002)
-- [ ] T009 [P] Modes·OpenCore 섹션 — honmoon run/gateway/join 3개 모드 행, OSS core(Apache-2.0) vs Team&Cloud 2패널 (files: apps/web/src/sections/Modes.tsx, apps/web/src/sections/OpenCore.tsx) (depends on T002)
-- [ ] T010 [P] Cta·Footer 섹션 — 최종 CTA(Get started on GitHub·Docs ↗), 푸터 브랜드 + Product/Resources 컬럼(GitHub·Docs·Readme 정확한 대상 URL) (files: apps/web/src/sections/Cta.tsx, apps/web/src/sections/Footer.tsx) (depends on T002)
-- [ ] T011 App 조립 + 페이드인 + 접근성 — App.tsx가 skip-link + Membrane + 모든 섹션을 원본 순서로 조립(AC-001), 섹션 aria-label(AC-015), 카피 원본 그대로(AC-002). `useReveal`(IntersectionObserver 페이드인, AC-007): 원본은 `.lp` 숨김 초기상태를 `<html>`에 `od-js` 클래스를 **동기적으로** 부여해 활성화한 뒤 IO로 `.in`을 추가한다. 이 `od-js` 부여를 post-paint useEffect에 넣으면 above-fold `.lp` 섹션이 보임→숨김→페이드로 깜빡인다(FOUC). 따라서 `od-js`는 index.html 인라인 스크립트 또는 모듈 최상위에서 동기 부여하고, useReveal은 관찰/`.in` 부여만 담당한다. reduced-motion 시 useReveal은 관찰을 건너뛰고 섹션을 정적 표시(개별 분기). (files: apps/web/index.html, apps/web/src/App.tsx, apps/web/src/hooks/useReveal.ts) (depends on T003, T004, T005, T006, T007, T008, T009, T010)
-- [ ] T012 충실도·반응형·링크 검증 패스 — 원본과 나란히 대조(10개 영역 순서·카피·레이아웃), 7개 인터랙션 동작, 920px 이하 재배치, reduced-motion 정지, 모든 외부 링크 대상 URL 확인, `bun run build`·`typecheck` 통과 (file: apps/web/src/App.tsx) (depends on T011)
+- [x] T006 [P] Barrier 섹션 + gate-scene 스크롤 애니메이션 — 5개 요청 행(allow·mask·deny·deny·pause)의 요청자·명령·verdict·rule·result 원본 카피(AC-002), `useGateScene`로 스크롤 구동 판정 애니메이션. reduced-motion 분기를 이 훅에 개별 이관(원본대로 판정 진행도를 최종 상태로 고정하고 scroll 리스너 미등록) — 전역 처리에 의존하지 말 것. (files: apps/web/src/sections/Barrier.tsx, apps/web/src/hooks/useGateScene.ts) (depends on T002)
+- [x] T007 [P] Threat·HowItWorks 섹션 — 위험 명령 밴드, 2-layer flow 다이어그램 + facts-strip (files: apps/web/src/sections/Threat.tsx, apps/web/src/sections/HowItWorks.tsx) (depends on T002)
+- [x] T008 [P] Policy 섹션 + CEL YAML 코드 카드 + Copy — verdict 목록(allow/deny/pause), agent.yaml 정책 예시(CEL 표현식 포함 YAML) 구문 강조, Copy 버튼 → `navigator.clipboard`로 정책 전문 복사 (file: apps/web/src/sections/Policy.tsx) (depends on T002)
+- [x] T009 [P] Modes·OpenCore 섹션 — honmoon run/gateway/join 3개 모드 행, OSS core(Apache-2.0) vs Team&Cloud 2패널 (files: apps/web/src/sections/Modes.tsx, apps/web/src/sections/OpenCore.tsx) (depends on T002)
+- [x] T010 [P] Cta·Footer 섹션 — 최종 CTA(Get started on GitHub·Docs ↗), 푸터 브랜드 + Product/Resources 컬럼(GitHub·Docs·Readme 정확한 대상 URL) (files: apps/web/src/sections/Cta.tsx, apps/web/src/sections/Footer.tsx) (depends on T002)
+- [x] T011 App 조립 + 페이드인 + 접근성 — App.tsx가 skip-link + Membrane + 모든 섹션을 원본 순서로 조립(AC-001), 섹션 aria-label(AC-015), 카피 원본 그대로(AC-002). `useReveal`(IntersectionObserver 페이드인, AC-007): 원본은 `.lp` 숨김 초기상태를 `<html>`에 `od-js` 클래스를 **동기적으로** 부여해 활성화한 뒤 IO로 `.in`을 추가한다. 이 `od-js` 부여를 post-paint useEffect에 넣으면 above-fold `.lp` 섹션이 보임→숨김→페이드로 깜빡인다(FOUC). 따라서 `od-js`는 index.html 인라인 스크립트 또는 모듈 최상위에서 동기 부여하고, useReveal은 관찰/`.in` 부여만 담당한다. reduced-motion 시 useReveal은 관찰을 건너뛰고 섹션을 정적 표시(개별 분기). (files: apps/web/index.html, apps/web/src/App.tsx, apps/web/src/hooks/useReveal.ts) (depends on T003, T004, T005, T006, T007, T008, T009, T010)
+- [x] T012 충실도·반응형·링크 검증 패스 — 원본과 나란히 대조(10개 영역 순서·카피·레이아웃), 7개 인터랙션 동작, 920px 이하 재배치, reduced-motion 정지, 모든 외부 링크 대상 URL 확인, `bun run build`·`typecheck` 통과 (file: apps/web/src/App.tsx) (depends on T011)
 
 ## Dependencies
 
@@ -200,7 +200,17 @@ T003–T010은 T002(전역 CSS·토큰) 완료 후 서로 독립이므로 병렬
 
 ## Progress
 
-_구현 시작 시 실행자가 갱신._
+- 2026-07-12: T001–T012 완료 (Inline 전략 — apps/web는 신규 앱으로 테스트 프레임워크가
+  없고 태스크가 시각 충실도 작업이라 implement-executor 대신 메인 세션이 직접 구현).
+  - 스캐폴드(apps/web, React19+Vite8+Tailwind v4, tsconfig 3종) + 원본 CSS 512행을
+    globals.css로 원문 이관(`.session-card` 비활성 블록 제외) + 11개 섹션 컴포넌트 +
+    4개 훅(useMembrane/useGateScene/useReveal/useScrollFlag) + scrollToPolicy 유틸.
+  - 검증: `bun run typecheck` 무오류, `bun run build` 성공(CSS 29KB·JS 217KB gzip 67KB),
+    `eslint apps/web` 0 errors. 브라우저 렌더 대조: 10개 영역 순서·카피·레이아웃 원본 일치,
+    7개 인터랙션(멤브레인+포인터·barrier 스크럽·페이드인·내비 프로스트·CTA 스크롤·정책 copy)
+    동작, 콘솔 오류 0.
+  - 결정 반영: Tailwind preflight를 globals 상단 import 후 원본 reset이 덮어씀, FOUC 방지
+    `od-js` 동기 부여(index.html), per-hook reduced-motion 분기, dead code 미이관.
 
 ## Decision Log
 
