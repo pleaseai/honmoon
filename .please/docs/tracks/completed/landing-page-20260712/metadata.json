@@ -1,9 +1,9 @@
 {
   "track_id": "landing-page-20260712",
   "type": "feature",
-  "status": "in_progress",
+  "status": "review",
   "created_at": "2026-07-12T00:00:00Z",
-  "updated_at": "2026-07-12T00:00:00Z",
+  "updated_at": "2026-07-12T12:00:00Z",
   "issue": "#17",
   "pr": "https://github.com/pleaseai/honmoon/pull/18",
   "code_pr": "https://github.com/pleaseai/honmoon/pull/18",

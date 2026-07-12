@@ -232,4 +232,28 @@ T003–T010은 T002(전역 CSS·토큰) 완료 후 서로 독립이므로 병렬
 
 ## Surprises & Discoveries
 
-_구현 중 발견 사항 기록._
+- 저장소 기본 브랜치가 `master`→`main`으로 마이그레이션되어 원격 `master`가 삭제된 상태.
+  PR base를 `main`으로 지정해야 했다.
+- Graphite가 저장소와 미동기화되어 `gt submit`이 실패 — `gh`로 브랜치 push + PR 생성/ready로 폴백.
+- antfu eslint 설정의 `jsx-one-expression-per-line` auto-fix가 인라인 텍스트 주변 공백을
+  깨뜨릴 수 있어, 밀집 마크업 충실 이관을 위해 `apps/web`에 한해 규칙 완화.
+
+## Outcomes & Retrospective
+
+### What Was Shipped
+승인된 디자인을 신규 `apps/web`(React 19·Vite 8·Tailwind v4)으로 충실 재현한 정적 마케팅
+랜딩페이지. 11개 섹션 컴포넌트 + 4개 인터랙션 훅 + 원문 이관 글로벌 CSS. 12/12 태스크 완료.
+
+### What Went Well
+- 원본 CSS·canvas 로직을 거의 원문 그대로 이관해 충실도 확보(브라우저 대조 불일치 0, 리뷰
+  충실도 회귀 0). typecheck·build·eslint 모두 green, 정확성 버그 0.
+- spec/plan 리뷰 게이트가 실질 가치를 냄: FOUC 동기 게이팅·per-hook reduced-motion·dead
+  code 제외·Tailwind preflight 계층 등 구현 gotcha를 계획 단계에서 태스크에 반영.
+
+### What Could Improve
+- 프론트엔드 시각 충실도 트랙에 자동 테스트 프레임워크가 없어 검증이 브라우저 육안 대조에
+  의존. 회귀 방지를 위한 스냅샷/DOM-diff 테스트는 별도 트랙으로 고려 가능.
+
+### Tech Debt Created
+- `useMembrane`의 파티클 모델이 `any[]`로 untyped — 향후 편집 시 오타가 런타임 침묵 버그가
+  될 수 있음(리뷰 known-minor). `Particle`/`Ripple` 인터페이스 도입은 후속 정리 항목.
