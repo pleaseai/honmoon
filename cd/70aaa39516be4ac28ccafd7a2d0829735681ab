@@ -1,0 +1,39 @@
+apps/web/src/sections/TopNav.tsx
+  s_18fbbebed9fe1b::t_75e2653dbcd03d 11
+apps/web/src/lib/links.ts
+  s_18fbbebed9fe1b::t_74b6bd0892cbf8 4-5
+apps/web/src/sections/Policy.tsx
+  s_18fbbebed9fe1b::t_46c0df1612b25c 5
+  s_18fbbebed9fe1b::t_f131b9c1640626 17-18
+  s_18fbbebed9fe1b::t_2d9381be6675d4 16
+apps/web/src/sections/Footer.tsx
+  s_18fbbebed9fe1b::t_c90f74768bfa94 8
+.please/docs/tracks/completed/landing-page-20260712/spec.md
+  s_18fbbebed9fe1b::t_e720c1cfb9b041 21-23
+.please/docs/tracks/completed/landing-page-20260712/plan.md
+  s_18fbbebed9fe1b::t_6d3aaeaaea49db 10
+apps/web/index.html
+  s_18fbbebed9fe1b::t_88c6dea8c8180b 18-21
+apps/web/src/hooks/useMembrane.ts
+  s_18fbbebed9fe1b::t_a1221ae9c068b7 192
+  s_18fbbebed9fe1b::t_fbc1783a3a3a0b 4-5,7-15
+  s_18fbbebed9fe1b::t_7185d981bed1d8 6,98,108-110,112-116,126-127,131-134,154,160-161,163,171
+  s_18fbbebed9fe1b::t_80eabf3622c168 158
+  s_18fbbebed9fe1b::t_d07da8ef4baaa0 377,379
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.12",
+  "base_commit_sha": "cd70aaa39516be4ac28ccafd7a2d0829735681ab",
+  "prompts": {},
+  "sessions": {
+    "s_18fbbebed9fe1b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "6c75e850-ea91-4815-8c14-0e5065c5192a",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "DANNY NA <danny@pusan.ac.kr>"
+    }
+  }
+}
