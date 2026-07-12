@@ -1,4 +1,4 @@
 {"id": "phase-2-cel-http-facts", "type": "feature", "status": "completed", "phase": "done", "issue": "", "created": "2026-06-20", "section": "completed"}
 {"id": "phase-3-sql-k8s-parsers", "type": "feature", "status": "completed", "phase": "done", "issue": "", "created": "2026-06-21", "section": "completed"}
 {"id":"secret-tokenization-20260707","type":"feature","status":"completed","phase":"review","issue":"#14","created":"2026-07-07","section":"completed"}
-{"id":"landing-page-20260712","type":"feature","status":"in_progress","phase":"implement","issue":"#17","created":"2026-07-12","section":"active"}
+{"id":"landing-page-20260712","type":"feature","status":"review","phase":"review","issue":"#17","created":"2026-07-12","section":"completed"}
