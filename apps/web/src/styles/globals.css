@@ -37,7 +37,7 @@
   --fs-meta: 13px;
 
   --gap-xs: 8px; --gap-sm: 12px; --gap-md: 20px;
-  --gap-lg: 32px; --gap-xl: 56px; --gap-2xl: 96px;
+  --gap-lg: 32px; --gap-xl: 56px; --gap-2xl: 120px;
   --container: 1120px;
   --gutter: 32px;
   --radius: 8px;
@@ -66,7 +66,7 @@ h1, h2, h3 { text-wrap: balance; }
 
 /* ─── layout primitives ─────────────────────────────────────────── */
 .container { max-width: var(--container); margin-inline: auto; padding-inline: var(--gutter); }
-.section { padding-block: clamp(56px, 9vw, var(--gap-2xl)); }
+.section { padding-block: clamp(68px, 9vw, var(--gap-2xl)); }
 .row-between { display: flex; align-items: center; justify-content: space-between; gap: var(--gap-md); }
 .grid-2 { display: grid; grid-template-columns: repeat(2, 1fr); gap: var(--gap-xl); }
 @media (max-width: 920px) { .grid-2 { grid-template-columns: 1fr; } }
@@ -316,12 +316,26 @@ h3 { font-size: var(--fs-h3); font-weight: 600; line-height: 1.35; letter-spacin
 .gate-legend span:nth-child(3) { padding-left: 20px; color: color-mix(in oklch, var(--accent) 55%, var(--muted)); }
 
 @media (max-width: 920px) {
-  .hero-bleed .container { padding-top: 40px; }
-  /* 좁은 화면 — 공간 게이트 대신 세로 스택으로 폴백 */
+  /* 좁은 화면 — 멤브레인 오브제는 폴드 상단에 뜨고, 히어로 카피는 하단으로
+     내려 겹침을 없앤다. 세로 여백을 넉넉히. */
+  .hero-bleed .container { padding-top: 32px; padding-bottom: 48px; }
+  .hero-copy { min-height: calc(100svh - 132px); justify-content: flex-end; max-width: none; }
+  .hero-copy h1 { margin-bottom: var(--gap-sm); }
+  .hero-copy .lead { margin-bottom: var(--gap-md); }
+  /* 오브제 뒤 카피를 확실히 읽히게 — 폴드 하단을 잉크로 덮는 스크림 */
+  .hero-scrim {
+    background: linear-gradient(to top,
+      var(--bg) 0%,
+      color-mix(in oklch, var(--bg) 88%, transparent) 30%,
+      color-mix(in oklch, var(--bg) 40%, transparent) 55%,
+      transparent 74%);
+  }
+  /* 공간 게이트 대신 세로 스택으로 폴백 — 행 간격을 넉넉히 */
   .gate-spine, .g-track, .gate-legend { display: none; }
-  .g-row { grid-template-columns: 1fr; gap: 6px; padding: 15px 0; }
+  .g-row { grid-template-columns: 1fr; gap: 7px; padding: 20px 0; }
   .g-req { text-align: left; padding-right: 0; }
   .g-out { padding-left: 0; }
+  .g-row.protagonist { padding: 26px 0; }
   .g-row.protagonist .g-cmd { font-size: 14px; }
 }
 
@@ -397,8 +411,9 @@ h3 { font-size: var(--fs-h3); font-weight: 600; line-height: 1.35; letter-spacin
   .split, .oc-grid { grid-template-columns: 1fr; }
   .flow-arrow { transform: rotate(90deg); }
   .flow-node { flex-basis: 100%; }
-  .mode-row { grid-template-columns: 1fr; gap: 5px; padding: 15px 4px; }
+  .mode-row { grid-template-columns: 1fr; gap: 6px; padding: 20px 4px; }
   .mode-row .m-w { text-align: left; }
+  .oc { padding: 26px 24px; }
 }
 
 /* ─── verdict rows (섹션) ────────────────────────────────────────── */
