@@ -1,0 +1,21 @@
+apps/web/src/sections/Hero.tsx
+  s_18fbbebed9fe1b::t_bd298e9a46e9be 14
+apps/web/index.html
+  s_18fbbebed9fe1b::t_fd02882f7ff755 6
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.12",
+  "base_commit_sha": "d0134319f2b66751783d05066c4cc19b057caaf1",
+  "prompts": {},
+  "sessions": {
+    "s_18fbbebed9fe1b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "6c75e850-ea91-4815-8c14-0e5065c5192a",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "DANNY NA <danny@pusan.ac.kr>"
+    }
+  }
+}
