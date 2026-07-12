@@ -1,6 +1,5 @@
+import { GITHUB_URL } from '../lib/links'
 import { scrollToPolicy } from '../lib/scrollToPolicy'
-
-const GITHUB_URL = 'https://github.com/pleaseai/honmoon'
 
 export function Hero() {
   return (

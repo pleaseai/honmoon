@@ -1,4 +1,5 @@
 import { useEffect } from 'react'
+import { prefersReducedMotion } from '../lib/prefersReducedMotion'
 
 /**
  * Barrier gate-scene scroll scrub. Updates each `.g-row`'s `--p` (0→1) as it
@@ -15,7 +16,7 @@ export function useGateScene(sceneRef: React.RefObject<HTMLElement | null>) {
     const rows = Array.prototype.slice.call(
       scene.querySelectorAll('.g-row'),
     ) as HTMLElement[]
-    const reduced = matchMedia('(prefers-reduced-motion: reduce)').matches
+    const reduced = prefersReducedMotion()
     if (reduced) {
       rows.forEach(r => r.style.setProperty('--p', '1'))
       return

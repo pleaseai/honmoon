@@ -1,6 +1,4 @@
-const GITHUB_URL = 'https://github.com/pleaseai/honmoon'
-const DOCS_URL = 'https://github.com/pleaseai/honmoon/tree/master/docs'
-const README_URL = 'https://github.com/pleaseai/honmoon/blob/master/README.md'
+import { DOCS_URL, GITHUB_URL, README_URL } from '../lib/links'
 
 export function Footer() {
   return (

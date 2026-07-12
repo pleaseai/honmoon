@@ -1,7 +1,6 @@
 import { useScrollFlag } from '../hooks/useScrollFlag'
+import { GITHUB_URL } from '../lib/links'
 import { scrollToPolicy } from '../lib/scrollToPolicy'
-
-const GITHUB_URL = 'https://github.com/pleaseai/honmoon'
 
 export function TopNav() {
   const scrolled = useScrollFlag(24)

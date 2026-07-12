@@ -1,4 +1,5 @@
 import { useEffect } from 'react'
+import { prefersReducedMotion } from '../lib/prefersReducedMotion'
 
 /**
  * Full-viewport fixed membrane background (`#gate3d`).
@@ -20,7 +21,7 @@ export function useMembrane(canvasRef: React.RefObject<HTMLCanvasElement | null>
     if (!canvas) { return }
     const ctx = canvas.getContext('2d')
     if (!ctx) { return }
-    const reduced = matchMedia('(prefers-reduced-motion: reduce)').matches
+    const reduced = prefersReducedMotion()
 
     const C = {
       star: (a: number) => `rgba(196, 208, 228, ${a})`,

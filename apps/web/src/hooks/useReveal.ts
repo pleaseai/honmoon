@@ -1,4 +1,5 @@
 import { useEffect } from 'react'
+import { prefersReducedMotion } from '../lib/prefersReducedMotion'
 
 /**
  * Landing-section fade-up reveal. Observes every `.lp` section and adds `.in`
@@ -16,7 +17,7 @@ export function useReveal(rootRef: React.RefObject<HTMLElement | null>) {
   useEffect(() => {
     const root = rootRef.current
     if (!root) { return }
-    const reduced = matchMedia('(prefers-reduced-motion: reduce)').matches
+    const reduced = prefersReducedMotion()
     const secs = root.querySelectorAll<HTMLElement>('.lp')
     if (reduced || !('IntersectionObserver' in window) || !secs.length) { return }
 

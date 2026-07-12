@@ -1,5 +1,4 @@
-const GITHUB_URL = 'https://github.com/pleaseai/honmoon'
-const DOCS_URL = 'https://github.com/pleaseai/honmoon/tree/master/docs'
+import { DOCS_URL, GITHUB_URL } from '../lib/links'
 
 export function Cta() {
   return (
