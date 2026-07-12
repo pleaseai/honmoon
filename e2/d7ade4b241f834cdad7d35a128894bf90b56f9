@@ -1,0 +1,19 @@
+.please/docs/tracks/active/landing-page-20260712/plan.md
+  s_18fbbebed9fe1b::t_2b3c7279735c08 214-216
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.12",
+  "base_commit_sha": "e2d7ade4b241f834cdad7d35a128894bf90b56f9",
+  "prompts": {},
+  "sessions": {
+    "s_18fbbebed9fe1b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "6c75e850-ea91-4815-8c14-0e5065c5192a",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "DANNY NA <danny@pusan.ac.kr>"
+    }
+  }
+}
