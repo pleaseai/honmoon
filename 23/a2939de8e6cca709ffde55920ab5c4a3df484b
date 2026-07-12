@@ -1,0 +1,24 @@
+apps/web/src/styles/globals.css
+  s_18fbbebed9fe1b::t_7442de1f64fa12 243-257,260
+  s_18fbbebed9fe1b::t_38977b842c60aa 327-332
+  s_18fbbebed9fe1b::t_e5d8fb78f0a588 372
+apps/web/src/sections/Barrier.tsx
+  s_18fbbebed9fe1b::t_71176db8ed0db6 23-28
+  s_18fbbebed9fe1b::t_0dd14c07113ea4 58
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.12",
+  "base_commit_sha": "23a2939de8e6cca709ffde55920ab5c4a3df484b",
+  "prompts": {},
+  "sessions": {
+    "s_18fbbebed9fe1b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "6c75e850-ea91-4815-8c14-0e5065c5192a",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "DANNY NA <danny@pusan.ac.kr>"
+    }
+  }
+}
