@@ -211,6 +211,9 @@ T003–T010은 T002(전역 CSS·토큰) 완료 후 서로 독립이므로 병렬
     동작, 콘솔 오류 0.
   - 결정 반영: Tailwind preflight를 globals 상단 import 후 원본 reset이 덮어씀, FOUC 방지
     `od-js` 동기 부여(index.html), per-hook reduced-motion 분기, dead code 미이관.
+- 2026-07-12: 코드 리뷰(high, 8-angle) — 정확성 버그 0건, 충실도 회귀 0건. cleanup 3건 중
+  링크 상수 중앙화(lib/links.ts) + reduced-motion 헬퍼(lib/prefersReducedMotion.ts) 적용
+  (SHA: `e46781c`). useMembrane 파티클 타입화는 충실 이관 맥락상 known-minor로 보류.
 
 ## Decision Log
 
