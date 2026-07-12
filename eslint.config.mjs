@@ -26,4 +26,17 @@ export default pleaseai({
     'node/prefer-global/process': 'off',
     'no-console': 'off',
   },
+}, {
+  // apps/web is a faithful port of an approved single-file design. Two purely
+  // stylistic rules fight that fidelity goal and are relaxed here only:
+  //  - jsx-one-expression-per-line: the design uses dense inline markup; its
+  //    autofix would reflow inline text around elements and shift rendered
+  //    whitespace, breaking the "reproduce as-is" contract.
+  //  - max-statements-per-line: the membrane canvas hook mirrors the original
+  //    imperative draw loop line-for-line for auditability against the source.
+  files: ['apps/web/**/*.{ts,tsx}'],
+  rules: {
+    'style/jsx-one-expression-per-line': 'off',
+    'style/max-statements-per-line': 'off',
+  },
 })
