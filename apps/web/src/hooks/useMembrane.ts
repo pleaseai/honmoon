@@ -50,11 +50,11 @@ export function useMembrane(canvasRef: React.RefObject<HTMLCanvasElement | null>
       canvas!.width = W * dpr; canvas!.height = H * dpr
       ctx!.setTransform(dpr, 0, 0, dpr, 0, 0)
       cx = W * (W > 920 ? 0.66 : 0.5)
-      // 모바일: 오브제를 폴드 상단으로 올려(0.27) 하단의 히어로 카피와 겹치지 않게,
-      // 살짝 작게(문 반너비/높이 축소) 띄운다.
-      cy = H * (W > 920 ? 0.48 : 0.27)
-      PX = W > 920 ? 240 : 172
-      PY = W > 920 ? 348 : 252
+      // 모바일: 오브제를 상단-중앙(0.36)에 두어 내비 아래 여백을 확보하고,
+      // 하단으로 올라온 히어로 카피와 균형을 이룬다(살짝 작게).
+      cy = H * (W > 920 ? 0.48 : 0.36)
+      PX = W > 920 ? 240 : 168
+      PY = W > 920 ? 348 : 236
       seedStars()
       seedNebula()
     }

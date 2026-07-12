@@ -319,9 +319,10 @@ h3 { font-size: var(--fs-h3); font-weight: 600; line-height: 1.35; letter-spacin
   /* 좁은 화면 — 멤브레인 오브제는 폴드 상단에 뜨고, 히어로 카피는 하단으로
      내려 겹침을 없앤다. 세로 여백을 넉넉히. */
   .hero-bleed .container { padding-top: 32px; padding-bottom: 48px; }
-  .hero-copy { min-height: calc(100svh - 132px); justify-content: flex-end; max-width: none; }
+  /* 카피를 폴드 하단에서 위로 끌어올려 게이트와 균형(바닥 여백 확보) */
+  .hero-copy { min-height: calc(100svh - 132px); justify-content: flex-end; padding-bottom: 11svh; max-width: none; }
   .hero-copy h1 { margin-bottom: var(--gap-sm); }
-  .hero-copy .lead { margin-bottom: var(--gap-md); }
+  .hero-copy .lead { margin-bottom: var(--gap-lg); }
   /* 오브제 뒤 카피를 확실히 읽히게 — 폴드 하단을 잉크로 덮는 스크림 */
   .hero-scrim {
     background: linear-gradient(to top,
@@ -409,8 +410,9 @@ h3 { font-size: var(--fs-h3); font-weight: 600; line-height: 1.35; letter-spacin
 
 @media (max-width: 860px) {
   .split, .oc-grid { grid-template-columns: 1fr; }
-  .flow-arrow { transform: rotate(90deg); }
+  /* 세로 스택 — 화살표를 각 카드 사이 중앙에 놓는다 */
   .flow-node { flex-basis: 100%; }
+  .flow-arrow { flex-basis: 100%; text-align: center; transform: rotate(90deg); }
   .mode-row { grid-template-columns: 1fr; gap: 6px; padding: 20px 4px; }
   .mode-row .m-w { text-align: left; }
   .oc { padding: 26px 24px; }
