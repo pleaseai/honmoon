@@ -11,7 +11,7 @@ export function Hero() {
 
       <div className="container">
         <div className="hero-copy">
-          <p className="eyebrow">Policy Gateway for AI Agents</p>
+          <p className="eyebrow">Runtime Security for AI Agents</p>
           <h1>The <span className="hl-accent">gate</span> between<br />your AI agents and production</h1>
           <p className="lead">Every outbound action pierces the barrier. What crosses is what your policy allows — <span className="hl-mask">masked</span>, <span className="hl-pause">held</span>, or <span className="hl-deny">bounced</span> before it lands.</p>
           <div className="hero-cta">
