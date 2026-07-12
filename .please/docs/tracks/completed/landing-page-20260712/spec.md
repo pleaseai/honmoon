@@ -18,8 +18,9 @@ Honmoon의 공개 마케팅 랜딩페이지를 신규 워크스페이스 앱 `ap
 "AI 에이전트와 프로덕션 사이의 정책 기반 방화벽"임을 하나의 스크롤 내러티브로 전달하고,
 GitHub·문서로 전환시키는 것이다. 별도 백엔드·폼·인증 없이 정적으로 서빙되는 단일 페이지다.
 
-원본 디자인 참조(구현 시 마크업/CSS/JS 원본):
-`/Users/danny/Library/Application Support/Open Design/namespaces/release-stable/data/projects/4459b9ad-0c80-4bac-83a7-ff2e6c8d2053/index-v7-inspector.html`
+원본 디자인 참조(구현 시 마크업/CSS/JS 원본): 승인된 단일 HTML 시안
+`index-v7-inspector.html` — Open Design 아티팩트(로컬 시안). 저장소에 커밋되지
+않으며, 구현자는 시안 파일을 로컬에서 열어 참조한다.
 
 ## User Scenarios & Testing
 

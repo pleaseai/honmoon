@@ -15,7 +15,10 @@
           if (!reduced && 'IntersectionObserver' in window) {
             document.documentElement.classList.add('od-js')
           }
-        } catch (e) {}
+        }
+        catch {
+          /* matchMedia unavailable — leave sections visible (no reveal gating) */
+        }
       })()
     </script>
   </head>

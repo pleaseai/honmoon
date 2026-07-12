@@ -7,7 +7,7 @@
 
 - **Source**: /please:plan
 - **Track**: landing-page-20260712
-- **Issue**: #{issue_number}
+- **Issue**: #17
 - **Created**: 2026-07-12
 - **Approach**: 대시보드 툴체인을 미러링한 신규 `apps/web` Vite+React 앱 스캐폴드 위에,
   원본 단일 HTML의 CSS 토큰/스타일을 글로벌 스타일시트로 이관하고 마크업을 섹션 단위 React

@@ -2,6 +2,7 @@ import { useRef, useState } from 'react'
 
 export function Policy() {
   const preRef = useRef<HTMLPreElement>(null)
+  const resetTimerRef = useRef<ReturnType<typeof setTimeout>>(undefined)
   const [label, setLabel] = useState('Copy')
 
   async function onCopy() {
@@ -12,7 +13,9 @@ export function Policy() {
     catch {
       setLabel('Failed')
     }
-    setTimeout(setLabel, 1600, 'Copy')
+    // Clear any pending reset so rapid clicks don't race the label back early.
+    clearTimeout(resetTimerRef.current)
+    resetTimerRef.current = setTimeout(setLabel, 1600, 'Copy')
   }
 
   return (

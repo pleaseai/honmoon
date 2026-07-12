@@ -8,7 +8,7 @@ export function TopNav() {
   return (
     <header className={scrolled ? 'topnav scrolled' : 'topnav'}>
       <div className="container topnav-inner">
-        <a className="logo" href="#"><span className="mark" aria-hidden="true"></span>honmoon</a>
+        <a className="logo" href="/"><span className="mark" aria-hidden="true"></span>honmoon</a>
         <div className="nav-right">
           <nav>
             <a href="#how">How it works</a>

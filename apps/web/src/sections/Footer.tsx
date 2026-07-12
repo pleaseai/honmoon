@@ -5,7 +5,7 @@ export function Footer() {
     <footer className="pagefoot">
       <div className="container foot-grid">
         <div className="foot-brand">
-          <a className="logo" href="#"><span className="mark" aria-hidden="true"></span>honmoon</a>
+          <a className="logo" href="/"><span className="mark" aria-hidden="true"></span>honmoon</a>
           <span className="foot-meta">Open-core policy firewall · Apache-2.0</span>
         </div>
         <nav className="foot-cols" aria-label="Footer">
