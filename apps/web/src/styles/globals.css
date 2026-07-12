@@ -42,6 +42,7 @@
   --gutter: 32px;
   --radius: 8px;
   --radius-lg: 12px;
+  --nav-h: 76px;
 }
 
 /* ─── reset & base ──────────────────────────────────────────────── */
@@ -164,8 +165,21 @@ h3 { font-size: var(--fs-h3); font-weight: 600; line-height: 1.35; letter-spacin
   display: flex;
   /* 히어로는 첫 화면(fold)만 차지 — 배리어 다이어그램은 그 아래 별도 섹션 */
   min-height: 100svh;
+  /* 투명 sticky 내비가 flow에서 차지하는 높이만큼 위로 당겨 히어로를 내비 아래로
+     밀어넣는다 → 세로 중앙 정렬된 카피가 뷰포트 실제 중앙에 오게 한다.
+     (내비가 없었다면 히어로가 그만큼 아래로 밀려 카피가 내려가 보임) */
+  margin-top: calc(-1 * var(--nav-h));
   overflow: hidden;
 }
+/* 히어로 워딩 액센트 — 단색(그라디언트 텍스트 금지). 'firewall'=결계(cyan),
+   lead의 판정 동사는 barrier 섹션의 verdict 색 언어와 일치시킨다. */
+.hero-copy h1 .hl-accent {
+  color: var(--accent);
+  text-shadow: 0 0 28px color-mix(in oklch, var(--accent) 32%, transparent);
+}
+.hero-copy .lead .hl-mask { color: var(--mask); }
+.hero-copy .lead .hl-pause { color: var(--warn); }
+.hero-copy .lead .hl-deny { color: var(--deny); }
 /* 우주 캔버스 = 페이지 전체 고정 배경. 히어로·배리어가 같은 우주를 공유해 경계가 사라진다 */
 #gate3d { position: fixed; inset: 0; width: 100%; height: 100%; z-index: -1; pointer-events: none; }
 .hero-scrim {
@@ -317,7 +331,9 @@ h3 { font-size: var(--fs-h3); font-weight: 600; line-height: 1.35; letter-spacin
 
 @media (max-width: 920px) {
   /* 좁은 화면 — 멤브레인 오브제는 폴드 상단에 뜨고, 히어로 카피는 하단으로
-     내려 겹침을 없앤다. 세로 여백을 넉넉히. */
+     내려 겹침을 없앤다. 세로 여백을 넉넉히. (모바일은 flex-end 하단 정렬이라
+     데스크톱의 내비 보정 margin-top은 리셋한다.) */
+  .hero-bleed { margin-top: 0; }
   .hero-bleed .container { padding-top: 32px; padding-bottom: 48px; }
   /* 카피를 폴드 하단에서 위로 끌어올려 게이트와 균형(바닥 여백 확보) */
   .hero-copy { min-height: calc(100svh - 132px); justify-content: flex-end; padding-bottom: 11svh; max-width: none; }
