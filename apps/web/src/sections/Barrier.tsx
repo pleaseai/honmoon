@@ -20,6 +20,12 @@ export function Barrier() {
 
         <div className="gate-scene" id="gate-scene" ref={sceneRef}>
           <div className="gate-spine" aria-hidden="true"></div>
+          {/* 경계선의 양쪽이 무엇인지 명시 — 통과=프로덕션 도달, 튕김=도달 못 함 */}
+          <div className="gate-axis" aria-hidden="true">
+            <span>agent</span>
+            <span className="gate-axis-mark">the barrier</span>
+            <span>production</span>
+          </div>
           <div className="gate-rows">
 
             <div className="g-row" data-v="allow" style={{ '--i': 0 } as React.CSSProperties}>
@@ -49,7 +55,7 @@ export function Barrier() {
             <div className="g-row protagonist" data-v="pause" style={{ '--i': 4 } as React.CSSProperties}>
               <div className="g-req"><span className="g-who">jun</span><span className="g-cmd">psql -h prod -c "DROP TABLE users"</span></div>
               <div className="g-track"><span className="g-token"></span></div>
-              <div className="g-out"><span className="g-tag">prod</span><span className="g-chip">PAUSE</span><span className="g-rule">sql-no-prod-drop</span><span className="g-result">held for a human → rejected by security · users table intact</span></div>
+              <div className="g-out"><span className="g-chip">PAUSE</span><span className="g-rule">sql-no-prod-drop</span><span className="g-result">held for a human → rejected by security · users table intact</span></div>
             </div>
 
           </div>

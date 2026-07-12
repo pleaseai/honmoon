@@ -240,9 +240,24 @@ h3 { font-size: var(--fs-h3); font-weight: 600; line-height: 1.35; letter-spacin
 .barrier-head .lead { margin-top: 16px; }
 
 .gate-scene { position: relative; }
+/* 경계선 축 라벨 — 왼쪽=에이전트 출발, 오른쪽=프로덕션 도달, 중앙=결계 */
+.gate-axis {
+  display: grid;
+  grid-template-columns: minmax(0,1fr) clamp(160px, 24vw, 300px) minmax(0,1fr);
+  align-items: baseline;
+  margin-bottom: 26px;
+  font-family: var(--font-mono); font-size: 10px;
+  letter-spacing: .16em; text-transform: uppercase;
+}
+.gate-axis span:nth-child(1) { text-align: right; padding-right: 20px; color: color-mix(in oklch, var(--muted) 80%, transparent); }
+.gate-axis span:nth-child(3) { padding-left: 20px; color: color-mix(in oklch, var(--accent) 62%, var(--muted)); }
+.gate-axis .gate-axis-mark {
+  text-align: center; letter-spacing: .1em;
+  color: color-mix(in oklch, var(--accent) 78%, var(--fg));
+}
 /* 중앙 게이트 스파인 — 발광하는 결계. 모든 행이 이 선을 가로지른다 */
 .gate-spine {
-  position: absolute; top: 4px; bottom: 34px; left: 50%; width: 2px;
+  position: absolute; top: 42px; bottom: 34px; left: 50%; width: 2px;
   transform: translateX(-50%); z-index: 2; pointer-events: none;
   background: linear-gradient(180deg, transparent, var(--accent) 10%, var(--accent) 90%, transparent);
   box-shadow: 0 0 16px var(--accent-soft), 0 0 44px var(--accent-soft);
@@ -309,6 +324,12 @@ h3 { font-size: var(--fs-h3); font-weight: 600; line-height: 1.35; letter-spacin
   align-self: start; font-family: var(--font-mono); font-weight: 700; font-size: 10px;
   letter-spacing: .09em; padding: 4px 9px; border-radius: 5px; color: var(--hit); background: var(--hit-soft);
 }
+/* verdict 글리프 — 통과✓ / 마스킹◐ / 차단✕ / 대기‖ 로 결과를 한눈에 */
+.g-chip::before { margin-right: 5px; font-weight: 700; }
+.g-row[data-v="allow"] .g-chip::before { content: '✓'; }
+.g-row[data-v="mask"]  .g-chip::before { content: '◐'; }
+.g-row[data-v="deny"]  .g-chip::before { content: '✕'; }
+.g-row[data-v="pause"] .g-chip::before { content: '‖'; }
 .g-rule { font-family: var(--font-mono); font-size: 10.5px; color: color-mix(in oklch, var(--hit) 60%, var(--muted)); }
 .g-result { font-size: 12px; color: var(--muted); line-height: 1.45; }
 
@@ -348,7 +369,7 @@ h3 { font-size: var(--fs-h3); font-weight: 600; line-height: 1.35; letter-spacin
       transparent 74%);
   }
   /* 공간 게이트 대신 세로 스택으로 폴백 — 행 간격을 넉넉히 */
-  .gate-spine, .g-track, .gate-legend { display: none; }
+  .gate-spine, .g-track, .gate-legend, .gate-axis { display: none; }
   .g-row { grid-template-columns: 1fr; gap: 7px; padding: 20px 0; }
   .g-req { text-align: left; padding-right: 0; }
   .g-out { padding-left: 0; }
