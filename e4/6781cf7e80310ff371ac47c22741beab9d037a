@@ -1,0 +1,37 @@
+apps/web/src/hooks/useMembrane.ts
+  s_18fbbebed9fe1b::t_3907a1db81ad03 2,24
+apps/web/src/hooks/useGateScene.ts
+  s_18fbbebed9fe1b::t_0311f527f7092c 19
+  s_18fbbebed9fe1b::t_563df37d435889 2
+apps/web/src/sections/Hero.tsx
+  s_18fbbebed9fe1b::t_e057c67c838efa 1
+apps/web/src/sections/Footer.tsx
+  s_18fbbebed9fe1b::t_b196b0223f3510 1
+apps/web/src/sections/Cta.tsx
+  s_18fbbebed9fe1b::t_31a81c0f7fea3b 1
+apps/web/src/lib/links.ts
+  s_18fbbebed9fe1b::t_a6984e6f310c48 1-5
+apps/web/src/lib/prefersReducedMotion.ts
+  s_18fbbebed9fe1b::t_d5516addc8b2aa 1-5
+apps/web/src/hooks/useReveal.ts
+  s_18fbbebed9fe1b::t_12cf008e9d0411 20
+  s_18fbbebed9fe1b::t_afdea09a4557d2 2
+apps/web/src/sections/TopNav.tsx
+  s_18fbbebed9fe1b::t_bbbcf5aed5e040 2
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.12",
+  "base_commit_sha": "e46781cf7e80310ff371ac47c22741beab9d037a",
+  "prompts": {},
+  "sessions": {
+    "s_18fbbebed9fe1b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "6c75e850-ea91-4815-8c14-0e5065c5192a",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "DANNY NA <danny@pusan.ac.kr>"
+    }
+  }
+}
