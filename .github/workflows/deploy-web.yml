@@ -1,9 +1,13 @@
 name: Deploy Web (Cloudflare Pages)
 
-# Deploys the static marketing site (apps/web) to Cloudflare Pages.
-#   - push to main  → production deploy (honmoon-web.pages.dev)
-#   - pull_request  → preview deploy (<branch>.honmoon-web.pages.dev)
-#   - manual run    → production deploy from the selected ref
+# Deploys the static marketing site (apps/web) to Cloudflare Pages (honmoon-web).
+#   - push to main → production deploy (honmoon-web.pages.dev)
+#   - manual run   → production deploy from the selected ref
+#
+# Intentionally does NOT run on pull_request: that would expose CLOUDFLARE_API_TOKEN
+# to PR-controlled workflow/build code (token exfiltration risk). PR build validation
+# is already covered by ci.yml (`bun run build` builds apps/web). Add preview deploys
+# later behind a protected GitHub Environment if needed.
 #
 # One-time setup (see notes at the bottom of this file):
 #   Repo secrets: CLOUDFLARE_API_TOKEN (scope: Account › Cloudflare Pages › Edit)
@@ -12,12 +16,6 @@ name: Deploy Web (Cloudflare Pages)
 on:
   push:
     branches: [main]
-    paths:
-      - 'apps/web/**'
-      - package.json
-      - bun.lock
-      - .github/workflows/deploy-web.yml
-  pull_request:
     paths:
       - 'apps/web/**'
       - package.json
@@ -35,14 +33,10 @@ concurrency:
 jobs:
   deploy:
     name: Build & deploy apps/web
-    # Fork PRs can't read secrets, so skip preview deploys from forks.
-    if: >-
-      github.event_name != 'pull_request' ||
-      github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      deployments: write # let wrangler-action publish a GitHub deployment (preview URLs)
+      deployments: write # let wrangler-action publish a GitHub deployment
     steps:
       - uses: actions/checkout@v4
         with:
@@ -57,7 +51,7 @@ jobs:
         run: bun run --filter '@honmoon/web' build
 
       - name: Deploy to Cloudflare Pages
-        uses: cloudflare/wrangler-action@v3
+        uses: cloudflare/wrangler-action@9acf94ace14e7dc412b076f2c5c20b8ce93c79cd # v3.15.0
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
@@ -65,7 +59,7 @@ jobs:
           command: >-
             pages deploy apps/web/dist
             --project-name=honmoon-web
-            --branch=${{ github.head_ref || github.ref_name }}
+            --branch=${{ github.ref_name }}
 
 # ── One-time Cloudflare setup ────────────────────────────────────────────────
 # 1. Create an API token: Cloudflare dashboard › My Profile › API Tokens ›
