@@ -2,7 +2,7 @@ name: CodSpeed
 
 on:
   push:
-    branches: [master]
+    branches: [main]
   pull_request:
   # `workflow_dispatch` allows CodSpeed to trigger backtest
   # performance analysis in order to generate initial data.
@@ -14,8 +14,8 @@ permissions:
 
 concurrency:
   group: codspeed-${{ github.ref }}
-  # Cancel superseded PR runs, but never cancel base-branch (master) runs so that
-  # CodSpeed's regression baseline stays continuous — every master run must complete
+  # Cancel superseded PR runs, but never cancel base-branch (main) runs so that
+  # CodSpeed's regression baseline stays continuous — every main run must complete
   # and upload its results.
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 

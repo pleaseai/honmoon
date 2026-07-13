@@ -3,7 +3,7 @@ import { withMermaid } from 'vitepress-plugin-mermaid'
 
 // Resolved citation base — repo + default branch (see Source Repository Resolution).
 const REPO = 'https://github.com/pleaseai/honmoon'
-const BRANCH = 'master'
+const BRANCH = 'main'
 
 export default withMermaid(
   defineConfig({

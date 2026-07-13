@@ -33,7 +33,7 @@ generics (`Vec<T>`, `Task<string>`) outside code fences will break the Vue compi
 
 ## Content Conventions
 
-- **Citations**: link to source as `[path:line](https://github.com/pleaseai/honmoon/blob/master/path#Lline)`.
+- **Citations**: link to source as `[path:line](https://github.com/pleaseai/honmoon/blob/main/path#Lline)`.
   Every architectural claim needs a source. Each Mermaid diagram is followed by a
   `<!-- Sources: … -->` comment.
 - **Mermaid**: dark-mode node fills `#2d333b`, borders `#6d5dfc`, text `#e6edf3`; subgraph

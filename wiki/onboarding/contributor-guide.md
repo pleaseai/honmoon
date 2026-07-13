@@ -39,7 +39,7 @@ Honmoon's data plane is ~1,000 lines of Rust across three crates. The Rust here 
 | Immutable by default | `const` (shallow) | everything `let` is immutable unless `mut` |
 
 The single most important pattern in this codebase is **`Option` + pattern matching**. Look at
-how the policy engine reads the domain ([engine.rs:30-45](https://github.com/pleaseai/honmoon/blob/master/crates/honmoon-core/src/engine.rs#L30-L45)):
+how the policy engine reads the domain ([engine.rs:30-45](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/engine.rs#L30-L45)):
 
 ```rust
 fn egress_verdict(policy: &Policy, facts: &Facts) -> Verdict {
@@ -67,7 +67,7 @@ Rust's headline feature is that memory safety is checked at compile time, with n
 each value has one owner; you either **move** ownership or **borrow** a reference (`&` read-only,
 `&mut` exclusive-mutable). You will mostly *borrow* in this codebase. When the gateway shares one
 policy across many connections, it wraps it in an `Arc` (atomic reference count) and clones the
-*handle*, not the data ([gateway.rs:46-55](https://github.com/pleaseai/honmoon/blob/master/crates/honmoon-proxy/src/gateway.rs#L46-L55)):
+*handle*, not the data ([gateway.rs:46-55](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-proxy/src/gateway.rs#L46-L55)):
 
 ```rust
 let policy = std::sync::Arc::new(policy);     // shared ownership
@@ -87,7 +87,7 @@ The proxy is asynchronous; the policy engine is not. That split is intentional �
 a socket, so it stays a set of plain synchronous functions you can test without a runtime.
 
 In `honmoon-proxy`, async works much like JS `async`/`await`, with `tokio` as the event loop
-(think Node's libuv) ([gateway.rs:42-60](https://github.com/pleaseai/honmoon/blob/master/crates/honmoon-proxy/src/gateway.rs#L42-L60)):
+(think Node's libuv) ([gateway.rs:42-60](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-proxy/src/gateway.rs#L42-L60)):
 
 | JS / Node | Rust / tokio |
 |-----------|--------------|
@@ -100,7 +100,7 @@ In `honmoon-proxy`, async works much like JS `async`/`await`, with `tokio` as th
 
 The accept loop spawns one task per connection — the Rust equivalent of handling each request on
 its own green thread. The slowloris guard is a `tokio::time::timeout` around reading the request
-head ([gateway.rs:64-67](https://github.com/pleaseai/honmoon/blob/master/crates/honmoon-proxy/src/gateway.rs#L64-L67)).
+head ([gateway.rs:64-67](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-proxy/src/gateway.rs#L64-L67)).
 
 ### 1.3 CEL — the policy condition language
 
@@ -108,7 +108,7 @@ head ([gateway.rs:64-67](https://github.com/pleaseai/honmoon/blob/master/crates/
 non-Turing-complete expression language from Google — used in Kubernetes admission policies and
 Envoy. Honmoon uses it for rule conditions because it has Rust, TypeScript, and Go
 implementations, so the *same* expression is portable across the data and control planes
-([tech-stack.md:39-41](https://github.com/pleaseai/honmoon/blob/master/.please/docs/knowledge/tech-stack.md#L39-L41)).
+([tech-stack.md:39-41](https://github.com/pleaseai/honmoon/blob/main/.please/docs/knowledge/tech-stack.md#L39-L41)).
 
 A CEL condition is just a boolean expression over variables:
 
@@ -120,7 +120,7 @@ http.method == 'POST' && http.body_size > 10485760
 
 The engine injects protocol facts as CEL variables (`http`, `sql`, `k8s`) and treats *only*
 `Ok(Bool(true))` as a match — every error or non-bool is "no match"
-([engine.rs:66-91](https://github.com/pleaseai/honmoon/blob/master/crates/honmoon-core/src/engine.rs#L66-L91)). See
+([engine.rs:66-91](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/engine.rs#L66-L91)). See
 [Policy Engine](/deep-dive/policy-engine#cel-evaluation) for the full mechanism.
 
 ### 1.4 Bun + TypeScript (control plane)
@@ -130,8 +130,8 @@ here instead of Node + npm. If you know Node, the differences you will touch:
 
 | Node | Bun (here) |
 |------|-----------|
-| `fs.readFile` | `Bun.file(path).text()` ([cli/index.ts:19](https://github.com/pleaseai/honmoon/blob/master/packages/cli/src/index.ts#L19)) |
-| `http.createServer` / Express | `Bun.serve({ fetch })` ([api/index.ts:10-20](https://github.com/pleaseai/honmoon/blob/master/packages/api/src/index.ts#L10-L20)) |
+| `fs.readFile` | `Bun.file(path).text()` ([cli/index.ts:19](https://github.com/pleaseai/honmoon/blob/main/packages/cli/src/index.ts#L19)) |
+| `http.createServer` / Express | `Bun.serve({ fetch })` ([api/index.ts:10-20](https://github.com/pleaseai/honmoon/blob/main/packages/api/src/index.ts#L10-L20)) |
 | `npm install` | `bun install` |
 | `ts-node` | Bun runs `.ts` directly |
 
@@ -170,7 +170,7 @@ nothing networked. Read [Architecture](/deep-dive/architecture) for the full lay
 ### 2.2 The domain model
 
 Five types carry the whole domain. Learn these and you understand Honmoon
-([lib.rs:14-119](https://github.com/pleaseai/honmoon/blob/master/crates/honmoon-core/src/lib.rs#L14-L119)):
+([lib.rs:14-119](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/lib.rs#L14-L119)):
 
 | Type | Is | Why it matters |
 |------|----|-----------------|
@@ -183,7 +183,7 @@ Five types carry the whole domain. Learn these and you understand Honmoon
 The cardinal invariant: **fail closed.** A broken or unmatched rule never *directly* yields
 `Allow` — it proceeds to egress evaluation (the `deny` list, then the `allow` list, then
 `egress.default`), and `Egress::default()` is `Verdict::Deny` out of the box
-([lib.rs:48-60](https://github.com/pleaseai/honmoon/blob/master/crates/honmoon-core/src/lib.rs#L48-L60)). So with the
+([lib.rs:48-60](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/lib.rs#L48-L60)). So with the
 default (or any `egress.default: deny`) policy, failure paths resolve to deny; a policy that sets
 `egress.default: allow` opts out of that safety. If you change the decision path, the property
 your tests must protect is "no failure path *upgrades* a verdict past what the egress block (and its
@@ -212,7 +212,7 @@ flowchart TD
 ### 2.4 What is real vs scaffold
 
 Knowing this saves you from "fixing" something that was never built. Marked honestly throughout
-the wiki and grounded in the [tech-debt tracker](https://github.com/pleaseai/honmoon/blob/master/.please/docs/tracks/tech-debt-tracker.md#L9-L14):
+the wiki and grounded in the [tech-debt tracker](https://github.com/pleaseai/honmoon/blob/main/.please/docs/tracks/tech-debt-tracker.md#L9-L14):
 
 | Area | Status |
 |------|--------|
@@ -244,7 +244,7 @@ Full detail (tasks, CI parity) is in [Installation & Toolchain](/getting-started
 ### 3.2 The test-driven workflow
 
 Honmoon mandates TDD with a strict task lifecycle and a >80% coverage target for new code
-([workflow.md:3-39](https://github.com/pleaseai/honmoon/blob/master/.please/docs/knowledge/workflow.md#L3-L39)). The cycle:
+([workflow.md:3-39](https://github.com/pleaseai/honmoon/blob/main/.please/docs/knowledge/workflow.md#L3-L39)). The cycle:
 
 ```mermaid
 stateDiagram-v2
@@ -264,12 +264,12 @@ stateDiagram-v2
 This is not ceremony — it is how the parsers reached their density of edge-case coverage. When you
 add a SQL verb or a K8s path shape, **write the `assert_eq!` first**, watch it fail, then make it
 pass. The existing tests are your templates:
-[`protocols.rs` tests](https://github.com/pleaseai/honmoon/blob/master/crates/honmoon-core/src/protocols.rs#L178-L313),
-[`engine.rs` tests](https://github.com/pleaseai/honmoon/blob/master/crates/honmoon-core/src/engine.rs#L93-L264).
+[`protocols.rs` tests](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/protocols.rs#L178-L313),
+[`engine.rs` tests](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/engine.rs#L93-L264).
 
 ### 3.3 The quality gate
 
-Before you commit, run what CI runs ([workflow.md:76-81](https://github.com/pleaseai/honmoon/blob/master/.please/docs/knowledge/workflow.md#L76-L81)):
+Before you commit, run what CI runs ([workflow.md:76-81](https://github.com/pleaseai/honmoon/blob/main/.please/docs/knowledge/workflow.md#L76-L81)):
 
 ```bash
 cargo fmt --all && cargo clippy --workspace --all-targets -- -D warnings
@@ -280,11 +280,11 @@ mise run check
 ```
 
 `clippy` runs with `-D warnings` — warnings are errors. Format with `cargo fmt` before pushing or
-the `fmt --check` CI step fails ([ci.yml:30-34](https://github.com/pleaseai/honmoon/blob/master/.github/workflows/ci.yml#L30-L34)).
+the `fmt --check` CI step fails ([ci.yml:30-34](https://github.com/pleaseai/honmoon/blob/main/.github/workflows/ci.yml#L30-L34)).
 
 ### 3.4 Commit convention
 
-Conventional Commits, one commit per task ([workflow.md:83-87](https://github.com/pleaseai/honmoon/blob/master/.please/docs/knowledge/workflow.md#L83-L87)):
+Conventional Commits, one commit per task ([workflow.md:83-87](https://github.com/pleaseai/honmoon/blob/main/.please/docs/knowledge/workflow.md#L83-L87)):
 
 ```text
 feat(core): add MERGE to the SQL verb heuristic
@@ -300,10 +300,10 @@ Types: `feat`, `fix`, `docs`, `style`, `refactor`, `perf`, `test`, `build`, `ci`
 Say you want the SQL parser to recognize `MERGE`. The honest, test-first path:
 
 1. **Red** — add to `parse_sql_extracts_verb_and_table` in
-   [protocols.rs](https://github.com/pleaseai/honmoon/blob/master/crates/honmoon-core/src/protocols.rs#L275-L281):
+   [protocols.rs](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/protocols.rs#L275-L281):
    `assert_eq!(parse_sql("MERGE INTO accounts …").table, "accounts");`. Run `cargo test` — it fails.
 2. **Green** — extend the `match verb` arms in `parse_sql`
-   ([protocols.rs:46-87](https://github.com/pleaseai/honmoon/blob/master/crates/honmoon-core/src/protocols.rs#L46-L87)) so `MERGE`
+   ([protocols.rs:46-87](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/protocols.rs#L46-L87)) so `MERGE`
    extracts the table after `INTO`. Run `cargo test` — green.
 3. **Sync the model if needed** — adding a verb doesn't change the *types*, so `@honmoon/policy`
    stays as-is. (If you ever change the policy *shape*, update Rust **and** TS — TD-001.)
@@ -314,11 +314,11 @@ Say you want the SQL parser to recognize `MERGE`. The honest, test-first path:
 
 | Action | Guidance |
 |--------|----------|
-| Add I/O to `honmoon-core` | 🚫 Never — it must stay transport-agnostic ([ARCHITECTURE.md:91-93](https://github.com/pleaseai/honmoon/blob/master/ARCHITECTURE.md#L91-L93)) |
+| Add I/O to `honmoon-core` | 🚫 Never — it must stay transport-agnostic ([ARCHITECTURE.md:91-93](https://github.com/pleaseai/honmoon/blob/main/ARCHITECTURE.md#L91-L93)) |
 | Change the decision path | ⚠️ Preserve fail-closed; add tests proving deny-by-default still holds |
 | Change policy shape | ⚠️ Update Rust + TS + JSON Schema together (TD-001) |
-| Decrypt / buffer payloads | 🚫 Extract only declared facts; no DPI surprises ([ARCHITECTURE.md:99-100](https://github.com/pleaseai/honmoon/blob/master/ARCHITECTURE.md#L99-L100)) |
-| Overstate a feature in docs | 🚫 Mark planned vs implemented; this is a security tool ([product-guidelines.md:14-17](https://github.com/pleaseai/honmoon/blob/master/.please/docs/knowledge/product-guidelines.md#L14-L17)) |
+| Decrypt / buffer payloads | 🚫 Extract only declared facts; no DPI surprises ([ARCHITECTURE.md:99-100](https://github.com/pleaseai/honmoon/blob/main/ARCHITECTURE.md#L99-L100)) |
+| Overstate a feature in docs | 🚫 Mark planned vs implemented; this is a security tool ([product-guidelines.md:14-17](https://github.com/pleaseai/honmoon/blob/main/.please/docs/knowledge/product-guidelines.md#L14-L17)) |
 
 ---
 
@@ -335,18 +335,18 @@ Say you want the SQL parser to recognize `MERGE`. The honest, test-first path:
 | **Fail closed** | Default-deny; a broken rule can never allow |
 | **Egress** | Outbound traffic; the domain allow/deny filter |
 | **CONNECT** | The HTTP method clients use to request a tunnel through a proxy |
-| **TD-00x** | A tracked tech-debt item ([tracker](https://github.com/pleaseai/honmoon/blob/master/.please/docs/tracks/tech-debt-tracker.md)) |
+| **TD-00x** | A tracked tech-debt item ([tracker](https://github.com/pleaseai/honmoon/blob/main/.please/docs/tracks/tech-debt-tracker.md)) |
 
 ## Key file reference
 
 | File | What | Source |
 |------|------|--------|
-| `crates/honmoon-core/src/lib.rs` | Domain model | [lib.rs](https://github.com/pleaseai/honmoon/blob/master/crates/honmoon-core/src/lib.rs) |
-| `crates/honmoon-core/src/engine.rs` | `decide()` | [engine.rs](https://github.com/pleaseai/honmoon/blob/master/crates/honmoon-core/src/engine.rs) |
-| `crates/honmoon-core/src/protocols.rs` | Parsers | [protocols.rs](https://github.com/pleaseai/honmoon/blob/master/crates/honmoon-core/src/protocols.rs) |
-| `crates/honmoon-proxy/src/gateway.rs` | CONNECT proxy | [gateway.rs](https://github.com/pleaseai/honmoon/blob/master/crates/honmoon-proxy/src/gateway.rs) |
-| `crates/honmoon-cli/src/main.rs` | CLI | [main.rs](https://github.com/pleaseai/honmoon/blob/master/crates/honmoon-cli/src/main.rs) |
-| `.please/docs/knowledge/workflow.md` | TDD workflow | [workflow.md](https://github.com/pleaseai/honmoon/blob/master/.please/docs/knowledge/workflow.md) |
+| `crates/honmoon-core/src/lib.rs` | Domain model | [lib.rs](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/lib.rs) |
+| `crates/honmoon-core/src/engine.rs` | `decide()` | [engine.rs](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/engine.rs) |
+| `crates/honmoon-core/src/protocols.rs` | Parsers | [protocols.rs](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/protocols.rs) |
+| `crates/honmoon-proxy/src/gateway.rs` | CONNECT proxy | [gateway.rs](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-proxy/src/gateway.rs) |
+| `crates/honmoon-cli/src/main.rs` | CLI | [main.rs](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-cli/src/main.rs) |
+| `.please/docs/knowledge/workflow.md` | TDD workflow | [workflow.md](https://github.com/pleaseai/honmoon/blob/main/.please/docs/knowledge/workflow.md) |
 
 ## Related Pages
 
@@ -356,6 +356,6 @@ Say you want the SQL parser to recognize `MERGE`. The honest, test-first path:
 
 ## References
 
-- [ARCHITECTURE.md](https://github.com/pleaseai/honmoon/blob/master/ARCHITECTURE.md)
-- [.please/docs/knowledge/workflow.md](https://github.com/pleaseai/honmoon/blob/master/.please/docs/knowledge/workflow.md)
-- [.please/docs/knowledge/product-guidelines.md](https://github.com/pleaseai/honmoon/blob/master/.please/docs/knowledge/product-guidelines.md)
+- [ARCHITECTURE.md](https://github.com/pleaseai/honmoon/blob/main/ARCHITECTURE.md)
+- [.please/docs/knowledge/workflow.md](https://github.com/pleaseai/honmoon/blob/main/.please/docs/knowledge/workflow.md)
+- [.please/docs/knowledge/product-guidelines.md](https://github.com/pleaseai/honmoon/blob/main/.please/docs/knowledge/product-guidelines.md)
