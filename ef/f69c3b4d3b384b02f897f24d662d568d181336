@@ -1,0 +1,19 @@
+docs/roadmap.md
+  s_b166a24d217f09::t_bf02f09281f183 168-175
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.12",
+  "base_commit_sha": "eff69c3b4d3b384b02f897f24d662d568d181336",
+  "prompts": {},
+  "sessions": {
+    "s_b166a24d217f09": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "2e0f37c2-d40f-44cc-9aca-30e774719ffe",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
