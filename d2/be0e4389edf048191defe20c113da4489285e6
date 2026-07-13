@@ -1,0 +1,19 @@
+.github/workflows/deploy-web.yml
+  s_cd5121dfae5182::t_e865a47dd6c1e2 17-19,23-25
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.13",
+  "base_commit_sha": "d2be0e4389edf048191defe20c113da4489285e6",
+  "prompts": {},
+  "sessions": {
+    "s_cd5121dfae5182": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "6465fbf2-98de-4156-83bc-04e3548edb2d",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
