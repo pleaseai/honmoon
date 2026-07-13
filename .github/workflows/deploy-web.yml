@@ -1,0 +1,80 @@
+name: Deploy Web (Cloudflare Pages)
+
+# Deploys the static marketing site (apps/web) to Cloudflare Pages.
+#   - push to main  → production deploy (honmoon-web.pages.dev)
+#   - pull_request  → preview deploy (<branch>.honmoon-web.pages.dev)
+#   - manual run    → production deploy from the selected ref
+#
+# One-time setup (see notes at the bottom of this file):
+#   Repo secrets: CLOUDFLARE_API_TOKEN (scope: Account › Cloudflare Pages › Edit)
+#                 CLOUDFLARE_ACCOUNT_ID
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'apps/web/**'
+      - 'package.json'
+      - 'bun.lock'
+      - '.github/workflows/deploy-web.yml'
+  pull_request:
+    paths:
+      - 'apps/web/**'
+      - 'package.json'
+      - 'bun.lock'
+      - '.github/workflows/deploy-web.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-web-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    name: Build & deploy apps/web
+    # Fork PRs can't read secrets, so skip preview deploys from forks.
+    if: >-
+      github.event_name != 'pull_request' ||
+      github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      deployments: write # let wrangler-action publish a GitHub deployment (preview URLs)
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: jdx/mise-action@c37c93293d6b742fc901e1406b8f764f6fb19dac # v2
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Build apps/web
+        run: bun run --filter '@honmoon/web' build
+
+      - name: Deploy to Cloudflare Pages
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          gitHubToken: ${{ secrets.GITHUB_TOKEN }}
+          command: >-
+            pages deploy apps/web/dist
+            --project-name=honmoon-web
+            --branch=${{ github.head_ref || github.ref_name }}
+
+# ── One-time Cloudflare setup ────────────────────────────────────────────────
+# 1. Create an API token: Cloudflare dashboard › My Profile › API Tokens ›
+#    Create Token › "Edit Cloudflare Workers" template, OR a custom token with
+#    permission  Account › Cloudflare Pages › Edit.
+# 2. Find your Account ID: dashboard › any domain › right sidebar (or Workers & Pages).
+# 3. Add both as GitHub repo secrets:
+#      gh secret set CLOUDFLARE_API_TOKEN
+#      gh secret set CLOUDFLARE_ACCOUNT_ID
+# 4. The first deploy on `main` auto-creates the `honmoon-web` Pages project with
+#    `main` as its production branch. (Or pre-create it once:
+#      bunx wrangler pages project create honmoon-web --production-branch=main )
