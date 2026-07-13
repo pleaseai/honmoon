@@ -14,15 +14,15 @@ on:
     branches: [main]
     paths:
       - 'apps/web/**'
-      - 'package.json'
-      - 'bun.lock'
-      - '.github/workflows/deploy-web.yml'
+      - package.json
+      - bun.lock
+      - .github/workflows/deploy-web.yml
   pull_request:
     paths:
       - 'apps/web/**'
-      - 'package.json'
-      - 'bun.lock'
-      - '.github/workflows/deploy-web.yml'
+      - package.json
+      - bun.lock
+      - .github/workflows/deploy-web.yml
   workflow_dispatch:
 
 permissions:
