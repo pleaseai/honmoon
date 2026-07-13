@@ -165,13 +165,16 @@ needed).
   tool result via `updatedToolOutput` (redacted in both model context and transcript);
   `UserPromptSubmit` blocks prompts carrying secrets (hooks cannot rewrite a prompt — block
   + actionable reason); `PreToolUse` denies reads of known-sensitive paths (`.env*`, key files)
-- [ ] `honmoon hook` CLI subcommand: hook JSON on stdin → Tier-1 detectors + reversible
-  secret tokenization from `honmoon-core` → hook JSON verdict, so the plugin is a thin
-  shell around the same engine the proxy uses
+- [ ] Two hook transports (#19): **gateway-direct** — `type: "http"` hooks POST the hook
+  payload to `POST /api/hooks/claude-code` on the management API and get the same hook JSON
+  schema back (no per-call process spawn; tokenization mapping shared with the proxy by
+  construction) — and **CLI fallback** — `honmoon hook` (`type: "command"`): hook JSON on
+  stdin → Tier-1 detectors + reversible secret tokenization from `honmoon-core` → hook JSON
+  verdict, works with only the binary installed. Caveat: HTTP hooks **fail open** (connection
+  failure / non-2xx continues unredacted), so the shipped default must fall back to a local
+  scan rather than fail silently
 - [ ] Cache-stable determinism on the proxy path (#20): identical secret → identical token
   across turns, so redacting the resent history preserves the provider prompt-cache prefix
-- [ ] (nice-to-have) Share the tokenization mapping store between plugin and co-running
-  proxy so tokens stay consistent across layers (relates to #16)
 
 **Exit criteria**: reading a file with a valid-checksum RRN or an API key lands redacted in
 both the model context and the session transcript JSONL; a prompt carrying a secret is
