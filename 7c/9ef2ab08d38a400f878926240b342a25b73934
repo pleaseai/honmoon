@@ -1,0 +1,35 @@
+.github/workflows/deploy-wiki.yml
+  s_d43b8f618d88c4::t_30ec2acd4a4ada 47
+  s_d43b8f618d88c4::t_ae48fdf934ab6b 25
+  s_d43b8f618d88c4::t_b47916549431d2 63
+  s_d43b8f618d88c4::t_2c3be39d771245 36
+.github/workflows/codspeed.yml
+  s_d43b8f618d88c4::t_11adc1fc197be3 27
+  s_d43b8f618d88c4::t_f19a90903f7e09 32,42
+.github/workflows/ci.yml
+  s_d43b8f618d88c4::t_1022c06014b04c 20,53,76
+  s_d43b8f618d88c4::t_8bb536d48dc04b 36
+  s_d43b8f618d88c4::t_248119885b75fd 28,84
+  s_d43b8f618d88c4::t_45b04a860ebd41 42
+  s_d43b8f618d88c4::t_7b6ea24cb439e5 57,80
+.github/workflows/deploy-web.yml
+  s_d43b8f618d88c4::t_8868957c34221c 54
+  s_d43b8f618d88c4::t_c451937df8e74d 41
+  s_d43b8f618d88c4::t_83ff9f65b59681 45
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.13",
+  "base_commit_sha": "7c9ef2ab08d38a400f878926240b342a25b73934",
+  "prompts": {},
+  "sessions": {
+    "s_d43b8f618d88c4": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "3a962905-3007-4e97-9a91-5fb1526a0bc5",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
