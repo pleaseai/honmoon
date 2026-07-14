@@ -86,7 +86,17 @@ fn handle_pre_tool_use(payload: &Value) -> Option<Value> {
         .get("tool_input")
         .and_then(|i| i.get("file_path"))
         .and_then(Value::as_str)?;
-    if !is_sensitive_path(file_path) {
+    // Deny when either the requested path OR its symlink-resolved target is
+    // sensitive: a benign-looking name (`config` → `.env`) must not smuggle a
+    // credential file past the deny list. Resolution is best-effort — if the path
+    // can't be canonicalized (doesn't exist yet, permission error), fall back to
+    // the literal check already performed, never failing open more than the
+    // pre-symlink behavior did.
+    let resolved_is_sensitive = std::fs::canonicalize(file_path)
+        .ok()
+        .and_then(|p| p.to_str().map(is_sensitive_path))
+        .unwrap_or(false);
+    if !is_sensitive_path(file_path) && !resolved_is_sensitive {
         return None;
     }
     Some(json!({
@@ -124,7 +134,13 @@ fn handle_post_tool_use(payload: &Value, salt: &[u8]) -> Option<Value> {
 /// actionable reason is the best available action.
 fn handle_user_prompt_submit(payload: &Value, salt: &[u8]) -> Option<Value> {
     let prompt = payload.get("prompt").and_then(Value::as_str)?;
-    let outcome = redact(prompt, salt, DEFAULT_MIN_PII_SEVERITY);
+    // Scan at the HIGH floor so `outcome.labels()` lists only what actually
+    // blocks. MEDIUM PII (EMAIL/PHONE) never blocks a prompt on its own, so
+    // naming it in the reason would wrongly imply the user must strip their email
+    // to resubmit. This handler only reads the labels/severity to decide the
+    // block — it never emits `outcome.text` (a prompt-submit hook cannot rewrite
+    // the prompt), so the narrower scan weakens no redaction.
+    let outcome = redact(prompt, salt, PII_SEVERITY_HIGH);
     if !(outcome.has_secret() || outcome.max_pii_severity >= PII_SEVERITY_HIGH) {
         return None;
     }
@@ -139,9 +155,24 @@ fn handle_user_prompt_submit(payload: &Value, salt: &[u8]) -> Option<Value> {
     }))
 }
 
+/// Maximum JSON nesting depth [`redact_json_value`] descends into. Real Claude
+/// Code tool output is never legitimately this deep; a pathologically nested
+/// payload must not exhaust the thread stack and turn a graceful no-op into a
+/// non-zero hook error (the process exits per hook call).
+const MAX_REDACT_DEPTH: usize = 64;
+
 /// Recursively redact every string leaf of a JSON value, returning the redacted
-/// value and whether anything changed.
+/// value and whether anything changed. Descent is bounded by [`MAX_REDACT_DEPTH`].
 fn redact_json_value(value: &Value, salt: &[u8]) -> (Value, bool) {
+    redact_json_value_at(value, salt, 0)
+}
+
+fn redact_json_value_at(value: &Value, salt: &[u8], depth: usize) -> (Value, bool) {
+    if depth >= MAX_REDACT_DEPTH {
+        // Too deep: return the subtree unchanged rather than risk a stack
+        // overflow. Fail-open — a depth this large is not real tool output.
+        return (value.clone(), false);
+    }
     match value {
         Value::String(s) => {
             let outcome = redact(s, salt, DEFAULT_MIN_PII_SEVERITY);
@@ -151,7 +182,7 @@ fn redact_json_value(value: &Value, salt: &[u8]) -> (Value, bool) {
             let mut changed = false;
             let mut out = Vec::with_capacity(items.len());
             for item in items {
-                let (redacted, item_changed) = redact_json_value(item, salt);
+                let (redacted, item_changed) = redact_json_value_at(item, salt, depth + 1);
                 changed |= item_changed;
                 out.push(redacted);
             }
@@ -161,7 +192,7 @@ fn redact_json_value(value: &Value, salt: &[u8]) -> (Value, bool) {
             let mut changed = false;
             let mut out = serde_json::Map::with_capacity(map.len());
             for (key, val) in map {
-                let (redacted, val_changed) = redact_json_value(val, salt);
+                let (redacted, val_changed) = redact_json_value_at(val, salt, depth + 1);
                 changed |= val_changed;
                 out.insert(key.clone(), redacted);
             }
@@ -384,12 +415,24 @@ fn create_secret_file_exclusive(path: &Path, bytes: &[u8]) -> std::io::Result<()
 }
 
 /// Read `n` bytes from the OS CSPRNG. Uses `/dev/urandom` to avoid pulling in an
-/// RNG crate (the CLI targets Unix data-plane hosts).
+/// RNG crate (the CLI targets Unix data-plane hosts). Guarded `#[cfg(unix)]` to
+/// match `set_permissions_0600` and the `OpenOptionsExt` open modes elsewhere in
+/// this file, so non-Unix builds fail explicitly here rather than compiling
+/// cleanly and degrading silently to the fallback key at runtime.
+#[cfg(unix)]
 fn random_bytes(n: usize) -> Result<Vec<u8>> {
     let mut file = std::fs::File::open("/dev/urandom").context("opening /dev/urandom")?;
     let mut buf = vec![0u8; n];
     file.read_exact(&mut buf).context("reading /dev/urandom")?;
     Ok(buf)
+}
+
+/// Non-Unix hosts have no `/dev/urandom`; the hook targets Unix data-plane hosts.
+/// Surface a clear error so the caller enters the fallback-salt path deliberately
+/// (per the fail-open contract) instead of via an opaque file-open failure.
+#[cfg(not(unix))]
+fn random_bytes(_n: usize) -> Result<Vec<u8>> {
+    anyhow::bail!("/dev/urandom CSPRNG is unavailable on non-Unix hosts")
 }
 
 #[cfg(unix)]
@@ -542,6 +585,29 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn pre_tool_use_denies_symlink_to_sensitive_target() {
+        use std::os::unix::fs::symlink;
+        // A benign-looking name pointing at a credential file (`config` → `.env`)
+        // must be denied via symlink resolution, not just the literal basename.
+        let tmp = TempDir::new("symlink");
+        let target = tmp.path().join(".env");
+        std::fs::write(&target, "SECRET=x").expect("write .env target");
+        let link = tmp.path().join("config");
+        symlink(&target, &link).expect("create symlink");
+        let payload = json!({
+            "hook_event_name": "PreToolUse",
+            "tool_name": "Read",
+            "tool_input": { "file_path": link.to_str().unwrap() }
+        });
+        let verdict = handle_hook(&payload, SALT).expect("expected deny for symlink to .env");
+        assert_eq!(
+            verdict["hookSpecificOutput"]["permissionDecision"], "deny",
+            "a symlink resolving to a sensitive file must be denied"
+        );
+    }
+
     #[test]
     fn user_prompt_submit_blocks_on_secret() {
         let payload = json!({
@@ -555,6 +621,24 @@ mod tests {
                 .as_str()
                 .unwrap()
                 .contains("ANTHROPIC_KEY")
+        );
+    }
+
+    #[test]
+    fn user_prompt_submit_reason_omits_non_blocking_medium_pii() {
+        // A secret blocks the prompt; a co-occurring MEDIUM email does not and
+        // must not appear in the reason (else the user is told to strip an email
+        // that was never the blocker).
+        let payload = json!({
+            "hook_event_name": "UserPromptSubmit",
+            "prompt": format!("email me at alice@corp.io using {ANTHROPIC_KEY}")
+        });
+        let verdict = handle_hook(&payload, SALT).expect("expected a block");
+        let reason = verdict["reason"].as_str().unwrap();
+        assert!(reason.contains("ANTHROPIC_KEY"), "blocking secret is named");
+        assert!(
+            !reason.contains("EMAIL"),
+            "non-blocking medium PII must be omitted from the reason"
         );
     }
 
@@ -660,6 +744,24 @@ mod tests {
         let (redacted, changed) = redact_json_value(&value, SALT);
         assert!(!changed, "a clean value must not report a change");
         assert_eq!(redacted, value);
+    }
+
+    #[test]
+    fn redact_json_value_bounds_recursion_depth() {
+        // A pathologically deep payload must return gracefully instead of
+        // overflowing the stack. The secret is nested far below MAX_REDACT_DEPTH,
+        // so past the cap the subtree is returned unchanged (fail-open) — the
+        // point is that the call completes without panicking.
+        let mut v = json!(format!("deep {ANTHROPIC_KEY}"));
+        for _ in 0..(MAX_REDACT_DEPTH + 50) {
+            v = json!([v]);
+        }
+        let (redacted, changed) = redact_json_value(&v, SALT);
+        assert!(!changed, "beyond the depth cap nothing is redacted");
+        assert!(
+            redacted.to_string().contains(ANTHROPIC_KEY),
+            "the too-deep subtree is returned unchanged"
+        );
     }
 
     #[test]

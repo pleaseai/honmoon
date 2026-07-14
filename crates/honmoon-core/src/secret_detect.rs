@@ -64,16 +64,20 @@ static ANTHROPIC_RE: LazyLock<Regex> =
 // which now shares the same body class.
 static OPENAI_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"(?-u:\b)sk-(?:proj-)?[A-Za-z0-9_-]{20,}").unwrap());
-// AWS access key id: `AKIA` + exactly 16 upper/digits (20 total). Trailing
-// boundary rejects a longer alnum blob that merely starts with `AKIA…`.
+// AWS access key id: `AKIA` (long-term) or `ASIA` (temporary/STS) + exactly 16
+// upper/digits (20 total). Trailing boundary rejects a longer alnum blob that
+// merely starts with the prefix.
 static AWS_AKID_RE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"(?-u:\b)AKIA[0-9A-Z]{16}(?-u:\b)").unwrap());
-// GitHub tokens: `ghp_`/`gho_`/`ghu_`/`ghs_`/`ghr_` + >=36 alnum.
-static GITHUB_RE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"(?-u:\b)gh[pousr]_[A-Za-z0-9]{36,}").unwrap());
-// Slack tokens: `xoxb-`/`xoxa-`/`xoxp-`/`xoxr-`/`xoxs-` + a hyphenated body.
+    LazyLock::new(|| Regex::new(r"(?-u:\b)(?:AKIA|ASIA)[0-9A-Z]{16}(?-u:\b)").unwrap());
+// GitHub tokens: classic `ghp_`/`gho_`/`ghu_`/`ghs_`/`ghr_` + >=36 alnum, or
+// fine-grained `github_pat_` + a long alnum/underscore body.
+static GITHUB_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?-u:\b)(?:gh[pousr]_[A-Za-z0-9]{36,}|github_pat_[A-Za-z0-9_]{50,})").unwrap()
+});
+// Slack tokens: bot/user/etc. `xoxb-`/`xoxa-`/`xoxp-`/`xoxr-`/`xoxs-`, plus
+// app-level `xapp-` and workflow `xwfp-` tokens + a hyphenated body.
 static SLACK_RE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"(?-u:\b)xox[baprs]-[A-Za-z0-9-]{10,}").unwrap());
+    LazyLock::new(|| Regex::new(r"(?-u:\b)(?:xox[baprs]-|xapp-|xwfp-)[A-Za-z0-9-]{10,}").unwrap());
 // Google API keys: `AIza` + exactly 35 of `[A-Za-z0-9_-]`.
 static GOOGLE_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"(?-u:\b)AIza[0-9A-Za-z_-]{35}(?-u:\b)").unwrap());
@@ -290,6 +294,13 @@ mod tests {
     }
 
     #[test]
+    fn detects_aws_temporary_access_key_id() {
+        // STS / temporary credentials use the `ASIA` prefix (same 20-char shape)
+        // and must be redacted just like long-term `AKIA` ids.
+        assert_eq!(labels("ASIAIOSFODNN7EXAMPLE"), vec!["AWS_ACCESS_KEY_ID"]);
+    }
+
+    #[test]
     fn aws_key_rejects_overlong_alnum_blob() {
         // A 30-char run that merely starts with AKIA is not a 20-char key id.
         assert!(detect_secrets("AKIAABCDEFGHIJKLMNOPQRSTUVWXYZ0123").is_empty());
@@ -308,11 +319,33 @@ mod tests {
     }
 
     #[test]
+    fn detects_fine_grained_github_pat() {
+        // Fine-grained PATs use the `github_pat_` prefix with a long
+        // alnum/underscore body — a shape the classic `ghp_` matcher misses.
+        let tok = format!("github_pat_11ABCDEFG0{}", "aB3xK9zQ1m".repeat(7));
+        assert_eq!(
+            labels(&format!("credential {tok} present")),
+            vec!["GITHUB_TOKEN"]
+        );
+    }
+
+    #[test]
     fn detects_slack_token() {
         assert_eq!(
             labels("xoxb-123456789012-abcdEFGHijkl"),
             vec!["SLACK_TOKEN"]
         );
+    }
+
+    #[test]
+    fn detects_slack_app_and_workflow_tokens() {
+        // App-level (`xapp-`) and workflow (`xwfp-`) tokens are documented Slack
+        // credential formats alongside the `xox?-` family.
+        assert_eq!(
+            labels("xapp-1-A1B2C3D4E5-9876543210-abcdEFGH"),
+            vec!["SLACK_TOKEN"]
+        );
+        assert_eq!(labels("xwfp-1-A1B2C3D4E5F6G7H8I9"), vec!["SLACK_TOKEN"]);
     }
 
     #[test]
