@@ -310,19 +310,40 @@ fn load_or_create_machine_salt(dir: &Path) -> Result<Vec<u8>> {
     }
 
     // First use: create exclusively so a concurrent first-run process cannot
-    // persist a *different* machine key. If we lose the race, read and adopt the
-    // winner's salt instead of our own.
+    // persist a *different* machine key. If we lose the race, adopt the winner's
+    // salt instead of our own.
     match create_secret_file_exclusive(&path, &salt) {
         Ok(()) => Ok(salt),
-        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => match std::fs::read(&path) {
-            Ok(bytes) if bytes.len() >= 16 => Ok(bytes),
-            // The winner wrote something unusable (or it vanished): fall back to
-            // our own salt for this call rather than fail. Redaction still works;
-            // only cross-process convergence is briefly relaxed.
-            _ => Ok(salt),
-        },
+        // The winner's create and write are separate syscalls, so a read here can
+        // briefly observe a 0-byte file before the winner's bytes land. Retry the
+        // read a few times so we actually converge on the winner's key; only fall
+        // back to our own (unpersisted) salt if it never becomes usable.
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+            Ok(read_valid_salt_retrying(&path).unwrap_or(salt))
+        }
         Err(e) => Err(e).with_context(|| format!("writing {}", path.display())),
     }
+}
+
+/// Read a persisted `>=16`-byte salt from `path`, retrying briefly to bridge the
+/// gap between a create-race winner's exclusive create and its write landing.
+/// Returns `None` if the file never reaches a usable size within the bounded
+/// attempts (a genuinely-truncated winner), so the caller can fall back promptly.
+fn read_valid_salt_retrying(path: &Path) -> Option<Vec<u8>> {
+    const ATTEMPTS: u32 = 10;
+    for attempt in 0..ATTEMPTS {
+        if let Ok(bytes) = std::fs::read(path) {
+            if bytes.len() >= 16 {
+                return Some(bytes);
+            }
+        }
+        if attempt + 1 < ATTEMPTS {
+            // The winner's 32-byte write completes in microseconds; a short pause
+            // (≤9ms total, well under the hook's 30s budget) lets it finish.
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+    }
+    None
 }
 
 /// Write `bytes` to `path`, creating it `0600` (Unix) via the open mode so the
