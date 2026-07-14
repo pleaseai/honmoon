@@ -1,0 +1,211 @@
+//! Combined secret + PII redaction — the join between detection
+//! ([`crate::secret_detect`], [`crate::pii`]) and the reversible tokenizer
+//! ([`crate::SecretTokenizer`]).
+//!
+//! This is the single engine behind the Claude Code plugin's hooks (issue #19)
+//! and, in a later track, the gateway-direct HTTP transport. It stays pure
+//! logic (no I/O): the caller supplies the text and a session salt, and gets
+//! back the redacted text plus what was found. Because the tokenizer mints
+//! deterministic, byte-stable placeholders for a given `(salt, secret)`,
+//! re-redacting resent conversation history is byte-identical across turns
+//! (issue #20) — the caller need do nothing extra to keep a provider's
+//! prompt-cache prefix stable.
+//!
+//! On the plugin path there is no reverse substitution, so the returned
+//! [`Mapping`] is effectively one-way redaction; it is kept in the outcome so
+//! a co-running proxy / HTTP transport can share the same placeholder→secret
+//! mapping when that lands.
+
+use std::collections::BTreeSet;
+
+use crate::pii;
+use crate::secret_detect::detect_secrets;
+use crate::secret_tokenizer::{Mapping, SecretTokenizer};
+
+/// Default PII severity floor for redaction: MEDIUM. Bare IPv4 (LOW) is left
+/// alone to cut noise; RRN / card / email / phone (MEDIUM+) are redacted.
+/// Secrets are always redacted regardless of this floor.
+pub const DEFAULT_MIN_PII_SEVERITY: i64 = 2;
+
+/// The result of a [`redact`] call.
+///
+/// `text` is the redacted output (equal to the input when nothing was found).
+/// `secret_labels` / `pii_labels` are the unique, sorted detector labels that
+/// fired (PII labels are only those at or above the requested severity floor).
+/// `max_pii_severity` is the highest severity among redacted PII (0 if none).
+/// `mapping` is the placeholder→secret mapping actually substituted.
+#[derive(Debug)]
+pub struct RedactionOutcome {
+    pub text: String,
+    pub redacted: bool,
+    pub secret_labels: Vec<String>,
+    pub pii_labels: Vec<String>,
+    pub max_pii_severity: i64,
+    pub mapping: Mapping,
+}
+
+impl RedactionOutcome {
+    /// Whether any secret (as opposed to PII) surface was detected.
+    pub fn has_secret(&self) -> bool {
+        !self.secret_labels.is_empty()
+    }
+
+    /// All fired labels (secrets then PII), unique and each already sorted.
+    pub fn labels(&self) -> Vec<String> {
+        let mut all = self.secret_labels.clone();
+        all.extend(self.pii_labels.iter().cloned());
+        all
+    }
+}
+
+/// Detect secrets + PII (at or above `min_pii_severity`) in `text` and replace
+/// every detected surface with its stable placeholder.
+///
+/// `salt` is the HMAC key behind placeholder unforgeability and must be
+/// non-empty (see [`SecretTokenizer::new`], which this calls) — an empty salt
+/// is a caller programming error, not a recoverable input, and panics rather
+/// than silently minting forgeable tokens or failing open.
+pub fn redact(text: &str, salt: &[u8], min_pii_severity: i64) -> RedactionOutcome {
+    // Collect surfaces to register. Secrets go first: registration order is the
+    // tokenizer's tie-break for equal-length leftmost-longest matches, and a
+    // secret should win over a coincidentally-overlapping PII span.
+    let mut surfaces: Vec<String> = Vec::new();
+    let mut seen: BTreeSet<String> = BTreeSet::new();
+    let mut secret_labels: BTreeSet<String> = BTreeSet::new();
+
+    for finding in detect_secrets(text) {
+        secret_labels.insert(finding.label);
+        if seen.insert(finding.text.clone()) {
+            surfaces.push(finding.text);
+        }
+    }
+
+    let mut pii_labels: BTreeSet<String> = BTreeSet::new();
+    let mut max_pii_severity = 0i64;
+    for span in pii::detect_spans(text) {
+        let severity = pii::severity_for_label(&span.label);
+        if severity < min_pii_severity {
+            continue;
+        }
+        pii_labels.insert(span.label.clone());
+        max_pii_severity = max_pii_severity.max(severity);
+        if seen.insert(span.text.clone()) {
+            surfaces.push(span.text);
+        }
+    }
+
+    if surfaces.is_empty() {
+        return RedactionOutcome {
+            text: text.to_string(),
+            redacted: false,
+            secret_labels: secret_labels.into_iter().collect(),
+            pii_labels: pii_labels.into_iter().collect(),
+            max_pii_severity,
+            mapping: Mapping::new(),
+        };
+    }
+
+    let tokenizer = SecretTokenizer::new(salt.to_vec(), surfaces);
+    let (redacted_text, mapping) = tokenizer.tokenize(text);
+
+    RedactionOutcome {
+        text: redacted_text,
+        redacted: !mapping.is_empty(),
+        secret_labels: secret_labels.into_iter().collect(),
+        pii_labels: pii_labels.into_iter().collect(),
+        max_pii_severity,
+        mapping,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::PLACEHOLDER_PREFIX;
+
+    const SALT: &[u8] = b"redact-test-salt";
+    const RRN: &str = "670125-1230644"; // valid checksum (mirrors pii.rs tests)
+    const ANTHROPIC_KEY: &str = "sk-ant-api03-cache-stable-abcDEF123456";
+
+    #[test]
+    fn redacts_a_valid_rrn() {
+        let out = redact(
+            &format!("제 주민번호는 {RRN} 입니다"),
+            SALT,
+            DEFAULT_MIN_PII_SEVERITY,
+        );
+        assert!(out.redacted);
+        assert!(!out.text.contains(RRN));
+        assert!(out.text.contains(PLACEHOLDER_PREFIX));
+        assert_eq!(out.pii_labels, vec!["RRN"]);
+        assert!(!out.has_secret());
+    }
+
+    #[test]
+    fn redacts_an_api_key() {
+        let out = redact(
+            &format!("deploy with {ANTHROPIC_KEY} now"),
+            SALT,
+            DEFAULT_MIN_PII_SEVERITY,
+        );
+        assert!(out.redacted);
+        assert!(out.has_secret());
+        assert!(!out.text.contains(ANTHROPIC_KEY));
+        assert_eq!(out.secret_labels, vec!["ANTHROPIC_KEY"]);
+    }
+
+    #[test]
+    fn redacts_secret_and_pii_together() {
+        let out = redact(
+            &format!("key {ANTHROPIC_KEY} for user rrn {RRN}"),
+            SALT,
+            DEFAULT_MIN_PII_SEVERITY,
+        );
+        assert!(out.redacted);
+        assert!(!out.text.contains(ANTHROPIC_KEY));
+        assert!(!out.text.contains(RRN));
+        assert!(out.has_secret());
+        assert_eq!(out.pii_labels, vec!["RRN"]);
+    }
+
+    #[test]
+    fn passthrough_when_nothing_found() {
+        let out = redact("just an ordinary sentence", SALT, DEFAULT_MIN_PII_SEVERITY);
+        assert!(!out.redacted);
+        assert_eq!(out.text, "just an ordinary sentence");
+        assert!(out.mapping.is_empty());
+        assert!(out.labels().is_empty());
+    }
+
+    #[test]
+    fn is_byte_deterministic_across_calls() {
+        // Issue #20: the same bytes under the same salt redact identically, so
+        // re-redacting resent history preserves a provider's prompt-cache prefix.
+        let text = format!("{ANTHROPIC_KEY} and {RRN}");
+        let a = redact(&text, SALT, DEFAULT_MIN_PII_SEVERITY);
+        let b = redact(&text, SALT, DEFAULT_MIN_PII_SEVERITY);
+        assert_eq!(a.text, b.text);
+    }
+
+    #[test]
+    fn min_severity_gate_skips_low_severity_ip_by_default() {
+        // A bare IPv4 is LOW severity: not redacted at the MEDIUM default...
+        let default = redact("connect to 10.0.0.1 please", SALT, DEFAULT_MIN_PII_SEVERITY);
+        assert!(!default.redacted);
+        assert!(default.text.contains("10.0.0.1"));
+        // ...but redacted when the floor is lowered to LOW.
+        let low = redact("connect to 10.0.0.1 please", SALT, 1);
+        assert!(low.redacted);
+        assert!(!low.text.contains("10.0.0.1"));
+        assert_eq!(low.pii_labels, vec!["IP"]);
+    }
+
+    #[test]
+    fn secrets_are_redacted_regardless_of_pii_floor() {
+        // Even with the PII floor above HIGH, a secret is still redacted.
+        let out = redact(&format!("key {ANTHROPIC_KEY}"), SALT, 99);
+        assert!(out.redacted);
+        assert!(out.has_secret());
+        assert!(!out.text.contains(ANTHROPIC_KEY));
+    }
+}
