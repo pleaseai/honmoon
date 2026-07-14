@@ -1,0 +1,19 @@
+crates/honmoon-core/tests/secret_tokenizer_public_api.rs
+  s_cdfa4c513cfbaf::t_fa2028b362c973 194-202,208-214,219-224,226-227
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.13",
+  "base_commit_sha": "aad340a95958eb2161de1f33827853937b4c91c0",
+  "prompts": {},
+  "sessions": {
+    "s_cdfa4c513cfbaf": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "de0de48b-34cc-4846-89a7-e0ed03a99d82",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
