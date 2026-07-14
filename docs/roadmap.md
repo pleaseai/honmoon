@@ -161,25 +161,33 @@ subagents, and backups/sync. Client-side hooks close that gap by redacting *befo
 enters the transcript — the plugin doubles as lightweight onboarding (no local CA trust
 needed).
 
-- [ ] Claude Code plugin with redaction hooks (#19): `PostToolUse` on `Read` replaces the
-  tool result via `updatedToolOutput` (redacted in both model context and transcript);
-  `UserPromptSubmit` blocks prompts carrying secrets (hooks cannot rewrite a prompt — block
-  + actionable reason); `PreToolUse` denies reads of known-sensitive paths (`.env*`, key files)
-- [ ] Two hook transports (#19): **gateway-direct** — `type: "http"` hooks POST the hook
+- [x] Claude Code plugin with redaction hooks (#19, `packages/claude-plugin/`): `PostToolUse`
+  on `Read` replaces the tool result via `updatedToolOutput` (redacted in the model context;
+  transcript rewrite is version-dependent — see caveat); `UserPromptSubmit` blocks prompts
+  carrying secrets (hooks cannot rewrite a prompt — block + actionable reason); `PreToolUse`
+  denies reads of known-sensitive paths (`.env*`, key files)
+- [x] New secret detector + redaction engine in `honmoon-core` (#19): `secret_detect`
+  (Anthropic/OpenAI/AWS/GitHub/Slack/Google/PEM + entropy-gated generic, precision-first like
+  `pii.rs`) and `redact` (joins secret + Tier-1 PII detection into the `SecretTokenizer` →
+  deterministic, byte-stable placeholders per #20)
+- [x] **CLI transport** — `honmoon hook` (`type: "command"`): hook JSON on stdin (with a
+  per-session salt derived from a persisted machine secret, so a given secret tokenizes
+  identically across the fresh processes each call spawns, per #20) → `honmoon-core` detectors
+  + tokenization → hook JSON verdict; works with only the binary installed. Caveat noted below.
+- [ ] **Gateway-direct HTTP transport (follow-up, #19)** — `type: "http"` hooks POST the hook
   payload to `POST /api/hooks/claude-code` on the management API and get the same hook JSON
   schema back (no per-call process spawn; tokenization mapping shared with the proxy by
-  construction) — and **CLI fallback** — `honmoon hook` (`type: "command"`): hook JSON on
-  stdin (with session/salt context, since each call spawns a fresh process — so a given
-  secret tokenizes identically across calls, per #20) → Tier-1 detectors + reversible secret
-  tokenization from `honmoon-core` → hook JSON verdict, works with only the binary installed.
-  Caveat: HTTP hooks **fail open** (connection failure / non-2xx continues unredacted), so the
-  shipped default must fall back to a local scan rather than fail silently
+  construction). Deferred: HTTP hooks **fail open** (connection failure / non-2xx continues
+  unredacted), so it must not become the silent default; the command transport ships first.
 - [ ] Cache-stable determinism on the proxy path (#20): identical secret → identical token
   across turns, so redacting the resent history preserves the provider prompt-cache prefix
 
-**Exit criteria**: reading a file with a valid-checksum RRN or an API key lands redacted in
-both the model context and the session transcript JSONL; a prompt carrying a secret is
-blocked with actionable feedback; same multi-turn body redacted twice is byte-identical (#20).
+**Exit criteria**: reading a file with a valid-checksum RRN or an API key lands redacted in the
+model context via `PostToolUse` `updatedToolOutput`; a prompt carrying a secret is blocked with
+actionable feedback; same multi-turn body redacted twice is byte-identical (#20). Transcript
+caveat: `updatedToolOutput` is documented to replace what the model sees, but the docs do not
+guarantee the persisted `.jsonl` is rewritten — for known credential files the guaranteed
+transcript-hygiene path is the `PreToolUse` deny (never read ⇒ never transcribed).
 
 ---
 

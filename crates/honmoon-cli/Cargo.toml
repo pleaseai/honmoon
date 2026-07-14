@@ -20,3 +20,8 @@ clap.workspace = true
 anyhow.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
+# `honmoon hook` (Claude Code plugin backend): parse the hook JSON payload and
+# derive a stable per-session salt for byte-deterministic redaction (#19/#20).
+serde_json.workspace = true
+hmac.workspace = true
+sha2.workspace = true

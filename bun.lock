@@ -66,6 +66,10 @@
         "typescript": "~6.0.2",
       },
     },
+    "packages/claude-plugin": {
+      "name": "@honmoon/claude-plugin",
+      "version": "0.1.0",
+    },
     "packages/cli": {
       "name": "@honmoon/cli",
       "version": "0.1.0",
@@ -174,6 +178,8 @@
     "@eslint/plugin-kit": ["@eslint/plugin-kit@0.7.2", "", { "dependencies": { "@eslint/core": "^1.2.1", "levn": "^0.4.1" } }, "sha512-+CNAzxglkrpNf/kKywqQfk74QjtceuOE7Qm+AF8miRvPF/wmmK5+OJOgVh3AVTT3RP2mH3+FOaxlE5v72owk0A=="],
 
     "@honmoon/api": ["@honmoon/api@workspace:packages/api"],
+
+    "@honmoon/claude-plugin": ["@honmoon/claude-plugin@workspace:packages/claude-plugin"],
 
     "@honmoon/cli": ["@honmoon/cli@workspace:packages/cli"],
 

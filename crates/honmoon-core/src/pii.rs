@@ -184,7 +184,10 @@ pub fn detect_pii(payload: &str) -> Option<PiiFacts> {
     })
 }
 
-fn severity_for_label(label: &str) -> i64 {
+/// Severity (3 high / 2 medium / 1 low) for a canonical PII label, or 0 if the
+/// label is unknown. Exposed so [`crate::redact`] can apply a severity floor
+/// (e.g. redact MEDIUM+ but leave bare IPv4 alone).
+pub fn severity_for_label(label: &str) -> i64 {
     DETECTORS
         .iter()
         .find(|d| d.label == label)
