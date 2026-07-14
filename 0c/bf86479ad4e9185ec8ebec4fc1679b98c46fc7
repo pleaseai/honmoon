@@ -1,0 +1,21 @@
+.claude/agent-memory/review-review-security-reviewer/MEMORY.md
+  s_a81daa6f23146d::t_2d3a8bc7c26e5b 1
+.claude/agent-memory/review-review-security-reviewer/project-redaction-failopen-design.md
+  s_a81daa6f23146d::t_f3622b5245b7a1 1-25
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.13",
+  "base_commit_sha": "0cbf86479ad4e9185ec8ebec4fc1679b98c46fc7",
+  "prompts": {},
+  "sessions": {
+    "s_a81daa6f23146d": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "1d590026-e5e7-498e-829d-ae651e15f604",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
