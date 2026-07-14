@@ -61,10 +61,13 @@ impl RedactionOutcome {
 /// Detect secrets + PII (at or above `min_pii_severity`) in `text` and replace
 /// every detected surface with its stable placeholder.
 ///
-/// `salt` is the HMAC key behind placeholder unforgeability and must be
-/// non-empty (see [`SecretTokenizer::new`], which this calls) — an empty salt
-/// is a caller programming error, not a recoverable input, and panics rather
-/// than silently minting forgeable tokens or failing open.
+/// `salt` is the HMAC key behind placeholder unforgeability. When at least one
+/// surface is detected this constructs a [`SecretTokenizer::new`], which
+/// **requires a non-empty salt and panics on an empty one** — an empty salt is a
+/// caller programming error, not a recoverable input, so it panics rather than
+/// silently minting forgeable tokens or failing open. (Text with nothing to
+/// redact returns early and never reaches the tokenizer, so an empty salt does
+/// not panic in that case — callers must still always pass a real salt.)
 pub fn redact(text: &str, salt: &[u8], min_pii_severity: i64) -> RedactionOutcome {
     // Collect surfaces to register. Secrets go first: registration order is the
     // tokenizer's tie-break for equal-length leftmost-longest matches, and a
@@ -121,7 +124,7 @@ pub fn redact(text: &str, salt: &[u8], min_pii_severity: i64) -> RedactionOutcom
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::PLACEHOLDER_PREFIX;
+    use crate::{PLACEHOLDER_PREFIX, PLACEHOLDER_SUFFIX};
 
     const SALT: &[u8] = b"redact-test-salt";
     const RRN: &str = "670125-1230644"; // valid checksum (mirrors pii.rs tests)
@@ -207,5 +210,82 @@ mod tests {
         assert!(out.redacted);
         assert!(out.has_secret());
         assert!(!out.text.contains(ANTHROPIC_KEY));
+    }
+
+    #[test]
+    fn redacts_a_pem_private_key_block() {
+        // A multi-line PEM block is captured header-through-footer and replaced
+        // wholesale, so no fragment of the block survives.
+        let pem = "-----BEGIN RSA PRIVATE KEY-----\n\
+                   MIIBOgIBAAJBAKjabc123DEF456ghiJKLmno\n\
+                   -----END RSA PRIVATE KEY-----";
+        let out = redact(
+            &format!("here is the key:\n{pem}\n"),
+            SALT,
+            DEFAULT_MIN_PII_SEVERITY,
+        );
+        assert!(out.redacted);
+        assert!(out.has_secret());
+        assert_eq!(out.secret_labels, vec!["PRIVATE_KEY"]);
+        assert!(!out.text.contains("PRIVATE KEY"));
+        assert!(out.text.contains(PLACEHOLDER_PREFIX));
+        // Surrounding prose is preserved.
+        assert!(out.text.contains("here is the key:"));
+    }
+
+    #[test]
+    fn redacts_a_keyword_anchored_generic_secret() {
+        // Only the high-entropy value (not the `api_key = ` anchor) is replaced.
+        let secret = "aB3xK9zQ1mP7wR2t";
+        let out = redact(
+            &format!("api_key = \"{secret}\""),
+            SALT,
+            DEFAULT_MIN_PII_SEVERITY,
+        );
+        assert!(out.redacted);
+        assert!(out.has_secret());
+        assert_eq!(out.secret_labels, vec!["GENERIC_SECRET"]);
+        assert!(!out.text.contains(secret));
+        assert!(out.text.starts_with("api_key = \""));
+    }
+
+    #[test]
+    fn mapping_reverses_each_placeholder_to_its_secret() {
+        // The returned mapping is the placeholder→secret substitution actually
+        // applied — every placeholder in the output must reverse to its surface.
+        let out = redact(
+            &format!("key {ANTHROPIC_KEY} rrn {RRN}"),
+            SALT,
+            DEFAULT_MIN_PII_SEVERITY,
+        );
+        assert!(out.redacted);
+        assert_eq!(out.mapping.len(), 2, "one entry per unique surface");
+        let recovered: Vec<&str> = placeholders(&out.text)
+            .iter()
+            .filter_map(|p| out.mapping.get(p))
+            .collect();
+        assert!(
+            recovered.contains(&ANTHROPIC_KEY),
+            "mapping recovers the API key"
+        );
+        assert!(recovered.contains(&RRN), "mapping recovers the RRN");
+    }
+
+    /// Extract every `<<hs:…>>` placeholder occurring in `text`, in order.
+    fn placeholders(text: &str) -> Vec<String> {
+        let mut out = Vec::new();
+        let mut rest = text;
+        while let Some(start) = rest.find(PLACEHOLDER_PREFIX) {
+            let after = &rest[start..];
+            match after.find(PLACEHOLDER_SUFFIX) {
+                Some(end) => {
+                    let end = end + PLACEHOLDER_SUFFIX.len();
+                    out.push(after[..end].to_string());
+                    rest = &after[end..];
+                }
+                None => break,
+            }
+        }
+        out
     }
 }

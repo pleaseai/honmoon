@@ -14,7 +14,7 @@
     ],
     "PostToolUse": [
       {
-        "matcher": "Read",
+        "matcher": "Read|Bash|Grep",
         "hooks": [
           {
             "type": "command",

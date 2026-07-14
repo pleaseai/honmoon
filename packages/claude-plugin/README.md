@@ -6,10 +6,10 @@ secrets and sensitive identifiers out of what Claude Code persists **locally**.
 ## Why this exists (and how it relates to the proxy)
 
 Honmoon's proxy covers the **wire**: agent clients resend the full conversation
-each turn, so every secret re-crosses the proxy and is re-redacted — the model
-and provider never see a raw secret. What the proxy *cannot* reach is what the
-client writes to disk **before** sending: Claude Code stores raw prompts and raw
-`Read` output in its session transcript
+each turn, so a secret the proxy detects is re-redacted on every turn — the model
+and provider see the placeholder, not the raw value. What the proxy *cannot*
+reach is what the client writes to disk **before** sending: Claude Code stores
+raw prompts and raw tool output in its session transcript
 (`~/.claude/projects/<project>/<session-id>.jsonl`), which then feeds `/resume`,
 compaction summaries, subagents, and any backup/sync of that directory.
 
@@ -24,14 +24,17 @@ a replacement:
 
 | Hook | Event | Behavior |
 |------|-------|----------|
-| Redact tool output | `PostToolUse` (`Read`) | Scans the tool result and replaces every detected secret/PII surface with a stable placeholder via `updatedToolOutput`, so the redacted form is what enters the model context. |
+| Redact tool output | `PostToolUse` (`Read`, `Bash`, `Grep`) | Scans the tool result and replaces every detected secret/PII surface with a stable placeholder via `updatedToolOutput`, so the redacted form is what enters the model context. `Bash` and `Grep` are matched too, not just `Read`: a secret surfaced by `cat`/`grep`/`echo` lands in the same local transcript and never touches the proxy for that local copy. |
 | Block risky prompts | `UserPromptSubmit` | A hook **cannot** rewrite a prompt, so a prompt carrying a secret (or a high-severity identifier like an RRN) is **blocked** with an actionable reason. Remove the value and resubmit. |
 | Deny sensitive reads | `PreToolUse` (`Read`) | Denies reads of known credential/key files (`.env*`, `*.pem`, `*.key`, `id_rsa`/`id_ed25519`, `~/.aws/credentials`, …) before the file is opened — so their plaintext never reaches the transcript. Template files (`.env.example`) are allowed. |
 
 All three call the same engine (`honmoon hook`), which reuses the exact Tier-1
-detectors and reversible tokenizer the proxy uses (`honmoon-core`). Placeholders
-are byte-stable for a given secret within a session, so re-redacting resent
-history keeps a provider's prompt cache intact.
+detectors and tokenizer from `honmoon-core` — the crate that also backs the
+proxy. On this client path the redaction is one-way (there is no reverse
+substitution; the tokenizer's mapping is not shared with a proxy today). What
+carries over is determinism: placeholders are byte-stable for a given secret
+within a session, so re-redacting resent history keeps a provider's prompt cache
+prefix intact.
 
 ## Requirements
 
@@ -50,8 +53,9 @@ backstop. Point the hooks at a specific binary with the `HONMOON_BIN` env var.
 
 ## Install the plugin
 
-Install from the repo's plugin marketplace, or point Claude Code at this
-directory (`packages/claude-plugin/`) as a local plugin. See
+Point Claude Code at this directory (`packages/claude-plugin/`) as a local
+plugin (once the repo publishes a plugin marketplace, you'll be able to install
+from there instead). See
 [Claude Code plugins](https://code.claude.com/docs/en/plugins). Once installed,
 `/hooks` should list the three honmoon hooks.
 

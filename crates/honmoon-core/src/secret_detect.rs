@@ -47,17 +47,23 @@ struct Detector {
     validate: fn(&str) -> bool,
 }
 
-// Boundaries use `(?-u:\b)` (ASCII word boundary) for the same reason as
-// `pii.rs`: credentials are often written flush against non-ASCII text, and a
-// Unicode `\b` treats CJK as a word char and never fires at the seam.
+// The prefix detectors below open with `(?-u:\b)` (ASCII word boundary) for the
+// same reason as `pii.rs`: credentials are often written flush against non-ASCII
+// text, and a Unicode `\b` treats CJK as a word char and never fires at the
+// seam. (`PRIVATE_KEY_RE` and `GENERIC_ASSIGN_RE` further below do not — one is a
+// structural block match, the other keyword-anchored.)
 //
 // Anthropic keys: `sk-ant-` then a long body that may contain `-`/`_`.
 static ANTHROPIC_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"(?-u:\b)sk-ant-[A-Za-z0-9_-]{20,}").unwrap());
-// OpenAI keys: `sk-` or `sk-proj-` then a long alnum body (no interior `-`),
-// which is what keeps it disjoint from the Anthropic form above.
+// OpenAI keys: `sk-` or `sk-proj-` then a long body. Modern `sk-proj-…` keys
+// embed `_`/`-` separators, so the body class must include them or the match
+// would stop at the first separator and leave the rest of the key in plaintext
+// (or, if the leading segment is <20 chars, miss the key entirely). The
+// `is_openai_key` gate keeps this disjoint from the Anthropic `sk-ant-` form,
+// which now shares the same body class.
 static OPENAI_RE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"(?-u:\b)sk-(?:proj-)?[A-Za-z0-9]{20,}").unwrap());
+    LazyLock::new(|| Regex::new(r"(?-u:\b)sk-(?:proj-)?[A-Za-z0-9_-]{20,}").unwrap());
 // AWS access key id: `AKIA` + exactly 16 upper/digits (20 total). Trailing
 // boundary rejects a longer alnum blob that merely starts with `AKIA…`.
 static AWS_AKID_RE: LazyLock<Regex> =
@@ -198,13 +204,14 @@ fn is_plausible_secret_value(s: &str) -> bool {
     if PLACEHOLDER_MARKERS.iter().any(|p| lower.contains(p)) {
         return false;
     }
-    // Require more than one character class — defeats dictionary words and
-    // single-run fillers ("aaaaaaaaaaaaaaaa", "ABCDEFGHIJKLMNOP").
-    let has_lower = s.chars().any(|c| c.is_ascii_lowercase());
-    let has_upper_or_digit = s
-        .chars()
-        .any(|c| c.is_ascii_uppercase() || c.is_ascii_digit());
-    has_lower && has_upper_or_digit && shannon_bits_per_char(s) >= 3.0
+    // Require at least two of {lowercase, uppercase, digit} — defeats dictionary
+    // words and single-run fillers ("aaaaaaaaaaaaaaaa", "ABCDEFGHIJKLMNOP") while
+    // still accepting uppercase-only credentials that carry digits (base32 TOTP
+    // secrets, uppercase hex tokens), which a lowercase-mandatory rule would miss.
+    let classes = u8::from(s.chars().any(|c| c.is_ascii_lowercase()))
+        + u8::from(s.chars().any(|c| c.is_ascii_uppercase()))
+        + u8::from(s.chars().any(|c| c.is_ascii_digit()));
+    classes >= 2 && shannon_bits_per_char(s) >= 3.0
 }
 
 // Shannon entropy in bits per character. Truly random base62 approaches its
@@ -266,6 +273,17 @@ mod tests {
     }
 
     #[test]
+    fn openai_proj_key_with_separators_is_captured_whole() {
+        // Modern sk-proj- keys embed `_`/`-` separators. The whole key must be
+        // captured (regression for the body class excluding separators, which
+        // truncated the match and left the tail in plaintext).
+        let key = "sk-proj-Ab1_Cd2-Ef3Gh4_Ij5Kl6-Mn7Op8Qr9St0";
+        let f = only_finding(&format!("OPENAI_KEY={key}"));
+        assert_eq!(f.label, "OPENAI_KEY");
+        assert_eq!(f.text, key);
+    }
+
+    #[test]
     fn detects_aws_access_key_id() {
         // Canonical AWS docs example — AKIA + exactly 16 = 20 chars.
         assert_eq!(labels("AKIAIOSFODNN7EXAMPLE"), vec!["AWS_ACCESS_KEY_ID"]);
@@ -321,6 +339,16 @@ mod tests {
     }
 
     #[test]
+    fn generic_accepts_uppercase_only_secret_with_digits() {
+        // Uppercase base32 / hex credentials (no lowercase) must still be caught
+        // behind a keyword anchor — the gate requires 2 of 3 char classes, not a
+        // lowercase char specifically.
+        let f = only_finding("secret = JBSWY3DPEHPK3PXPGEZDG");
+        assert_eq!(f.label, "GENERIC_SECRET");
+        assert_eq!(f.text, "JBSWY3DPEHPK3PXPGEZDG");
+    }
+
+    #[test]
     fn generic_rejects_placeholders_and_low_entropy() {
         // Placeholder fillers and single-class / low-entropy values must not
         // be flagged even though a keyword precedes them.
@@ -328,6 +356,8 @@ mod tests {
         assert!(detect_secrets(r#"password = "changeme_now_please""#).is_empty());
         assert!(detect_secrets("token = aaaaaaaaaaaaaaaaaaaa").is_empty());
         assert!(detect_secrets("secret: example_value_placeholder").is_empty());
+        // Single-class uppercase-only word (no digits) stays rejected.
+        assert!(detect_secrets("token = ABCDEFGHIJKLMNOPQRST").is_empty());
     }
 
     #[test]

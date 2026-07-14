@@ -4,14 +4,19 @@
 //! redaction engine, and writes the hook verdict JSON to stdout (or nothing
 //! for a no-op). It **always exits 0**: a JSON verdict on stdout with exit 0 is
 //! how a command hook applies a decision; exit 2 would instead be a *blocking
-//! error* whose stdout JSON Claude Code ignores. Redaction failures (bad JSON,
-//! unreadable salt dir) degrade to a no-op rather than a loud error, since the
-//! proxy remains the enforcement backstop.
+//! error* whose stdout JSON Claude Code ignores (a stdout-write failure is
+//! logged, not propagated, to preserve this). Unparseable stdin/JSON degrades to
+//! a no-op — content passes unredacted, since the proxy remains the enforcement
+//! backstop. An unreadable/unwritable salt dir does **not** no-op: it falls back
+//! to a fixed-key salt and still redacts (only placeholder unforgeability is
+//! relaxed — see [`session_salt`]).
 //!
 //! Handlers by event:
-//! - `PostToolUse` (matcher `Read`): redact the tool result via
-//!   `hookSpecificOutput.updatedToolOutput` so the redacted form is what enters
-//!   the model context (and, per issue #19, ideally the transcript).
+//! - `PostToolUse` (the plugin matches `Read`, `Bash`, and `Grep` — a secret
+//!   surfaced by `cat`/`grep`/`echo` lands in the same local transcript): redact
+//!   the tool result via `hookSpecificOutput.updatedToolOutput` so the redacted
+//!   form is what enters the model context (and, per issue #19, ideally the
+//!   transcript). This handler redacts any `tool_response` regardless of tool.
 //! - `UserPromptSubmit`: a hook cannot rewrite a prompt, so a prompt carrying a
 //!   secret or high-severity identifier is `decision:"block"`ed with an
 //!   actionable reason.
@@ -38,7 +43,8 @@ const PII_SEVERITY_HIGH: i64 = 3;
 /// fails the process for expected error conditions (see module docs).
 pub fn run() -> Result<()> {
     let mut input = String::new();
-    if std::io::stdin().read_to_string(&mut input).is_err() {
+    if let Err(e) = std::io::stdin().read_to_string(&mut input) {
+        eprintln!("honmoon hook: ignoring unreadable stdin payload ({e})");
         return Ok(());
     }
     let payload: Value = match serde_json::from_str(&input) {
@@ -51,8 +57,12 @@ pub fn run() -> Result<()> {
 
     let salt = session_salt(&payload);
     if let Some(verdict) = handle_hook(&payload, &salt) {
-        let stdout = std::io::stdout();
-        serde_json::to_writer(stdout.lock(), &verdict).context("writing hook verdict to stdout")?;
+        // Never propagate a stdout-write failure (e.g. a broken pipe if Claude
+        // Code detaches early): propagating would exit non-zero and surface as a
+        // hook error. Log and continue so `run` always exits 0 (module contract).
+        if let Err(e) = serde_json::to_writer(std::io::stdout().lock(), &verdict) {
+            eprintln!("honmoon hook: failed to write verdict to stdout ({e})");
+        }
     }
     Ok(())
 }
@@ -175,8 +185,9 @@ fn is_sensitive_path(path: &str) -> bool {
         return false;
     }
 
-    // Dotenv, in any variant (`.env`, `.env.local`, `.env.production`).
-    if base == ".env" || base.starts_with(".env.") {
+    // Dotenv, in any variant (`.env`, `.env.local`, `.env.production`), plus
+    // direnv `.envrc` (commonly holds `export AWS_SECRET_ACCESS_KEY=…`).
+    if base == ".env" || base == ".envrc" || base.starts_with(".env.") {
         return true;
     }
 
@@ -245,20 +256,51 @@ fn session_salt(payload: &Value) -> Vec<u8> {
     mac.finalize().into_bytes().to_vec()
 }
 
-/// Read (or generate on first use) the persisted 32-byte machine secret used as
-/// the HMAC key behind placeholder unforgeability. Written `0600`.
+/// Read (or generate on first use) the persisted machine secret used as the
+/// HMAC key behind placeholder unforgeability. A freshly generated secret is 32
+/// bytes; the read path accepts any existing file of **at least 16 bytes** as-is
+/// (a shorter/corrupt file is discarded and regenerated). The file is created
+/// `0600` so the secret is never briefly world-readable through the umask
+/// default. A short/corrupt file or an unexpected read error is logged before
+/// regenerating; a genuinely-absent file (first run) is silent.
 fn load_or_create_machine_salt(dir: &Path) -> Result<Vec<u8>> {
     let path = dir.join("hook-salt");
-    if let Ok(bytes) = std::fs::read(&path) {
-        if bytes.len() >= 16 {
-            return Ok(bytes);
-        }
+    match std::fs::read(&path) {
+        Ok(bytes) if bytes.len() >= 16 => return Ok(bytes),
+        Ok(bytes) => eprintln!(
+            "honmoon hook: salt file {} is short/corrupt ({} bytes) — regenerating",
+            path.display(),
+            bytes.len()
+        ),
+        Err(e) if e.kind() != std::io::ErrorKind::NotFound => eprintln!(
+            "honmoon hook: unexpected error reading salt file {} ({e}) — regenerating",
+            path.display()
+        ),
+        Err(_) => {} // NotFound: expected on first use, no diagnostic needed.
     }
     let salt = random_bytes(32)?;
     std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
-    std::fs::write(&path, &salt).with_context(|| format!("writing {}", path.display()))?;
-    set_permissions_0600(&path);
+    write_secret_file(&path, &salt).with_context(|| format!("writing {}", path.display()))?;
     Ok(salt)
+}
+
+/// Write `bytes` to `path`, creating it `0600` (Unix) via the open mode so the
+/// secret is never briefly readable at the umask default between `write` and a
+/// later `chmod`. Re-tightens permissions afterward to cover the case where
+/// `path` already existed (open-mode applies only on creation).
+fn write_secret_file(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    use std::io::Write as _;
+    let mut opts = std::fs::OpenOptions::new();
+    opts.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        opts.mode(0o600);
+    }
+    let mut file = opts.open(path)?;
+    file.write_all(bytes)?;
+    set_permissions_0600(path);
+    Ok(())
 }
 
 /// Read `n` bytes from the OS CSPRNG. Uses `/dev/urandom` to avoid pulling in an
@@ -273,7 +315,12 @@ fn random_bytes(n: usize) -> Result<Vec<u8>> {
 #[cfg(unix)]
 fn set_permissions_0600(path: &Path) {
     use std::os::unix::fs::PermissionsExt;
-    let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
+    if let Err(e) = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)) {
+        eprintln!(
+            "honmoon hook: could not restrict permissions on {} ({e}) — salt may be group/world-readable",
+            path.display()
+        );
+    }
 }
 
 #[cfg(not(unix))]
@@ -282,10 +329,36 @@ fn set_permissions_0600(_path: &Path) {}
 #[cfg(test)]
 mod tests {
     use super::*;
+    use honmoon_core::PLACEHOLDER_PREFIX;
 
     const SALT: &[u8] = b"deterministic-test-salt";
     const ANTHROPIC_KEY: &str = "sk-ant-api03-cache-stable-abcDEF123456";
     const RRN: &str = "670125-1230644";
+
+    /// Throwaway temp dir under the OS temp root, removed on drop. The `tag`
+    /// keeps concurrently-running tests from colliding on the same path (no
+    /// `tempfile` dev-dependency in this workspace).
+    struct TempDir(PathBuf);
+
+    impl TempDir {
+        fn new(tag: &str) -> Self {
+            let dir = std::env::temp_dir()
+                .join(format!("honmoon-hook-test-{tag}-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir_all(&dir).expect("creating temp dir");
+            TempDir(dir)
+        }
+
+        fn path(&self) -> &Path {
+            &self.0
+        }
+    }
+
+    impl Drop for TempDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
 
     fn updated_output(verdict: &Value) -> &Value {
         verdict
@@ -305,7 +378,7 @@ mod tests {
         let out = updated_output(&verdict).as_str().unwrap();
         assert!(!out.contains(ANTHROPIC_KEY));
         assert!(!out.contains(RRN));
-        assert!(out.contains("<<hs:"));
+        assert!(out.contains(PLACEHOLDER_PREFIX));
     }
 
     #[test]
@@ -322,7 +395,7 @@ mod tests {
             .and_then(Value::as_str)
             .unwrap();
         assert!(!content.contains(ANTHROPIC_KEY));
-        assert!(content.contains("<<hs:"));
+        assert!(content.contains(PLACEHOLDER_PREFIX));
     }
 
     #[test]
@@ -431,12 +504,120 @@ mod tests {
     }
 
     #[test]
-    fn sensitive_path_matcher_basics() {
-        assert!(is_sensitive_path("/a/b/.env"));
-        assert!(is_sensitive_path("C:\\proj\\secret.key"));
-        assert!(is_sensitive_path("/home/u/.ssh/id_rsa"));
-        assert!(!is_sensitive_path("/a/b/README.md"));
-        assert!(!is_sensitive_path("/a/b/.env.sample"));
-        assert!(!is_sensitive_path("/home/u/.ssh/id_rsa.pub"));
+    fn sensitive_path_matcher_covers_deny_list() {
+        // Every dotenv variant, credential basename, key extension, and path
+        // fragment must match — case-insensitively, across `/` and `\`.
+        let sensitive = [
+            "/a/b/.env",
+            "/a/b/.env.local",
+            "/a/b/.env.production",
+            "/a/b/.envrc",
+            "/a/b/.git-credentials",
+            "/a/b/.netrc",
+            "/a/b/.npmrc",
+            "/a/b/.pypirc",
+            "/a/b/credentials",
+            "/home/u/.ssh/id_rsa",
+            "/home/u/.ssh/id_dsa",
+            "/home/u/.ssh/id_ecdsa",
+            "/home/u/.ssh/id_ed25519",
+            "/tmp/server.pem",
+            "/tmp/server.key",
+            "/tmp/bundle.p12",
+            "/tmp/bundle.pfx",
+            "/tmp/store.keystore",
+            "/tmp/store.jks",
+            "/tmp/key.asc",
+            "C:\\proj\\secret.key",       // backslash separator
+            "/home/u/.aws/credentials",   // path fragment
+            "/home/u/.gnupg/secring.gpg", // path fragment
+            "/a/b/.ENV",                  // case-insensitive basename
+            "/tmp/SERVER.PEM",            // case-insensitive extension
+        ];
+        for path in sensitive {
+            assert!(is_sensitive_path(path), "{path} should be sensitive");
+        }
+
+        // Ordinary source, template/sample files, and public key material must
+        // stay readable (templates hold no real secret; `.pub`/`known_hosts`/
+        // `config` under `.ssh` are not secret).
+        let allowed = [
+            "/a/b/README.md",
+            "/a/b/.env.example",
+            "/a/b/.env.sample",
+            "/a/b/config.template",
+            "/a/b/schema.dist",
+            "/home/u/.ssh/id_rsa.pub",
+            "/home/u/.ssh/known_hosts",
+            "/home/u/.ssh/config",
+        ];
+        for path in allowed {
+            assert!(!is_sensitive_path(path), "{path} should be allowed");
+        }
+    }
+
+    #[test]
+    fn redact_json_value_walks_arrays_and_nested_fields() {
+        let value = json!({
+            "lines": [format!("first {ANTHROPIC_KEY}"), "clean line", format!("rrn {RRN}")],
+            "meta": { "note": format!("token {ANTHROPIC_KEY}"), "count": 3 },
+            "ok": true
+        });
+        let (redacted, changed) = redact_json_value(&value, SALT);
+        assert!(changed);
+        let blob = redacted.to_string();
+        assert!(!blob.contains(ANTHROPIC_KEY), "every string leaf redacted");
+        assert!(!blob.contains(RRN));
+        // Non-string leaves survive verbatim, and a clean element is untouched.
+        assert_eq!(redacted["meta"]["count"], 3);
+        assert_eq!(redacted["ok"], true);
+        assert_eq!(redacted["lines"][1], "clean line");
+    }
+
+    #[test]
+    fn redact_json_value_reports_unchanged_when_clean() {
+        let value = json!({ "lines": ["all", "clean"], "n": 1, "ok": false });
+        let (redacted, changed) = redact_json_value(&value, SALT);
+        assert!(!changed, "a clean value must not report a change");
+        assert_eq!(redacted, value);
+    }
+
+    #[test]
+    fn machine_salt_persists_and_is_stable() {
+        let tmp = TempDir::new("persist");
+        let first = load_or_create_machine_salt(tmp.path()).expect("first load");
+        assert_eq!(first.len(), 32, "a freshly generated salt is 32 bytes");
+        let second = load_or_create_machine_salt(tmp.path()).expect("second load");
+        assert_eq!(first, second, "second call reuses the persisted salt");
+    }
+
+    #[test]
+    fn machine_salt_regenerates_short_or_corrupt_file() {
+        let tmp = TempDir::new("corrupt");
+        std::fs::write(tmp.path().join("hook-salt"), b"tooshort").expect("seed corrupt file");
+        let salt = load_or_create_machine_salt(tmp.path()).expect("regenerate");
+        assert!(
+            salt.len() >= 16,
+            "a short file is discarded and regenerated"
+        );
+        assert_ne!(salt, b"tooshort".to_vec(), "not the corrupt bytes");
+        // The regenerated salt is itself persisted and stable thereafter.
+        assert_eq!(
+            salt,
+            load_or_create_machine_salt(tmp.path()).expect("reload")
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn machine_salt_file_is_owner_only() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = TempDir::new("perms");
+        load_or_create_machine_salt(tmp.path()).expect("create salt");
+        let mode = std::fs::metadata(tmp.path().join("hook-salt"))
+            .expect("stat salt file")
+            .permissions()
+            .mode();
+        assert_eq!(mode & 0o777, 0o600, "salt file must be owner-only (0600)");
     }
 }
