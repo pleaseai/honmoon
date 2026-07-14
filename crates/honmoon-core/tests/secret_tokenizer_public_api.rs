@@ -179,16 +179,27 @@ fn public_path_redacted_bytes_are_independent_of_registration_order() {
         b"order-salt".to_vec(),
         vec!["hunter2", "sk-prod-key-extended", "sk-prod-key"],
     );
-    assert_eq!(forward.tokenize(body).0, reversed.tokenize(body).0);
+    let forward_out = forward.tokenize(body).0;
+    let reversed_out = reversed.tokenize(body).0;
+    assert_eq!(forward_out, reversed_out);
+    // Negative control: order-independence of a no-op tokenize would prove
+    // nothing, so confirm a substitution actually happened — every
+    // `sk-prod-key*` occurrence is consumed by a placeholder (whose hex body
+    // cannot contain the literal secret bytes).
+    assert!(!forward_out.contains("sk-prod-key"));
 }
 
 #[test]
 fn public_path_extending_the_history_preserves_the_redacted_prefix() {
     // The property prompt caching actually needs: turn N's redacted request
-    // must survive as a byte prefix of turn N+1's redacted request. This
-    // holds whenever the appended turn does not split a secret occurrence at
-    // the boundary — which it never does in practice, since history messages
-    // are resent byte-identically and secrets sit inside message contents.
+    // must survive as a byte prefix of turn N+1's redacted request. It holds
+    // whenever no secret occurrence straddles the append boundary — if one
+    // did, the longer text could form a leftmost-longest match the shorter
+    // text couldn't, rewriting the tail of the redacted prefix. Here that is
+    // impossible because the boundary sits after JSON structural bytes
+    // (`"`, `}`, `]`) that no registered secret contains. This test exercises
+    // that ordinary case; it does not construct a secret split across the
+    // boundary.
     let t = SecretTokenizer::new(
         b"session-salt".to_vec(),
         vec!["sk-ant-api03-cache-stable", "hunter2-prod"],
@@ -204,6 +215,11 @@ fn public_path_extending_the_history_preserves_the_redacted_prefix() {
         redacted_extended.starts_with(&redacted_history),
         "growing the history must extend, not rewrite, the redacted prefix"
     );
+    // Negative control: prefix preservation is trivially true if `tokenize`
+    // is a no-op (extended is built by appending to history), so confirm the
+    // redaction actually happened in the shared prefix.
+    assert!(!redacted_history.contains("sk-ant-api03-cache-stable"));
+    assert!(!redacted_history.contains("hunter2-prod"));
 }
 
 #[test]
