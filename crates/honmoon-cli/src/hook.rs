@@ -161,6 +161,11 @@ fn handle_user_prompt_submit(payload: &Value, salt: &[u8]) -> Option<Value> {
 /// non-zero hook error (the process exits per hook call).
 const MAX_REDACT_DEPTH: usize = 64;
 
+/// Replacement emitted for a subtree that exceeds [`MAX_REDACT_DEPTH`]. Contains
+/// the placeholder marker `redacted` so it can never itself be re-flagged as a
+/// secret, and carries no scannable content.
+const DEPTH_LIMIT_MARKER: &str = "[honmoon: redacted — nesting exceeds scan depth]";
+
 /// Recursively redact every string leaf of a JSON value, returning the redacted
 /// value and whether anything changed. Descent is bounded by [`MAX_REDACT_DEPTH`].
 fn redact_json_value(value: &Value, salt: &[u8]) -> (Value, bool) {
@@ -169,9 +174,14 @@ fn redact_json_value(value: &Value, salt: &[u8]) -> (Value, bool) {
 
 fn redact_json_value_at(value: &Value, salt: &[u8], depth: usize) -> (Value, bool) {
     if depth >= MAX_REDACT_DEPTH {
-        // Too deep: return the subtree unchanged rather than risk a stack
-        // overflow. Fail-open — a depth this large is not real tool output.
-        return (value.clone(), false);
+        // Too deep to scan safely. Fail CLOSED, not open: a redactor that passed
+        // an unscanned subtree through would leak any secret buried below the cap
+        // (a depth this large is not real tool output, so we do not rely on that
+        // assumption for safety). Replace the whole subtree with a non-secret
+        // marker and report a change so the redacted form is what is emitted —
+        // over-redacting pathological nesting is the safe default, and it still
+        // avoids the stack overflow that a non-zero hook error would come from.
+        return (Value::String(DEPTH_LIMIT_MARKER.to_string()), true);
     }
     match value {
         Value::String(s) => {
@@ -747,20 +757,24 @@ mod tests {
     }
 
     #[test]
-    fn redact_json_value_bounds_recursion_depth() {
+    fn redact_json_value_fails_closed_beyond_depth_cap() {
         // A pathologically deep payload must return gracefully instead of
-        // overflowing the stack. The secret is nested far below MAX_REDACT_DEPTH,
-        // so past the cap the subtree is returned unchanged (fail-open) — the
-        // point is that the call completes without panicking.
+        // overflowing the stack, AND must fail closed: a secret nested below
+        // MAX_REDACT_DEPTH is replaced wholesale (never passed through), and the
+        // call reports a change so the redacted form is what gets emitted.
         let mut v = json!(format!("deep {ANTHROPIC_KEY}"));
         for _ in 0..(MAX_REDACT_DEPTH + 50) {
             v = json!([v]);
         }
         let (redacted, changed) = redact_json_value(&v, SALT);
-        assert!(!changed, "beyond the depth cap nothing is redacted");
+        assert!(changed, "crossing the depth cap must report a change");
         assert!(
-            redacted.to_string().contains(ANTHROPIC_KEY),
-            "the too-deep subtree is returned unchanged"
+            !redacted.to_string().contains(ANTHROPIC_KEY),
+            "a secret below the cap must not survive — fail closed"
+        );
+        assert!(
+            redacted.to_string().contains(DEPTH_LIMIT_MARKER),
+            "the too-deep subtree is replaced with the redaction marker"
         );
     }
 
