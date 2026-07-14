@@ -191,33 +191,40 @@ fn public_path_redacted_bytes_are_independent_of_registration_order() {
 
 #[test]
 fn public_path_extending_the_history_preserves_the_redacted_prefix() {
-    // The property prompt caching actually needs: turn N's redacted request
-    // must survive as a byte prefix of turn N+1's redacted request. It holds
-    // whenever no secret occurrence straddles the append boundary — if one
-    // did, the longer text could form a leftmost-longest match the shorter
-    // text couldn't, rewriting the tail of the redacted prefix. Here that is
-    // impossible because the boundary sits after JSON structural bytes
-    // (`"`, `}`, `]`) that no registered secret contains. This test exercises
-    // that ordinary case; it does not construct a secret split across the
-    // boundary.
+    // The property prompt caching actually needs: the redaction of turn N's
+    // messages must reappear byte-for-byte inside turn N+1's request. A real
+    // next turn inserts the new message *inside* the `messages` array (before
+    // the closing `]}`), not appended after it — so turn N's bytes remain a
+    // prefix only up to that moved `]}`. The shared region must redact
+    // identically, and it does: the insertion point sits after JSON
+    // structural bytes (`"`, `}`) that no registered secret contains, so no
+    // leftmost-longest match straddles it. This test exercises that ordinary
+    // case; it does not construct a secret split across the insertion point.
     let t = SecretTokenizer::new(
         b"session-salt".to_vec(),
         vec!["sk-ant-api03-cache-stable", "hunter2-prod"],
     );
     let history = multi_turn_body();
-    let extended = format!(
-        "{history}\n{{\"role\":\"assistant\",\"content\":\"rotated hunter2-prod as asked\"}}"
+    // Grow the conversation the way an agent client does: splice the next
+    // turn into the array, keeping the body valid JSON. `]}` occurs exactly
+    // once (the array/object close at the very end), so this replaces only
+    // the closing delimiter.
+    let extended = history.replace(
+        "]}",
+        ",\n{\"role\":\"assistant\",\"content\":\"rotated hunter2-prod as asked\"}\n]}",
     );
 
     let (redacted_history, _) = t.tokenize(&history);
     let (redacted_extended, _) = t.tokenize(&extended);
-    assert!(
-        redacted_extended.starts_with(&redacted_history),
-        "growing the history must extend, not rewrite, the redacted prefix"
+    // Everything up to (not including) the moved `]}` must redact identically.
+    let prefix_len = redacted_history.len() - "]}".len();
+    assert_eq!(
+        &redacted_extended[..prefix_len],
+        &redacted_history[..prefix_len],
+        "growing the history must preserve the redacted prefix of prior messages"
     );
-    // Negative control: prefix preservation is trivially true if `tokenize`
-    // is a no-op (extended is built by appending to history), so confirm the
-    // redaction actually happened in the shared prefix.
+    // Negative control: the assertion above holds trivially under a no-op
+    // tokenize, so confirm redaction actually happened in the shared prefix.
     assert!(!redacted_history.contains("sk-ant-api03-cache-stable"));
     assert!(!redacted_history.contains("hunter2-prod"));
 }
