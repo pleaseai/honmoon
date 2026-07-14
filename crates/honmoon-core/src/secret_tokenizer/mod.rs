@@ -16,6 +16,33 @@
 //! predict the placeholder, breaking the unforgeability guarantee (FR-007)
 //! this module exists to provide.
 //!
+//! # Determinism — prompt-cache prefix stability (issue #20)
+//!
+//! Redaction is deterministic, byte for byte. Two properties combine to
+//! guarantee it:
+//!
+//! - **Minting is a pure function of `(salt, secret)`.** No counters, no
+//!   RNG, no per-call or per-instance state: the same secret under the same
+//!   session salt always mints the identical placeholder — across calls,
+//!   across independently constructed tokenizers, and across process
+//!   restarts.
+//! - **Match boundaries depend only on the input text.** Substitution runs a
+//!   leftmost-longest multi-literal automaton ([`AhoCorasick`] with
+//!   [`MatchKind::LeftmostLongest`]): at each position the longest registered
+//!   secret wins, so overlap resolution — and therefore every replacement
+//!   offset — is a property of the text, not of registration order,
+//!   alternation order, or any prior `tokenize` call.
+//!
+//! Consequently, running the same bytes through `tokenize` any number of
+//! times yields the same bytes. This is load-bearing for cost: agent clients
+//! (e.g. Claude Code) resend the full conversation history on every request,
+//! and provider prompt caching works on a longest-common-prefix basis — if
+//! re-redacting that history could ever produce different bytes for the same
+//! secret occurrence, the request prefix would diverge at the first
+//! occurrence and silently invalidate the entire prompt-cache prefix every
+//! turn. The guarantee covers redaction (`tokenize`) only; detokenization
+//! and `Mapping` disclosure semantics are a separate discussion (issue #16).
+//!
 //! Unlike `pii.rs`, secret-bearing types here (`SecretTokenizer`, `Mapping`)
 //! deliberately do **not** derive `Serialize`/`Deserialize`, and implement
 //! `Debug` manually to redact secret bytes (AC-015/NFR-005) — these types

@@ -122,6 +122,113 @@ fn public_path_round_trip_and_streaming_equivalence_across_corpus() {
     );
 }
 
+/// A Claude-Code-shaped multi-turn request body: the same secrets recur
+/// across turns because agent clients resend the full history every request.
+fn multi_turn_body() -> String {
+    r#"{"model":"claude-fable-5","messages":[
+{"role":"user","content":"deploy with key sk-ant-api03-cache-stable and db pass hunter2-prod"},
+{"role":"assistant","content":"Using sk-ant-api03-cache-stable for the deploy."},
+{"role":"user","content":"rotate hunter2-prod afterwards, keep sk-ant-api03-cache-stable"}
+]}"#
+    .to_string()
+}
+
+#[test]
+fn public_path_same_multi_turn_body_redacted_twice_is_byte_identical() {
+    // Issue #20: the proxy re-redacts the resent conversation history on
+    // every request, and provider prompt caching is longest-common-prefix
+    // based. If two passes over the same bytes could ever differ, the cache
+    // prefix would silently be invalidated each turn — so double-pass
+    // byte-identity is the contract, not an implementation detail.
+    let secrets = vec!["sk-ant-api03-cache-stable", "hunter2-prod"];
+    let body = multi_turn_body();
+
+    let t = SecretTokenizer::new(b"session-salt".to_vec(), secrets.clone());
+    let (first, _) = t.tokenize(&body);
+    let (second, _) = t.tokenize(&body);
+    // Same instance, same bytes in → same bytes out (no per-call state).
+    assert_eq!(first, second);
+
+    // A tokenizer rebuilt from the same session state (next request, fresh
+    // per-request construction — or a fresh process, as the CLI hook
+    // transport spawns per call) must reproduce the exact bytes too.
+    let rebuilt = SecretTokenizer::new(b"session-salt".to_vec(), secrets);
+    let (third, _) = rebuilt.tokenize(&body);
+    assert_eq!(first, third);
+
+    // And the redaction actually happened — determinism of a no-op would
+    // prove nothing.
+    assert!(!first.contains("sk-ant-api03-cache-stable"));
+    assert!(!first.contains("hunter2-prod"));
+}
+
+#[test]
+fn public_path_redacted_bytes_are_independent_of_registration_order() {
+    // Issue #20 detection stability: replacement offsets must not shift
+    // between passes over the same bytes. Leftmost-longest overlap
+    // resolution is a property of the *text* (longest registered secret at
+    // each position wins), so permuting registration order — including a
+    // secret that is a strict prefix of another — must yield byte-identical
+    // output.
+    let body = "a=sk-prod-key-extended; b=sk-prod-key; c=hunter2 d=sk-prod-key-extended";
+    let forward = SecretTokenizer::new(
+        b"order-salt".to_vec(),
+        vec!["sk-prod-key", "sk-prod-key-extended", "hunter2"],
+    );
+    let reversed = SecretTokenizer::new(
+        b"order-salt".to_vec(),
+        vec!["hunter2", "sk-prod-key-extended", "sk-prod-key"],
+    );
+    let forward_out = forward.tokenize(body).0;
+    let reversed_out = reversed.tokenize(body).0;
+    assert_eq!(forward_out, reversed_out);
+    // Negative control: order-independence of a no-op tokenize would prove
+    // nothing, so confirm a substitution actually happened — every
+    // `sk-prod-key*` occurrence is consumed by a placeholder (whose hex body
+    // cannot contain the literal secret bytes).
+    assert!(!forward_out.contains("sk-prod-key"));
+}
+
+#[test]
+fn public_path_extending_the_history_preserves_the_redacted_prefix() {
+    // The property prompt caching actually needs: the redaction of turn N's
+    // messages must reappear byte-for-byte inside turn N+1's request. A real
+    // next turn inserts the new message *inside* the `messages` array (before
+    // the closing `]}`), not appended after it — so turn N's bytes remain a
+    // prefix only up to that moved `]}`. The shared region must redact
+    // identically, and it does: the insertion point sits after JSON
+    // structural bytes (`"`, `}`) that no registered secret contains, so no
+    // leftmost-longest match straddles it. This test exercises that ordinary
+    // case; it does not construct a secret split across the insertion point.
+    let t = SecretTokenizer::new(
+        b"session-salt".to_vec(),
+        vec!["sk-ant-api03-cache-stable", "hunter2-prod"],
+    );
+    let history = multi_turn_body();
+    // Grow the conversation the way an agent client does: splice the next
+    // turn into the array, keeping the body valid JSON. `]}` occurs exactly
+    // once (the array/object close at the very end), so this replaces only
+    // the closing delimiter.
+    let extended = history.replace(
+        "]}",
+        ",\n{\"role\":\"assistant\",\"content\":\"rotated hunter2-prod as asked\"}\n]}",
+    );
+
+    let (redacted_history, _) = t.tokenize(&history);
+    let (redacted_extended, _) = t.tokenize(&extended);
+    // Everything up to (not including) the moved `]}` must redact identically.
+    let prefix_len = redacted_history.len() - "]}".len();
+    assert_eq!(
+        &redacted_extended[..prefix_len],
+        &redacted_history[..prefix_len],
+        "growing the history must preserve the redacted prefix of prior messages"
+    );
+    // Negative control: the assertion above holds trivially under a no-op
+    // tokenize, so confirm redaction actually happened in the shared prefix.
+    assert!(!redacted_history.contains("sk-ant-api03-cache-stable"));
+    assert!(!redacted_history.contains("hunter2-prod"));
+}
+
 #[test]
 fn public_path_overlap_leftmost_longest_and_provenance_binding() {
     // SC-005 overlap resolution, reachable only via `honmoon_core::`.
