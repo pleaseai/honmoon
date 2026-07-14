@@ -147,7 +147,7 @@ Note: fleet-wide DLP policy management and compliance / exfil reporting are Paid
 
 ---
 
-## Agent-side integrations — Claude Code plugin `OSS`
+## Agent-side integrations (parallel track) — Claude Code plugin `OSS`
 
 > Can run in parallel with Phases 5–6; builds on the Phase 5 detectors and the secret
 > tokenization primitive.
@@ -169,10 +169,11 @@ needed).
   payload to `POST /api/hooks/claude-code` on the management API and get the same hook JSON
   schema back (no per-call process spawn; tokenization mapping shared with the proxy by
   construction) — and **CLI fallback** — `honmoon hook` (`type: "command"`): hook JSON on
-  stdin → Tier-1 detectors + reversible secret tokenization from `honmoon-core` → hook JSON
-  verdict, works with only the binary installed. Caveat: HTTP hooks **fail open** (connection
-  failure / non-2xx continues unredacted), so the shipped default must fall back to a local
-  scan rather than fail silently
+  stdin (with session/salt context, since each call spawns a fresh process — so a given
+  secret tokenizes identically across calls, per #20) → Tier-1 detectors + reversible secret
+  tokenization from `honmoon-core` → hook JSON verdict, works with only the binary installed.
+  Caveat: HTTP hooks **fail open** (connection failure / non-2xx continues unredacted), so the
+  shipped default must fall back to a local scan rather than fail silently
 - [ ] Cache-stable determinism on the proxy path (#20): identical secret → identical token
   across turns, so redacting the resent history preserves the provider prompt-cache prefix
 
