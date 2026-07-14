@@ -1,0 +1,28 @@
+crates/honmoon-core/src/lib.rs
+  s_a81daa6f23146d::t_1fa2980c8665d4 12-13,19-20
+crates/honmoon-core/src/redact.rs
+  s_a81daa6f23146d::t_569e68b2e5e1d3 1-211
+crates/honmoon-core/src/pii.rs
+  s_a81daa6f23146d::t_1583f5ca6847e9 187-190
+crates/honmoon-core/src/secret_detect.rs
+  s_a81daa6f23146d::t_726913127e4c80 268-269
+  s_a81daa6f23146d::t_f89efcfa6f2f70 281-284
+  s_a81daa6f23146d::t_a00de67de1f0e2 1-267,270-280,285-341
+  s_a81daa6f23146d::t_8651565dde3f56 342-350
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.13",
+  "base_commit_sha": "b0d202dcb093d3c0e904a1ca376c09d3d66cd2e4",
+  "prompts": {},
+  "sessions": {
+    "s_a81daa6f23146d": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "1d590026-e5e7-498e-829d-ae651e15f604",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
