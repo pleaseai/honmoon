@@ -1,0 +1,21 @@
+docs/roadmap.md
+  s_834aafc837ac72::t_9932366e76cd97 172-173
+  s_834aafc837ac72::t_2731d4076caf88 150
+  s_834aafc837ac72::t_68d07747446c93 174-176
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.13",
+  "base_commit_sha": "b822f7325b09a02cca888d7170a9606c5ca469f9",
+  "prompts": {},
+  "sessions": {
+    "s_834aafc837ac72": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "bec7bf6c-6979-413f-8379-3b962da9f0f4",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
