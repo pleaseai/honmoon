@@ -1,0 +1,48 @@
+ARCHITECTURE.md
+  s_a81daa6f23146d::t_a5ad928a1e06fb 82-83
+  s_a81daa6f23146d::t_258e07917cb9c5 79
+packages/claude-plugin/hooks/hooks.json
+  s_a81daa6f23146d::t_659b0b304c7b2c 1-39
+crates/honmoon-cli/src/hook.rs
+  s_a81daa6f23146d::t_52e5057360054d 206-211
+  s_a81daa6f23146d::t_93839e5a2f55ee 1-205,212-433
+  s_a81daa6f23146d::t_8395ee25c375f2 434-436
+  s_a81daa6f23146d::t_5abf93058a8e50 437-442
+docs/roadmap.md
+  s_a81daa6f23146d::t_1d7bdd693cda97 164-177,180-181
+  s_a81daa6f23146d::t_2c32ca4749b8ce 185-190
+crates/honmoon-cli/Cargo.toml
+  s_a81daa6f23146d::t_64ac94bc1b87e0 23-27
+packages/claude-plugin/scripts/redact.sh
+  s_a81daa6f23146d::t_78cfc2828a8be5 1-21
+packages/claude-plugin/.claude-plugin/plugin.json
+  s_a81daa6f23146d::t_0d82fdc027f5b5 1-15
+packages/claude-plugin/package.json
+  s_a81daa6f23146d::t_f8506a01489fdb 1-6
+packages/claude-plugin/README.md
+  s_a81daa6f23146d::t_83b9660d54a6c6 1-88
+crates/honmoon-cli/src/main.rs
+  s_a81daa6f23146d::t_0655d898ee4032 115
+  s_a81daa6f23146d::t_6ffec727fcb052 79-84
+  s_a81daa6f23146d::t_efe64da09750b7 3-4
+Cargo.lock
+  s_a81daa6f23146d::t_fe5d9e063a4283 1003,1007-1008
+bun.lock
+  s_a81daa6f23146d::t_586bfda7f413bf 69-72,182-183
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.13",
+  "base_commit_sha": "42e32bb55adb412e92a056ad76c5541a375fab5c",
+  "prompts": {},
+  "sessions": {
+    "s_a81daa6f23146d": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "1d590026-e5e7-498e-829d-ae651e15f604",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
