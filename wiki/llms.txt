@@ -39,6 +39,6 @@ Pages mark implemented vs planned explicitly.
 
 ## Optional
 
-- [docs/roadmap.md](https://github.com/pleaseai/honmoon/blob/master/docs/roadmap.md): the full phased roadmap with exit criteria.
-- [docs/business-model.md](https://github.com/pleaseai/honmoon/blob/master/docs/business-model.md): the open-core business model.
-- [ARCHITECTURE.md](https://github.com/pleaseai/honmoon/blob/master/ARCHITECTURE.md): module boundaries and invariants.
+- [docs/roadmap.md](https://github.com/pleaseai/honmoon/blob/main/docs/roadmap.md): the full phased roadmap with exit criteria.
+- [docs/business-model.md](https://github.com/pleaseai/honmoon/blob/main/docs/business-model.md): the open-core business model.
+- [ARCHITECTURE.md](https://github.com/pleaseai/honmoon/blob/main/ARCHITECTURE.md): module boundaries and invariants.

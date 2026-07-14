@@ -27,8 +27,8 @@ trying to delete the production database?" ([Overview](/getting-started/overview
 
 | Audience | What they get | Source |
 |----------|---------------|--------|
-| **Platform / security teams** (the buyer) | Central control, audit, and approval over a fleet of AI agents | [product.md:31-37](https://github.com/pleaseai/honmoon/blob/master/.please/docs/knowledge/product.md#L31-L37) |
-| **Individual developers / small teams** (the adopter) | A free, self-hosted guard for a single machine | [product.md:33-36](https://github.com/pleaseai/honmoon/blob/master/.please/docs/knowledge/product.md#L33-L36) |
+| **Platform / security teams** (the buyer) | Central control, audit, and approval over a fleet of AI agents | [product.md:31-37](https://github.com/pleaseai/honmoon/blob/main/.please/docs/knowledge/product.md#L31-L37) |
+| **Individual developers / small teams** (the adopter) | A free, self-hosted guard for a single machine | [product.md:33-36](https://github.com/pleaseai/honmoon/blob/main/.please/docs/knowledge/product.md#L33-L36) |
 
 The team that *pays* is the one that needs to manage many agents, prove compliance, and route
 approvals. Individual developers get a strong free tool — that's deliberate.
@@ -98,7 +98,7 @@ flowchart TB
 ## Known limitations
 
 Stated plainly, because honesty is a product principle for a security tool
-([product-guidelines.md:14-17](https://github.com/pleaseai/honmoon/blob/master/.please/docs/knowledge/product-guidelines.md#L14-L17)):
+([product-guidelines.md:14-17](https://github.com/pleaseai/honmoon/blob/main/.please/docs/knowledge/product-guidelines.md#L14-L17)):
 
 | Limitation | What it means for users |
 |-----------|--------------------------|
@@ -113,10 +113,10 @@ This matters for positioning a security product:
 
 | Question | Answer | Source |
 |----------|--------|--------|
-| Does it read the *content* of traffic? | No. It looks only at the minimum needed to make a decision (e.g. "this is a 'delete' on 'secrets'"), never the full message contents | [protocols.rs:7-8](https://github.com/pleaseai/honmoon/blob/master/crates/honmoon-core/src/protocols.rs#L7-L8), [product-guidelines.md:25-27](https://github.com/pleaseai/honmoon/blob/master/.please/docs/knowledge/product-guidelines.md#L25-L27) |
-| Is the core open for inspection? | Yes — the part that inspects traffic is 100% open source, on purpose, so security teams can audit it | [business-model.md:12-18](https://github.com/pleaseai/honmoon/blob/master/docs/business-model.md#L12-L18) |
-| Where does data live? | On your own machine/server (self-hosted). A hosted option is a future paid offering | [business-model.md:41-43](https://github.com/pleaseai/honmoon/blob/master/docs/business-model.md#L41-L43) |
-| What happens if a rule is broken or missing? | It falls back to your configured default — which is **block (deny)** out of the box, the safe choice. Keep that default for fail-safe behavior | [product-guidelines.md:23-24](https://github.com/pleaseai/honmoon/blob/master/.please/docs/knowledge/product-guidelines.md#L23-L24) |
+| Does it read the *content* of traffic? | No. It looks only at the minimum needed to make a decision (e.g. "this is a 'delete' on 'secrets'"), never the full message contents | [protocols.rs:7-8](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/protocols.rs#L7-L8), [product-guidelines.md:25-27](https://github.com/pleaseai/honmoon/blob/main/.please/docs/knowledge/product-guidelines.md#L25-L27) |
+| Is the core open for inspection? | Yes — the part that inspects traffic is 100% open source, on purpose, so security teams can audit it | [business-model.md:12-18](https://github.com/pleaseai/honmoon/blob/main/docs/business-model.md#L12-L18) |
+| Where does data live? | On your own machine/server (self-hosted). A hosted option is a future paid offering | [business-model.md:41-43](https://github.com/pleaseai/honmoon/blob/main/docs/business-model.md#L41-L43) |
+| What happens if a rule is broken or missing? | It falls back to your configured default — which is **block (deny)** out of the box, the safe choice. Keep that default for fail-safe behavior | [product-guidelines.md:23-24](https://github.com/pleaseai/honmoon/blob/main/.please/docs/knowledge/product-guidelines.md#L23-L24) |
 
 ## FAQ
 
@@ -128,7 +128,7 @@ and understands the *actions* they take (which query, which cloud operation), no
 The part that inspects your traffic is open source so you can trust it — security teams won't
 adopt a "black box." The company plans to charge later for *team-scale* features (managing many
 agents, compliance reports, approvals across an organization), not for the core
-([business-model.md:24-28](https://github.com/pleaseai/honmoon/blob/master/docs/business-model.md#L24-L28)).
+([business-model.md:24-28](https://github.com/pleaseai/honmoon/blob/main/docs/business-model.md#L24-L28)).
 
 **Can I use it in production today?**
 You can use the gateway mode now — website control, the audit log, and the approve/deny dashboard
@@ -138,11 +138,11 @@ around the roadmap — those are the next milestones.
 **Who are the competitors?**
 Two open-source projects inspired Honmoon: GitHub's domain-filtering firewall and Deno's
 protocol-aware gateway. Honmoon's pitch is to **unify both** — domain filtering *and* deep
-protocol rules — and to be self-hostable ([README.md:201-206](https://github.com/pleaseai/honmoon/blob/master/README.md#L201-L206)).
+protocol rules — and to be self-hostable ([README.md:201-206](https://github.com/pleaseai/honmoon/blob/main/README.md#L201-L206)).
 
 **What does the name mean?**
 "Honmoon" (혼문, 魂門) is a protective barrier from Korean lore — the barrier you raise between your
-AI agents and your production systems ([README.md:19-23](https://github.com/pleaseai/honmoon/blob/master/README.md#L19-L23)).
+AI agents and your production systems ([README.md:19-23](https://github.com/pleaseai/honmoon/blob/main/README.md#L19-L23)).
 
 ## Related Pages
 
@@ -152,7 +152,7 @@ AI agents and your production systems ([README.md:19-23](https://github.com/plea
 
 ## References
 
-- [README.md](https://github.com/pleaseai/honmoon/blob/master/README.md)
-- [.please/docs/knowledge/product.md](https://github.com/pleaseai/honmoon/blob/master/.please/docs/knowledge/product.md)
-- [docs/business-model.md](https://github.com/pleaseai/honmoon/blob/master/docs/business-model.md)
-- [docs/roadmap.md](https://github.com/pleaseai/honmoon/blob/master/docs/roadmap.md)
+- [README.md](https://github.com/pleaseai/honmoon/blob/main/README.md)
+- [.please/docs/knowledge/product.md](https://github.com/pleaseai/honmoon/blob/main/.please/docs/knowledge/product.md)
+- [docs/business-model.md](https://github.com/pleaseai/honmoon/blob/main/docs/business-model.md)
+- [docs/roadmap.md](https://github.com/pleaseai/honmoon/blob/main/docs/roadmap.md)

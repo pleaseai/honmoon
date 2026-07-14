@@ -17,12 +17,12 @@ decision log — not a tutorial.
 
 Everything else falls out of protecting that seam. The core has no `tokio`, no sockets, no async —
 it is a pure function `(Policy, Facts) -> Verdict` plus the parsers that produce `Facts` from raw
-bytes ([engine.rs:19-28](https://github.com/pleaseai/honmoon/blob/master/crates/honmoon-core/src/engine.rs#L19-L28), [lib.rs:1-4](https://github.com/pleaseai/honmoon/blob/master/crates/honmoon-core/src/lib.rs#L1-L4)).
+bytes ([engine.rs:19-28](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/engine.rs#L19-L28), [lib.rs:1-4](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/lib.rs#L1-L4)).
 This buys three properties that are otherwise expensive in a security product:
 
 1. **Testability without infrastructure.** The entire policy semantics — egress precedence, CEL
    evaluation, fail-closed behavior, every parser edge case — is unit-tested with zero network,
-   zero containers ([engine.rs:93-264](https://github.com/pleaseai/honmoon/blob/master/crates/honmoon-core/src/engine.rs#L93-L264)).
+   zero containers ([engine.rs:93-264](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/engine.rs#L93-L264)).
 2. **Framework optionality.** Because the core doesn't know how bytes arrive, the team could
    reverse the Pingora decision mid-flight (ADR-0001 → ADR-0002) and ship raw tokio without
    touching a line of policy logic.
@@ -73,7 +73,7 @@ flowchart TB
 ## The decision core, as pseudocode
 
 Expressed in Python to strip away Rust syntax — this *is* the policy semantics
-([engine.rs:19-91](https://github.com/pleaseai/honmoon/blob/master/crates/honmoon-core/src/engine.rs#L19-L91)):
+([engine.rs:19-91](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/engine.rs#L19-L91)):
 
 ```python
 def decide(policy, facts) -> Verdict:
@@ -116,7 +116,7 @@ policy that explicitly sets `egress.default: allow` is choosing to opt out of fa
 
 The two rows that should shape *your* judgment when extending the system are **fail closed** and
 **transport-agnostic core** — they are invariants, not preferences
-([ARCHITECTURE.md:82-100](https://github.com/pleaseai/honmoon/blob/master/ARCHITECTURE.md#L82-L100)).
+([ARCHITECTURE.md:82-100](https://github.com/pleaseai/honmoon/blob/main/ARCHITECTURE.md#L82-L100)).
 
 ## The Pingora reversal — a model decision
 
@@ -124,7 +124,7 @@ ADR-0001 adopted Pingora on a documentation-derived premise. During Phase 1, tha
 tested against the real Pingora 0.8.1 source and a prototype, and **disproven**: `HttpProxy` is
 reverse-proxy oriented and `allow_connect_method_proxying` does proxy *chaining*, not terminating
 tunnels. ADR-0002 reversed course to ~130 LOC of tokio and deferred the framework to the phase
-that actually terminates TLS ([.please/docs/decisions/0002-phase1-connect-proxy-on-tokio.md:10-44](https://github.com/pleaseai/honmoon/blob/master/.please/docs/decisions/0002-phase1-connect-proxy-on-tokio.md#L10-L44)).
+that actually terminates TLS ([.please/docs/decisions/0002-phase1-connect-proxy-on-tokio.md:10-44](https://github.com/pleaseai/honmoon/blob/main/.please/docs/decisions/0002-phase1-connect-proxy-on-tokio.md#L10-L44)).
 
 ```mermaid
 sequenceDiagram
@@ -144,7 +144,7 @@ The transferable lesson: the transport-agnostic seam made a load-bearing framewo
 
 ## Where the bodies are buried
 
-Be precise about maturity when you plan work ([tech-debt-tracker.md:9-14](https://github.com/pleaseai/honmoon/blob/master/.please/docs/tracks/tech-debt-tracker.md#L9-L14)):
+Be precise about maturity when you plan work ([tech-debt-tracker.md:9-14](https://github.com/pleaseai/honmoon/blob/main/.please/docs/tracks/tech-debt-tracker.md#L9-L14)):
 
 | Reality | Implication for planning |
 |---------|--------------------------|
@@ -158,22 +158,22 @@ Be precise about maturity when you plan work ([tech-debt-tracker.md:9-14](https:
 
 The data plane is single-binary, single-node by design today. The open-core thesis is that this
 stays free and powerful, and monetization begins at the **fleet** boundary — central policy,
-RBAC/SSO, approval routing, compliance retention ([business-model.md:32-44](https://github.com/pleaseai/honmoon/blob/master/docs/business-model.md#L32-L44)).
+RBAC/SSO, approval routing, compliance retention ([business-model.md:32-44](https://github.com/pleaseai/honmoon/blob/main/docs/business-model.md#L32-L44)).
 A hard platform constraint shapes scope: the wire-level core needs OS networking, so it cannot run
 on serverless isolates (Cloudflare Workers can host the egress filter + control plane only)
-([roadmap.md:137-144](https://github.com/pleaseai/honmoon/blob/master/docs/roadmap.md#L137-L144)). Treat "must own a host/container"
+([roadmap.md:137-144](https://github.com/pleaseai/honmoon/blob/main/docs/roadmap.md#L137-L144)). Treat "must own a host/container"
 as a fixed assumption, not a temporary gap.
 
 ## Decision log
 
 | ADR / TD | Subject | Status | Pointer |
 |----------|---------|--------|---------|
-| ADR-0001 | Pingora for HTTP data plane | Superseded | [0001](https://github.com/pleaseai/honmoon/blob/master/.please/docs/decisions/0001-adopt-pingora-http-data-plane.md) |
-| ADR-0002 | Tokio CONNECT proxy; defer Pingora | Accepted | [0002](https://github.com/pleaseai/honmoon/blob/master/.please/docs/decisions/0002-phase1-connect-proxy-on-tokio.md) |
-| TD-001 | Dual policy model → schema-gen | Open (Med) | [tracker](https://github.com/pleaseai/honmoon/blob/master/.please/docs/tracks/tech-debt-tracker.md#L9) |
-| TD-003 | Real network isolation for `run` | Open (High) | [tracker](https://github.com/pleaseai/honmoon/blob/master/.please/docs/tracks/tech-debt-tracker.md#L11) |
-| TD-006 | Live relay feeding parsers | Open (High) | [tracker](https://github.com/pleaseai/honmoon/blob/master/.please/docs/tracks/tech-debt-tracker.md#L14) |
-| — | CEL over HCL; Rust core + Bun control | Not yet an ADR | [ARCHITECTURE.md:139](https://github.com/pleaseai/honmoon/blob/master/ARCHITECTURE.md#L139) |
+| ADR-0001 | Pingora for HTTP data plane | Superseded | [0001](https://github.com/pleaseai/honmoon/blob/main/.please/docs/decisions/0001-adopt-pingora-http-data-plane.md) |
+| ADR-0002 | Tokio CONNECT proxy; defer Pingora | Accepted | [0002](https://github.com/pleaseai/honmoon/blob/main/.please/docs/decisions/0002-phase1-connect-proxy-on-tokio.md) |
+| TD-001 | Dual policy model → schema-gen | Open (Med) | [tracker](https://github.com/pleaseai/honmoon/blob/main/.please/docs/tracks/tech-debt-tracker.md#L9) |
+| TD-003 | Real network isolation for `run` | Open (High) | [tracker](https://github.com/pleaseai/honmoon/blob/main/.please/docs/tracks/tech-debt-tracker.md#L11) |
+| TD-006 | Live relay feeding parsers | Open (High) | [tracker](https://github.com/pleaseai/honmoon/blob/main/.please/docs/tracks/tech-debt-tracker.md#L14) |
+| — | CEL over HCL; Rust core + Bun control | Not yet an ADR | [ARCHITECTURE.md:139](https://github.com/pleaseai/honmoon/blob/main/ARCHITECTURE.md#L139) |
 
 ## What I'd watch
 
@@ -195,7 +195,7 @@ as a fixed assumption, not a temporary gap.
 
 ## References
 
-- [ARCHITECTURE.md](https://github.com/pleaseai/honmoon/blob/master/ARCHITECTURE.md)
-- [.please/docs/decisions/0002-phase1-connect-proxy-on-tokio.md](https://github.com/pleaseai/honmoon/blob/master/.please/docs/decisions/0002-phase1-connect-proxy-on-tokio.md)
-- [docs/business-model.md](https://github.com/pleaseai/honmoon/blob/master/docs/business-model.md)
-- [.please/docs/tracks/tech-debt-tracker.md](https://github.com/pleaseai/honmoon/blob/master/.please/docs/tracks/tech-debt-tracker.md)
+- [ARCHITECTURE.md](https://github.com/pleaseai/honmoon/blob/main/ARCHITECTURE.md)
+- [.please/docs/decisions/0002-phase1-connect-proxy-on-tokio.md](https://github.com/pleaseai/honmoon/blob/main/.please/docs/decisions/0002-phase1-connect-proxy-on-tokio.md)
+- [docs/business-model.md](https://github.com/pleaseai/honmoon/blob/main/docs/business-model.md)
+- [.please/docs/tracks/tech-debt-tracker.md](https://github.com/pleaseai/honmoon/blob/main/.please/docs/tracks/tech-debt-tracker.md)

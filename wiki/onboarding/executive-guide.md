@@ -17,7 +17,7 @@ every outbound connection — allow it, block it, or hold it for human approval.
 is **protocol awareness**: beyond a domain allowlist, it inspects SQL, Kubernetes, and HTTP at the
 wire level, so policy can say "never `DROP` the prod database" or "never delete a Kubernetes
 secret," not merely "block this domain"
-([product.md:6-29](https://github.com/pleaseai/honmoon/blob/master/.please/docs/knowledge/product.md#L6-L29)).
+([product.md:6-29](https://github.com/pleaseai/honmoon/blob/main/.please/docs/knowledge/product.md#L6-L29)).
 
 ## The problem it addresses
 
@@ -25,7 +25,7 @@ AI agents now run shell commands, call APIs, and touch databases autonomously. A
 inference can exfiltrate data, run a destructive query, or delete production resources. Existing
 controls are either too coarse (block all network) or too narrow (HTTP domain allowlists). Honmoon
 targets the gap: fine-grained, protocol-aware enforcement at the network boundary
-([product.md:13-18](https://github.com/pleaseai/honmoon/blob/master/.please/docs/knowledge/product.md#L13-L18)).
+([product.md:13-18](https://github.com/pleaseai/honmoon/blob/main/.please/docs/knowledge/product.md#L13-L18)).
 
 ## Capability map
 
@@ -69,7 +69,7 @@ This is an **early-stage project**, and its own guidelines forbid overstating it
 the intended product is built: the policy engine, protocol parsers, and — as of Phase 4 — the
 `pause` approval workflow, audit log, and management dashboard are all real, tested, and safe to
 build on. Hardened isolation and live-traffic protocol enforcement remain roadmap
-([product-guidelines.md:14-17](https://github.com/pleaseai/honmoon/blob/master/.please/docs/knowledge/product-guidelines.md#L14-L17)). Two gaps
+([product-guidelines.md:14-17](https://github.com/pleaseai/honmoon/blob/main/.please/docs/knowledge/product-guidelines.md#L14-L17)). Two gaps
 materially affect "is it production-ready":
 
 - **The single-process wrapper is advisory.** It routes a child's traffic by setting proxy
@@ -110,10 +110,10 @@ flowchart LR
 
 | Risk | Severity | Mitigation in the plan |
 |------|----------|------------------------|
-| Competitors (Deno's clawpatrol, GitHub's gh-aw-firewall) have distribution | High | Differentiate on protocol awareness + self-host + unification ([business-model.md:77-90](https://github.com/pleaseai/honmoon/blob/master/docs/business-model.md#L77-L90)) |
+| Competitors (Deno's clawpatrol, GitHub's gh-aw-firewall) have distribution | High | Differentiate on protocol awareness + self-host + unification ([business-model.md:77-90](https://github.com/pleaseai/honmoon/blob/main/docs/business-model.md#L77-L90)) |
 | Process isolation is advisory until Phase 5 | High | Use gateway mode (not the wrapper) where enforcement matters; TD-003 prioritized High |
 | Two hand-synced policy models can diverge | Medium | Generate both from JSON Schema (TD-001) |
-| Building paid features before a team buyer exists | Medium | Phased strategy: adoption → team entry → monetization ([business-model.md:100-107](https://github.com/pleaseai/honmoon/blob/master/docs/business-model.md#L100-L107)) |
+| Building paid features before a team buyer exists | Medium | Phased strategy: adoption → team entry → monetization ([business-model.md:100-107](https://github.com/pleaseai/honmoon/blob/main/docs/business-model.md#L100-L107)) |
 
 ## Technology investment thesis
 
@@ -129,7 +129,7 @@ The architecture reflects a deliberate, defensible set of bets:
 The open-core boundary is explicit and well-reasoned: the data plane stays 100% open source to
 build trust; monetization begins where a customer moves from one node to operating a fleet —
 central policy, compliance retention, approval routing, RBAC/SSO
-([business-model.md:32-44](https://github.com/pleaseai/honmoon/blob/master/docs/business-model.md#L32-L44)).
+([business-model.md:32-44](https://github.com/pleaseai/honmoon/blob/main/docs/business-model.md#L32-L44)).
 
 ## Cost & scaling model
 
@@ -147,10 +147,10 @@ flowchart LR
   required for the OSS core.
 - **Hard constraint:** the wire-level core requires OS networking — it cannot run on serverless
   isolates (e.g. Cloudflare Workers can host only the egress filter + control plane)
-  ([roadmap.md:137-144](https://github.com/pleaseai/honmoon/blob/master/docs/roadmap.md#L137-L144)). Budget for host/container infrastructure.
+  ([roadmap.md:137-144](https://github.com/pleaseai/honmoon/blob/main/docs/roadmap.md#L137-L144)). Budget for host/container infrastructure.
 - **Monetization timing:** individual developers don't pay for security tools; the buyer is the
   platform/security team operating many agents. Revenue should follow team operation, not precede
-  it ([business-model.md:94-98](https://github.com/pleaseai/honmoon/blob/master/docs/business-model.md#L94-L98)).
+  it ([business-model.md:94-98](https://github.com/pleaseai/honmoon/blob/main/docs/business-model.md#L94-L98)).
 
 ## Recommendations
 
@@ -159,7 +159,7 @@ flowchart LR
 | **Now** | Pilot **gateway mode** for HTTPS egress control of agent fleets. It is tested and enforcing. Avoid relying on the process-wrapper for hard isolation. |
 | **Now** | Author protocol policies (SQL/K8s) against the engine to validate fit, knowing live-traffic enforcement is the next data-plane milestone (TD-006). |
 | **Near-term** | If protocol-level enforcement is your driver, **fund/track TD-006 (live relay) and TD-003 (real isolation)** — they convert this from "promising engine" to "deployable control." |
-| **Strategic** | The open-core thesis only works if the free core is generous. Resist pressure to gate the data plane; the moat and the trust both live there ([business-model.md:24-28](https://github.com/pleaseai/honmoon/blob/master/docs/business-model.md#L24-L28)). |
+| **Strategic** | The open-core thesis only works if the free core is generous. Resist pressure to gate the data plane; the moat and the trust both live there ([business-model.md:24-28](https://github.com/pleaseai/honmoon/blob/main/docs/business-model.md#L24-L28)). |
 
 ## Related Pages
 
@@ -170,6 +170,6 @@ flowchart LR
 
 ## References
 
-- [.please/docs/knowledge/product.md](https://github.com/pleaseai/honmoon/blob/master/.please/docs/knowledge/product.md)
-- [docs/business-model.md](https://github.com/pleaseai/honmoon/blob/master/docs/business-model.md)
-- [docs/roadmap.md](https://github.com/pleaseai/honmoon/blob/master/docs/roadmap.md)
+- [.please/docs/knowledge/product.md](https://github.com/pleaseai/honmoon/blob/main/.please/docs/knowledge/product.md)
+- [docs/business-model.md](https://github.com/pleaseai/honmoon/blob/main/docs/business-model.md)
+- [docs/roadmap.md](https://github.com/pleaseai/honmoon/blob/main/docs/roadmap.md)

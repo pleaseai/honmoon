@@ -186,7 +186,7 @@ T003–T010은 T002(전역 CSS·토큰) 완료 후 서로 독립이므로 병렬
 
 ### T010
 - Happy: 최종 CTA와 푸터 컬럼이 원본대로 렌더.
-- Action: Docs ↗ → `github.com/pleaseai/honmoon/tree/master/docs`(AC-012), Readme → `.../blob/master/README.md`(AC-012b), GitHub → repo(AC-011), 모두 새 탭.
+- Action: Docs ↗ → `github.com/pleaseai/honmoon/tree/main/docs`(AC-012), Readme → `.../blob/main/README.md`(AC-012b), GitHub → repo(AC-011), 모두 새 탭.
 
 ### T011
 - Happy: 10개 영역이 원본 순서로 조립(AC-001), skip-link가 첫 Tab에 노출되고 #content로 이동(AC-015).

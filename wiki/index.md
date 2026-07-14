@@ -79,17 +79,17 @@ flowchart LR
 
 | File | Role | Source |
 |------|------|--------|
-| `crates/honmoon-core/src/lib.rs` | Policy model: `Policy`, `Egress`, `Rule`, `Verdict`, `Facts` | [lib.rs](https://github.com/pleaseai/honmoon/blob/master/crates/honmoon-core/src/lib.rs) |
-| `crates/honmoon-core/src/engine.rs` | `decide_explained()` — CEL rules + egress matching | [engine.rs](https://github.com/pleaseai/honmoon/blob/master/crates/honmoon-core/src/engine.rs) |
-| `crates/honmoon-core/src/audit.rs` | Audit log (in-memory ring + JSONL sink) | [audit.rs](https://github.com/pleaseai/honmoon/blob/master/crates/honmoon-core/src/audit.rs) |
-| `crates/honmoon-core/src/protocols.rs` | Wire parsers → SQL / K8s facts | [protocols.rs](https://github.com/pleaseai/honmoon/blob/master/crates/honmoon-core/src/protocols.rs) |
-| `crates/honmoon-proxy/src/gateway.rs` | CONNECT egress proxy + audit + pause hold | [gateway.rs](https://github.com/pleaseai/honmoon/blob/master/crates/honmoon-proxy/src/gateway.rs) |
-| `crates/honmoon-proxy/src/approval.rs` | Pending-approval registry (pause hold) | [approval.rs](https://github.com/pleaseai/honmoon/blob/master/crates/honmoon-proxy/src/approval.rs) |
-| `crates/honmoon-mgmt/src/lib.rs` | Management API + embedded dashboard | [lib.rs](https://github.com/pleaseai/honmoon/blob/master/crates/honmoon-mgmt/src/lib.rs) |
-| `crates/honmoon-cli/src/main.rs` | `honmoon` binary: `run` / `gateway` / `join` | [main.rs](https://github.com/pleaseai/honmoon/blob/master/crates/honmoon-cli/src/main.rs) |
-| `packages/policy/schema/policy.schema.json` | JSON Schema for policy validation | [policy.schema.json](https://github.com/pleaseai/honmoon/blob/master/packages/policy/schema/policy.schema.json) |
-| `policies/agent.yaml` | Example policy | [agent.yaml](https://github.com/pleaseai/honmoon/blob/master/policies/agent.yaml) |
-| `ARCHITECTURE.md` | Module boundaries & invariants | [ARCHITECTURE.md](https://github.com/pleaseai/honmoon/blob/master/ARCHITECTURE.md) |
+| `crates/honmoon-core/src/lib.rs` | Policy model: `Policy`, `Egress`, `Rule`, `Verdict`, `Facts` | [lib.rs](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/lib.rs) |
+| `crates/honmoon-core/src/engine.rs` | `decide_explained()` — CEL rules + egress matching | [engine.rs](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/engine.rs) |
+| `crates/honmoon-core/src/audit.rs` | Audit log (in-memory ring + JSONL sink) | [audit.rs](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/audit.rs) |
+| `crates/honmoon-core/src/protocols.rs` | Wire parsers → SQL / K8s facts | [protocols.rs](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/protocols.rs) |
+| `crates/honmoon-proxy/src/gateway.rs` | CONNECT egress proxy + audit + pause hold | [gateway.rs](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-proxy/src/gateway.rs) |
+| `crates/honmoon-proxy/src/approval.rs` | Pending-approval registry (pause hold) | [approval.rs](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-proxy/src/approval.rs) |
+| `crates/honmoon-mgmt/src/lib.rs` | Management API + embedded dashboard | [lib.rs](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-mgmt/src/lib.rs) |
+| `crates/honmoon-cli/src/main.rs` | `honmoon` binary: `run` / `gateway` / `join` | [main.rs](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-cli/src/main.rs) |
+| `packages/policy/schema/policy.schema.json` | JSON Schema for policy validation | [policy.schema.json](https://github.com/pleaseai/honmoon/blob/main/packages/policy/schema/policy.schema.json) |
+| `policies/agent.yaml` | Example policy | [agent.yaml](https://github.com/pleaseai/honmoon/blob/main/policies/agent.yaml) |
+| `ARCHITECTURE.md` | Module boundaries & invariants | [ARCHITECTURE.md](https://github.com/pleaseai/honmoon/blob/main/ARCHITECTURE.md) |
 
 ## Tech stack
 
@@ -111,7 +111,7 @@ flowchart LR
 
 ## References
 
-- [README.md](https://github.com/pleaseai/honmoon/blob/master/README.md)
-- [ARCHITECTURE.md](https://github.com/pleaseai/honmoon/blob/master/ARCHITECTURE.md)
-- [Cargo.toml](https://github.com/pleaseai/honmoon/blob/master/Cargo.toml)
-- [package.json](https://github.com/pleaseai/honmoon/blob/master/package.json)
+- [README.md](https://github.com/pleaseai/honmoon/blob/main/README.md)
+- [ARCHITECTURE.md](https://github.com/pleaseai/honmoon/blob/main/ARCHITECTURE.md)
+- [Cargo.toml](https://github.com/pleaseai/honmoon/blob/main/Cargo.toml)
+- [package.json](https://github.com/pleaseai/honmoon/blob/main/package.json)
