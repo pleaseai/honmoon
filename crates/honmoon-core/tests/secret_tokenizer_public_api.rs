@@ -122,6 +122,90 @@ fn public_path_round_trip_and_streaming_equivalence_across_corpus() {
     );
 }
 
+/// A Claude-Code-shaped multi-turn request body: the same secrets recur
+/// across turns because agent clients resend the full history every request.
+fn multi_turn_body() -> String {
+    r#"{"model":"claude-fable-5","messages":[
+{"role":"user","content":"deploy with key sk-ant-api03-cache-stable and db pass hunter2-prod"},
+{"role":"assistant","content":"Using sk-ant-api03-cache-stable for the deploy."},
+{"role":"user","content":"rotate hunter2-prod afterwards, keep sk-ant-api03-cache-stable"}
+]}"#
+    .to_string()
+}
+
+#[test]
+fn public_path_same_multi_turn_body_redacted_twice_is_byte_identical() {
+    // Issue #20: the proxy re-redacts the resent conversation history on
+    // every request, and provider prompt caching is longest-common-prefix
+    // based. If two passes over the same bytes could ever differ, the cache
+    // prefix would silently be invalidated each turn — so double-pass
+    // byte-identity is the contract, not an implementation detail.
+    let secrets = vec!["sk-ant-api03-cache-stable", "hunter2-prod"];
+    let body = multi_turn_body();
+
+    let t = SecretTokenizer::new(b"session-salt".to_vec(), secrets.clone());
+    let (first, _) = t.tokenize(&body);
+    let (second, _) = t.tokenize(&body);
+    // Same instance, same bytes in → same bytes out (no per-call state).
+    assert_eq!(first, second);
+
+    // A tokenizer rebuilt from the same session state (next request, fresh
+    // per-request construction — or a fresh process, as the CLI hook
+    // transport spawns per call) must reproduce the exact bytes too.
+    let rebuilt = SecretTokenizer::new(b"session-salt".to_vec(), secrets);
+    let (third, _) = rebuilt.tokenize(&body);
+    assert_eq!(first, third);
+
+    // And the redaction actually happened — determinism of a no-op would
+    // prove nothing.
+    assert!(!first.contains("sk-ant-api03-cache-stable"));
+    assert!(!first.contains("hunter2-prod"));
+}
+
+#[test]
+fn public_path_redacted_bytes_are_independent_of_registration_order() {
+    // Issue #20 detection stability: replacement offsets must not shift
+    // between passes over the same bytes. Leftmost-longest overlap
+    // resolution is a property of the *text* (longest registered secret at
+    // each position wins), so permuting registration order — including a
+    // secret that is a strict prefix of another — must yield byte-identical
+    // output.
+    let body = "a=sk-prod-key-extended; b=sk-prod-key; c=hunter2 d=sk-prod-key-extended";
+    let forward = SecretTokenizer::new(
+        b"order-salt".to_vec(),
+        vec!["sk-prod-key", "sk-prod-key-extended", "hunter2"],
+    );
+    let reversed = SecretTokenizer::new(
+        b"order-salt".to_vec(),
+        vec!["hunter2", "sk-prod-key-extended", "sk-prod-key"],
+    );
+    assert_eq!(forward.tokenize(body).0, reversed.tokenize(body).0);
+}
+
+#[test]
+fn public_path_extending_the_history_preserves_the_redacted_prefix() {
+    // The property prompt caching actually needs: turn N's redacted request
+    // must survive as a byte prefix of turn N+1's redacted request. This
+    // holds whenever the appended turn does not split a secret occurrence at
+    // the boundary — which it never does in practice, since history messages
+    // are resent byte-identically and secrets sit inside message contents.
+    let t = SecretTokenizer::new(
+        b"session-salt".to_vec(),
+        vec!["sk-ant-api03-cache-stable", "hunter2-prod"],
+    );
+    let history = multi_turn_body();
+    let extended = format!(
+        "{history}\n{{\"role\":\"assistant\",\"content\":\"rotated hunter2-prod as asked\"}}"
+    );
+
+    let (redacted_history, _) = t.tokenize(&history);
+    let (redacted_extended, _) = t.tokenize(&extended);
+    assert!(
+        redacted_extended.starts_with(&redacted_history),
+        "growing the history must extend, not rewrite, the redacted prefix"
+    );
+}
+
 #[test]
 fn public_path_overlap_leftmost_longest_and_provenance_binding() {
     // SC-005 overlap resolution, reachable only via `honmoon_core::`.
