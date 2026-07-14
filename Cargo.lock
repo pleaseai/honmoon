@@ -1000,9 +1000,12 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "clap",
+ "hmac",
  "honmoon-core",
  "honmoon-mgmt",
  "honmoon-proxy",
+ "serde_json",
+ "sha2",
  "tokio",
  "tracing",
  "tracing-subscriber",

@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-plugin.json",
+  "name": "honmoon-redact",
+  "version": "0.1.0",
+  "description": "Client-side secret/PII redaction hooks: keeps API keys and sensitive identifiers out of Claude Code's local session transcript (and the model context) by redacting Read output, blocking prompts that carry secrets, and denying reads of known credential files.",
+  "author": {
+    "name": "Honmoon",
+    "url": "https://github.com/pleaseai/honmoon"
+  },
+  "homepage": "https://github.com/pleaseai/honmoon",
+  "repository": "https://github.com/pleaseai/honmoon",
+  "license": "MIT",
+  "keywords": ["security", "redaction", "secrets", "pii", "dlp", "hooks"],
+  "hooks": "./hooks/hooks.json"
+}

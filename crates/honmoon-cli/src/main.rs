@@ -1,5 +1,7 @@
 //! `honmoon` — policy-based firewall gateway CLI.
 
+mod hook;
+
 use std::net::TcpListener;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -74,6 +76,12 @@ enum Command {
         #[arg(long, value_name = "HOST:PORT")]
         gateway: String,
     },
+    /// Redact a Claude Code hook payload (read on stdin, verdict on stdout).
+    ///
+    /// The command-transport backend for the honmoon Claude Code plugin (#19):
+    /// scans `Read` output / prompts for secrets + PII and emits the hook JSON
+    /// verdict. Reads the event JSON on stdin and always exits 0.
+    Hook,
 }
 
 fn main() -> Result<()> {
@@ -104,6 +112,7 @@ fn main() -> Result<()> {
         Command::Join { gateway } => {
             anyhow::bail!("`join` not yet implemented (gateway: {gateway})");
         }
+        Command::Hook => hook::run(),
     }
 }
 
