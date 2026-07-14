@@ -1,6 +1,6 @@
 # Honmoon Roadmap
 
-> Status: Draft (v0.2) · Last updated: 2026-06-23
+> Status: Draft (v0.3) · Last updated: 2026-07-13
 >
 > A phased path from the current scaffold to a production-grade, open-core firewall
 > gateway. Phases are roughly sequential but later OSS phases can overlap. The
@@ -144,6 +144,42 @@ Note: fleet-wide DLP policy management and compliance / exfil reporting are Paid
 - [ ] Policy hot-reload (graceful reload without dropping tunnels)
 
 **Exit criteria**: all three modes work end-to-end on Linux; documented setup.
+
+---
+
+## Agent-side integrations (parallel track) — Claude Code plugin `OSS`
+
+> Can run in parallel with Phases 5–6; builds on the Phase 5 detectors and the secret
+> tokenization primitive.
+
+The proxy is the enforcement backstop: every request — including the full conversation
+history agent clients resend each turn — crosses the wire through honmoon, so the model
+never sees a raw secret. What the proxy *cannot* reach is what the client persists locally
+before sending: Claude Code stores raw prompts and raw `Read` output in its session
+transcript (`~/.claude/projects/**/*.jsonl`), which then feeds `/resume`, compaction,
+subagents, and backups/sync. Client-side hooks close that gap by redacting *before* content
+enters the transcript — the plugin doubles as lightweight onboarding (no local CA trust
+needed).
+
+- [ ] Claude Code plugin with redaction hooks (#19): `PostToolUse` on `Read` replaces the
+  tool result via `updatedToolOutput` (redacted in both model context and transcript);
+  `UserPromptSubmit` blocks prompts carrying secrets (hooks cannot rewrite a prompt — block
+  + actionable reason); `PreToolUse` denies reads of known-sensitive paths (`.env*`, key files)
+- [ ] Two hook transports (#19): **gateway-direct** — `type: "http"` hooks POST the hook
+  payload to `POST /api/hooks/claude-code` on the management API and get the same hook JSON
+  schema back (no per-call process spawn; tokenization mapping shared with the proxy by
+  construction) — and **CLI fallback** — `honmoon hook` (`type: "command"`): hook JSON on
+  stdin (with session/salt context, since each call spawns a fresh process — so a given
+  secret tokenizes identically across calls, per #20) → Tier-1 detectors + reversible secret
+  tokenization from `honmoon-core` → hook JSON verdict, works with only the binary installed.
+  Caveat: HTTP hooks **fail open** (connection failure / non-2xx continues unredacted), so the
+  shipped default must fall back to a local scan rather than fail silently
+- [ ] Cache-stable determinism on the proxy path (#20): identical secret → identical token
+  across turns, so redacting the resent history preserves the provider prompt-cache prefix
+
+**Exit criteria**: reading a file with a valid-checksum RRN or an API key lands redacted in
+both the model context and the session transcript JSONL; a prompt carrying a secret is
+blocked with actionable feedback; same multi-turn body redacted twice is byte-identical (#20).
 
 ---
 
