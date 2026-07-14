@@ -83,6 +83,25 @@ secret that merely appears inside an otherwise-normal file, `PostToolUse` at
 minimum keeps the raw secret out of the model context; whether it also scrubs
 the transcript depends on the Claude Code version — verify against yours.
 
+## Known limitation — detector coverage
+
+The detectors are **precision-first**, so a few shapes can slip through — the
+proxy remains the wire-facing backstop, but for local transcript hygiene these
+are gaps to be aware of:
+
+- **Truncated PEM private keys.** A private-key block is only matched when both
+  the `-----BEGIN … PRIVATE KEY-----` header *and* the matching `-----END …`
+  footer are present (the footer anchor keeps prose that merely mentions a key
+  from matching). Output that shows the header plus only part of the body — e.g.
+  `head -5 id_rsa` via `Bash` — is not redacted. Prefer the `PreToolUse` deny
+  for whole key files.
+- **Generic-secret placeholder filtering.** The keyword-anchored
+  `GENERIC_SECRET` detector drops values that look like placeholders by matching
+  markers (`example`, `changeme`, `test`, …) as substrings, so a genuine
+  high-entropy secret that happens to embed one of the short markers can be
+  treated as a placeholder and passed through. Structural keys
+  (`sk-ant-…`/`AKIA…`/`ghp_…`/…) are unaffected — they don't consult this list.
+
 ## Scope
 
 This ships the **command transport** (works with only the binary installed). A

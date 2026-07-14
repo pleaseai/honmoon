@@ -259,35 +259,76 @@ fn session_salt(payload: &Value) -> Vec<u8> {
 /// Read (or generate on first use) the persisted machine secret used as the
 /// HMAC key behind placeholder unforgeability. A freshly generated secret is 32
 /// bytes; the read path accepts any existing file of **at least 16 bytes** as-is
-/// (a shorter/corrupt file is discarded and regenerated). The file is created
-/// `0600` so the secret is never briefly world-readable through the umask
-/// default. A short/corrupt file or an unexpected read error is logged before
-/// regenerating; a genuinely-absent file (first run) is silent.
+/// (a shorter/corrupt file is discarded and regenerated), and re-tightens its
+/// permissions to `0600` even on that read path so a file that somehow ended up
+/// group/world-readable is corrected rather than trusted indefinitely.
+///
+/// First-run creation is **atomic** (`O_CREAT|O_EXCL`, mode `0600`): if two hook
+/// processes race on a machine with no salt yet, exactly one creates the file
+/// and the other adopts the winner's bytes — so every process converges on one
+/// machine key and placeholders for the same secret stay byte-stable across
+/// turns (issue #20). A short/corrupt file or an unexpected read error is logged
+/// before regenerating; a genuinely-absent file (first run) is silent.
 fn load_or_create_machine_salt(dir: &Path) -> Result<Vec<u8>> {
     let path = dir.join("hook-salt");
-    match std::fs::read(&path) {
-        Ok(bytes) if bytes.len() >= 16 => return Ok(bytes),
-        Ok(bytes) => eprintln!(
-            "honmoon hook: salt file {} is short/corrupt ({} bytes) — regenerating",
-            path.display(),
-            bytes.len()
-        ),
-        Err(e) if e.kind() != std::io::ErrorKind::NotFound => eprintln!(
-            "honmoon hook: unexpected error reading salt file {} ({e}) — regenerating",
-            path.display()
-        ),
-        Err(_) => {} // NotFound: expected on first use, no diagnostic needed.
-    }
+    // `true` means the file exists but is unusable (must be force-overwritten);
+    // `false` means it is absent (first run — create atomically to avoid a race).
+    let must_overwrite = match std::fs::read(&path) {
+        Ok(bytes) if bytes.len() >= 16 => {
+            // Valid: adopt it, but correct its permissions in case an external
+            // actor (backup restore, older build) left it looser than 0600.
+            set_permissions_0600(&path);
+            return Ok(bytes);
+        }
+        Ok(bytes) => {
+            eprintln!(
+                "honmoon hook: salt file {} is short/corrupt ({} bytes) — regenerating",
+                path.display(),
+                bytes.len()
+            );
+            true
+        }
+        Err(e) if e.kind() != std::io::ErrorKind::NotFound => {
+            eprintln!(
+                "honmoon hook: unexpected error reading salt file {} ({e}) — regenerating",
+                path.display()
+            );
+            true
+        }
+        Err(_) => false, // NotFound: expected on first use, no diagnostic needed.
+    };
+
     let salt = random_bytes(32)?;
     std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
-    write_secret_file(&path, &salt).with_context(|| format!("writing {}", path.display()))?;
-    Ok(salt)
+
+    if must_overwrite {
+        // The file exists but is unusable, so there is no create race to lose:
+        // overwrite it. (A concurrent second corrupt-recovery is negligible — the
+        // damaged state is already anomalous.)
+        write_secret_file(&path, &salt).with_context(|| format!("writing {}", path.display()))?;
+        return Ok(salt);
+    }
+
+    // First use: create exclusively so a concurrent first-run process cannot
+    // persist a *different* machine key. If we lose the race, read and adopt the
+    // winner's salt instead of our own.
+    match create_secret_file_exclusive(&path, &salt) {
+        Ok(()) => Ok(salt),
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => match std::fs::read(&path) {
+            Ok(bytes) if bytes.len() >= 16 => Ok(bytes),
+            // The winner wrote something unusable (or it vanished): fall back to
+            // our own salt for this call rather than fail. Redaction still works;
+            // only cross-process convergence is briefly relaxed.
+            _ => Ok(salt),
+        },
+        Err(e) => Err(e).with_context(|| format!("writing {}", path.display())),
+    }
 }
 
 /// Write `bytes` to `path`, creating it `0600` (Unix) via the open mode so the
 /// secret is never briefly readable at the umask default between `write` and a
-/// later `chmod`. Re-tightens permissions afterward to cover the case where
-/// `path` already existed (open-mode applies only on creation).
+/// later `chmod`. Truncates an existing file, and re-tightens permissions
+/// afterward since open-mode applies only on creation.
 fn write_secret_file(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     use std::io::Write as _;
     let mut opts = std::fs::OpenOptions::new();
@@ -300,6 +341,24 @@ fn write_secret_file(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     let mut file = opts.open(path)?;
     file.write_all(bytes)?;
     set_permissions_0600(path);
+    Ok(())
+}
+
+/// Create `path` **exclusively** (`O_CREAT|O_EXCL`, mode `0600` on Unix), failing
+/// with [`std::io::ErrorKind::AlreadyExists`] if it already exists so the caller
+/// can detect and recover from a lost create race. No `chmod` afterward: an
+/// exclusively-created file is new, so the open-mode `0600` is authoritative.
+fn create_secret_file_exclusive(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    use std::io::Write as _;
+    let mut opts = std::fs::OpenOptions::new();
+    opts.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        opts.mode(0o600);
+    }
+    let mut file = opts.open(path)?;
+    file.write_all(bytes)?;
     Ok(())
 }
 
@@ -619,5 +678,32 @@ mod tests {
             .permissions()
             .mode();
         assert_eq!(mode & 0o777, 0o600, "salt file must be owner-only (0600)");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn machine_salt_read_path_retightens_loose_permissions() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = TempDir::new("retighten");
+        let path = tmp.path().join("hook-salt");
+        std::fs::write(&path, [7u8; 32]).expect("seed valid salt");
+        // Simulate a file left group/world-readable by some external actor.
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644))
+            .expect("loosen perms");
+        let salt = load_or_create_machine_salt(tmp.path()).expect("load");
+        assert_eq!(
+            salt,
+            vec![7u8; 32],
+            "a valid existing salt is adopted as-is"
+        );
+        let mode = std::fs::metadata(&path)
+            .expect("stat salt file")
+            .permissions()
+            .mode();
+        assert_eq!(
+            mode & 0o777,
+            0o600,
+            "loose permissions are re-tightened on the read path"
+        );
     }
 }
