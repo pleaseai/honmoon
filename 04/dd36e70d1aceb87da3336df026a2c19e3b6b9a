@@ -1,0 +1,40 @@
+.claude/agent-memory/review-review-security-reviewer/project-redaction-failopen-design.md
+  s_497816b35fbe3c::t_badd0822603de3 9-13
+  s_497816b35fbe3c::t_13f0df9b4eff55 25-30
+crates/honmoon-core/src/secret_detect.rs
+  s_497816b35fbe3c::t_12d70732bb234a 80
+  s_497816b35fbe3c::t_9ddefa6f1b07da 297-302
+  s_497816b35fbe3c::t_e72476408fe4f2 67-69,71-78
+  s_497816b35fbe3c::t_b1cdc04651bd28 296,321-331,340-349
+  s_497816b35fbe3c::t_12238db2f0ff4c 350
+packages/claude-plugin/.claude-plugin/plugin.json
+  s_497816b35fbe3c::t_51b30b20e7f763 5
+crates/honmoon-cli/src/hook.rs
+  s_497816b35fbe3c::t_18b2d04567abee 89-99
+  s_497816b35fbe3c::t_43502a3430dbfc 185
+  s_497816b35fbe3c::t_7829833c055a75 418-422,430-435
+  s_497816b35fbe3c::t_4e7a371aaa7e4a 588-603,605-610,627,749
+  s_497816b35fbe3c::t_2d1a3521c072c7 628-644
+  s_497816b35fbe3c::t_fb429eab1522f3 195
+  s_497816b35fbe3c::t_a2519b73101fcf 137-143
+  s_497816b35fbe3c::t_12d70732bb234a 604
+  s_497816b35fbe3c::t_b86e1f5586f893 750-766
+  s_497816b35fbe3c::t_7f313678be4539 158-163,165,167-175,436
+  s_497816b35fbe3c::t_2fbfd720445491 437
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.14",
+  "base_commit_sha": "04dd36e70d1aceb87da3336df026a2c19e3b6b9a",
+  "prompts": {},
+  "sessions": {
+    "s_497816b35fbe3c": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "76ecaf55-40ed-4f01-ab38-2971a1eef79c",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}

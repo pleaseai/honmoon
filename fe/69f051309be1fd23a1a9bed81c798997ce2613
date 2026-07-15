@@ -1,0 +1,19 @@
+crates/honmoon-core/src/secret_tokenizer/mod.rs
+  s_0a8b670cf4b284::t_33357b2523f2bc 19-45
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.13",
+  "base_commit_sha": "fe69f051309be1fd23a1a9bed81c798997ce2613",
+  "prompts": {},
+  "sessions": {
+    "s_0a8b670cf4b284": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "513a3ef5-a6df-4b8f-b746-ed67b51730ca",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
