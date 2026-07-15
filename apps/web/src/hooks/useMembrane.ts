@@ -351,7 +351,7 @@ export function useMembrane(canvasRef: React.RefObject<HTMLCanvasElement | null>
       cp_ = Math.cos(pitchO); sp_ = Math.sin(pitchO)
 
       /* 은하 가스 글로우 — 1/4 해상도 오프스크린에 렌더 후 업스케일 블릿 */
-      if (nebCtx) {
+      if (nebCtx && nebW > 0 && nebH > 0) {
         nebCtx.clearRect(0, 0, nebW, nebH)
         for (const nb of nebula) {
           nb.x += nb.dx; nb.y += nb.dy
