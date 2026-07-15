@@ -35,6 +35,15 @@ export function useMembrane(canvasRef: React.RefObject<HTMLCanvasElement | null>
     if (!ctx) { return }
     const reduced = prefersReducedMotion()
 
+    /* 은하 가스 레이어 — 화면 크기의 거대한 라디얼 글로우를 매 프레임 6번 칠하면
+       프레임당 ~20ms를 잡아먹어 로드·상시 jank의 주범이 된다(fill 오버드로우).
+       구름이 본디 흐릿하므로 1/4 해상도 오프스크린에 그린 뒤 업스케일 블릿한다
+       — 드리프트·펄스는 매 프레임 그대로 유지하면서 비용만 ~77배 줄어든다. */
+    const NEB_SCALE = 0.25
+    const nebCanvas = document.createElement('canvas')
+    const nebCtx = nebCanvas.getContext('2d')
+    let nebW = 0; let nebH = 0
+
     const C = {
       star: (a: number) => `rgba(196, 208, 228, ${a})`,
       raw: (a: number) => `rgba(150, 158, 178, ${a})`,
@@ -61,6 +70,8 @@ export function useMembrane(canvasRef: React.RefObject<HTMLCanvasElement | null>
       W = rect.width; H = rect.height
       canvas!.width = W * dpr; canvas!.height = H * dpr
       ctx!.setTransform(dpr, 0, 0, dpr, 0, 0)
+      nebW = Math.max(1, Math.ceil(W * NEB_SCALE)); nebH = Math.max(1, Math.ceil(H * NEB_SCALE))
+      nebCanvas.width = nebW; nebCanvas.height = nebH
       cx = W * (W > 920 ? 0.66 : 0.5)
       // 모바일: 오브제를 상단-중앙(0.36)에 두어 내비 아래 여백을 확보하고,
       // 하단으로 올라온 히어로 카피와 균형을 이룬다(살짝 작게).
@@ -339,19 +350,24 @@ export function useMembrane(canvasRef: React.RefObject<HTMLCanvasElement | null>
       cosY = Math.cos(TH + yawO); sinY = Math.sin(TH + yawO)
       cp_ = Math.cos(pitchO); sp_ = Math.sin(pitchO)
 
-      /* 은하 가스 글로우 */
-      for (const nb of nebula) {
-        nb.x += nb.dx; nb.y += nb.dy
-        if (nb.x < -nb.r) { nb.x = W + nb.r }
-        else if (nb.x > W + nb.r) { nb.x = -nb.r }
-        if (nb.y < -nb.r) { nb.y = H + nb.r }
-        else if (nb.y > H + nb.r) { nb.y = -nb.r }
-        const na = nb.a * (0.75 + 0.25 * Math.sin(tm * nb.sp + nb.ph))
-        const g = ctx!.createRadialGradient(nb.x, nb.y, 0, nb.x, nb.y, nb.r)
-        g.addColorStop(0, nb.col(na))
-        g.addColorStop(1, nb.col(0))
-        ctx!.fillStyle = g
-        ctx!.beginPath(); ctx!.arc(nb.x, nb.y, nb.r, 0, 7); ctx!.fill()
+      /* 은하 가스 글로우 — 1/4 해상도 오프스크린에 렌더 후 업스케일 블릿 */
+      if (nebCtx && nebW > 0 && nebH > 0) {
+        nebCtx.clearRect(0, 0, nebW, nebH)
+        for (const nb of nebula) {
+          nb.x += nb.dx; nb.y += nb.dy
+          if (nb.x < -nb.r) { nb.x = W + nb.r }
+          else if (nb.x > W + nb.r) { nb.x = -nb.r }
+          if (nb.y < -nb.r) { nb.y = H + nb.r }
+          else if (nb.y > H + nb.r) { nb.y = -nb.r }
+          const na = nb.a * (0.75 + 0.25 * Math.sin(tm * nb.sp + nb.ph))
+          const sx = nb.x * NEB_SCALE; const sy = nb.y * NEB_SCALE; const sr = nb.r * NEB_SCALE
+          const g = nebCtx.createRadialGradient(sx, sy, 0, sx, sy, sr)
+          g.addColorStop(0, nb.col(na))
+          g.addColorStop(1, nb.col(0))
+          nebCtx.fillStyle = g
+          nebCtx.beginPath(); nebCtx.arc(sx, sy, sr, 0, 7); nebCtx.fill()
+        }
+        ctx!.drawImage(nebCanvas, 0, 0, nebW, nebH, 0, 0, W, H)
       }
 
       for (const s of stars) {
