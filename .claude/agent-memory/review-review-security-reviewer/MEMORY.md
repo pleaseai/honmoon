@@ -1,1 +1,2 @@
 - [Redaction fail-open design](project-redaction-failopen-design.md) — plugin/hook redaction is best-effort fail-open by design; proxy is the backstop. Don't over-flag documented fail-open; do flag transcript-hygiene gaps the proxy can't cover.
+- [Hook machine-salt security model](hook-salt-security-model.md) — how honmoon-cli's HMAC salt is stored, its 0600 invariant, and the fail-open fallback
