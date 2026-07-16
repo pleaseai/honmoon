@@ -1,0 +1,19 @@
+apps/web/src/hooks/useMembrane.ts
+  s_40d1620f078ce6::t_a17909b77e71a9 354
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.14",
+  "base_commit_sha": "2fd9e0fac55323e317f209534ef420db748ea1a1",
+  "prompts": {},
+  "sessions": {
+    "s_40d1620f078ce6": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a133a330-1719-4545-a4a4-529a5648f8d4",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "DANNY NA <danny@pusan.ac.kr>"
+    }
+  }
+}

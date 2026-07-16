@@ -1,0 +1,21 @@
+.please/docs/tracks.jsonl
+  s_18fbbebed9fe1b::t_baa7338a9a4e55 4
+.please/docs/tracks/completed/landing-page-20260712/metadata.json
+  s_18fbbebed9fe1b::t_241d0fe50642b9 4,6
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.12",
+  "base_commit_sha": "06070b5ade0cc3577aaf9a93c6fec0465c9aa8f8",
+  "prompts": {},
+  "sessions": {
+    "s_18fbbebed9fe1b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "6c75e850-ea91-4815-8c14-0e5065c5192a",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "DANNY NA <danny@pusan.ac.kr>"
+    }
+  }
+}
