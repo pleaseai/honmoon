@@ -1,0 +1,22 @@
+crates/honmoon-cli/src/hook.rs
+  s_07f31bcf949cf3::t_e6052a1b0c2f38 388-396,403,405-410
+  s_07f31bcf949cf3::t_1ff8a76158c262 370-378
+.claude/agent-memory/review-review-security-reviewer/hook-salt-security-model.md
+  s_07f31bcf949cf3::t_597d1aa228fc99 16-21,24-25,33-42
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.14",
+  "base_commit_sha": "8936d85758f0723ae737119fa56cc729bbbfccbb",
+  "prompts": {},
+  "sessions": {
+    "s_07f31bcf949cf3": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "7c82906f-dad3-4b12-a732-c192652e427c",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
