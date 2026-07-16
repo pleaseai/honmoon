@@ -359,54 +359,107 @@ fn load_or_create_machine_salt(dir: &Path) -> Result<Vec<u8>> {
     publish_secret_atomically(dir, &path, &salt)
 }
 
-/// Publish `salt` as the first-run machine key using a fully-written temp file
-/// linked into place. The bytes are written to a per-caller temp (`0600`), then
-/// `hard_link`ed onto `path`: the link is one atomic syscall that fails with
-/// [`std::io::ErrorKind::AlreadyExists`] if the target exists, so exactly one
-/// racer publishes and the target only ever becomes visible already-complete (a
-/// publisher links *after* its temp is fully written). A loser therefore reads
-/// the winner's bytes in a single shot — no empty-file window to bridge and no
-/// read-retry loop. Falls back to the caller's own (unpersisted) `salt` only if
-/// that post-link read genuinely fails, which the next invocation self-heals via
-/// the short-file path.
+/// Publish `salt` as the first-run machine key: write it to an
+/// exclusively-created temp with an unpredictable name, then `hard_link` that
+/// temp onto `path`. Two properties combine here:
+/// - **Atomic publish** — `hard_link` is one syscall that fails with
+///   [`std::io::ErrorKind::AlreadyExists`] if the target exists, so exactly one
+///   racer publishes and the target only ever becomes visible already-complete (a
+///   publisher links *after* its temp is fully written). A loser reads the
+///   winner's bytes in a single shot — no empty-file window, no read-retry loop.
+/// - **Symlink-safe write** — the temp is created with `O_CREAT|O_EXCL` (mode
+///   `0600`) at a random, unguessable path, so the write can neither follow nor
+///   clobber a pre-planted symlink/file even when `dir` is attacker-writable (the
+///   relative `.honmoon` fallback landing in a world-writable CWD). This keeps the
+///   hardening the removed exclusive first-run create had. The random name also
+///   makes the temp unique across processes and threads with no extra bookkeeping.
+///
+/// Falls back to the caller's own (unpersisted) `salt` only if the post-link read
+/// genuinely fails; the next invocation self-heals via the short-file path.
 fn publish_secret_atomically(dir: &Path, path: &Path, salt: &[u8]) -> Result<Vec<u8>> {
-    // Temp name unique per caller: the PID keeps concurrent hook *processes*
-    // apart, the sequence counter keeps threads within one process apart (the
-    // test harness races threads). No live racer can share the name, so a
-    // truncating write is safe — any file already at this name is stale debris
-    // from a dead same-PID process.
-    let seq = TEMP_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let tmp = dir.join(format!("hook-salt.tmp.{}.{}", std::process::id(), seq));
-    write_secret_file(&tmp, salt)
+    // Unpredictable temp name (16 random bytes), created exclusively below: an
+    // attacker cannot pre-plant a file/symlink at a path they cannot guess, and no
+    // two racers (processes or threads) collide on it.
+    let nonce = random_bytes(16)?;
+    let tmp = dir.join(format!("hook-salt.tmp.{}", hex_encode(&nonce)));
+    create_secret_file_exclusive(&tmp, salt)
         .with_context(|| format!("writing temp salt {}", tmp.display()))?;
 
     let linked = std::fs::hard_link(&tmp, path);
-    // The temp has done its job in every outcome — remove it best-effort so a
-    // stray temp never lingers. On a win its content now lives at `path` via the
-    // link; on a loss `path` already holds the winner's content.
-    let _ = std::fs::remove_file(&tmp);
+    // The temp has done its job in every outcome — remove it. On a win its content
+    // now lives at `path` via the link; on a loss `path` already holds the winner's
+    // content. A cleanup failure is non-fatal but leaves a 0600 secret file behind,
+    // so log it (this file treats every non-happy filesystem anomaly as log-worthy).
+    if let Err(e) = std::fs::remove_file(&tmp) {
+        eprintln!(
+            "honmoon hook: could not remove temp salt file {} ({e}) — secret material may linger on disk",
+            tmp.display()
+        );
+    }
 
     match linked {
         Ok(()) => Ok(salt.to_vec()),
         Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
             // Lost the race: the target is already a complete salt (a publisher
-            // links only after a full write), so a single read suffices.
+            // links only after a full write), so a single read suffices. The two
+            // anomaly arms below are "vanishingly unlikely" (target present but
+            // short/unreadable right after a peer's link) — fall back to our own
+            // salt for this one invocation, but log it, mirroring the sibling read
+            // path in `load_or_create_machine_salt`: the next run self-heals via
+            // the top-level path, so without a diagnostic a transient recurrence
+            // would leave no trace at all.
             match std::fs::read(path) {
                 Ok(bytes) if bytes.len() >= 16 => Ok(bytes),
-                // Vanishingly unlikely (target present but unreadable/short right
-                // after a peer's successful link). Use our own salt for this
-                // invocation; the next run rewrites the short file and self-heals.
-                _ => Ok(salt.to_vec()),
+                Ok(bytes) => {
+                    eprintln!(
+                        "honmoon hook: winner salt file {} is short/corrupt ({} bytes) after a lost publish race — using our own salt for this invocation",
+                        path.display(),
+                        bytes.len()
+                    );
+                    Ok(salt.to_vec())
+                }
+                Err(e) => {
+                    eprintln!(
+                        "honmoon hook: unexpected error reading salt file {} after a lost publish race ({e}) — using our own salt for this invocation",
+                        path.display()
+                    );
+                    Ok(salt.to_vec())
+                }
             }
         }
         Err(e) => Err(e).with_context(|| format!("linking salt into place {}", path.display())),
     }
 }
 
-/// Per-process sequence for [`publish_secret_atomically`] temp names, so two
-/// threads publishing at once (only the test harness does) never collide on one
-/// temp path. Distinct hook *processes* are already separated by PID.
-static TEMP_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+/// Create `path` **exclusively** (`O_CREAT|O_EXCL`, mode `0600` on Unix), failing
+/// with [`std::io::ErrorKind::AlreadyExists`] if it already exists. Exclusive
+/// creation refuses to follow or truncate a pre-planted symlink/file, so it is
+/// symlink-safe; no `chmod` afterward since a newly created file already carries
+/// the authoritative open-mode `0600`.
+fn create_secret_file_exclusive(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    use std::io::Write as _;
+    let mut opts = std::fs::OpenOptions::new();
+    opts.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        opts.mode(0o600);
+    }
+    let mut file = opts.open(path)?;
+    file.write_all(bytes)?;
+    Ok(())
+}
+
+/// Lowercase hex-encode `bytes` (the workspace pulls in no `hex` crate). Used only
+/// for the random temp-file suffix in [`publish_secret_atomically`].
+fn hex_encode(bytes: &[u8]) -> String {
+    use std::fmt::Write as _;
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for b in bytes {
+        let _ = write!(out, "{b:02x}");
+    }
+    out
+}
 
 /// Write `bytes` to `path`, creating it `0600` (Unix) via the open mode so the
 /// secret is never briefly readable at the umask default between `write` and a
@@ -869,6 +922,27 @@ mod tests {
             std::fs::read(&path).unwrap(),
             winner,
             "the winner's file is left untouched"
+        );
+    }
+
+    #[test]
+    fn first_run_loser_falls_back_when_winner_file_is_short() {
+        // The lost-race read normally sees a complete winner file; the fallback
+        // arm only fires in the "vanishingly unlikely" case that the target is
+        // present but under 16 bytes right after a peer's link. Exercise it
+        // deterministically: pre-seed `path` with a sub-16-byte file so the
+        // hard_link loses (target exists) and the follow-up read is too short —
+        // the publisher must fall back to its own salt for this invocation rather
+        // than erroring or returning garbage.
+        let tmp = TempDir::new("short-winner");
+        let path = tmp.path().join("hook-salt");
+        std::fs::write(&path, b"tooshort").expect("seed short winner file");
+        let ours = vec![1u8; 32];
+        let adopted =
+            publish_secret_atomically(tmp.path(), &path, &ours).expect("publish falls back");
+        assert_eq!(
+            adopted, ours,
+            "a short winner file forces fallback to our own salt"
         );
     }
 
