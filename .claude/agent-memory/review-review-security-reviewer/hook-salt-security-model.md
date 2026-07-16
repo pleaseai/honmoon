@@ -21,8 +21,9 @@ forge placeholders. Redaction still works without it (fail-open).
   created temps/targets have no such window.
 - The `.honmoon` dir is created via `create_dir_all` at umask default (~0755) and is
   owned by the user — so the 0600 file contents are safe from other UIDs *as long as
-  the dir is not attacker-writable*. A world-writable salt directory (relative `.honmoon`
-  fallback when `HOME` is unset, or a misconfigured `$HOME`) breaks that assumption.
+  the dir is not attacker-writable*. An attacker-writable salt directory (group-writable
+  or world-writable — the relative `.honmoon` fallback when `HOME` is unset, or a
+  misconfigured `$HOME`) breaks that assumption.
 - Fail-open fallback key `b"honmoon-hook-v1-fallback-key"` is **by design** (documented
   tradeoff) — do NOT flag it as a vuln.
 
@@ -36,7 +37,9 @@ guess), but this is **not** full symlink-safety: in an attacker-writable, *obser
 dir an attacker can still replace the temp between its close and the `hard_link`
 (TOCTOU), and the top-level and lost-race `std::fs::read(hook-salt)` follow a symlink —
 so a planted target could substitute the adopted HMAC key. All of this is reachable only
-in the **non-default world-writable salt-directory** case (`HOME` unset → relative
-fallback, or a misconfigured `$HOME`); the default user-owned `$HOME/.honmoon` is safe.
+in an **attacker-writable salt-directory** (including group-writable/shared paths — the
+attack needs write access, not specifically *world*-writable; the `HOME`-unset relative
+fallback is unsafe only when its CWD is attacker-writable); the default user-owned
+`$HOME/.honmoon` is safe as long as it is not attacker-writable.
 To fully close it for hostile-directory deployments, use fd-based linking (`O_TMPFILE` +
 `linkat`) and `O_NOFOLLOW`/`symlink_metadata` on the reads.
