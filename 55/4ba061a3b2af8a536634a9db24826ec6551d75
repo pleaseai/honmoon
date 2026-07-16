@@ -1,0 +1,29 @@
+crates/honmoon-cli/src/hook.rs
+  s_07f31bcf949cf3::t_9d85296e4d11f1 362-378,380-385,389-398,404-410,413-427,434-462
+  s_07f31bcf949cf3::t_656682b96ce569 929-948
+  s_53f119918a707c::t_141916399bd7bd 928
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.14",
+  "base_commit_sha": "554ba061a3b2af8a536634a9db24826ec6551d75",
+  "prompts": {},
+  "sessions": {
+    "s_07f31bcf949cf3": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "7c82906f-dad3-4b12-a732-c192652e427c",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    },
+    "s_53f119918a707c": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "fc678f72-9bfe-4f11-b2cc-6342fb0b5c6a",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
