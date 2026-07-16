@@ -13,12 +13,16 @@ metadata:
 forge placeholders. Redaction still works without it (fail-open).
 
 **Security invariants to check on any change here:**
-- Salt file + any temp must be mode `0600` at all times, no looser transient window.
-  `write_secret_file` opens O_CREAT mode 0600 AND calls `set_permissions_0600` after.
+- Salt file + any temp should be mode `0600`. Newly created files are `0600` from the
+  open mode; the *recovery/overwrite* path (`write_secret_file` on a pre-existing
+  short/corrupt `hook-salt` that some external actor left group/world-readable) writes
+  the bytes before its trailing `set_permissions_0600`, so there is a brief transient
+  window where a pre-existing looser file holds new bytes at its old mode. Freshly
+  created temps/targets have no such window.
 - The `.honmoon` dir is created via `create_dir_all` at umask default (~0755) and is
   owned by the user — so the 0600 file contents are safe from other UIDs *as long as
-  the dir is not attacker-writable*. The relative `.honmoon` fallback (HOME unset) can
-  land in a world-writable CWD, which breaks that assumption.
+  the dir is not attacker-writable*. A world-writable salt directory (relative `.honmoon`
+  fallback when `HOME` is unset, or a misconfigured `$HOME`) breaks that assumption.
 - Fail-open fallback key `b"honmoon-hook-v1-fallback-key"` is **by design** (documented
   tradeoff) — do NOT flag it as a vuln.
 
@@ -26,10 +30,13 @@ forge placeholders. Redaction still works without it (fail-open).
 create/link/read sequence (symlink follow, TOCTOU, predictable temp names) rather than
 the fallback key. The 2026-07 hard_link rewrite publishes the first-run salt by writing
 it to an **exclusively-created** temp (`O_CREAT|O_EXCL`, mode 0600) at an unguessable
-**random** name, then `hard_link`ing it onto `hook-salt` — so the temp write is
-symlink-safe (cannot follow or clobber a pre-planted path) and the publish is atomic.
-Still open (pre-existing, not introduced by the rewrite): the top-level and lost-race
-`std::fs::read(hook-salt)` follow a symlink, so a planted `hook-salt` symlink in an
-attacker-writable dir could substitute the adopted HMAC key — only reachable in the
-non-default world-writable `.honmoon` case (relative fallback when `HOME` is unset).
-Harden with `O_NOFOLLOW`/`symlink_metadata` if that deployment matters.
+**random** name, then `hard_link`ing it onto `hook-salt`. The random + exclusive temp
+blocks *pre-planting* (an attacker cannot create a symlink/file at a path they cannot
+guess), but this is **not** full symlink-safety: in an attacker-writable, *observable*
+dir an attacker can still replace the temp between its close and the `hard_link`
+(TOCTOU), and the top-level and lost-race `std::fs::read(hook-salt)` follow a symlink —
+so a planted target could substitute the adopted HMAC key. All of this is reachable only
+in the **non-default world-writable salt-directory** case (`HOME` unset → relative
+fallback, or a misconfigured `$HOME`); the default user-owned `$HOME/.honmoon` is safe.
+To fully close it for hostile-directory deployments, use fd-based linking (`O_TMPFILE` +
+`linkat`) and `O_NOFOLLOW`/`symlink_metadata` on the reads.

@@ -367,12 +367,15 @@ fn load_or_create_machine_salt(dir: &Path) -> Result<Vec<u8>> {
 ///   racer publishes and the target only ever becomes visible already-complete (a
 ///   publisher links *after* its temp is fully written). A loser reads the
 ///   winner's bytes in a single shot — no empty-file window, no read-retry loop.
-/// - **Symlink-safe write** — the temp is created with `O_CREAT|O_EXCL` (mode
-///   `0600`) at a random, unguessable path, so the write can neither follow nor
-///   clobber a pre-planted symlink/file even when `dir` is attacker-writable (the
-///   relative `.honmoon` fallback landing in a world-writable CWD). This keeps the
-///   hardening the removed exclusive first-run create had. The random name also
-///   makes the temp unique across processes and threads with no extra bookkeeping.
+/// - **Exclusive, unguessable temp write** — the temp is created with
+///   `O_CREAT|O_EXCL` (mode `0600`) at a random name, so the write neither follows
+///   nor clobbers a *pre-planted* symlink/file, and no two racers collide. This
+///   restores the pre-planting safety the removed exclusive first-run create had.
+///   (It does not fully close a hostile-directory attack: in an attacker-writable,
+///   *observable* `dir` an attacker could still replace the temp between its close
+///   and the `hard_link` — a TOCTOU that only fd-based linking or a trusted,
+///   non-attacker-writable directory would eliminate. The default `$HOME/.honmoon`
+///   is user-owned, so this residual gap is out of the standard threat model.)
 ///
 /// Falls back to the caller's own (unpersisted) `salt` only if the post-link read
 /// genuinely fails; the next invocation self-heals via the short-file path.
@@ -382,19 +385,29 @@ fn publish_secret_atomically(dir: &Path, path: &Path, salt: &[u8]) -> Result<Vec
     // two racers (processes or threads) collide on it.
     let nonce = random_bytes(16)?;
     let tmp = dir.join(format!("hook-salt.tmp.{}", hex_encode(&nonce)));
-    create_secret_file_exclusive(&tmp, salt)
-        .with_context(|| format!("writing temp salt {}", tmp.display()))?;
+    if let Err(e) = create_secret_file_exclusive(&tmp, salt)
+        .with_context(|| format!("writing temp salt {}", tmp.display()))
+    {
+        // A write failure after the exclusive create leaves a partial/empty temp.
+        // It is ours alone (random nonce), so remove it before returning rather
+        // than accumulating orphaned salt material in `dir` on repeated I/O errors.
+        let _ = std::fs::remove_file(&tmp);
+        return Err(e);
+    }
 
     let linked = std::fs::hard_link(&tmp, path);
     // The temp has done its job in every outcome — remove it. On a win its content
     // now lives at `path` via the link; on a loss `path` already holds the winner's
     // content. A cleanup failure is non-fatal but leaves a 0600 secret file behind,
     // so log it (this file treats every non-happy filesystem anomaly as log-worthy).
+    // `NotFound` is not such an anomaly — the temp is already gone, nothing lingers.
     if let Err(e) = std::fs::remove_file(&tmp) {
-        eprintln!(
-            "honmoon hook: could not remove temp salt file {} ({e}) — secret material may linger on disk",
-            tmp.display()
-        );
+        if e.kind() != std::io::ErrorKind::NotFound {
+            eprintln!(
+                "honmoon hook: could not remove temp salt file {} ({e}) — secret material may linger on disk",
+                tmp.display()
+            );
+        }
     }
 
     match linked {
