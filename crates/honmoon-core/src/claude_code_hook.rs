@@ -217,12 +217,17 @@ pub fn is_sensitive_path(path: &str) -> bool {
         ".npmrc",
         ".pypirc",
         "credentials",
-        "id_rsa",
-        "id_dsa",
-        "id_ecdsa",
-        "id_ed25519",
     ];
-    if SENSITIVE_BASENAMES.contains(&base) || base.starts_with("id_rsa") && !base.ends_with(".pub")
+    // Private SSH keys ship as `id_<type>` plus renamed variants and backups
+    // (`id_ed25519_old`, `id_ecdsa.bak`); only the `.pub` half is public. Match
+    // every key type by prefix so variants of all four types are covered — not
+    // just the exact `id_rsa` basename.
+    const SSH_KEY_PREFIXES: &[&str] = &["id_rsa", "id_dsa", "id_ecdsa", "id_ed25519"];
+    if SENSITIVE_BASENAMES.contains(&base)
+        || (SSH_KEY_PREFIXES
+            .iter()
+            .any(|prefix| base.starts_with(prefix))
+            && !base.ends_with(".pub"))
     {
         return true;
     }
@@ -234,10 +239,13 @@ pub fn is_sensitive_path(path: &str) -> bool {
     {
         return true;
     }
+    // Match path fragments cross-platform: normalize Windows separators so
+    // `…\.gnupg\secring.gpg` is caught the same as the Unix form.
     const SENSITIVE_FRAGMENTS: &[&str] = &["/.aws/credentials", "/.gnupg/"];
+    let normalized = lower.replace('\\', "/");
     SENSITIVE_FRAGMENTS
         .iter()
-        .any(|fragment| lower.contains(fragment))
+        .any(|fragment| normalized.contains(fragment))
 }
 
 #[cfg(test)]
@@ -320,6 +328,28 @@ mod tests {
                 "deny"
             );
         }
+    }
+
+    #[test]
+    fn is_sensitive_path_covers_key_variants_and_windows_gnupg() {
+        // Renamed / backup variants of every SSH key type are sensitive.
+        for path in [
+            "/home/u/.ssh/id_rsa_backup",
+            "/home/u/.ssh/id_ed25519_old",
+            "/home/u/.ssh/id_ecdsa.bak",
+            "/home/u/.ssh/id_dsa2",
+        ] {
+            assert!(is_sensitive_path(path), "expected sensitive: {path}");
+        }
+        // Public halves stay allowed for every key type.
+        for path in ["/home/u/.ssh/id_rsa.pub", "/home/u/.ssh/id_ed25519.pub"] {
+            assert!(!is_sensitive_path(path), "expected allowed: {path}");
+        }
+        // `.gnupg` private material is denied on both separator styles. Uses a
+        // `.gpg` basename (not a sensitive extension) so only the normalized
+        // fragment match can catch the Windows form.
+        assert!(is_sensitive_path("/home/u/.gnupg/secring.gpg"));
+        assert!(is_sensitive_path(r"C:\Users\me\.gnupg\secring.gpg"));
     }
 
     #[test]

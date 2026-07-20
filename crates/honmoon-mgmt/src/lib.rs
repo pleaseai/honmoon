@@ -54,16 +54,12 @@ pub struct AppState {
 }
 
 impl AppState {
-    pub fn new(gateway: GatewayState, policy_yaml: impl Into<String>) -> Self {
-        Self::with_hook_config(
-            gateway,
-            policy_yaml,
-            b"honmoon-gateway-hook-v1".to_vec(),
-            None,
-        )
-    }
-
     /// Build state with explicit hook salt and optional bearer token.
+    ///
+    /// There is deliberately no salt-less constructor: the hook salt keys the
+    /// HMAC that derives redaction placeholders, so baking in a fixed default
+    /// would make placeholders for known secrets precomputable. Callers must
+    /// supply a securely sourced salt (see `honmoon-cli`'s `derive_salt_context`).
     pub fn with_hook_config(
         gateway: GatewayState,
         policy_yaml: impl Into<String>,
@@ -128,17 +124,24 @@ async fn claude_code_hook(
             .into_response();
     }
 
-    let resolved_path_is_sensitive = payload
+    let path_to_resolve = payload
         .get("tool_input")
         .and_then(|input| {
             input
                 .get("file_path")
                 .or_else(|| input.get("notebook_path"))
         })
-        .and_then(serde_json::Value::as_str)
-        .and_then(|path| std::fs::canonicalize(path).ok())
-        .and_then(|path| path.to_str().map(is_sensitive_path))
-        .unwrap_or(false);
+        .and_then(serde_json::Value::as_str);
+    // Resolve symlinks off the async executor: `tokio::fs::canonicalize` hands
+    // the blocking syscall to the runtime's blocking pool, so concurrent hook
+    // requests don't stall the Tokio worker thread.
+    let resolved_path_is_sensitive = match path_to_resolve {
+        Some(path) => match tokio::fs::canonicalize(path).await {
+            Ok(canonical) => canonical.to_str().map(is_sensitive_path).unwrap_or(false),
+            Err(_) => false,
+        },
+        None => false,
+    };
     let verdict = claude_code_hook_verdict(&payload, &state.hook_salt, resolved_path_is_sensitive);
     let (output, mapping) = verdict.into_parts();
     state.hook_mappings.record(mapping);
@@ -156,15 +159,22 @@ fn authorized(state: &AppState, headers: &HeaderMap) -> bool {
         .is_some_and(|provided| constant_time_eq(provided.as_bytes(), expected.as_bytes()))
 }
 
-fn constant_time_eq(left: &[u8], right: &[u8]) -> bool {
-    let mut difference = left.len() ^ right.len();
-    let max_len = left.len().max(right.len());
-    for index in 0..max_len {
-        let l = left.get(index).copied().unwrap_or(0);
-        let r = right.get(index).copied().unwrap_or(0);
-        difference |= usize::from(l ^ r);
+/// Constant-time equality for authenticating the caller-supplied bearer token
+/// against the configured secret.
+///
+/// The loop always runs `expected.len()` iterations regardless of `provided`, so
+/// its timing never depends on — and cannot leak — the attacker-controlled
+/// length. `black_box` stops LLVM from short-circuiting the fold once a mismatch
+/// is known. `expected` is a server-held secret, so its own length is not
+/// sensitive; hashing to a fixed width would only add a dependency without
+/// closing a real leak.
+fn constant_time_eq(provided: &[u8], expected: &[u8]) -> bool {
+    let mut difference = u8::from(provided.len() != expected.len());
+    for (index, expected_byte) in expected.iter().enumerate() {
+        let provided_byte = provided.get(index).copied().unwrap_or(0);
+        difference |= provided_byte ^ expected_byte;
     }
-    difference == 0
+    std::hint::black_box(difference) == 0
 }
 
 #[derive(Debug, Deserialize)]
@@ -253,5 +263,22 @@ async fn static_handler(uri: Uri) -> Response {
             "dashboard not built — run `bun run --filter @honmoon/dashboard build`",
         )
             .into_response(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::constant_time_eq;
+
+    #[test]
+    fn constant_time_eq_matches_only_identical_secrets() {
+        assert!(constant_time_eq(b"s3cr3t-token", b"s3cr3t-token"));
+        assert!(constant_time_eq(b"", b""));
+        // Same length, one byte differs (`0` vs `o`).
+        assert!(!constant_time_eq(b"s3cr3t-t0ken", b"s3cr3t-token"));
+        // Shorter and longer provided tokens both fail, even on a matching prefix.
+        assert!(!constant_time_eq(b"s3cr3t", b"s3cr3t-token"));
+        assert!(!constant_time_eq(b"s3cr3t-token-extra", b"s3cr3t-token"));
+        assert!(!constant_time_eq(b"", b"s3cr3t-token"));
     }
 }
