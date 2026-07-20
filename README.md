@@ -224,4 +224,7 @@ Honmoon unifies the approaches of two projects:
 
 ## License
 
-TBD
+Honmoon's open-source core is licensed under the [Apache License 2.0](./LICENSE).
+Enterprise components under `packages/enterprise/` (planned for Phase 7) will be
+separately licensed under the BSL or FSL, as described in the
+[open-core business model](./docs/business-model.md).
