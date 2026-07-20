@@ -1,0 +1,22 @@
+crates/honmoon-mgmt/src/lib.rs
+  s_6289b0c2852115::t_35afa48c61713c 26,31-33
+  s_6289b0c2852115::t_2f0c3626038c1e 170-175,177-184
+crates/honmoon-mgmt/Cargo.toml
+  s_6289b0c2852115::t_5eb8591c654b79 15-16
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.14",
+  "base_commit_sha": "5da3d446a4f026426d6aa440051cfb741c293e5c",
+  "prompts": {},
+  "sessions": {
+    "s_6289b0c2852115": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "ae6e757b-564f-4346-bd1d-32e70b2d9217",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
