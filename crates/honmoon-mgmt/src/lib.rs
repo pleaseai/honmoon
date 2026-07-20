@@ -134,10 +134,11 @@ async fn claude_code_hook(
         .and_then(serde_json::Value::as_str);
     // Resolve symlinks off the async executor: `tokio::fs::canonicalize` hands
     // the blocking syscall to the runtime's blocking pool, so concurrent hook
-    // requests don't stall the Tokio worker thread.
+    // requests don't stall the Tokio worker thread. Use `to_string_lossy` so a
+    // non-UTF-8 path is still checked (fail toward denying) rather than skipped.
     let resolved_path_is_sensitive = match path_to_resolve {
         Some(path) => match tokio::fs::canonicalize(path).await {
-            Ok(canonical) => canonical.to_str().map(is_sensitive_path).unwrap_or(false),
+            Ok(canonical) => is_sensitive_path(&canonical.to_string_lossy()),
             Err(_) => false,
         },
         None => false,
@@ -164,15 +165,15 @@ fn authorized(state: &AppState, headers: &HeaderMap) -> bool {
 ///
 /// The loop always runs `expected.len()` iterations regardless of `provided`, so
 /// its timing never depends on — and cannot leak — the attacker-controlled
-/// length. `black_box` stops LLVM from short-circuiting the fold once a mismatch
-/// is known. `expected` is a server-held secret, so its own length is not
-/// sensitive; hashing to a fixed width would only add a dependency without
-/// closing a real leak.
+/// length. `black_box` on each byte's XOR (and on the final fold) stops LLVM
+/// from short-circuiting the accumulation once a mismatch is known. `expected`
+/// is a server-held secret, so its own length is not sensitive; hashing to a
+/// fixed width would only add a dependency without closing a real leak.
 fn constant_time_eq(provided: &[u8], expected: &[u8]) -> bool {
     let mut difference = u8::from(provided.len() != expected.len());
     for (index, expected_byte) in expected.iter().enumerate() {
         let provided_byte = provided.get(index).copied().unwrap_or(0);
-        difference |= provided_byte ^ expected_byte;
+        difference |= std::hint::black_box(provided_byte ^ expected_byte);
     }
     std::hint::black_box(difference) == 0
 }

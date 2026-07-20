@@ -75,7 +75,9 @@ pub fn handle_hook(payload: &Value, salt: &[u8]) -> Value {
         })
         .and_then(Value::as_str)
         .and_then(|path| std::fs::canonicalize(path).ok())
-        .and_then(|path| path.to_str().map(honmoon_core::is_sensitive_path))
+        // `to_string_lossy` so a non-UTF-8 path is still checked (fail toward
+        // denying) rather than silently skipped by a `to_str()` `None`.
+        .map(|path| honmoon_core::is_sensitive_path(&path.to_string_lossy()))
         .unwrap_or(false);
     honmoon_core::claude_code_hook_verdict(payload, salt, resolved_is_sensitive)
         .into_parts()
