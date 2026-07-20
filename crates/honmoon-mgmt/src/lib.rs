@@ -23,10 +23,14 @@ use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode, Uri, header};
 use axum::response::{Html, IntoResponse, Response};
 use axum::routing::{get, post};
+use hmac::{Hmac, Mac};
 use honmoon_core::{AuditEvent, MappingStore, Policy, claude_code_hook_verdict, is_sensitive_path};
 use honmoon_proxy::approval::{ApprovalDecision, PendingApproval};
 use honmoon_proxy::gateway::GatewayState;
 use serde::{Deserialize, Serialize};
+use sha2::Sha256;
+
+type HmacSha256 = Hmac<Sha256>;
 
 /// Embedded dashboard assets (built by Vite into `apps/dashboard/dist`).
 ///
@@ -163,19 +167,21 @@ fn authorized(state: &AppState, headers: &HeaderMap) -> bool {
 /// Constant-time equality for authenticating the caller-supplied bearer token
 /// against the configured secret.
 ///
-/// The loop always runs `expected.len()` iterations regardless of `provided`, so
-/// its timing never depends on — and cannot leak — the attacker-controlled
-/// length. `black_box` on each byte's XOR (and on the final fold) stops LLVM
-/// from short-circuiting the accumulation once a mismatch is known. `expected`
-/// is a server-held secret, so its own length is not sensitive; hashing to a
-/// fixed width would only add a dependency without closing a real leak.
+/// Both inputs are folded through HMAC-SHA256 into a fixed 32-byte digest before
+/// comparison, so the comparison length is independent of either input's length
+/// — closing even the theoretical leak of the secret's length through absolute
+/// timing. `CtOutput`'s `PartialEq` compares the digests in constant time (via
+/// `subtle`). The key is a public constant: it only maps inputs to a fixed
+/// width for comparison, so it need not be secret.
 fn constant_time_eq(provided: &[u8], expected: &[u8]) -> bool {
-    let mut difference = u8::from(provided.len() != expected.len());
-    for (index, expected_byte) in expected.iter().enumerate() {
-        let provided_byte = provided.get(index).copied().unwrap_or(0);
-        difference |= std::hint::black_box(provided_byte ^ expected_byte);
-    }
-    std::hint::black_box(difference) == 0
+    const KEY: &[u8] = b"honmoon-bearer-token-comparison";
+    let digest = |data: &[u8]| {
+        let mut mac =
+            <HmacSha256 as Mac>::new_from_slice(KEY).expect("HMAC accepts a key of any length");
+        mac.update(data);
+        mac.finalize()
+    };
+    digest(provided) == digest(expected)
 }
 
 #[derive(Debug, Deserialize)]
