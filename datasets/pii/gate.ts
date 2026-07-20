@@ -14,7 +14,7 @@
 import type { LabelScore } from './score.ts'
 import { appendFileSync, readFileSync } from 'node:fs'
 import { assertValidRecords, fromJsonl, loadLabels } from './build/types.ts'
-import { score } from './score.ts'
+import { prf, score } from './score.ts'
 
 // AC1 floors: Tier-1 micro F1 ≥ 0.98, per-label F1 ≥ 0.90, AND per-label precision ≥ 0.99.
 // Gating F1 alone would let a false-positive regression pass as long as recall compensates,
@@ -86,10 +86,19 @@ function main(): void {
         offenders.push(`${label} P ${s.precision.toFixed(3)}<${PRECISION_FLOOR}`)
       }
     }
-    const tier1 = score(
-      gold.map(record => ({ ...record, spans: record.spans.filter(span => SYNTH_LABELS.includes(span.label)) })),
-      pred.map(record => ({ ...record, spans: record.spans.filter(span => SYNTH_LABELS.includes(span.label)) })),
-    ).micro
+    // Matching is label-scoped (score.ts groups spans by label before matching),
+    // so the Tier-1 micro score equals the aggregate of the per-label counts
+    // already in `report` — no need to re-score a filtered copy of the datasets.
+    let tp = 0
+    let fp = 0
+    let fn = 0
+    for (const label of SYNTH_LABELS) {
+      const s = report.perLabel.get(label)
+      tp += s?.tp ?? 0
+      fp += s?.fp ?? 0
+      fn += s?.fn ?? 0
+    }
+    const tier1 = prf(tp, fp, fn)
     scoredLabels.push(['Tier-1 micro', tier1])
     console.log(`  ${'Tier-1 micro'.padEnd(14)} F1=${tier1.f1.toFixed(3)} P=${tier1.precision.toFixed(3)}`)
     if (tier1.f1 < F1_FLOOR) {
