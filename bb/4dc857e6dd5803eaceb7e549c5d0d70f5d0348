@@ -1,0 +1,52 @@
+crates/honmoon-proxy/src/mitm.rs
+  s_8657a4c40ae094::t_a8eddd57633822 361-368
+  s_8657a4c40ae094::t_c68b2c6ac2a1e6 739
+  s_8657a4c40ae094::t_71de151de963ea 38
+  s_8657a4c40ae094::t_6dd9f606b59523 710
+  s_8657a4c40ae094::t_3d7caae98a7f9c 793
+  s_8657a4c40ae094::t_dea907998a4671 62-65
+  s_8657a4c40ae094::t_a8319fbe81126a 376
+  s_8657a4c40ae094::t_1a6b794e2a74d6 404-407
+  s_8657a4c40ae094::t_42dfd56d9c5692 360,369-374
+  s_8657a4c40ae094::t_2cb6e072728d85 709,711-712
+  s_8657a4c40ae094::t_c861e67dcc7873 776
+  s_8657a4c40ae094::t_b7348107c5eab7 838-839,841
+  s_8657a4c40ae094::t_0deec226d0a30d 728-729,732-738,740-745,748-775,777-779,782-784,787-792,794-797,799-802,805,807-815,817-821,824-837,840,842-885
+  s_8657a4c40ae094::t_8d3f839c7586ba 730-731
+  s_8657a4c40ae094::t_5815e079790149 886,954-965,968-971
+  s_8657a4c40ae094::t_a066e29b1725b9 966-967
+  s_8657a4c40ae094::t_dea20ac6de082c 798,803-804,806
+  s_8657a4c40ae094::t_c5599c0fc6c8a4 43-45
+  s_8657a4c40ae094::t_5616584da85332 672-673,676
+  s_8657a4c40ae094::t_07694a73af4b8c 403
+crates/honmoon-proxy/src/body.rs
+  s_8657a4c40ae094::t_5483544e36e9b1 257-259
+  s_8657a4c40ae094::t_40bf0c2c80198a 447-461
+  s_8657a4c40ae094::t_99eba2bf1abec5 446
+crates/honmoon-proxy/tests/redaction.rs
+  s_8657a4c40ae094::t_fdfb4bf1aabd2e 31-33,35
+  s_8657a4c40ae094::t_2e9ab69c3ad575 309,404-409,411-435,437-455,578,645
+  s_8657a4c40ae094::t_bc7c523339f56f 646-663
+  s_8657a4c40ae094::t_44cdb6b880ff2e 410
+  s_8657a4c40ae094::t_c4954ee5dcaf0b 579-606
+  s_8657a4c40ae094::t_79c7e28a7dd423 34
+  s_8657a4c40ae094::t_91bc4a7c79f997 100-112
+  s_8657a4c40ae094::t_aaae44e13b597a 310-336
+  s_8657a4c40ae094::t_f5cb5a8c7fe8b0 436
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.14",
+  "base_commit_sha": "bb4dc857e6dd5803eaceb7e549c5d0d70f5d0348",
+  "prompts": {},
+  "sessions": {
+    "s_8657a4c40ae094": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "4e57bb76-809f-47f2-a2c1-fc38876a8bf5",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
