@@ -18,7 +18,7 @@ use honmoon_core::{AuditLog, Decision, Policy};
 use honmoon_mgmt::AppState;
 use honmoon_proxy::approval::ApprovalRegistry;
 use honmoon_proxy::ca::CaMaterial;
-use honmoon_proxy::gateway::{GatewayState, InterceptPolicy};
+use honmoon_proxy::gateway::{GatewayState, InterceptPolicy, PiiMode};
 
 /// In-process HTTP upstream that answers `200 OK / "ok"`.
 fn start_upstream() -> u16 {
@@ -53,6 +53,7 @@ fn start_gateway(policy_yaml: &str) -> Gateway {
         pause_timeout: Duration::from_secs(10),
         ca: Arc::new(CaMaterial::generate().unwrap()),
         intercept: InterceptPolicy::None,
+        pii_mode: PiiMode::Detect,
     };
 
     let proxy_listener = TcpListener::bind("127.0.0.1:0").unwrap();

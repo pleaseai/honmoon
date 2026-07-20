@@ -11,8 +11,9 @@
 //!    policy is applied here too, so the egress allowlist can't be bypassed by
 //!    skipping CONNECT. Bodies are also scanned.
 //! 3. **Decrypted inner requests** over a terminated tunnel (only when
-//!    intercepted) — the host was already authorized at the CONNECT, so only
-//!    the body is scanned with [`detect_pii`] and findings are audited.
+//!    intercepted) — the host was already authorized at the CONNECT; the body is
+//!    scanned and PII rules are either audited or enforced according to
+//!    [`PiiMode`](crate::gateway::PiiMode).
 //!
 //! Whether a request is an inner request (shape 3) is decided by the
 //! [`TunnelRegistry`] — the client's socket must have an authorized CONNECT to
@@ -21,8 +22,10 @@
 //! the scheme would let it skip the host gate. Unrecognized requests are gated
 //! like shape 2.
 //!
-//! Content inspection is **detect-only**: PII findings are surfaced to the audit
-//! log but do not block the request. Enforcing content rules is a follow-up.
+//! Content inspection defaults to **detect-only** for backward compatibility:
+//! PII findings and the policy's would-be verdict are audited, then forwarded.
+//! In block mode, the same verdict is enforced inline (`deny` returns 403 and
+//! `pause` uses the shared approval registry).
 //! Request-body buffering and `Content-Encoding` decoding live in
 //! [`crate::body`]; the forwarded body is always the original (still-encoded)
 //! bytes — only the scanner sees decoded output.
@@ -36,7 +39,8 @@ use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
 
 use honmoon_core::{
-    AuditDraft, Decision, Facts, FactsSummary, HttpFacts, Verdict, decide_explained, detect_pii,
+    AuditDraft, Decision, Facts, FactsSummary, HttpFacts, PiiFacts, Verdict, decide_explained,
+    detect_pii,
 };
 use http_body_util::{BodyExt, Full};
 use hudsucker::hyper::{Method, Request, Response, StatusCode, header};
@@ -46,7 +50,7 @@ use crate::approval::{ApprovalDecision, NewApproval};
 use crate::body::{
     Buffered, MAX_INSPECT_BODY, buffer_up_to, decode_for_inspection, prefixed_body, utf8_prefix,
 };
-use crate::gateway::{GatewayState, InterceptPolicy, canonical_host};
+use crate::gateway::{GatewayState, InterceptPolicy, PiiMode, canonical_host};
 
 /// Backstop cap on tracked tunnels. Entries are overwritten per client socket
 /// but never individually removed (hudsucker exposes no close event), so this
@@ -185,18 +189,28 @@ impl HonmoonHandler {
                 });
                 Gate::Block(Box::new(status_response(StatusCode::FORBIDDEN)))
             }
-            Verdict::Pause => self.hold(host, summary, outcome.rule).await,
+            Verdict::Pause => {
+                let approval_summary = connect_summary(host, outcome.rule.as_deref());
+                self.hold(host, summary, outcome.rule, approval_summary)
+                    .await
+            }
         }
     }
 
     /// Hold a `pause`d request until a human resolves it (or the hold times out).
     /// The client waits the whole time (a CONNECT stays silent until its `200`),
     /// so returning [`Gate::Proceed`] lets it through and [`Gate::Block`] closes it.
-    async fn hold(&self, host: &str, summary: FactsSummary, rule: Option<String>) -> Gate {
+    async fn hold(
+        &self,
+        host: &str,
+        summary: FactsSummary,
+        rule: Option<String>,
+        approval_summary: String,
+    ) -> Gate {
         let registration = self.state.approvals.register(NewApproval {
             domain: Some(host.to_owned()),
             rule: rule.clone(),
-            summary: connect_summary(host, rule.as_deref()),
+            summary: approval_summary,
             ..Default::default()
         });
         let Some((pending, rx)) = registration else {
@@ -268,8 +282,8 @@ impl HonmoonHandler {
         }
     }
 
-    /// Scan a request body for PII and record any findings. Detect-only: the
-    /// (reconstructed) request is always returned to forward.
+    /// Scan a request body for PII. Detect mode audits findings and forwards;
+    /// block mode enforces the resulting policy verdict inline.
     async fn inspect_body(&self, req: Request<Body>) -> RequestOrResponse {
         let method = req.method().clone();
         let host = request_host(&req);
@@ -323,45 +337,91 @@ impl HonmoonHandler {
         let decoded = scanned
             .as_deref()
             .map(|raw| decode_for_inspection(content_encoding.as_deref(), raw));
-        let pii = decoded
-            .as_deref()
-            .and_then(utf8_prefix)
-            .and_then(detect_pii);
+        let inspected_text = decoded.as_deref().and_then(utf8_prefix);
+        let pii = inspected_text.and_then(detect_pii);
+        let forwarded = Request::from_parts(parts, new_body);
 
-        // Only record when something was found — every request would otherwise
-        // flood the bounded audit ring. (No let-chains: MSRV is 1.85.)
-        if let Some(pii) = pii.filter(|p| p.count > 0) {
-            let facts = Facts {
-                domain: Some(host.clone()),
-                http: Some(HttpFacts {
-                    method: method.as_str().to_owned(),
-                    host: host.clone(),
-                    path,
-                    body_size,
-                }),
-                pii: Some(pii.clone()),
-                ..Default::default()
-            };
-            let outcome = decide_explained(&self.state.policy, &facts);
-            tracing::info!(
-                domain = %host,
-                pii_types = ?pii.types,
-                pii_count = pii.count,
-                would_be = ?outcome.verdict,
-                "pii detected (detect-only)"
-            );
-            self.state.audit.record(AuditDraft {
-                // Detect-only: we forwarded (Allowed), but `verdict` carries what
-                // policy *would* do so enforcing mode is a drop-in later.
-                decision: Decision::Allowed,
-                verdict: outcome.verdict,
-                rule: outcome.rule,
-                facts: FactsSummary::from(&facts),
-                approval_id: None,
-            });
+        // An oversized or non-text body was not inspected. Do not interpret the
+        // absence of facts as `pii.count == 0`; retain the host gate's verdict.
+        if inspected_text.is_none() {
+            return forwarded.into();
         }
 
-        Request::from_parts(parts, new_body).into()
+        let facts = Facts {
+            domain: Some(host.clone()),
+            http: Some(HttpFacts {
+                method: method.as_str().to_owned(),
+                host: host.clone(),
+                path: path.clone(),
+                body_size,
+            }),
+            pii: pii.clone(),
+            ..Default::default()
+        };
+        let outcome = decide_explained(&self.state.policy, &facts);
+        let summary = FactsSummary::from(&facts);
+
+        if self.state.pii_mode == PiiMode::Detect {
+            // Keep the detect-only default quiet for clean traffic: only actual
+            // findings produce the would-be verdict audit event.
+            if let Some(pii) = pii.filter(|p| p.count > 0) {
+                tracing::info!(
+                    domain = %host,
+                    pii_types = ?pii.types,
+                    pii_count = pii.count,
+                    would_be = ?outcome.verdict,
+                    "pii detected (detect-only)"
+                );
+                self.state.audit.record(AuditDraft {
+                    decision: Decision::Allowed,
+                    verdict: outcome.verdict,
+                    rule: outcome.rule,
+                    facts: summary,
+                    approval_id: None,
+                });
+            }
+            return forwarded.into();
+        }
+
+        match outcome.verdict {
+            Verdict::Allow => {
+                self.state.audit.record(AuditDraft {
+                    decision: Decision::Allowed,
+                    verdict: Verdict::Allow,
+                    rule: outcome.rule,
+                    facts: summary,
+                    approval_id: None,
+                });
+                forwarded.into()
+            }
+            Verdict::Deny => {
+                tracing::info!(domain = %host, rule = ?outcome.rule, "request denied by content policy");
+                self.state.audit.record(AuditDraft {
+                    decision: Decision::Denied,
+                    verdict: Verdict::Deny,
+                    rule: outcome.rule,
+                    facts: summary,
+                    approval_id: None,
+                });
+                status_response(StatusCode::FORBIDDEN)
+            }
+            Verdict::Pause => {
+                let approval_summary = pii_summary(
+                    method.as_str(),
+                    &path,
+                    &host,
+                    facts.pii.as_ref(),
+                    outcome.rule.as_deref(),
+                );
+                match self
+                    .hold(&host, summary, outcome.rule, approval_summary)
+                    .await
+                {
+                    Gate::Proceed => forwarded.into(),
+                    Gate::Block(response) => *response,
+                }
+            }
+        }
     }
 }
 
@@ -422,6 +482,27 @@ fn connect_summary(host: &str, rule: Option<&str>) -> String {
     match rule {
         Some(r) => format!("CONNECT {host} (rule: {r})"),
         None => format!("CONNECT {host}"),
+    }
+}
+
+/// A PII-safe summary of a held body request. It names only labels/count, never
+/// matched text, so the approval queue cannot become a second PII leak.
+fn pii_summary(
+    method: &str,
+    path: &str,
+    host: &str,
+    pii: Option<&PiiFacts>,
+    rule: Option<&str>,
+) -> String {
+    let (types, count) = match pii {
+        Some(pii) => (pii.types.join(","), pii.count),
+        None => ("none".to_owned(), 0),
+    };
+    match rule {
+        Some(rule) => {
+            format!("{method} {host}{path}: PII [{types}] ({count} finding(s), rule: {rule})")
+        }
+        None => format!("{method} {host}{path}: PII [{types}] ({count} finding(s))"),
     }
 }
 

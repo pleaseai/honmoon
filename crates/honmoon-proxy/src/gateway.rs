@@ -48,6 +48,16 @@ pub enum InterceptPolicy {
     Hosts(HashSet<String>),
 }
 
+/// Whether body PII findings only inform audit events or enforce policy verdicts.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum PiiMode {
+    /// Evaluate PII rules for audit visibility, but always forward the request.
+    #[default]
+    Detect,
+    /// Enforce the policy verdict produced from the request and its PII facts.
+    Block,
+}
+
 /// Shared runtime state for the egress proxy.
 ///
 /// The data plane (this crate) and the management API (`honmoon-mgmt`) both hold
@@ -64,6 +74,8 @@ pub struct GatewayState {
     pub ca: Arc<CaMaterial>,
     /// Which tunnels to TLS-terminate.
     pub intercept: InterceptPolicy,
+    /// Whether PII policy verdicts are audit-only or enforced inline.
+    pub pii_mode: PiiMode,
 }
 
 impl GatewayState {
@@ -78,6 +90,7 @@ impl GatewayState {
             pause_timeout: DEFAULT_PAUSE_TIMEOUT,
             ca: Arc::new(CaMaterial::generate().expect("generate ephemeral CA")),
             intercept: InterceptPolicy::None,
+            pii_mode: PiiMode::Detect,
         }
     }
 }

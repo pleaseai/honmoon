@@ -1,8 +1,8 @@
 //! Request-body buffering and `Content-Encoding` decoding for PII inspection.
 //!
 //! Split out of [`mitm`](crate::mitm) so the TLS-termination handler stays
-//! focused on policy/gating. Everything here is detect-only plumbing: it
-//! produces the bytes the scanner reads, never the bytes that get forwarded.
+//! focused on policy/gating. It produces bounded decoded bytes for inspection;
+//! the caller decides whether findings are audit-only or enforced.
 //!
 //! Two invariants hold throughout:
 //! - **Bounded memory**: no more than [`MAX_INSPECT_BODY`] bytes are ever
