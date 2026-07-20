@@ -332,17 +332,24 @@ impl HonmoonHandler {
         };
 
         // Compressed bodies must not evade the scan: decode supported
-        // `Content-Encoding`s (capped) before scanning. Only the scan sees the
-        // decoded bytes — the original (still-encoded) body is forwarded.
+        // `Content-Encoding`s before scanning. Only the scan sees the decoded
+        // bytes — the original (still-encoded) body is forwarded. Decoded
+        // output that overflows the inspection cap is reported as `None`
+        // (leaving the body unscanned, like any other over-cap body) so a
+        // content verdict is never applied to a truncated prefix.
         let decoded = scanned
             .as_deref()
-            .map(|raw| decode_for_inspection(content_encoding.as_deref(), raw));
+            .and_then(|raw| decode_for_inspection(content_encoding.as_deref(), raw));
         let inspected_text = decoded.as_deref().and_then(utf8_prefix);
         let pii = inspected_text.and_then(detect_pii);
         let forwarded = Request::from_parts(parts, new_body);
 
-        // An oversized or non-text body was not inspected. Do not interpret the
-        // absence of facts as `pii.count == 0`; retain the host gate's verdict.
+        // An oversized, over-cap-decoded, or non-text body was not inspected.
+        // Do not interpret the absence of facts as `pii.count == 0`; retain the
+        // host gate's verdict. Intentionally no audit entry either, even in
+        // block mode — per-request forwards stay quiet (see `host_gate`'s
+        // `audit_allow`), and recording every uninspected forward would flood
+        // the bounded audit ring.
         if inspected_text.is_none() {
             return forwarded.into();
         }
@@ -385,13 +392,20 @@ impl HonmoonHandler {
 
         match outcome.verdict {
             Verdict::Allow => {
-                self.state.audit.record(AuditDraft {
-                    decision: Decision::Allowed,
-                    verdict: Verdict::Allow,
-                    rule: outcome.rule,
-                    facts: summary,
-                    approval_id: None,
-                });
+                // Keep block mode as quiet as detect mode for clean traffic:
+                // only actual PII findings are audited. Recording every clean
+                // Allow would flood the bounded audit ring and cycle out the
+                // Deny/Pause records that matter (see `host_gate`'s
+                // `audit_allow`).
+                if pii.as_ref().is_some_and(|p| p.count > 0) {
+                    self.state.audit.record(AuditDraft {
+                        decision: Decision::Allowed,
+                        verdict: Verdict::Allow,
+                        rule: outcome.rule,
+                        facts: summary,
+                        approval_id: None,
+                    });
+                }
                 forwarded.into()
             }
             Verdict::Deny => {

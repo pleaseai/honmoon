@@ -6,7 +6,8 @@
 //!
 //! Two invariants hold throughout:
 //! - **Bounded memory**: no more than [`MAX_INSPECT_BODY`] bytes are ever
-//!   buffered or inflated, so a large upload — or a decompression bomb — can't
+//!   buffered, and inflation reads at most one byte past that cap (only to
+//!   detect overflow), so a large upload — or a decompression bomb — can't
 //!   exhaust memory.
 //! - **Untrusted headers**: `Content-Encoding` is client input. A body that
 //!   fails to decode (mislabeled, corrupt, or an unsupported codec) falls back
@@ -33,18 +34,24 @@ pub(crate) const MAX_INSPECT_BODY: usize = 2 * 1024 * 1024;
 
 /// Decode a buffered request body for inspection according to its
 /// `Content-Encoding`. Returns the bytes to scan — borrowed for identity /
-/// undecodable inputs, inflated (capped at [`MAX_INSPECT_BODY`]) for
-/// `gzip`/`deflate`.
+/// undecodable inputs, inflated for `gzip`/`deflate` — or `None` when the
+/// inflated output exceeds [`MAX_INSPECT_BODY`]: a truncated prefix must not
+/// feed a content-policy verdict, so an over-cap body is left unscanned,
+/// exactly like an over-cap raw body.
 ///
-/// Never returns "nothing to scan": an undecodable body (mislabeled, corrupt,
-/// or an unsupported codec such as `br`) falls back to its raw bytes, because
-/// the header is untrusted and skipping would let a plaintext body evade the
-/// scan by claiming to be compressed. Only the scan sees this output — the
-/// original (still-encoded) body is what gets forwarded.
-pub(crate) fn decode_for_inspection<'a>(encoding: Option<&str>, raw: &'a [u8]) -> Cow<'a, [u8]> {
+/// Never returns "nothing to scan" for a *decodable* body: an undecodable one
+/// (mislabeled, corrupt, or an unsupported codec such as `br`) falls back to
+/// its raw bytes, because the header is untrusted and skipping would let a
+/// plaintext body evade the scan by claiming to be compressed. Only the scan
+/// sees this output — the original (still-encoded) body is what gets
+/// forwarded.
+pub(crate) fn decode_for_inspection<'a>(
+    encoding: Option<&str>,
+    raw: &'a [u8],
+) -> Option<Cow<'a, [u8]>> {
     let token = encoding.map(|e| e.trim().to_ascii_lowercase());
     let attempt = match token.as_deref() {
-        None | Some("") | Some("identity") => return Cow::Borrowed(raw),
+        None | Some("") | Some("identity") => return Some(Cow::Borrowed(raw)),
         Some("gzip") | Some("x-gzip") => inflate_capped(flate2::read::MultiGzDecoder::new(raw)),
         // HTTP `deflate` is zlib-wrapped (RFC 9110 §8.4.1), but some senders
         // ship raw DEFLATE — try zlib first, then fall back to raw.
@@ -54,30 +61,41 @@ pub(crate) fn decode_for_inspection<'a>(encoding: Option<&str>, raw: &'a [u8]) -
             // Unsupported codec (e.g. `br`, or a multi-token list): scan the raw
             // bytes rather than skip — see the untrusted-header invariant above.
             tracing::debug!(encoding = %other, "unsupported content-encoding; scanning raw bytes");
-            return Cow::Borrowed(raw);
+            return Some(Cow::Borrowed(raw));
         }
     };
     match attempt {
-        Ok(out) => Cow::Owned(out),
+        Ok(Some(out)) => Some(Cow::Owned(out)),
+        Ok(None) => {
+            tracing::debug!(
+                encoding = ?token,
+                "decoded output exceeds inspection cap; leaving body unscanned"
+            );
+            None
+        }
         Err(e) => {
             tracing::debug!(
                 encoding = ?token,
                 error = %e,
                 "declared content-encoding failed to decode; scanning raw bytes"
             );
-            Cow::Borrowed(raw)
+            Some(Cow::Borrowed(raw))
         }
     }
 }
 
-/// Inflate at most [`MAX_INSPECT_BODY`] bytes (decompression-bomb guard) —
-/// output beyond the cap is truncated, so the scan sees the capped prefix.
-/// Propagates the decoder error so the caller can log the real cause (bad
-/// magic, checksum mismatch, truncated stream).
-fn inflate_capped<R: Read>(reader: R) -> std::io::Result<Vec<u8>> {
+/// Inflate up to [`MAX_INSPECT_BODY`] bytes, reading one byte past the cap
+/// only to detect overflow (decompression-bomb guard — memory stays bounded).
+/// Returns `None` when the output overflows the cap, so the caller can leave
+/// the body unscanned instead of judging a truncated prefix. Propagates the
+/// decoder error so the caller can log the real cause (bad magic, checksum
+/// mismatch, truncated stream).
+fn inflate_capped<R: Read>(reader: R) -> std::io::Result<Option<Vec<u8>>> {
     let mut out = Vec::new();
-    reader.take(MAX_INSPECT_BODY as u64).read_to_end(&mut out)?;
-    Ok(out)
+    reader
+        .take(MAX_INSPECT_BODY as u64 + 1)
+        .read_to_end(&mut out)?;
+    Ok((out.len() <= MAX_INSPECT_BODY).then_some(out))
 }
 
 /// The longest valid-UTF-8 prefix of `b`, tolerating only a *trailing*
@@ -182,9 +200,14 @@ mod tests {
     #[test]
     fn decode_identity_passes_bytes_through() {
         let raw = b"plain body";
-        assert_eq!(decode_for_inspection(None, raw).as_ref(), &raw[..]);
         assert_eq!(
-            decode_for_inspection(Some("identity"), raw).as_ref(),
+            decode_for_inspection(None, raw).expect("identity").as_ref(),
+            &raw[..]
+        );
+        assert_eq!(
+            decode_for_inspection(Some("identity"), raw)
+                .expect("identity")
+                .as_ref(),
             &raw[..]
         );
     }
@@ -193,16 +216,22 @@ mod tests {
     fn decode_gzip_inflates_body() {
         let compressed = gzip(b"rrn=670125-1230644");
         assert_eq!(
-            decode_for_inspection(Some("gzip"), &compressed).as_ref(),
+            decode_for_inspection(Some("gzip"), &compressed)
+                .expect("gzip")
+                .as_ref(),
             b"rrn=670125-1230644"
         );
         // Token normalization (case/whitespace) and the legacy alias.
         assert_eq!(
-            decode_for_inspection(Some(" GZIP "), &compressed).as_ref(),
+            decode_for_inspection(Some(" GZIP "), &compressed)
+                .expect("gzip")
+                .as_ref(),
             b"rrn=670125-1230644"
         );
         assert_eq!(
-            decode_for_inspection(Some("x-gzip"), &compressed).as_ref(),
+            decode_for_inspection(Some("x-gzip"), &compressed)
+                .expect("gzip")
+                .as_ref(),
             b"rrn=670125-1230644"
         );
     }
@@ -215,7 +244,9 @@ mod tests {
         zlib.write_all(b"zlib-wrapped").unwrap();
         let zlib = zlib.finish().unwrap();
         assert_eq!(
-            decode_for_inspection(Some("deflate"), &zlib).as_ref(),
+            decode_for_inspection(Some("deflate"), &zlib)
+                .expect("zlib")
+                .as_ref(),
             &b"zlib-wrapped"[..]
         );
 
@@ -224,7 +255,9 @@ mod tests {
         raw.write_all(b"raw-deflate").unwrap();
         let raw = raw.finish().unwrap();
         assert_eq!(
-            decode_for_inspection(Some("deflate"), &raw).as_ref(),
+            decode_for_inspection(Some("deflate"), &raw)
+                .expect("deflate")
+                .as_ref(),
             &b"raw-deflate"[..]
         );
     }
@@ -236,20 +269,28 @@ mod tests {
         // scan by wearing an encoding label we don't handle.
         let plain = b"plaintext rrn=670125-1230644";
         assert_eq!(
-            decode_for_inspection(Some("br"), plain).as_ref(),
+            decode_for_inspection(Some("br"), plain)
+                .expect("raw")
+                .as_ref(),
             &plain[..]
         );
         assert_eq!(
-            decode_for_inspection(Some("gzip, br"), plain).as_ref(),
+            decode_for_inspection(Some("gzip, br"), plain)
+                .expect("raw")
+                .as_ref(),
             &plain[..]
         );
         // Declared gzip/deflate that fails to decode also falls back to raw.
         assert_eq!(
-            decode_for_inspection(Some("gzip"), plain).as_ref(),
+            decode_for_inspection(Some("gzip"), plain)
+                .expect("raw")
+                .as_ref(),
             &plain[..]
         );
         assert_eq!(
-            decode_for_inspection(Some("deflate"), plain).as_ref(),
+            decode_for_inspection(Some("deflate"), plain)
+                .expect("raw")
+                .as_ref(),
             &plain[..]
         );
     }
@@ -266,13 +307,24 @@ mod tests {
     }
 
     #[test]
-    fn decompression_bomb_is_capped() {
+    fn decompression_bomb_is_reported_as_overflow() {
         // Highly compressible payload far over the cap: a few KiB compressed,
-        // 4× MAX_INSPECT_BODY inflated. The decoder must stop at the cap.
+        // 4× MAX_INSPECT_BODY inflated. Overflow must be reported (`None`) so
+        // the caller leaves the body unscanned instead of judging a truncated
+        // prefix; memory stays bounded (at most cap+1 bytes are inflated).
         let bomb = gzip(&vec![0u8; MAX_INSPECT_BODY * 4]);
         assert!(bomb.len() < MAX_INSPECT_BODY, "bomb should compress small");
-        let decoded = decode_for_inspection(Some("gzip"), &bomb);
-        assert_eq!(decoded.len(), MAX_INSPECT_BODY, "inflate must stop at cap");
+        assert!(
+            decode_for_inspection(Some("gzip"), &bomb).is_none(),
+            "over-cap inflate must report overflow"
+        );
+    }
+
+    #[test]
+    fn decode_at_exactly_the_cap_is_not_overflow() {
+        let at_cap = gzip(&vec![b'a'; MAX_INSPECT_BODY]);
+        let decoded = decode_for_inspection(Some("gzip"), &at_cap).expect("at-cap decode");
+        assert_eq!(decoded.len(), MAX_INSPECT_BODY);
     }
 
     #[tokio::test]
