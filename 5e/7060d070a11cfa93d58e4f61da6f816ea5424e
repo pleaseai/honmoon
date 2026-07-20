@@ -1,0 +1,21 @@
+crates/honmoon-core/src/claude_code_hook.rs
+  s_52805e3b70038a::t_c8dee1197be7be 7-8
+  s_52805e3b70038a::t_d41930a0fd55f5 62
+  s_52805e3b70038a::t_e52738c1cc1a79 61,63
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.14",
+  "base_commit_sha": "5e7060d070a11cfa93d58e4f61da6f816ea5424e",
+  "prompts": {},
+  "sessions": {
+    "s_52805e3b70038a": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "f0d9a83f-a5a2-4ccc-85e2-9589406f43e1",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
