@@ -256,8 +256,9 @@ bun datasets/pii/score.ts <gold>.jsonl <pred>.jsonl
 > **Live path (Phase 5).** This section measures the detector offline against gold corpora. Since
 > [ADR-0003](../.please/docs/decisions/0003-adopt-hudsucker-for-tls-termination.md) the data plane
 > also feeds `detect_pii` from **decrypted request bodies** over terminated TLS
-> (`honmoon gateway --tls-intercept`, detect-only), recording findings to the audit log — proven
-> end-to-end by `crates/honmoon-proxy/tests/mitm.rs`.
+> (`honmoon gateway --tls-intercept`, `--pii-mode detect` by default), recording findings to the
+> audit log — proven end-to-end by `crates/honmoon-proxy/tests/mitm.rs`. Set
+> `--pii-mode block` to enforce matching body-policy `deny`/`pause` verdicts inline.
 
 | Set | Labels | Result |
 | --- | --- | --- |

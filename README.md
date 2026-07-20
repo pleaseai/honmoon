@@ -154,6 +154,8 @@ honmoon run --policy policies/agent.yaml -- curl https://api.github.com
 
 # Run the gateway: egress proxy on :8443, management API + dashboard on :8444
 honmoon gateway --config policies/agent.yaml --audit-log honmoon-audit.jsonl
+# Intercept TLS and enforce PII policy verdicts (detect-only is the default mode)
+honmoon gateway --config policies/agent.yaml --tls-intercept --pii-mode block
 #   proxy:     http://127.0.0.1:8443   (point https_proxy here)
 #   dashboard: http://127.0.0.1:8444   (audit log, approval queue, policy)
 
@@ -224,4 +226,7 @@ Honmoon unifies the approaches of two projects:
 
 ## License
 
-TBD
+Honmoon's open-source core is licensed under the [Apache License 2.0](./LICENSE).
+Enterprise components under `packages/enterprise/` (planned for Phase 7) will be
+separately licensed under the BSL or FSL, as described in the
+[open-core business model](./docs/business-model.md).

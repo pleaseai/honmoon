@@ -51,7 +51,7 @@ function matchGroup(gold: string[], pred: string[]): number {
   return tp
 }
 
-function prf(tp: number, fp: number, fn: number): LabelScore {
+export function prf(tp: number, fp: number, fn: number): LabelScore {
   const precision = tp + fp ? tp / (tp + fp) : 0
   const recall = tp + fn ? tp / (tp + fn) : 0
   const f1 = precision + recall ? (2 * precision * recall) / (precision + recall) : 0
