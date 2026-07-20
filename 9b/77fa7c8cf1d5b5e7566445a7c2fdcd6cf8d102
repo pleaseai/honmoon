@@ -1,0 +1,37 @@
+datasets/pii/gate.ts
+  s_52805e3b70038a::t_5e4d74a8fcb197 14
+  s_52805e3b70038a::t_eb6c0fa1f2b644 15
+  s_52805e3b70038a::t_e7778c484dc9c8 34-49
+  s_52805e3b70038a::t_112338c8278a5a 8-9
+  s_52805e3b70038a::t_1a4562ee71258a 73-77,79-80,83-91
+  s_52805e3b70038a::t_67b3ef76e0ea23 50
+  s_52805e3b70038a::t_0ffc8aebfeb800 92
+  s_b1f012ab8ff3ed::t_ac495ad1d603c0 23,71,96,101
+.github/workflows/ci.yml
+  s_52805e3b70038a::t_d1f2c1a247362f 92-93
+  s_52805e3b70038a::t_032a1ff24f761c 105
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.14",
+  "base_commit_sha": "9b77fa7c8cf1d5b5e7566445a7c2fdcd6cf8d102",
+  "prompts": {},
+  "sessions": {
+    "s_52805e3b70038a": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "f0d9a83f-a5a2-4ccc-85e2-9589406f43e1",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    },
+    "s_b1f012ab8ff3ed": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "agent-ade1777d83fc2783c",
+        "model": "unknown"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
