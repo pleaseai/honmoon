@@ -89,8 +89,8 @@ jobs:
       - name: Build PII scan bridge
         run: cargo build -p honmoon-core --example pii_scan
 
-      # Gold sets are seeded/deterministic, so CI regenerates them — no vendored
-      # corpora. KDPII (download-only, CC-BY) is excluded from the gate.
+      # Gold sets are committed as deterministic generators with pinned seeds, so CI
+      # reproduces the same corpus on every run. KDPII (download-only, CC-BY) is excluded.
       - name: Generate gold sets
         run: |
           mkdir -p target/pii
@@ -102,7 +102,7 @@ jobs:
           ./target/debug/examples/pii_scan < target/pii/synth.jsonl    > target/pii/synth.pred.jsonl
           ./target/debug/examples/pii_scan < target/pii/negative.jsonl > target/pii/negative.pred.jsonl
 
-      - name: Gate — AC1 (synth per-label F1 + precision floor)
+      - name: Gate — Tier-1 micro F1 and per-type floors
         run: bun datasets/pii/gate.ts synth target/pii/synth.jsonl target/pii/synth.pred.jsonl
 
       - name: Gate — FR6 (hard-negative FP budget)
