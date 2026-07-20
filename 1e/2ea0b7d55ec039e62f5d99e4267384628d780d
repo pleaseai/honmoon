@@ -1,0 +1,76 @@
+docs/pii-benchmark-goals.md
+  s_52805e3b70038a::t_eab7386209876c 259-261
+crates/honmoon-cli/src/main.rs
+  s_52805e3b70038a::t_44b851252c70f6 56
+  s_52805e3b70038a::t_9dbe4d02428d72 199-200
+  s_52805e3b70038a::t_b9b5142b0a9bc8 220
+  s_52805e3b70038a::t_700503cd0cf18f 51,54-55,57
+  s_52805e3b70038a::t_0a46f66e93a599 10
+  s_52805e3b70038a::t_107c16d7714767 105,114
+  s_52805e3b70038a::t_caf4a2070a6ebf 14
+  s_52805e3b70038a::t_22d11b6e65dbba 147
+  s_52805e3b70038a::t_e3f1b6361648e5 170
+  s_52805e3b70038a::t_48cab3bd6cbf90 175-178
+  s_52805e3b70038a::t_374a5b9b769187 125-139
+docs/roadmap.md
+  s_52805e3b70038a::t_891341e3a9d573 125-127
+crates/honmoon-proxy/src/mitm.rs
+  s_52805e3b70038a::t_9cb6f36b103c4f 203-209,213
+  s_52805e3b70038a::t_73b55a8886af29 14-16
+  s_52805e3b70038a::t_ef19fcb48cec30 42-43
+  s_52805e3b70038a::t_8279086b291465 192-196
+  s_52805e3b70038a::t_206d86371d262a 502,504
+  s_52805e3b70038a::t_a82362d7cc58a7 25-28
+  s_52805e3b70038a::t_8af92ea1f22a58 488-501,503,505-508
+  s_52805e3b70038a::t_8faa8624f56291 285-286,340-383,386-424
+  s_52805e3b70038a::t_8cb03c7d87dc5e 53
+crates/honmoon-proxy/tests/mitm.rs
+  s_52805e3b70038a::t_f968cfbdea8a94 320-321
+  s_52805e3b70038a::t_5d788fb6ea5332 18
+  s_52805e3b70038a::t_6f7beaf6c50e6f 31
+  s_52805e3b70038a::t_c2e98878eb2e1f 165-183,185-191,193-194,196-206
+  s_52805e3b70038a::t_91b3514fcb3346 11
+  s_52805e3b70038a::t_bd089409d957ee 77-79,84-87
+  s_52805e3b70038a::t_923bdd84b45f5b 242,293
+  s_52805e3b70038a::t_42cb1160a96349 15
+  s_52805e3b70038a::t_c60605adcd24f5 41
+  s_52805e3b70038a::t_54955fca1cff0c 138,143,160,162-164
+  s_52805e3b70038a::t_feb36e097db066 232,237-241,243-267,269-272,276-289,296
+  s_52805e3b70038a::t_2bf2aac74eb65b 268,273-274
+  s_52805e3b70038a::t_206d86371d262a 275,334-335
+  s_52805e3b70038a::t_f1d94ce4ae44a9 29-30,32-40,42-58
+  s_52805e3b70038a::t_aeb05afb8a1c6c 13
+  s_52805e3b70038a::t_68fcfcfc121c8b 136-137,139-142,145-146,153,157,207-221
+  s_52805e3b70038a::t_23acf0b7f8bb0f 73-76,80-83
+  s_52805e3b70038a::t_6242439b05df25 290-292,294-295,297-319,322-333
+  s_52805e3b70038a::t_06db9a33ccc247 16
+crates/honmoon-proxy/src/gateway.rs
+  s_52805e3b70038a::t_98396cb0fcb399 51-60
+  s_52805e3b70038a::t_0ed279834fe96a 93
+  s_52805e3b70038a::t_c7109b0fd35a81 77-78
+crates/honmoon-proxy/src/body.rs
+  s_52805e3b70038a::t_206d86371d262a 4-5
+.please/docs/knowledge/tech-stack.md
+  s_52805e3b70038a::t_f9dcc94e559275 21-22
+README.md
+  s_52805e3b70038a::t_fe1acfeb706329 157-158
+crates/honmoon-mgmt/tests/e2e.rs
+  s_52805e3b70038a::t_7980828fa3dfa4 21
+  s_52805e3b70038a::t_82bfa59afce00c 56
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.14",
+  "base_commit_sha": "1e2ea0b7d55ec039e62f5d99e4267384628d780d",
+  "prompts": {},
+  "sessions": {
+    "s_52805e3b70038a": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "f0d9a83f-a5a2-4ccc-85e2-9589406f43e1",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
