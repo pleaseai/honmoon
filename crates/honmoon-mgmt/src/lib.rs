@@ -7,6 +7,7 @@
 //! - `GET  /api/approvals`     — requests held pending approval
 //! - `POST /api/approvals/:id/approve` / `.../reject` — resolve a held request
 //! - `GET  /api/policy`        — the active policy (raw YAML + parsed)
+//! - `POST /api/hooks/claude-code` — Claude Code hook verdict transport
 //! - `GET  /healthz`
 //! - everything else — the embedded React dashboard (SPA fallback)
 //!
@@ -19,10 +20,10 @@ use std::sync::Arc;
 use axum::Json;
 use axum::Router;
 use axum::extract::{Path, Query, State};
-use axum::http::{StatusCode, Uri, header};
+use axum::http::{HeaderMap, StatusCode, Uri, header};
 use axum::response::{Html, IntoResponse, Response};
 use axum::routing::{get, post};
-use honmoon_core::{AuditEvent, Policy};
+use honmoon_core::{AuditEvent, MappingStore, Policy, claude_code_hook_verdict, is_sensitive_path};
 use honmoon_proxy::approval::{ApprovalDecision, PendingApproval};
 use honmoon_proxy::gateway::GatewayState;
 use serde::{Deserialize, Serialize};
@@ -41,13 +42,41 @@ struct Assets;
 pub struct AppState {
     pub gateway: GatewayState,
     pub policy_yaml: Arc<String>,
+    /// Stable HMAC salt used by gateway-direct hook redaction.
+    pub hook_salt: Arc<Vec<u8>>,
+    /// Live reverse mappings introduced by hook verdicts.
+    ///
+    /// The proxy does not yet tokenize wire bodies. Issue #50 will clone this
+    /// shared store into that path and add hook-vs-proxy token parity coverage.
+    pub hook_mappings: Arc<MappingStore>,
+    /// Optional bearer credential protecting the hook endpoint.
+    pub hook_token: Option<Arc<str>>,
 }
 
 impl AppState {
     pub fn new(gateway: GatewayState, policy_yaml: impl Into<String>) -> Self {
+        Self::with_hook_config(
+            gateway,
+            policy_yaml,
+            b"honmoon-gateway-hook-v1".to_vec(),
+            None,
+        )
+    }
+
+    /// Build state with explicit hook salt and optional bearer token.
+    pub fn with_hook_config(
+        gateway: GatewayState,
+        policy_yaml: impl Into<String>,
+        hook_salt: Vec<u8>,
+        hook_token: Option<String>,
+    ) -> Self {
+        assert!(!hook_salt.is_empty(), "hook salt must not be empty");
         Self {
             gateway,
             policy_yaml: Arc::new(policy_yaml.into()),
+            hook_salt: Arc::new(hook_salt),
+            hook_mappings: Arc::new(MappingStore::new()),
+            hook_token: hook_token.map(Arc::from),
         }
     }
 }
@@ -60,6 +89,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/approvals", get(list_approvals))
         .route("/api/approvals/{id}/approve", post(approve))
         .route("/api/approvals/{id}/reject", post(reject))
+        .route("/api/hooks/claude-code", post(claude_code_hook))
         .route("/api/policy", get(get_policy))
         .fallback(static_handler)
         .with_state(state)
@@ -76,6 +106,65 @@ pub async fn serve(state: AppState, listener: std::net::TcpListener) -> std::io:
 
 async fn healthz() -> Json<serde_json::Value> {
     Json(serde_json::json!({ "status": "ok" }))
+}
+
+/// Evaluate the unwrapped Claude Code hook payload and return its standard
+/// verdict JSON. If `hook_token` is configured, callers must send exactly
+/// `Authorization: Bearer <token>`.
+///
+/// Claude Code HTTP hooks fail open on connection errors, timeouts, and non-2xx
+/// responses: processing continues without applying a verdict. That is why the
+/// plugin defaults to the command transport, which can perform local fallback.
+async fn claude_code_hook(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(payload): Json<serde_json::Value>,
+) -> Response {
+    if !authorized(&state, &headers) {
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(serde_json::json!({ "error": "missing or invalid bearer token" })),
+        )
+            .into_response();
+    }
+
+    let resolved_path_is_sensitive = payload
+        .get("tool_input")
+        .and_then(|input| {
+            input
+                .get("file_path")
+                .or_else(|| input.get("notebook_path"))
+        })
+        .and_then(serde_json::Value::as_str)
+        .and_then(|path| std::fs::canonicalize(path).ok())
+        .and_then(|path| path.to_str().map(is_sensitive_path))
+        .unwrap_or(false);
+    let verdict = claude_code_hook_verdict(&payload, &state.hook_salt, resolved_path_is_sensitive);
+    let (output, mapping) = verdict.into_parts();
+    state.hook_mappings.record(mapping);
+    (StatusCode::OK, Json(output)).into_response()
+}
+
+fn authorized(state: &AppState, headers: &HeaderMap) -> bool {
+    let Some(expected) = state.hook_token.as_deref() else {
+        return true;
+    };
+    headers
+        .get(header::AUTHORIZATION)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.strip_prefix("Bearer "))
+        .is_some_and(|provided| constant_time_eq(provided.as_bytes(), expected.as_bytes()))
+}
+
+fn constant_time_eq(left: &[u8], right: &[u8]) -> bool {
+    let mut difference = left.len() ^ right.len();
+    let max_len = left.len().max(right.len());
+    for index in 0..max_len {
+        let l = left.get(index).copied().unwrap_or(0);
+        let r = right.get(index).copied().unwrap_or(0);
+        difference |= usize::from(l ^ r);
+    }
+    difference == 0
 }
 
 #[derive(Debug, Deserialize)]

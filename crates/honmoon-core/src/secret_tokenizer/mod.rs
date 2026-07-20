@@ -52,6 +52,7 @@ use std::collections::HashMap;
 use std::collections::HashSet;
 use std::fmt;
 use std::fmt::Write as _;
+use std::sync::Mutex;
 
 use aho_corasick::{AhoCorasick, MatchKind};
 use hmac::{Hmac, Mac};
@@ -312,6 +313,14 @@ impl Mapping {
         self.inner.insert(placeholder.into(), secret.into());
     }
 
+    /// Merge all entries from `other` into this mapping.
+    ///
+    /// Used by transport adapters that redact multiple JSON string leaves and
+    /// keep one live reverse mapping for the resulting verdict.
+    pub fn extend(&mut self, other: Mapping) {
+        self.inner.extend(other.inner);
+    }
+
     /// The secret `placeholder` substitutes for, if this mapping has it.
     pub fn get(&self, placeholder: &str) -> Option<&str> {
         self.inner.get(placeholder).map(String::as_str)
@@ -335,6 +344,53 @@ impl fmt::Debug for Mapping {
                 "entries",
                 &format_args!("<redacted: {} entrie(s)>", self.inner.len()),
             )
+            .finish()
+    }
+}
+
+/// Thread-safe live reverse-mapping store for long-running transports.
+///
+/// A management API keeps one store for its lifetime and records every mapping
+/// produced by hook redaction. The future proxy-path tokenization work in #50
+/// can clone the surrounding shared handle and consume this same store; the
+/// current proxy detects PII but does not yet tokenize wire bodies.
+#[derive(Default)]
+pub struct MappingStore {
+    mapping: Mutex<Mapping>,
+}
+
+impl MappingStore {
+    /// Create an empty live store.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Add all substitutions from one redaction verdict.
+    pub fn record(&self, mapping: Mapping) {
+        self.mapping
+            .lock()
+            .expect("tokenization mapping store poisoned")
+            .extend(mapping);
+    }
+
+    /// Number of distinct placeholder mappings currently retained.
+    pub fn len(&self) -> usize {
+        self.mapping
+            .lock()
+            .expect("tokenization mapping store poisoned")
+            .len()
+    }
+
+    /// Whether no substitutions have been retained.
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+}
+
+impl fmt::Debug for MappingStore {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("MappingStore")
+            .field("mapping", &self.mapping)
             .finish()
     }
 }

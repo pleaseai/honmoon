@@ -44,6 +44,14 @@ struct Gateway {
 
 /// Start the proxy and the management API on one runtime, sharing state.
 fn start_gateway(policy_yaml: &str) -> Gateway {
+    start_gateway_with_hook(policy_yaml, b"e2e-hook-salt".to_vec(), None)
+}
+
+fn start_gateway_with_hook(
+    policy_yaml: &str,
+    hook_salt: Vec<u8>,
+    hook_token: Option<String>,
+) -> Gateway {
     let policy = Policy::from_yaml(policy_yaml).unwrap();
     let audit = Arc::new(AuditLog::new(1024));
     let state = GatewayState {
@@ -60,7 +68,12 @@ fn start_gateway(policy_yaml: &str) -> Gateway {
     let mgmt_listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let mgmt_port = mgmt_listener.local_addr().unwrap().port();
 
-    let app = AppState::new(state.clone(), policy_yaml.to_string());
+    let app = AppState::with_hook_config(
+        state.clone(),
+        policy_yaml.to_string(),
+        hook_salt,
+        hook_token,
+    );
     thread::spawn(move || {
         let rt = tokio::runtime::Runtime::new().unwrap();
         rt.block_on(async move {
@@ -103,17 +116,36 @@ fn read_head(s: &mut TcpStream) -> String {
 
 /// Minimal one-shot HTTP request to the management API; returns the body.
 fn http_request(port: u16, method: &str, path: &str) -> String {
+    let raw = http_request_with_body(port, method, path, &[], "");
+    http_body(&raw).to_string()
+}
+
+fn http_request_with_body(
+    port: u16,
+    method: &str,
+    path: &str,
+    headers: &[(&str, &str)],
+    body: &str,
+) -> String {
     let mut s = TcpStream::connect(("127.0.0.1", port)).unwrap();
     s.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+    let extra_headers = headers
+        .iter()
+        .map(|(name, value)| format!("{name}: {value}\r\n"))
+        .collect::<String>();
     let req = format!(
-        "{method} {path} HTTP/1.1\r\nHost: localhost\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+        "{method} {path} HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\n{extra_headers}Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len()
     );
     s.write_all(req.as_bytes()).unwrap();
     let mut raw = String::new();
     s.read_to_string(&mut raw).unwrap();
-    // Split head from body.
+    raw
+}
+
+fn http_body(raw: &str) -> &str {
     raw.split_once("\r\n\r\n")
-        .map(|(_, body)| body.to_string())
+        .map(|(_, body)| body)
         .unwrap_or_default()
 }
 
@@ -223,6 +255,80 @@ fn paused_request_is_rejected_and_blocked() {
         recent.iter().any(|e| e.decision == Decision::Rejected),
         "no Rejected audit event: {recent:?}"
     );
+}
+
+#[test]
+fn claude_code_hook_endpoint_redacts_and_requires_configured_bearer() {
+    let salt = b"http-hook-parity-salt".to_vec();
+    let gw = start_gateway_with_hook(
+        "egress:\n  default: deny\n",
+        salt.clone(),
+        Some("test-hook-token".to_string()),
+    );
+    let payload = serde_json::json!({
+        "hook_event_name": "PostToolUse",
+        "tool_name": "Read",
+        "tool_response": "key sk-ant-api03-http-parity-abcDEF123456"
+    });
+    let body = serde_json::to_string(&payload).unwrap();
+
+    let unauthorized =
+        http_request_with_body(gw.mgmt_port, "POST", "/api/hooks/claude-code", &[], &body);
+    assert!(
+        unauthorized.starts_with("HTTP/1.1 401"),
+        "missing bearer must be rejected: {unauthorized:?}"
+    );
+
+    let authorized = http_request_with_body(
+        gw.mgmt_port,
+        "POST",
+        "/api/hooks/claude-code",
+        &[("Authorization", "Bearer test-hook-token")],
+        &body,
+    );
+    assert!(authorized.starts_with("HTTP/1.1 200"));
+    let actual: serde_json::Value = serde_json::from_str(http_body(&authorized)).unwrap();
+    let expected = honmoon_core::claude_code_hook_verdict(&payload, &salt, false)
+        .into_parts()
+        .0;
+    assert_eq!(actual, expected, "HTTP transport uses shared core verdict");
+    assert!(!actual.to_string().contains("sk-ant-api03-http-parity"));
+}
+
+#[test]
+fn claude_code_hook_endpoint_accumulates_live_mappings() {
+    let policy_yaml = "egress:\n  default: deny\n";
+    let policy = Policy::from_yaml(policy_yaml).unwrap();
+    let state = GatewayState::new(policy);
+    let app = AppState::with_hook_config(state, policy_yaml, b"mapping-store-salt".to_vec(), None);
+    let mappings = app.hook_mappings.clone();
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    thread::spawn(move || {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(honmoon_mgmt::serve(app, listener)).unwrap();
+    });
+    wait_for_port(port);
+
+    for secret in [
+        "sk-ant-api03-live-mapping-one-abcDEF123456",
+        "sk-ant-api03-live-mapping-two-abcDEF123456",
+    ] {
+        let payload = serde_json::json!({
+            "hook_event_name": "PostToolUse",
+            "tool_name": "Read",
+            "tool_response": format!("key {secret}")
+        });
+        let raw = http_request_with_body(
+            port,
+            "POST",
+            "/api/hooks/claude-code",
+            &[],
+            &serde_json::to_string(&payload).unwrap(),
+        );
+        assert!(raw.starts_with("HTTP/1.1 200"));
+    }
+    assert_eq!(mappings.len(), 2, "both reversible mappings stay live");
 }
 
 #[test]
