@@ -12,7 +12,7 @@ use honmoon_core::{AuditLog, Policy};
 use honmoon_mgmt::AppState;
 use honmoon_proxy::approval::ApprovalRegistry;
 use honmoon_proxy::ca::CaMaterial;
-use honmoon_proxy::gateway::{GatewayState, InterceptPolicy};
+use honmoon_proxy::gateway::{GatewayState, InterceptPolicy, PiiMode};
 use sha2::Sha256;
 
 type HmacSha256 = Hmac<Sha256>;
@@ -94,6 +94,7 @@ fn start_mgmt(salt: Vec<u8>) -> u16 {
         pause_timeout: Duration::from_secs(1),
         ca: Arc::new(CaMaterial::generate().unwrap()),
         intercept: InterceptPolicy::None,
+        pii_mode: PiiMode::Detect,
     };
     let app = AppState::with_hook_config(state, policy_yaml, salt, None);
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
