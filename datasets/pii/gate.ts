@@ -16,9 +16,9 @@ import { appendFileSync, readFileSync } from 'node:fs'
 import { assertValidRecords, fromJsonl, loadLabels } from './build/types.ts'
 import { score } from './score.ts'
 
-// AC1 floors: per-label F1 ≥ 0.98 AND precision ≥ 0.99. Gating F1 alone would let
-// a false-positive regression pass as long as recall compensates, so precision is
-// checked separately.
+// AC1 floors: Tier-1 micro F1 ≥ 0.98, per-label F1 ≥ 0.90, AND per-label precision ≥ 0.99.
+// Gating F1 alone would let a false-positive regression pass as long as recall compensates,
+// so precision is checked separately.
 const F1_FLOOR = 0.98
 const PER_LABEL_F1_FLOOR = 0.90
 const PRECISION_FLOOR = 0.99
@@ -45,7 +45,13 @@ function summaryTable(title: string, scores: Array<[string, LabelScore]>): void 
     ...scores.map(([label, s]) => `| ${label} | ${s.f1.toFixed(3)} | ${s.precision.toFixed(3)} | ${s.recall.toFixed(3)} | ${s.tp} | ${s.fp} | ${s.fn} |`),
     '',
   ]
-  appendFileSync(summaryPath, `${lines.join('\n')}\n`)
+  // The summary table is auxiliary — never let a write failure fail the gate itself.
+  try {
+    appendFileSync(summaryPath, `${lines.join('\n')}\n`)
+  }
+  catch (err) {
+    console.warn(`⚠️ Failed to write to GITHUB_STEP_SUMMARY: ${err}`)
+  }
 }
 
 function fail(msg: string): never {
