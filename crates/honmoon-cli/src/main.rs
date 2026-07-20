@@ -47,6 +47,23 @@ enum Command {
         /// Append every verdict to this JSONL audit log (default: in-memory only).
         #[arg(long, value_name = "FILE")]
         audit_log: Option<PathBuf>,
+        /// Bearer token required by `POST /api/hooks/claude-code`.
+        /// May also be supplied through `HONMOON_HOOK_TOKEN`.
+        #[arg(long, value_name = "TOKEN", env = "HONMOON_HOOK_TOKEN")]
+        hook_token: Option<String>,
+        /// Stable salt context shared by gateway hook redaction and CLI hooks.
+        /// Domain-separation input only: placeholder unforgeability and per-machine
+        /// uniqueness come from the random `~/.honmoon/hook-salt` secret, which
+        /// keys the HMAC this value is mixed into — so the default is safe. Override
+        /// it only to separate instances that deliberately share one machine salt.
+        /// May also be supplied through `HONMOON_HOOK_SALT_CONTEXT`.
+        #[arg(
+            long,
+            value_name = "CONTEXT",
+            env = "HONMOON_HOOK_SALT_CONTEXT",
+            default_value = "default"
+        )]
+        hook_salt_context: String,
         /// Terminate TLS (MITM) to inspect request bodies for PII. Agents must
         /// trust the CA certificate. See --pii-mode to choose audit or enforcement.
         #[arg(long)]
@@ -85,7 +102,12 @@ enum Command {
     /// The command-transport backend for the honmoon Claude Code plugin (#19):
     /// scans `Read` output / prompts for secrets + PII and emits the hook JSON
     /// verdict. Reads the event JSON on stdin and always exits 0.
-    Hook,
+    Hook {
+        /// Stable session/salt context. Overrides `HONMOON_HOOK_SALT_CONTEXT`
+        /// and the payload's `session_id` when set.
+        #[arg(long, value_name = "CONTEXT")]
+        salt_context: Option<String>,
+    },
 }
 
 fn main() -> Result<()> {
@@ -101,6 +123,8 @@ fn main() -> Result<()> {
             addr,
             mgmt_addr,
             audit_log,
+            hook_token,
+            hook_salt_context,
             tls_intercept,
             pii_mode,
             ca_cert,
@@ -110,6 +134,8 @@ fn main() -> Result<()> {
             addr,
             mgmt_addr,
             audit_log,
+            hook_token,
+            hook_salt_context,
             tls_intercept,
             pii_mode,
             ca_cert,
@@ -118,7 +144,7 @@ fn main() -> Result<()> {
         Command::Join { gateway } => {
             anyhow::bail!("`join` not yet implemented (gateway: {gateway})");
         }
-        Command::Hook => hook::run(),
+        Command::Hook { salt_context } => hook::run(salt_context.as_deref()),
     }
 }
 
@@ -143,6 +169,8 @@ struct GatewayArgs {
     addr: String,
     mgmt_addr: String,
     audit_log: Option<PathBuf>,
+    hook_token: Option<String>,
+    hook_salt_context: String,
     tls_intercept: bool,
     pii_mode: PiiModeArg,
     ca_cert: Option<PathBuf>,
@@ -166,6 +194,8 @@ fn gateway(args: GatewayArgs) -> Result<()> {
         addr,
         mgmt_addr,
         audit_log,
+        hook_token,
+        hook_salt_context,
         tls_intercept,
         pii_mode,
         ca_cert,
@@ -226,7 +256,12 @@ fn gateway(args: GatewayArgs) -> Result<()> {
     let mgmt_listener = TcpListener::bind(&mgmt_addr)
         .with_context(|| format!("binding management API {mgmt_addr}"))?;
 
-    let app_state = AppState::new(state.clone(), policy_yaml);
+    let app_state = AppState::with_hook_config(
+        state.clone(),
+        policy_yaml,
+        hook::derive_salt_context(&hook_salt_context),
+        hook_token,
+    );
 
     let runtime = tokio::runtime::Runtime::new().context("build tokio runtime")?;
     runtime.block_on(async move {

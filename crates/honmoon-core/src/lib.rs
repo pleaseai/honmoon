@@ -6,6 +6,7 @@
 use serde::{Deserialize, Serialize};
 
 pub mod audit;
+pub mod claude_code_hook;
 pub mod engine;
 pub mod pii;
 pub mod protocols;
@@ -14,13 +15,14 @@ pub mod secret_detect;
 pub mod secret_tokenizer;
 
 pub use audit::{AuditDraft, AuditEvent, AuditLog, Decision, FactsSummary};
+pub use claude_code_hook::{ClaudeCodeHookVerdict, claude_code_hook_verdict, is_sensitive_path};
 pub use engine::{Outcome, decide, decide_explained};
 pub use pii::{PiiFacts, PiiSpan, detect_pii, detect_spans};
 pub use redact::{DEFAULT_MIN_PII_SEVERITY, RedactionOutcome, redact};
 pub use secret_detect::{SecretFinding, detect_secrets};
 pub use secret_tokenizer::{
-    MAX_PLACEHOLDER_LEN, Mapping, PLACEHOLDER_PREFIX, PLACEHOLDER_SUFFIX, SecretTokenizer,
-    SecretTokenizerError, StreamingDetokenizer, detokenize,
+    MAX_PLACEHOLDER_LEN, Mapping, MappingStore, PLACEHOLDER_PREFIX, PLACEHOLDER_SUFFIX,
+    SecretTokenizer, SecretTokenizerError, StreamingDetokenizer, detokenize,
 };
 
 /// The decision the policy engine returns for a given request.

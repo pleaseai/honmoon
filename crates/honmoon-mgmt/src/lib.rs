@@ -7,6 +7,7 @@
 //! - `GET  /api/approvals`     — requests held pending approval
 //! - `POST /api/approvals/:id/approve` / `.../reject` — resolve a held request
 //! - `GET  /api/policy`        — the active policy (raw YAML + parsed)
+//! - `POST /api/hooks/claude-code` — Claude Code hook verdict transport
 //! - `GET  /healthz`
 //! - everything else — the embedded React dashboard (SPA fallback)
 //!
@@ -19,13 +20,17 @@ use std::sync::Arc;
 use axum::Json;
 use axum::Router;
 use axum::extract::{Path, Query, State};
-use axum::http::{StatusCode, Uri, header};
+use axum::http::{HeaderMap, StatusCode, Uri, header};
 use axum::response::{Html, IntoResponse, Response};
 use axum::routing::{get, post};
-use honmoon_core::{AuditEvent, Policy};
+use hmac::{Hmac, Mac};
+use honmoon_core::{AuditEvent, MappingStore, Policy, claude_code_hook_verdict, is_sensitive_path};
 use honmoon_proxy::approval::{ApprovalDecision, PendingApproval};
 use honmoon_proxy::gateway::GatewayState;
 use serde::{Deserialize, Serialize};
+use sha2::Sha256;
+
+type HmacSha256 = Hmac<Sha256>;
 
 /// Embedded dashboard assets (built by Vite into `apps/dashboard/dist`).
 ///
@@ -41,13 +46,37 @@ struct Assets;
 pub struct AppState {
     pub gateway: GatewayState,
     pub policy_yaml: Arc<String>,
+    /// Stable HMAC salt used by gateway-direct hook redaction.
+    pub hook_salt: Arc<Vec<u8>>,
+    /// Live reverse mappings introduced by hook verdicts.
+    ///
+    /// The proxy does not yet tokenize wire bodies. Issue #50 will clone this
+    /// shared store into that path and add hook-vs-proxy token parity coverage.
+    pub hook_mappings: Arc<MappingStore>,
+    /// Optional bearer credential protecting the hook endpoint.
+    pub hook_token: Option<Arc<str>>,
 }
 
 impl AppState {
-    pub fn new(gateway: GatewayState, policy_yaml: impl Into<String>) -> Self {
+    /// Build state with explicit hook salt and optional bearer token.
+    ///
+    /// There is deliberately no salt-less constructor: the hook salt keys the
+    /// HMAC that derives redaction placeholders, so baking in a fixed default
+    /// would make placeholders for known secrets precomputable. Callers must
+    /// supply a securely sourced salt (see `honmoon-cli`'s `derive_salt_context`).
+    pub fn with_hook_config(
+        gateway: GatewayState,
+        policy_yaml: impl Into<String>,
+        hook_salt: Vec<u8>,
+        hook_token: Option<String>,
+    ) -> Self {
+        assert!(!hook_salt.is_empty(), "hook salt must not be empty");
         Self {
             gateway,
             policy_yaml: Arc::new(policy_yaml.into()),
+            hook_salt: Arc::new(hook_salt),
+            hook_mappings: Arc::new(MappingStore::new()),
+            hook_token: hook_token.map(Arc::from),
         }
     }
 }
@@ -60,6 +89,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/approvals", get(list_approvals))
         .route("/api/approvals/{id}/approve", post(approve))
         .route("/api/approvals/{id}/reject", post(reject))
+        .route("/api/hooks/claude-code", post(claude_code_hook))
         .route("/api/policy", get(get_policy))
         .fallback(static_handler)
         .with_state(state)
@@ -76,6 +106,82 @@ pub async fn serve(state: AppState, listener: std::net::TcpListener) -> std::io:
 
 async fn healthz() -> Json<serde_json::Value> {
     Json(serde_json::json!({ "status": "ok" }))
+}
+
+/// Evaluate the unwrapped Claude Code hook payload and return its standard
+/// verdict JSON. If `hook_token` is configured, callers must send exactly
+/// `Authorization: Bearer <token>`.
+///
+/// Claude Code HTTP hooks fail open on connection errors, timeouts, and non-2xx
+/// responses: processing continues without applying a verdict. That is why the
+/// plugin defaults to the command transport, which can perform local fallback.
+async fn claude_code_hook(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(payload): Json<serde_json::Value>,
+) -> Response {
+    if !authorized(&state, &headers) {
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(serde_json::json!({ "error": "missing or invalid bearer token" })),
+        )
+            .into_response();
+    }
+
+    let path_to_resolve = payload
+        .get("tool_input")
+        .and_then(|input| {
+            input
+                .get("file_path")
+                .or_else(|| input.get("notebook_path"))
+        })
+        .and_then(serde_json::Value::as_str);
+    // Resolve symlinks off the async executor: `tokio::fs::canonicalize` hands
+    // the blocking syscall to the runtime's blocking pool, so concurrent hook
+    // requests don't stall the Tokio worker thread. Use `to_string_lossy` so a
+    // non-UTF-8 path is still checked (fail toward denying) rather than skipped.
+    let resolved_path_is_sensitive = match path_to_resolve {
+        Some(path) => match tokio::fs::canonicalize(path).await {
+            Ok(canonical) => is_sensitive_path(&canonical.to_string_lossy()),
+            Err(_) => false,
+        },
+        None => false,
+    };
+    let verdict = claude_code_hook_verdict(&payload, &state.hook_salt, resolved_path_is_sensitive);
+    let (output, mapping) = verdict.into_parts();
+    state.hook_mappings.record(mapping);
+    (StatusCode::OK, Json(output)).into_response()
+}
+
+fn authorized(state: &AppState, headers: &HeaderMap) -> bool {
+    let Some(expected) = state.hook_token.as_deref() else {
+        return true;
+    };
+    headers
+        .get(header::AUTHORIZATION)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.strip_prefix("Bearer "))
+        .is_some_and(|provided| constant_time_eq(provided.as_bytes(), expected.as_bytes()))
+}
+
+/// Constant-time equality for authenticating the caller-supplied bearer token
+/// against the configured secret.
+///
+/// Both inputs are folded through HMAC-SHA256 into a fixed 32-byte digest before
+/// comparison, so the comparison length is independent of either input's length
+/// — closing even the theoretical leak of the secret's length through absolute
+/// timing. `CtOutput`'s `PartialEq` compares the digests in constant time (via
+/// `subtle`). The key is a public constant: it only maps inputs to a fixed
+/// width for comparison, so it need not be secret.
+fn constant_time_eq(provided: &[u8], expected: &[u8]) -> bool {
+    const KEY: &[u8] = b"honmoon-bearer-token-comparison";
+    let digest = |data: &[u8]| {
+        let mut mac =
+            <HmacSha256 as Mac>::new_from_slice(KEY).expect("HMAC accepts a key of any length");
+        mac.update(data);
+        mac.finalize()
+    };
+    digest(provided) == digest(expected)
 }
 
 #[derive(Debug, Deserialize)]
@@ -164,5 +270,22 @@ async fn static_handler(uri: Uri) -> Response {
             "dashboard not built — run `bun run --filter @honmoon/dashboard build`",
         )
             .into_response(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::constant_time_eq;
+
+    #[test]
+    fn constant_time_eq_matches_only_identical_secrets() {
+        assert!(constant_time_eq(b"s3cr3t-token", b"s3cr3t-token"));
+        assert!(constant_time_eq(b"", b""));
+        // Same length, one byte differs (`0` vs `o`).
+        assert!(!constant_time_eq(b"s3cr3t-t0ken", b"s3cr3t-token"));
+        // Shorter and longer provided tokens both fail, even on a matching prefix.
+        assert!(!constant_time_eq(b"s3cr3t", b"s3cr3t-token"));
+        assert!(!constant_time_eq(b"s3cr3t-token-extra", b"s3cr3t-token"));
+        assert!(!constant_time_eq(b"", b"s3cr3t-token"));
     }
 }
