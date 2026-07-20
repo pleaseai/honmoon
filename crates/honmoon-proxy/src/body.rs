@@ -212,7 +212,6 @@ impl DetokenizingBody {
             return data;
         }
 
-        let carry_len = self.carry.len();
         let mut combined = std::mem::take(&mut self.carry);
         combined.extend_from_slice(&data);
         match std::str::from_utf8(&combined) {
@@ -245,8 +244,7 @@ impl DetokenizingBody {
                     .expect("detokenizer present before pass-through")
                     .finish()
                     .into_bytes();
-                output.extend_from_slice(&combined[..carry_len]);
-                output.extend_from_slice(&data);
+                output.extend_from_slice(&combined);
                 self.passthrough = true;
                 Bytes::from(output)
             }

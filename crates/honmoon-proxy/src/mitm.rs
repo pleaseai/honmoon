@@ -576,6 +576,14 @@ impl HttpHandler for HonmoonHandler {
         let Some(redaction) = &self.state.redaction else {
             return res;
         };
+        // 1xx/204/304 responses carry no body (RFC 9110); rewriting framing
+        // headers on them would corrupt cache validation and client framing.
+        if res.status().is_informational()
+            || res.status() == StatusCode::NO_CONTENT
+            || res.status() == StatusCode::NOT_MODIFIED
+        {
+            return res;
+        }
         if redaction.mappings.is_empty() {
             return res;
         }
