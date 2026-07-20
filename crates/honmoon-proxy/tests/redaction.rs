@@ -28,6 +28,11 @@ struct CapturedRequest {
 
 enum ResponseMode {
     Static(Vec<u8>),
+    StaticWithHeaders {
+        status: &'static str,
+        body: Vec<u8>,
+        headers: String,
+    },
     EncodedStatic {
         body: Vec<u8>,
         encoding: &'static str,
@@ -87,6 +92,19 @@ fn start_upstream(mode: ResponseMode) -> (u16, Receiver<CapturedRequest>) {
                     write!(
                         stream,
                         "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                        body.len()
+                    )
+                    .unwrap();
+                    stream.write_all(body).unwrap();
+                }
+                ResponseMode::StaticWithHeaders {
+                    status,
+                    body,
+                    headers,
+                } => {
+                    write!(
+                        stream,
+                        "HTTP/1.1 {status}\r\n{headers}Content-Length: {}\r\nConnection: close\r\n\r\n",
                         body.len()
                     )
                     .unwrap();
@@ -289,6 +307,34 @@ fn wire_redaction_rewrites_secret_and_pii_with_correct_headers() {
 }
 
 #[test]
+fn rewritten_request_strips_stale_body_integrity_headers() {
+    let (upstream, captured) = start_upstream(ResponseMode::Static(b"ok".to_vec()));
+    let (proxy, _) = start_proxy(true);
+    let body = format!("key={SECRET}");
+
+    proxy_request(
+        proxy,
+        upstream,
+        body.as_bytes(),
+        &[
+            ("Content-MD5", "stale"),
+            ("Digest", "sha-256=stale"),
+            ("Content-Digest", "sha-256=:stale:"),
+            ("Repr-Digest", "sha-256=:stale:"),
+            ("Authorization", "preserved"),
+        ],
+    );
+    let request = captured.recv_timeout(Duration::from_secs(5)).unwrap();
+    for name in ["content-md5", "digest", "content-digest", "repr-digest"] {
+        assert_eq!(header_value(&request.headers, name), None, "{name}");
+    }
+    assert_eq!(
+        header_value(&request.headers, "authorization"),
+        Some("preserved")
+    );
+}
+
+#[test]
 fn repeated_multi_turn_body_is_byte_identical_on_the_wire() {
     let (upstream, captured) = start_upstream(ResponseMode::Static(b"ok".to_vec()));
     let (proxy, _) = start_proxy(true);
@@ -353,6 +399,58 @@ fn response_echo_restores_the_request_secret() {
             .any(|w| w == SECRET.as_bytes())
     );
     assert_eq!(response_body(&response), original.as_bytes());
+}
+
+#[test]
+fn detokenized_response_strips_stale_body_validators() {
+    let tokenized = honmoon_core::redact(SECRET, SALT, honmoon_core::DEFAULT_MIN_PII_SEVERITY);
+    let (upstream, captured) = start_upstream(ResponseMode::StaticWithHeaders {
+        status: "200 OK",
+        body: tokenized.text.into_bytes(),
+        headers: "Content-MD5: stale\r\nDigest: sha-256=stale\r\nContent-Digest: sha-256=:stale:\r\nRepr-Digest: sha-256=:stale:\r\nContent-Range: bytes 0-41/42\r\n".to_owned(),
+    });
+    let (proxy, _) = start_proxy(true);
+    proxy_request(proxy, upstream, SECRET.as_bytes(), &[]);
+    captured.recv_timeout(Duration::from_secs(5)).unwrap();
+
+    let response = proxy_request(proxy, upstream, b"clean", &[]);
+    let headers = response_headers(&response);
+    for name in [
+        "content-length",
+        "content-md5",
+        "digest",
+        "content-digest",
+        "repr-digest",
+        "content-range",
+    ] {
+        assert_eq!(header_value(&headers, name), None, "{name}");
+    }
+    assert_eq!(response_body(&response), SECRET.as_bytes());
+}
+
+#[test]
+fn partial_content_response_bypasses_detokenization() {
+    let tokenized = honmoon_core::redact(SECRET, SALT, honmoon_core::DEFAULT_MIN_PII_SEVERITY);
+    let placeholder = tokenized.text.into_bytes();
+    let content_range = format!("bytes 0-{}/{}", placeholder.len() - 1, placeholder.len());
+    let headers = format!("Content-Range: {content_range}\r\n");
+    let (upstream, captured) = start_upstream(ResponseMode::StaticWithHeaders {
+        status: "206 Partial Content",
+        body: placeholder.clone(),
+        headers,
+    });
+    let (proxy, _) = start_proxy(true);
+    proxy_request(proxy, upstream, SECRET.as_bytes(), &[]);
+    captured.recv_timeout(Duration::from_secs(5)).unwrap();
+
+    let response = proxy_request(proxy, upstream, b"clean", &[]);
+    let response_headers = response_headers(&response);
+    assert!(response.starts_with(b"HTTP/1.1 206"));
+    assert_eq!(
+        header_value(&response_headers, "content-range"),
+        Some(content_range.as_str())
+    );
+    assert_eq!(response_body(&response), placeholder);
 }
 
 #[test]
@@ -478,6 +576,35 @@ fn over_cap_request_preserves_bytes_and_records_no_mapping() {
 }
 
 #[test]
+fn gzip_decoded_over_cap_preserves_wire_bytes_and_records_no_mapping() {
+    use std::io::Write as _;
+
+    let (upstream, captured) = start_upstream(ResponseMode::Static(b"ok".to_vec()));
+    let (proxy, mappings) = start_proxy(true);
+    let mut decoded = vec![b'x'; MAX_BODY + 1];
+    decoded[..SECRET.len()].copy_from_slice(SECRET.as_bytes());
+    let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+    encoder.write_all(&decoded).unwrap();
+    let compressed = encoder.finish().unwrap();
+    assert!(compressed.len() < MAX_BODY);
+
+    let response = proxy_request(
+        proxy,
+        upstream,
+        &compressed,
+        &[("Content-Encoding", "gzip")],
+    );
+    assert!(response.starts_with(b"HTTP/1.1 200"));
+    let forwarded = captured.recv_timeout(Duration::from_secs(10)).unwrap();
+    assert_eq!(forwarded.body, compressed);
+    assert_eq!(
+        header_value(&forwarded.headers, "content-encoding"),
+        Some("gzip")
+    );
+    assert_eq!(mappings.unwrap().len(), 0);
+}
+
+#[test]
 fn compressed_response_bypasses_detokenization_and_preserves_framing() {
     use std::io::Write as _;
 
@@ -513,6 +640,25 @@ fn compressed_response_bypasses_detokenization_and_preserves_framing() {
         );
         assert_eq!(response_body(&response), body, "{name}");
     }
+}
+
+#[test]
+fn quoted_and_unquoted_identical_json_pii_redacts_only_quoted_occurrence() {
+    let (upstream, captured) = start_upstream(ResponseMode::Static(b"ok".to_vec()));
+    let (proxy, mappings) = start_proxy(true);
+    let body = br#"{"card":4111111111111111,"note":"4111111111111111"}"#;
+
+    proxy_request(
+        proxy,
+        upstream,
+        body,
+        &[("Content-Type", "application/json")],
+    );
+    let forwarded = captured.recv_timeout(Duration::from_secs(5)).unwrap();
+    let parsed: serde_json::Value = serde_json::from_slice(&forwarded.body).unwrap();
+    assert_eq!(parsed["card"], serde_json::json!(4111111111111111u64));
+    assert!(parsed["note"].as_str().unwrap().starts_with("<<hs:"));
+    assert_eq!(mappings.unwrap().len(), 1);
 }
 
 #[test]

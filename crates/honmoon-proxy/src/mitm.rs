@@ -35,13 +35,14 @@
 //! [`should_intercept`](HonmoonHandler::should_intercept) from the gateway's
 //! [`InterceptPolicy`](crate::gateway::InterceptPolicy).
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap};
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
 
 use honmoon_core::{
-    AuditDraft, DEFAULT_MIN_PII_SEVERITY, Decision, Facts, FactsSummary, HttpFacts, PiiFacts,
-    PiiSpan, Verdict, decide_explained, detect_spans, redact_with_spans, summarize_spans,
+    AuditDraft, DEFAULT_MIN_PII_SEVERITY, Decision, Facts, FactsSummary, HttpFacts, Mapping,
+    PiiFacts, PiiSpan, RedactionOutcome, SecretTokenizer, Verdict, decide_explained,
+    detect_secrets, detect_spans, pii::severity_for_label, redact_with_spans, summarize_spans,
 };
 use http_body_util::{BodyExt, Full};
 use hudsucker::hyper::{Method, Request, Response, StatusCode, header};
@@ -58,6 +59,10 @@ use crate::gateway::{GatewayState, InterceptPolicy, PiiMode, canonical_host};
 /// but never individually removed (hudsucker exposes no close event), so this
 /// bounds memory under long-running / hostile traffic.
 const MAX_TRACKED_TUNNELS: usize = 65_536;
+const CONTENT_MD5: header::HeaderName = header::HeaderName::from_static("content-md5");
+const DIGEST: header::HeaderName = header::HeaderName::from_static("digest");
+const CONTENT_DIGEST: header::HeaderName = header::HeaderName::from_static("content-digest");
+const REPR_DIGEST: header::HeaderName = header::HeaderName::from_static("repr-digest");
 
 /// CONNECT-authorized tunnels, keyed by the client socket address.
 ///
@@ -352,33 +357,24 @@ impl HonmoonHandler {
             );
             return request;
         };
-        let eligible_spans = if is_json {
-            let unsafe_surfaces = pii_spans
-                .iter()
-                .filter(|span| !json_span_is_quoted(text, span))
-                .map(|span| span.text.as_str())
-                .collect::<HashSet<_>>();
-            pii_spans
-                .iter()
-                .filter(|span| !unsafe_surfaces.contains(span.text.as_str()))
-                .cloned()
-                .collect::<Vec<_>>()
+        let outcome = if is_json {
+            let (eligible_spans, skipped_json_spans) = quoted_json_spans(text, pii_spans);
+            if skipped_json_spans != 0 {
+                tracing::warn!(
+                    domain = %host,
+                    skipped = skipped_json_spans,
+                    "wire redaction skipped unquoted JSON PII to preserve valid syntax"
+                );
+            }
+            redact_json_with_spans(
+                text,
+                &redaction.salt,
+                DEFAULT_MIN_PII_SEVERITY,
+                &eligible_spans,
+            )
         } else {
-            pii_spans.to_vec()
+            redact_with_spans(text, &redaction.salt, DEFAULT_MIN_PII_SEVERITY, pii_spans)
         };
-        if is_json && eligible_spans.len() != pii_spans.len() {
-            tracing::warn!(
-                domain = %host,
-                skipped = pii_spans.len() - eligible_spans.len(),
-                "wire redaction skipped unquoted JSON PII to preserve valid syntax"
-            );
-        }
-        let outcome = redact_with_spans(
-            text,
-            &redaction.salt,
-            DEFAULT_MIN_PII_SEVERITY,
-            &eligible_spans,
-        );
         if !outcome.redacted {
             return request;
         }
@@ -404,6 +400,11 @@ impl HonmoonHandler {
         // compressed representation.
         request.headers_mut().remove(header::CONTENT_ENCODING);
         request.headers_mut().remove(header::TRANSFER_ENCODING);
+        for name in [CONTENT_MD5, DIGEST, CONTENT_DIGEST, REPR_DIGEST] {
+            request.headers_mut().remove(name);
+        }
+        // Honmoon cannot re-sign authenticated body bytes; signed-body requests
+        // are incompatible with wire redaction.
         request
     }
 
@@ -668,10 +669,11 @@ impl HttpHandler for HonmoonHandler {
         let Some(redaction) = &self.state.redaction else {
             return res;
         };
-        // 1xx/204/304 responses carry no body (RFC 9110); rewriting framing
-        // headers on them would corrupt cache validation and client framing.
+        // 1xx/204/304 responses carry no body (RFC 9110), while rewriting a
+        // 206 body would invalidate its byte-range semantics.
         if res.status().is_informational()
             || res.status() == StatusCode::NO_CONTENT
+            || res.status() == StatusCode::PARTIAL_CONTENT
             || res.status() == StatusCode::NOT_MODIFIED
         {
             return res;
@@ -704,6 +706,10 @@ impl HttpHandler for HonmoonHandler {
         *res.body_mut() = detokenizing_body(body, mapping);
         // Detokenization changes byte length; let hyper frame the streamed body.
         res.headers_mut().remove(header::CONTENT_LENGTH);
+        res.headers_mut().remove(header::CONTENT_RANGE);
+        for name in [CONTENT_MD5, DIGEST, CONTENT_DIGEST, REPR_DIGEST] {
+            res.headers_mut().remove(name);
+        }
         res
     }
 
@@ -719,41 +725,165 @@ impl HttpHandler for HonmoonHandler {
     }
 }
 
-/// Whether a PII span is inside a JSON string. JSON numeric/literal values must
-/// not be replaced with an unquoted placeholder because that would invalidate
-/// the document. Span offsets are UTF-16 code units, so convert the start to a
-/// byte offset before walking JSON string/escape state.
-fn json_span_is_quoted(text: &str, span: &PiiSpan) -> bool {
-    let Some(byte_start) = utf16_to_byte_offset(text, span.start) else {
-        return false;
-    };
-    let mut in_string = false;
-    let mut escaped = false;
-    for byte in text.as_bytes()[..byte_start].iter().copied() {
-        if in_string && escaped {
-            escaped = false;
-        } else if in_string && byte == b'\\' {
-            escaped = true;
-        } else if byte == b'"' {
-            in_string = !in_string;
-        }
-    }
-    in_string
+/// A JSON PII span whose UTF-16 start was resolved to an exact byte boundary
+/// while the parser was inside a quoted string.
+struct QuotedJsonSpan<'a> {
+    span: &'a PiiSpan,
+    byte_start: usize,
+    byte_end: usize,
 }
 
-fn utf16_to_byte_offset(text: &str, target: i64) -> Option<usize> {
-    let target = usize::try_from(target).ok()?;
-    let mut utf16 = 0usize;
-    for (byte, ch) in text.char_indices() {
-        if utf16 == target {
-            return Some(byte);
+/// Classify PII spans in one forward pass over the JSON text. A malformed
+/// offset, including one inside a multi-unit character or past the body, is
+/// skipped in the safe direction.
+fn quoted_json_spans<'a>(text: &str, spans: &'a [PiiSpan]) -> (Vec<QuotedJsonSpan<'a>>, usize) {
+    let mut sorted = spans.iter().collect::<Vec<_>>();
+    sorted.sort_by_key(|span| span.start);
+
+    let mut chars = text.char_indices();
+    let mut byte_offset = 0usize;
+    let mut utf16_offset = 0i64;
+    let mut in_string = false;
+    let mut escaped = false;
+    let mut eligible = Vec::with_capacity(spans.len());
+
+    for span in sorted {
+        while utf16_offset < span.start {
+            let Some((byte, ch)) = chars.next() else {
+                break;
+            };
+            byte_offset = byte + ch.len_utf8();
+            utf16_offset += ch.len_utf16() as i64;
+            if in_string && escaped {
+                escaped = false;
+            } else if in_string && ch == '\\' {
+                escaped = true;
+            } else if ch == '"' {
+                in_string = !in_string;
+            }
         }
-        utf16 += ch.len_utf16();
-        if utf16 > target {
-            return None;
+
+        if utf16_offset != span.start || !in_string {
+            continue;
+        }
+        let byte_end = byte_offset.saturating_add(span.text.len());
+        let exact_surface = text
+            .get(byte_offset..byte_end)
+            .is_some_and(|surface| surface == span.text)
+            && span.end - span.start == span.text.encode_utf16().count() as i64;
+        if exact_surface {
+            eligible.push(QuotedJsonSpan {
+                span,
+                byte_start: byte_offset,
+                byte_end,
+            });
         }
     }
-    (utf16 == target).then_some(text.len())
+
+    let skipped = spans.len() - eligible.len();
+    (eligible, skipped)
+}
+
+/// Redact JSON PII at the exact eligible occurrences while retaining the core
+/// tokenizer's global matching behavior for machine-secret findings.
+fn redact_json_with_spans(
+    text: &str,
+    salt: &[u8],
+    min_pii_severity: i64,
+    pii_spans: &[QuotedJsonSpan<'_>],
+) -> RedactionOutcome {
+    let secret_findings = detect_secrets(text);
+    let mut surfaces = Vec::new();
+    let mut surface_indices = HashMap::new();
+    let mut secret_surface_indices = Vec::new();
+    let mut secret_labels = BTreeSet::new();
+    for finding in &secret_findings {
+        secret_labels.insert(finding.label.clone());
+        if !surface_indices.contains_key(&finding.text) {
+            let surface_index = surfaces.len();
+            surface_indices.insert(finding.text.clone(), surface_index);
+            surfaces.push(finding.text.clone());
+            secret_surface_indices.push(surface_index);
+        }
+    }
+
+    let mut pii_labels = BTreeSet::new();
+    let mut max_pii_severity = 0;
+    for eligible in pii_spans {
+        let severity = severity_for_label(&eligible.span.label);
+        if severity < min_pii_severity {
+            continue;
+        }
+        pii_labels.insert(eligible.span.label.clone());
+        max_pii_severity = max_pii_severity.max(severity);
+        if !surface_indices.contains_key(&eligible.span.text) {
+            surface_indices.insert(eligible.span.text.clone(), surfaces.len());
+            surfaces.push(eligible.span.text.clone());
+        }
+    }
+
+    if surfaces.is_empty() {
+        return RedactionOutcome {
+            text: text.to_owned(),
+            redacted: false,
+            secret_labels: secret_labels.into_iter().collect(),
+            pii_labels: pii_labels.into_iter().collect(),
+            max_pii_severity,
+            mapping: Mapping::new(),
+        };
+    }
+
+    let tokenizer = SecretTokenizer::new(salt.to_vec(), surfaces.clone());
+    let mut candidates = Vec::new();
+    for surface_index in secret_surface_indices {
+        let surface = &surfaces[surface_index];
+        candidates.extend(
+            text.match_indices(surface)
+                .map(|(start, surface)| (start, start + surface.len(), surface_index)),
+        );
+    }
+    for eligible in pii_spans {
+        if severity_for_label(&eligible.span.label) >= min_pii_severity {
+            candidates.push((
+                eligible.byte_start,
+                eligible.byte_end,
+                surface_indices[&eligible.span.text],
+            ));
+        }
+    }
+    candidates.sort_unstable_by(|left, right| {
+        left.0
+            .cmp(&right.0)
+            .then_with(|| (right.1 - right.0).cmp(&(left.1 - left.0)))
+            .then_with(|| left.2.cmp(&right.2))
+    });
+
+    let mut output = String::with_capacity(text.len());
+    let mut mapping = Mapping::new();
+    let mut last_end = 0;
+    for (start, end, surface_index) in candidates {
+        if start < last_end {
+            continue;
+        }
+        output.push_str(&text[last_end..start]);
+        let surface = &surfaces[surface_index];
+        let placeholder = tokenizer
+            .placeholder_for(surface)
+            .expect("registered surface has a placeholder");
+        output.push_str(placeholder);
+        mapping.insert(placeholder.to_owned(), surface.clone());
+        last_end = end;
+    }
+    output.push_str(&text[last_end..]);
+
+    RedactionOutcome {
+        redacted: !mapping.is_empty(),
+        text: output,
+        secret_labels: secret_labels.into_iter().collect(),
+        pii_labels: pii_labels.into_iter().collect(),
+        max_pii_severity,
+        mapping,
+    }
 }
 
 /// A `Content-Length: 0` response with the given status.
@@ -819,6 +949,24 @@ mod tests {
         let mut enc = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
         enc.write_all(data).expect("gzip write");
         enc.finish().expect("gzip finish")
+    }
+
+    #[test]
+    fn json_span_classification_rejects_mid_character_and_past_end_offsets() {
+        let text = r#"{"note":"😀user@example.com"}"#;
+        let detected = detect_spans(text);
+        assert_eq!(quoted_json_spans(text, &detected).0.len(), 1);
+
+        let mut mid_character = detected[0].clone();
+        mid_character.start -= 1;
+        let mut past_end = detected[0].clone();
+        past_end.start = 10_000;
+        past_end.end = 10_000 + past_end.text.encode_utf16().count() as i64;
+
+        let malformed = [mid_character, past_end];
+        let (eligible, skipped) = quoted_json_spans(text, &malformed);
+        assert!(eligible.is_empty());
+        assert_eq!(skipped, 2);
     }
 
     #[tokio::test]

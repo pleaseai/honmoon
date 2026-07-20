@@ -254,6 +254,9 @@ impl DetokenizingBody {
                 Bytes::from(output)
             }
             Err(_) => {
+                tracing::warn!(
+                    "response detokenization abandoned because response body is not valid UTF-8; forwarding remaining bytes verbatim"
+                );
                 // Flush undecided placeholder text and the bytes carried from the
                 // prior frame verbatim before preserving this binary stream.
                 let mut output = self
@@ -438,6 +441,22 @@ mod tests {
             String::from_utf8(restored).unwrap(),
             format!("before 한{secret} after")
         );
+    }
+
+    #[test]
+    fn response_detokenizer_flushes_carry_and_pending_text_before_binary_passthrough() {
+        let mut body = detokenizer(Mapping::new());
+        let mut first = b"<<hs:".to_vec();
+        first.extend_from_slice(&"한".as_bytes()[..2]);
+        assert!(body.transform_data(Bytes::from(first)).is_empty());
+
+        let output = body.transform_data(Bytes::from_static(b"\xffbinary"));
+        let mut expected = b"<<hs:".to_vec();
+        expected.extend_from_slice(&"한".as_bytes()[..2]);
+        expected.extend_from_slice(b"\xffbinary");
+        assert_eq!(&output[..], &expected);
+        assert!(body.passthrough);
+        assert!(body.finish_bytes().is_none());
     }
 
     #[test]
