@@ -1,0 +1,21 @@
+crates/honmoon-proxy/tests/mitm.rs
+  s_cf83ee98a2626b::t_39809a789708bc 409-450
+crates/honmoon-proxy/src/mitm.rs
+  s_cf83ee98a2626b::t_de4a71bb6fccee 347-353
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.14",
+  "base_commit_sha": "544abdbefaa46daadd939708c316a6b009423101",
+  "prompts": {},
+  "sessions": {
+    "s_cf83ee98a2626b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "21c56566-bd83-4d83-9f4d-2838fb0fcafc",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
