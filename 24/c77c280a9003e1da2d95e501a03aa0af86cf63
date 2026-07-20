@@ -1,0 +1,29 @@
+crates/honmoon-core/src/claude_code_hook.rs
+  s_6289b0c2852115::t_3d928a29db1c86 221-230,242-243,245,248
+  s_6289b0c2852115::t_b7f2aa3d2ff6c5 348-352
+  s_6289b0c2852115::t_8652c76135a556 345-347
+  s_6289b0c2852115::t_7842fe87a79eb3 353-354
+  s_6289b0c2852115::t_c7c705031e81b5 333-344
+crates/honmoon-mgmt/src/lib.rs
+  s_6289b0c2852115::t_0f5bda084cf840 58-62
+  s_6289b0c2852115::t_413b6e92d9a546 127,134-144
+  s_6289b0c2852115::t_9017a3db87897c 268-276,279-284
+  s_6289b0c2852115::t_4870a7decaba3f 277-278
+  s_6289b0c2852115::t_dfd6b301a6f70d 162-175,177
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.14",
+  "base_commit_sha": "24c77c280a9003e1da2d95e501a03aa0af86cf63",
+  "prompts": {},
+  "sessions": {
+    "s_6289b0c2852115": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "ae6e757b-564f-4346-bd1d-32e70b2d9217",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
