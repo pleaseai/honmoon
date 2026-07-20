@@ -212,9 +212,17 @@ impl DetokenizingBody {
             return data;
         }
 
-        let mut combined = std::mem::take(&mut self.carry);
-        combined.extend_from_slice(&data);
-        match std::str::from_utf8(&combined) {
+        // Common case: no carry from the prior frame — borrow `data` directly
+        // instead of allocating a combined buffer on every frame.
+        let mut combined_storage;
+        let combined: &[u8] = if self.carry.is_empty() {
+            &data
+        } else {
+            combined_storage = std::mem::take(&mut self.carry);
+            combined_storage.extend_from_slice(&data);
+            &combined_storage
+        };
+        match std::str::from_utf8(combined) {
             Ok(text) => Bytes::from(
                 self.detokenizer
                     .as_mut()
@@ -244,7 +252,7 @@ impl DetokenizingBody {
                     .expect("detokenizer present before pass-through")
                     .finish()
                     .into_bytes();
-                output.extend_from_slice(&combined);
+                output.extend_from_slice(combined);
                 self.passthrough = true;
                 Bytes::from(output)
             }
