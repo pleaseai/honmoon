@@ -4,6 +4,8 @@
 //! public API (`StreamingDetokenizer`, `detokenize`) is re-exported from the
 //! parent module unchanged.
 
+use std::borrow::Cow;
+
 use super::{MAX_PLACEHOLDER_LEN, Mapping, PLACEHOLDER_PREFIX};
 
 /// A streaming reverse-substitution engine (FR-004): accepts ordered chunks
@@ -25,7 +27,7 @@ use super::{MAX_PLACEHOLDER_LEN, Mapping, PLACEHOLDER_PREFIX};
 /// apart from one another (AC-008 by construction) — this is the only
 /// reverse-substitution state machine in the module.
 pub struct StreamingDetokenizer<'a> {
-    mapping: &'a Mapping,
+    mapping: Cow<'a, Mapping>,
     /// Bytes not yet safely emitted. Bounded to under `MAX_PLACEHOLDER_LEN`
     /// bytes whenever more chunks may still arrive (NFR-003): any run at
     /// least that long has already been resolved — matched, invalidated, or
@@ -47,7 +49,18 @@ impl<'a> StreamingDetokenizer<'a> {
     /// (FR-008).
     pub fn new(mapping: &'a Mapping) -> Self {
         Self {
-            mapping,
+            mapping: Cow::Borrowed(mapping),
+            buffer: String::new(),
+        }
+    }
+
+    /// Begin streaming detokenization with an owned point-in-time mapping.
+    ///
+    /// This form is suitable for transport body adapters that must be `'static`
+    /// and cannot hold a mapping-store lock while the body is polled.
+    pub fn owned(mapping: Mapping) -> StreamingDetokenizer<'static> {
+        StreamingDetokenizer {
+            mapping: Cow::Owned(mapping),
             buffer: String::new(),
         }
     }

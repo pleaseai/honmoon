@@ -1,8 +1,10 @@
-//! Request-body buffering and `Content-Encoding` decoding for PII inspection.
+//! Request-body buffering, `Content-Encoding` decoding for PII inspection and
+//! redaction, and streaming response detokenization.
 //!
 //! Split out of [`mitm`](crate::mitm) so the TLS-termination handler stays
-//! focused on policy/gating. It produces bounded decoded bytes for inspection;
-//! the caller decides whether findings are audit-only or enforced.
+//! focused on policy/gating. Request helpers produce bounded decoded bytes for
+//! inspection or rewriting; the response adapter restores known placeholders
+//! without buffering the upstream stream.
 //!
 //! Two invariants hold throughout:
 //! - **Bounded memory**: no more than [`MAX_INSPECT_BODY`] bytes are ever
@@ -20,6 +22,7 @@ use std::io::Read;
 use std::pin::Pin;
 use std::task::Poll;
 
+use honmoon_core::{Mapping, StreamingDetokenizer};
 use http_body_util::BodyExt;
 use http_body_util::combinators::BoxBody;
 use hudsucker::Body;
@@ -82,6 +85,26 @@ pub(crate) fn decode_for_inspection<'a>(
             Some(Cow::Borrowed(raw))
         }
     }
+}
+
+/// Strictly decode a buffered request body for wire redaction.
+///
+/// Unlike [`decode_for_inspection`], this never falls back to raw bytes for an
+/// unsupported or malformed declared encoding: rewriting those bytes as identity
+/// text would corrupt the request. `None` is the documented fail-open signal.
+pub(crate) fn decode_for_redaction<'a>(
+    encoding: Option<&str>,
+    raw: &'a [u8],
+) -> Option<Cow<'a, [u8]>> {
+    let token = encoding.map(|e| e.trim().to_ascii_lowercase());
+    let attempt = match token.as_deref() {
+        None | Some("") | Some("identity") => return Some(Cow::Borrowed(raw)),
+        Some("gzip") | Some("x-gzip") => inflate_capped(flate2::read::MultiGzDecoder::new(raw)),
+        Some("deflate") => inflate_capped(flate2::read::ZlibDecoder::new(raw))
+            .or_else(|_| inflate_capped(flate2::read::DeflateDecoder::new(raw))),
+        Some(_) => return None,
+    };
+    attempt.ok().flatten().map(Cow::Owned)
 }
 
 /// Inflate up to [`MAX_INSPECT_BODY`] bytes, reading one byte past the cap
@@ -155,6 +178,144 @@ pub(crate) fn prefixed_body(prefix: Bytes, rest: Body) -> Body {
     }))
 }
 
+pub(crate) fn detokenizing_body(body: Body, mapping: Mapping) -> Body {
+    Body::from(BoxBody::new(DetokenizingBody {
+        inner: body,
+        detokenizer: Some(StreamingDetokenizer::owned(mapping)),
+        carry: Vec::new(),
+        pending: None,
+        passthrough: false,
+        finished: false,
+    }))
+}
+
+/// A streaming response body that restores known placeholders without buffering
+/// the response. The detokenizer may withhold at most
+/// `MAX_PLACEHOLDER_LEN - 1` bytes between frames; for SSE those bytes flush
+/// with the next frame or at stream end.
+///
+/// UTF-8 code points split across frames use a carry of at most three bytes. An
+/// interior invalid sequence permanently switches to byte-for-byte pass-through:
+/// placeholders are ASCII, but splicing secrets into a binary stream is unsafe.
+struct DetokenizingBody {
+    inner: Body,
+    detokenizer: Option<StreamingDetokenizer<'static>>,
+    carry: Vec<u8>,
+    pending: Option<Frame<Bytes>>,
+    passthrough: bool,
+    finished: bool,
+}
+
+impl DetokenizingBody {
+    fn transform_data(&mut self, data: Bytes) -> Bytes {
+        if self.passthrough {
+            return data;
+        }
+
+        let carry_len = self.carry.len();
+        let mut combined = std::mem::take(&mut self.carry);
+        combined.extend_from_slice(&data);
+        match std::str::from_utf8(&combined) {
+            Ok(text) => Bytes::from(
+                self.detokenizer
+                    .as_mut()
+                    .expect("detokenizer present before pass-through")
+                    .push(text),
+            ),
+            Err(error) if error.error_len().is_none() => {
+                let valid_up_to = error.valid_up_to();
+                let output = self
+                    .detokenizer
+                    .as_mut()
+                    .expect("detokenizer present before pass-through")
+                    .push(
+                        std::str::from_utf8(&combined[..valid_up_to])
+                            .expect("UTF-8 valid_up_to is valid text"),
+                    );
+                self.carry.extend_from_slice(&combined[valid_up_to..]);
+                debug_assert!(self.carry.len() <= 3);
+                Bytes::from(output)
+            }
+            Err(_) => {
+                // Flush undecided placeholder text and the bytes carried from the
+                // prior frame verbatim before preserving this binary stream.
+                let mut output = self
+                    .detokenizer
+                    .take()
+                    .expect("detokenizer present before pass-through")
+                    .finish()
+                    .into_bytes();
+                output.extend_from_slice(&combined[..carry_len]);
+                output.extend_from_slice(&data);
+                self.passthrough = true;
+                Bytes::from(output)
+            }
+        }
+    }
+
+    fn finish_bytes(&mut self) -> Option<Bytes> {
+        if self.finished {
+            return None;
+        }
+        self.finished = true;
+        if self.passthrough {
+            return None;
+        }
+        let mut output = self
+            .detokenizer
+            .take()
+            .expect("detokenizer present before finish")
+            .finish()
+            .into_bytes();
+        output.append(&mut self.carry);
+        (!output.is_empty()).then(|| Bytes::from(output))
+    }
+}
+
+impl HttpBody for DetokenizingBody {
+    type Data = Bytes;
+    type Error = hudsucker::Error;
+
+    fn poll_frame(
+        mut self: Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> Poll<Option<Result<Frame<Self::Data>, Self::Error>>> {
+        if let Some(frame) = self.pending.take() {
+            return Poll::Ready(Some(Ok(frame)));
+        }
+        if self.finished {
+            return Poll::Ready(None);
+        }
+
+        match Pin::new(&mut self.inner).poll_frame(cx) {
+            Poll::Pending => Poll::Pending,
+            Poll::Ready(Some(Err(error))) => Poll::Ready(Some(Err(error))),
+            Poll::Ready(Some(Ok(frame))) => match frame.into_data() {
+                Ok(data) => Poll::Ready(Some(Ok(Frame::data(self.transform_data(data))))),
+                Err(frame) => match self.finish_bytes() {
+                    Some(bytes) => {
+                        self.pending = Some(frame);
+                        Poll::Ready(Some(Ok(Frame::data(bytes))))
+                    }
+                    None => Poll::Ready(Some(Ok(frame))),
+                },
+            },
+            Poll::Ready(None) => match self.finish_bytes() {
+                Some(bytes) => Poll::Ready(Some(Ok(Frame::data(bytes)))),
+                None => Poll::Ready(None),
+            },
+        }
+    }
+
+    fn is_end_stream(&self) -> bool {
+        self.finished && self.pending.is_none()
+    }
+
+    fn size_hint(&self) -> SizeHint {
+        SizeHint::default()
+    }
+}
+
 /// An [`HttpBody`] that yields one prefix chunk, then delegates to `rest`.
 struct PrefixedBody {
     prefix: Option<Bytes>,
@@ -190,6 +351,64 @@ impl HttpBody for PrefixedBody {
 mod tests {
     use super::*;
 
+    fn detokenizer(mapping: Mapping) -> DetokenizingBody {
+        DetokenizingBody {
+            inner: Body::empty(),
+            detokenizer: Some(StreamingDetokenizer::owned(mapping)),
+            carry: Vec::new(),
+            pending: None,
+            passthrough: false,
+            finished: false,
+        }
+    }
+
+    #[test]
+    fn response_detokenizer_carries_trailing_utf8_across_frames() {
+        let secret = "sk-ant-api03-response-carry-abcDEF123456";
+        let outcome = honmoon_core::redact(
+            secret,
+            b"response-body-test-salt",
+            honmoon_core::DEFAULT_MIN_PII_SEVERITY,
+        );
+        let placeholder = outcome.text;
+        let mut body = detokenizer(outcome.mapping);
+        let korean = "한".as_bytes();
+
+        let mut first = b"before ".to_vec();
+        first.extend_from_slice(&korean[..2]);
+        let first_output = body.transform_data(Bytes::from(first));
+        assert_eq!(&first_output[..], b"before ");
+        assert_eq!(body.carry, korean[..2]);
+
+        let mut second = vec![korean[2]];
+        second.extend_from_slice(placeholder.as_bytes());
+        second.extend_from_slice(b" after");
+        let mut restored = first_output.to_vec();
+        restored.extend_from_slice(&body.transform_data(Bytes::from(second)));
+        if let Some(final_bytes) = body.finish_bytes() {
+            restored.extend_from_slice(&final_bytes);
+        }
+        assert_eq!(
+            String::from_utf8(restored).unwrap(),
+            format!("before 한{secret} after")
+        );
+    }
+
+    #[test]
+    fn response_detokenizer_flushes_pending_text_then_passes_binary_through() {
+        let mut body = detokenizer(Mapping::new());
+        assert!(body.transform_data(Bytes::from_static(b"<<hs:")).is_empty());
+
+        let binary = Bytes::from_static(b"\xff\x00binary");
+        let output = body.transform_data(binary.clone());
+        assert_eq!(&output[..], b"<<hs:\xff\x00binary");
+        assert!(body.passthrough);
+
+        let rest = Bytes::from_static(b"\xfe<<hs:unchanged>>");
+        assert_eq!(body.transform_data(rest.clone()), rest);
+        assert!(body.finish_bytes().is_none());
+    }
+
     fn gzip(data: &[u8]) -> Vec<u8> {
         use std::io::Write;
         let mut enc = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
@@ -209,6 +428,21 @@ mod tests {
                 .expect("identity")
                 .as_ref(),
             &raw[..]
+        );
+    }
+
+    #[test]
+    fn strict_redaction_decode_rejects_unsupported_or_malformed_encoding() {
+        let plain = b"plaintext secret";
+        assert!(decode_for_redaction(Some("br"), plain).is_none());
+        assert!(decode_for_redaction(Some("gzip"), plain).is_none());
+
+        let compressed = gzip(plain);
+        assert_eq!(
+            decode_for_redaction(Some("gzip"), &compressed)
+                .expect("valid gzip")
+                .as_ref(),
+            plain
         );
     }
 

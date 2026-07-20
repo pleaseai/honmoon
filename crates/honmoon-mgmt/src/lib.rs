@@ -48,10 +48,10 @@ pub struct AppState {
     pub policy_yaml: Arc<String>,
     /// Stable HMAC salt used by gateway-direct hook redaction.
     pub hook_salt: Arc<Vec<u8>>,
-    /// Live reverse mappings introduced by hook verdicts.
+    /// Live reverse mappings introduced by hook and proxy-wire redaction.
     ///
-    /// The proxy does not yet tokenize wire bodies. Issue #50 will clone this
-    /// shared store into that path and add hook-vs-proxy token parity coverage.
+    /// When wire redaction is enabled this is the exact store held by the proxy:
+    /// one gateway process, one mapping.
     pub hook_mappings: Arc<MappingStore>,
     /// Optional bearer credential protecting the hook endpoint.
     pub hook_token: Option<Arc<str>>,
@@ -71,11 +71,16 @@ impl AppState {
         hook_token: Option<String>,
     ) -> Self {
         assert!(!hook_salt.is_empty(), "hook salt must not be empty");
+        let hook_mappings = gateway
+            .redaction
+            .as_ref()
+            .map(|redaction| Arc::clone(&redaction.mappings))
+            .unwrap_or_else(|| Arc::new(MappingStore::new()));
         Self {
             gateway,
             policy_yaml: Arc::new(policy_yaml.into()),
             hook_salt: Arc::new(hook_salt),
-            hook_mappings: Arc::new(MappingStore::new()),
+            hook_mappings,
             hook_token: hook_token.map(Arc::from),
         }
     }

@@ -11,7 +11,9 @@ use clap::{Parser, Subcommand, ValueEnum};
 use honmoon_core::{AuditLog, Policy};
 use honmoon_mgmt::AppState;
 use honmoon_proxy::ca::CaMaterial;
-use honmoon_proxy::gateway::{DEFAULT_PAUSE_TIMEOUT, GatewayState, InterceptPolicy, PiiMode};
+use honmoon_proxy::gateway::{
+    DEFAULT_PAUSE_TIMEOUT, GatewayState, InterceptPolicy, PiiMode, RedactionState,
+};
 
 #[derive(Parser)]
 #[command(
@@ -68,6 +70,17 @@ enum Command {
         /// trust the CA certificate. See --pii-mode to choose audit or enforcement.
         #[arg(long)]
         tls_intercept: bool,
+        /// Rewrite intercepted request bodies: detected secrets and Tier-1 PII are
+        /// replaced with stable placeholder tokens before forwarding upstream, and
+        /// placeholders appearing in responses are restored (detokenized) so the
+        /// agent keeps working. Placeholder minting is deterministic per salt, so
+        /// re-redacted conversation history stays byte-identical across turns
+        /// (prompt-cache safe). Fail modes: bodies over the 2 MiB inspection cap,
+        /// non-UTF-8/binary bodies, and bodies whose declared encoding cannot be
+        /// decoded are forwarded UNREDACTED (matching scan behavior); compressed
+        /// responses are not detokenized (the proxy requests identity encoding).
+        #[arg(long, requires = "tls_intercept")]
+        redact_secrets: bool,
         /// How detected PII policy verdicts are handled: detect audits the
         /// would-be verdict; block enforces allow/deny/pause inline.
         #[arg(long, value_enum, default_value_t = PiiModeArg::Detect)]
@@ -126,6 +139,7 @@ fn main() -> Result<()> {
             hook_token,
             hook_salt_context,
             tls_intercept,
+            redact_secrets,
             pii_mode,
             ca_cert,
             ca_key,
@@ -137,6 +151,7 @@ fn main() -> Result<()> {
             hook_token,
             hook_salt_context,
             tls_intercept,
+            redact_secrets,
             pii_mode,
             ca_cert,
             ca_key,
@@ -172,6 +187,7 @@ struct GatewayArgs {
     hook_token: Option<String>,
     hook_salt_context: String,
     tls_intercept: bool,
+    redact_secrets: bool,
     pii_mode: PiiModeArg,
     ca_cert: Option<PathBuf>,
     ca_key: Option<PathBuf>,
@@ -197,6 +213,7 @@ fn gateway(args: GatewayArgs) -> Result<()> {
         hook_token,
         hook_salt_context,
         tls_intercept,
+        redact_secrets,
         pii_mode,
         ca_cert,
         ca_key,
@@ -240,6 +257,8 @@ fn gateway(args: GatewayArgs) -> Result<()> {
         )
     };
 
+    let salt = hook::derive_salt_context(&hook_salt_context);
+    let redaction = redact_secrets.then(|| RedactionState::new(salt.clone()));
     let state = GatewayState {
         policy: Arc::new(policy),
         audit,
@@ -248,6 +267,7 @@ fn gateway(args: GatewayArgs) -> Result<()> {
         ca: Arc::new(ca),
         intercept,
         pii_mode: pii_mode.into(),
+        redaction,
     };
 
     // Bind both listeners up front so a bind error is reported before we spawn.
@@ -256,12 +276,7 @@ fn gateway(args: GatewayArgs) -> Result<()> {
     let mgmt_listener = TcpListener::bind(&mgmt_addr)
         .with_context(|| format!("binding management API {mgmt_addr}"))?;
 
-    let app_state = AppState::with_hook_config(
-        state.clone(),
-        policy_yaml,
-        hook::derive_salt_context(&hook_salt_context),
-        hook_token,
-    );
+    let app_state = AppState::with_hook_config(state.clone(), policy_yaml, salt, hook_token);
 
     let runtime = tokio::runtime::Runtime::new().context("build tokio runtime")?;
     runtime.block_on(async move {

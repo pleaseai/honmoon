@@ -5,8 +5,9 @@
 //! This is the transport-agnostic primitive described in the
 //! `secret-tokenization-20260707` track spec. Registration, placeholder
 //! minting, `tokenize` (secret → placeholder), whole-text `detokenize`, and a
-//! boundary-safe [`StreamingDetokenizer`] are all implemented here. Wiring
-//! into the proxy and a policy action are deferred to follow-up tracks.
+//! boundary-safe [`StreamingDetokenizer`] are all implemented here. The proxy
+//! wire path and management hook transport share these primitives and one live
+//! mapping store.
 //!
 //! Placeholders are `HMAC-SHA256(key = session_salt, message = secret)`,
 //! truncated and hex-encoded inside a fixed ASCII sentinel. The salt is used
@@ -297,7 +298,7 @@ impl fmt::Debug for SecretTokenizer {
 ///
 /// `Debug` is implemented manually to redact secret bytes (AC-015); this
 /// type deliberately does not derive `Serialize`/`Deserialize` (NFR-005).
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct Mapping {
     inner: HashMap<String, String>,
 }
@@ -350,10 +351,10 @@ impl fmt::Debug for Mapping {
 
 /// Thread-safe live reverse-mapping store for long-running transports.
 ///
-/// A management API keeps one store for its lifetime and records every mapping
-/// produced by hook redaction. The future proxy-path tokenization work in #50
-/// can clone the surrounding shared handle and consume this same store; the
-/// current proxy detects PII but does not yet tokenize wire bodies.
+/// A management API and the proxy wire path share one store for their lifetime,
+/// recording every mapping produced by either transport. This lets a response
+/// detokenize placeholders minted by the current request or by the co-running
+/// hook endpoint while keeping the secret-bearing mapping process-local.
 #[derive(Default)]
 pub struct MappingStore {
     mapping: Mutex<Mapping>,
@@ -371,6 +372,17 @@ impl MappingStore {
             .lock()
             .expect("tokenization mapping store poisoned")
             .extend(mapping);
+    }
+
+    /// Take a point-in-time copy of the live mapping.
+    ///
+    /// Consumers snapshot under the mutex so no lock is held across await points
+    /// or while a streaming response is being polled.
+    pub fn snapshot(&self) -> Mapping {
+        self.mapping
+            .lock()
+            .expect("tokenization mapping store poisoned")
+            .clone()
     }
 
     /// Number of distinct placeholder mappings currently retained.
@@ -401,6 +413,23 @@ pub use streaming::{StreamingDetokenizer, detokenize};
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn mapping_store_snapshot_is_a_point_in_time_clone() {
+        let store = MappingStore::new();
+        let mut first = Mapping::new();
+        first.insert("<<hs:first>>", "sk-first");
+        store.record(first);
+
+        let snapshot = store.snapshot();
+        let mut second = Mapping::new();
+        second.insert("<<hs:second>>", "sk-second");
+        store.record(second);
+
+        assert_eq!(snapshot.get("<<hs:first>>"), Some("sk-first"));
+        assert_eq!(snapshot.get("<<hs:second>>"), None);
+        assert_eq!(store.len(), 2);
+    }
 
     #[test]
     fn happy_path_placeholders_match_sentinel_format() {

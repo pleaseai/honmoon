@@ -95,6 +95,7 @@ fn start_mgmt(salt: Vec<u8>) -> u16 {
         ca: Arc::new(CaMaterial::generate().unwrap()),
         intercept: InterceptPolicy::None,
         pii_mode: PiiMode::Detect,
+        redaction: None,
     };
     let app = AppState::with_hook_config(state, policy_yaml, salt, None);
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();

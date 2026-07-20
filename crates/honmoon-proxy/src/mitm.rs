@@ -27,8 +27,9 @@
 //! In block mode, the same verdict is enforced inline (`deny` returns 403 and
 //! `pause` uses the shared approval registry).
 //! Request-body buffering and `Content-Encoding` decoding live in
-//! [`crate::body`]; the forwarded body is always the original (still-encoded)
-//! bytes — only the scanner sees decoded output.
+//! [`crate::body`]. By default the forwarded body remains the original encoded
+//! bytes; when wire redaction is enabled, a fully buffered/decoded UTF-8 body is
+//! rewritten to identity-encoded placeholder text before the upstream leg.
 //!
 //! Whether a tunnel is TLS-terminated is decided by
 //! [`should_intercept`](HonmoonHandler::should_intercept) from the gateway's
@@ -39,8 +40,8 @@ use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
 
 use honmoon_core::{
-    AuditDraft, Decision, Facts, FactsSummary, HttpFacts, PiiFacts, Verdict, decide_explained,
-    detect_pii,
+    AuditDraft, DEFAULT_MIN_PII_SEVERITY, Decision, Facts, FactsSummary, HttpFacts, PiiFacts,
+    Verdict, decide_explained, detect_pii, redact,
 };
 use http_body_util::{BodyExt, Full};
 use hudsucker::hyper::{Method, Request, Response, StatusCode, header};
@@ -48,7 +49,8 @@ use hudsucker::{Body, HttpContext, HttpHandler, RequestOrResponse};
 
 use crate::approval::{ApprovalDecision, NewApproval};
 use crate::body::{
-    Buffered, MAX_INSPECT_BODY, buffer_up_to, decode_for_inspection, prefixed_body, utf8_prefix,
+    Buffered, MAX_INSPECT_BODY, buffer_up_to, decode_for_inspection, decode_for_redaction,
+    detokenizing_body, prefixed_body, utf8_prefix,
 };
 use crate::gateway::{GatewayState, InterceptPolicy, PiiMode, canonical_host};
 
@@ -282,6 +284,83 @@ impl HonmoonHandler {
         }
     }
 
+    /// Finalize a policy-approved request for the upstream leg.
+    fn forwarded_request(
+        &self,
+        mut request: Request<Body>,
+        scanned: Option<&[u8]>,
+        content_encoding_present: bool,
+        content_encoding: Option<&str>,
+        host: &str,
+    ) -> Request<Body> {
+        let Some(redaction) = &self.state.redaction else {
+            return request;
+        };
+
+        // Ask upstreams for text we can safely detokenize on the response path.
+        // A server may ignore this, in which case handle_response fails open.
+        request.headers_mut().insert(
+            header::ACCEPT_ENCODING,
+            header::HeaderValue::from_static("identity"),
+        );
+
+        let Some(raw) = scanned else {
+            tracing::warn!(
+                domain = %host,
+                limit = MAX_INSPECT_BODY,
+                "wire redaction bypassed for over-cap request body"
+            );
+            return request;
+        };
+        if content_encoding_present && content_encoding.is_none() {
+            tracing::warn!(
+                domain = %host,
+                "wire redaction bypassed because Content-Encoding was not valid text"
+            );
+            return request;
+        }
+        let Some(decoded) = decode_for_redaction(content_encoding, raw) else {
+            tracing::warn!(
+                domain = %host,
+                encoding = ?content_encoding,
+                "wire redaction bypassed because request encoding was not fully decodable"
+            );
+            return request;
+        };
+        // Rewriting a UTF-8 prefix would discard the remaining request bytes.
+        // Only a fully decoded, fully valid text body is eligible for rewriting.
+        let Ok(text) = std::str::from_utf8(&decoded) else {
+            return request;
+        };
+        let outcome = redact(text, &redaction.salt, DEFAULT_MIN_PII_SEVERITY);
+        if !outcome.redacted {
+            return request;
+        }
+
+        let labels = outcome.labels();
+        let bytes = hudsucker::hyper::body::Bytes::from(outcome.text);
+        let length = bytes.len();
+        redaction.mappings.record(outcome.mapping);
+        tracing::info!(
+            domain = %host,
+            labels = ?labels,
+            label_count = labels.len(),
+            "request body redacted"
+        );
+
+        *request.body_mut() = Body::from(Full::new(bytes));
+        request.headers_mut().insert(
+            header::CONTENT_LENGTH,
+            header::HeaderValue::from_str(&length.to_string())
+                .expect("usize is a valid Content-Length"),
+        );
+        // The replacement is decoded UTF-8 text, not the client's original
+        // compressed representation.
+        request.headers_mut().remove(header::CONTENT_ENCODING);
+        request.headers_mut().remove(header::TRANSFER_ENCODING);
+        request
+    }
+
     /// Scan a request body for PII. Detect mode audits findings and forwards;
     /// block mode enforces the resulting policy verdict inline.
     async fn inspect_body(&self, req: Request<Body>) -> RequestOrResponse {
@@ -295,6 +374,7 @@ impl HonmoonHandler {
             .and_then(|v| v.to_str().ok())
             .and_then(|v| v.parse::<usize>().ok());
 
+        let content_encoding_present = req.headers().contains_key(header::CONTENT_ENCODING);
         let content_encoding = req
             .headers()
             .get(header::CONTENT_ENCODING)
@@ -384,7 +464,15 @@ impl HonmoonHandler {
                     approval_id: None,
                 });
             }
-            return forwarded.into();
+            return self
+                .forwarded_request(
+                    forwarded,
+                    scanned.as_deref(),
+                    content_encoding_present,
+                    content_encoding.as_deref(),
+                    &host,
+                )
+                .into();
         }
 
         match outcome.verdict {
@@ -403,7 +491,14 @@ impl HonmoonHandler {
                         approval_id: None,
                     });
                 }
-                forwarded.into()
+                self.forwarded_request(
+                    forwarded,
+                    scanned.as_deref(),
+                    content_encoding_present,
+                    content_encoding.as_deref(),
+                    &host,
+                )
+                .into()
             }
             Verdict::Deny => {
                 tracing::info!(domain = %host, rule = ?outcome.rule, "request denied by content policy");
@@ -428,7 +523,15 @@ impl HonmoonHandler {
                     .hold(&host, summary, outcome.rule, approval_summary)
                     .await
                 {
-                    Gate::Proceed => forwarded.into(),
+                    Gate::Proceed => self
+                        .forwarded_request(
+                            forwarded,
+                            scanned.as_deref(),
+                            content_encoding_present,
+                            content_encoding.as_deref(),
+                            &host,
+                        )
+                        .into(),
                     Gate::Block(response) => *response,
                 }
             }
@@ -463,6 +566,41 @@ impl HttpHandler for HonmoonHandler {
         }
 
         self.inspect_body(req).await
+    }
+
+    async fn handle_response(
+        &mut self,
+        _ctx: &HttpContext,
+        mut res: Response<Body>,
+    ) -> Response<Body> {
+        let Some(redaction) = &self.state.redaction else {
+            return res;
+        };
+        if redaction.mappings.is_empty() {
+            return res;
+        }
+        let identity_encoded = res
+            .headers()
+            .get(header::CONTENT_ENCODING)
+            .map(|value| {
+                value.to_str().ok().is_some_and(|value| {
+                    value.trim().is_empty() || value.trim().eq_ignore_ascii_case("identity")
+                })
+            })
+            .unwrap_or(true);
+        if !identity_encoded {
+            return res;
+        }
+
+        // handle_request records this request's mapping before the upstream leg,
+        // so this point-in-time snapshot always includes its substitutions. It
+        // also avoids holding the MappingStore mutex while the body is polled.
+        let mapping = redaction.mappings.snapshot();
+        let body = std::mem::replace(res.body_mut(), Body::empty());
+        *res.body_mut() = detokenizing_body(body, mapping);
+        // Detokenization changes byte length; let hyper frame the streamed body.
+        res.headers_mut().remove(header::CONTENT_LENGTH);
+        res
     }
 
     async fn should_intercept(&mut self, _ctx: &HttpContext, req: &Request<Body>) -> bool {

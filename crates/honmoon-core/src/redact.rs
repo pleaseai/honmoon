@@ -3,18 +3,18 @@
 //! ([`crate::SecretTokenizer`]).
 //!
 //! This is the single engine behind the Claude Code plugin's hooks (issue #19)
-//! and, in a later track, the gateway-direct HTTP transport. It stays pure
-//! logic (no I/O): the caller supplies the text and a session salt, and gets
-//! back the redacted text plus what was found. Because the tokenizer mints
+//! and the gateway-direct HTTP wire transport. It stays pure logic (no I/O):
+//! the caller supplies the text and a session salt, and gets back the redacted
+//! text plus what was found. Because the tokenizer mints
 //! deterministic, byte-stable placeholders for a given `(salt, secret)`,
 //! re-redacting resent conversation history is byte-identical across turns
 //! (issue #20) — the caller need do nothing extra to keep a provider's
 //! prompt-cache prefix stable.
 //!
-//! On the plugin path there is no reverse substitution, so the returned
-//! [`Mapping`] is effectively one-way redaction; it is kept in the outcome so
-//! a co-running proxy / HTTP transport can share the same placeholder→secret
-//! mapping when that lands.
+//! The plugin path does not itself reverse substitutions, but the management
+//! hook transport records the returned [`Mapping`] in the same live store as
+//! the proxy wire path. Identity-encoded proxy responses can therefore restore
+//! placeholders minted by either transport within one gateway process.
 
 use std::collections::BTreeSet;
 
