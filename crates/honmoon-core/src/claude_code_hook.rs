@@ -240,8 +240,10 @@ pub fn is_sensitive_path(path: &str) -> bool {
         return true;
     }
     // Match path fragments cross-platform: normalize Windows separators so
-    // `…\.gnupg\secring.gpg` is caught the same as the Unix form.
-    const SENSITIVE_FRAGMENTS: &[&str] = &["/.aws/credentials", "/.gnupg/"];
+    // `…\.gnupg\secring.gpg` is caught like the Unix form, and use no leading
+    // slash so relative paths (`cat .aws/credentials`) match too — this runs on
+    // raw, un-canonicalized literal paths as well as canonicalized ones.
+    const SENSITIVE_FRAGMENTS: &[&str] = &[".aws/credentials", ".gnupg/"];
     let normalized = lower.replace('\\', "/");
     SENSITIVE_FRAGMENTS
         .iter()
@@ -350,6 +352,9 @@ mod tests {
         // fragment match can catch the Windows form.
         assert!(is_sensitive_path("/home/u/.gnupg/secring.gpg"));
         assert!(is_sensitive_path(r"C:\Users\me\.gnupg\secring.gpg"));
+        // Relative paths (no leading slash) are caught too.
+        assert!(is_sensitive_path(".aws/credentials"));
+        assert!(is_sensitive_path(".gnupg/secring.gpg"));
     }
 
     #[test]

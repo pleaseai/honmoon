@@ -52,6 +52,10 @@ enum Command {
         #[arg(long, value_name = "TOKEN", env = "HONMOON_HOOK_TOKEN")]
         hook_token: Option<String>,
         /// Stable salt context shared by gateway hook redaction and CLI hooks.
+        /// Domain-separation input only: placeholder unforgeability and per-machine
+        /// uniqueness come from the random `~/.honmoon/hook-salt` secret, which
+        /// keys the HMAC this value is mixed into — so the default is safe. Override
+        /// it only to separate instances that deliberately share one machine salt.
         /// May also be supplied through `HONMOON_HOOK_SALT_CONTEXT`.
         #[arg(
             long,
