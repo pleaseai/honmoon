@@ -344,16 +344,13 @@ impl HonmoonHandler {
         let pii = inspected_text.and_then(detect_pii);
         let forwarded = Request::from_parts(parts, new_body);
 
-        // An oversized, over-cap-decoded, or non-text body was not inspected.
-        // Do not interpret the absence of facts as `pii.count == 0`; retain the
-        // host gate's verdict. Intentionally no audit entry either, even in
-        // block mode — per-request forwards stay quiet (see `host_gate`'s
-        // `audit_allow`), and recording every uninspected forward would flood
-        // the bounded audit ring.
-        if inspected_text.is_none() {
-            return forwarded.into();
-        }
-
+        // An oversized, over-cap-decoded, or non-text body was not inspected,
+        // but the policy engine still runs so HTTP-metadata rules (method,
+        // path, host, body_size) cannot be bypassed by an uninspectable body.
+        // `pii` stays `None` — the engine binds the empty default, so unscanned
+        // content never satisfies a `pii.count > 0` condition (the same
+        // forwarding outcome as skipping evaluation) and the `count > 0` audit
+        // gates below keep these forwards quiet.
         let facts = Facts {
             domain: Some(host.clone()),
             http: Some(HttpFacts {

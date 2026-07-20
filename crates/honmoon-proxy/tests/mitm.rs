@@ -406,3 +406,45 @@ fn detects_pii_under_unsupported_encoding_label() {
         "expected an RRN PII finding for a plaintext body labeled Content-Encoding: br"
     );
 }
+
+const DENY_SUBMIT_PATH_POLICY: &str = "\
+egress:
+  default: allow
+rules:
+  - name: block-submit-path
+    endpoint: '*'
+    condition: \"http.path == '/submit'\"
+    verdict: deny
+";
+
+/// An uninspectable (non-UTF-8) body must not bypass HTTP-metadata rules: the
+/// policy engine still runs — with the `pii` facts absent, so unscanned content
+/// can never satisfy a `pii.count > 0` condition — and a path/method/size rule
+/// denies the request even though its content was never scanned.
+#[test]
+fn block_mode_enforces_http_rules_on_uninspected_body() {
+    let mut body = b"binary \xFF\xFF payload".to_vec();
+    let mut request = format!(
+        "POST /submit HTTP/1.1\r\nHost: localhost\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        body.len()
+    )
+    .into_bytes();
+    request.append(&mut body);
+
+    let (response, audit, approvals) = intercepted_request(
+        DENY_SUBMIT_PATH_POLICY,
+        PiiMode::Block,
+        start_hanging_upstream(),
+        request,
+    );
+
+    assert!(
+        response.starts_with("HTTP/1.1 403"),
+        "expected 403 from the path rule despite the uninspectable body: {response:?}"
+    );
+    assert!(approvals.is_empty());
+    let events = audit.recent(50);
+    assert!(events.iter().any(|event| {
+        event.decision == Decision::Denied && event.rule.as_deref() == Some("block-submit-path")
+    }));
+}
