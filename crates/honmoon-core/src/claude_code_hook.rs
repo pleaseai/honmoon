@@ -4,6 +4,8 @@
 //! API feed it the unwrapped hook JSON payload and a session salt, and receive
 //! the same JSON verdict. No-op and malformed/unknown payloads deliberately
 //! produce `{}` so a hook integration never blocks normal work by accident.
+//! Transport adapters preserve their channel conventions: the CLI emits empty
+//! stdout for this no-op per #27, while HTTP returns the `{}` body with 200.
 
 use serde_json::{Value, json};
 
@@ -56,8 +58,9 @@ pub fn claude_code_hook_verdict(
             handle_pre_tool_use(payload, resolved_path_is_sensitive).unwrap_or_else(noop),
             Mapping::new(),
         ),
-        Some("PostToolUse") => handle_post_tool_use(payload, salt)
-            .map_or_else(|| (noop(), Mapping::new()), |(v, m)| (v, m)),
+        Some("PostToolUse") => {
+            handle_post_tool_use(payload, salt).unwrap_or_else(|| (noop(), Mapping::new()))
+        }
         Some("UserPromptSubmit") => (
             handle_user_prompt_submit(payload, salt).unwrap_or_else(noop),
             Mapping::new(),
