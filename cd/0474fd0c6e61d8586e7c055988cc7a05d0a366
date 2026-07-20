@@ -1,0 +1,101 @@
+crates/honmoon-proxy/tests/redaction.rs
+  s_2a785e8725b062::t_068a14175fbe73 1-7,9-38,40-42,45-48,55-179,184-193,197-209,211-291,298-321
+  s_2a785e8725b062::t_5fe22e175775e1 8
+  s_2a785e8725b062::t_126ebc55c9e19f 39,43-44,49-54,180-183,194-196,210,292-297
+crates/honmoon-mgmt/tests/e2e.rs
+  s_2a785e8725b062::t_59cde1de570cda 65
+  s_2a785e8725b062::t_829ad7cba5f0c2 21
+  s_2a785e8725b062::t_af109bcba4f141 337-432,435-436
+  s_2a785e8725b062::t_126ebc55c9e19f 433-434,437-441
+  s_2a785e8725b062::t_bcd206895aa2c7 334-336
+crates/honmoon-proxy/src/gateway.rs
+  s_2a785e8725b062::t_d3f3fac45aa45d 11-14
+  s_2a785e8725b062::t_9fdfe0d6120ba6 106-107
+  s_2a785e8725b062::t_c29fede7e5f460 123
+  s_2a785e8725b062::t_83d37b5fbc3e47 23
+  s_2a785e8725b062::t_f9868843ccdd0b 63-87
+crates/honmoon-core/src/secret_tokenizer/streaming/tests.rs
+  s_2a785e8725b062::t_ee2ea12ff45aca 15-30
+  s_2a785e8725b062::t_9f78cabc20ba75 14
+crates/honmoon-proxy/tests/mitm.rs
+  s_2a785e8725b062::t_e115cce1a7e980 158
+docs/roadmap.md
+  s_2a785e8725b062::t_c4a1cc57dacb12 183,185-186
+crates/honmoon-proxy/src/mitm.rs
+  s_2a785e8725b062::t_8cc0e1057ec5a3 526-529,531-534
+  s_2a785e8725b062::t_d2ad660d6accc9 30-32
+  s_2a785e8725b062::t_8d9403ed6fb941 471,497
+  s_2a785e8725b062::t_9e9943278c27e6 494-496,498-501
+  s_2a785e8725b062::t_d5064bdde42efc 292
+  s_2a785e8725b062::t_ee93bc7bf551bc 467-470,472-475
+  s_2a785e8725b062::t_b4ee6b672b5d83 323-327
+  s_2a785e8725b062::t_126ebc55c9e19f 586-588
+  s_2a785e8725b062::t_ce2984cfabc799 530
+  s_2a785e8725b062::t_7eaaf2decb2d58 43-44
+  s_2a785e8725b062::t_c73dcd5fe1f625 287-291,293-314,322,328-363
+  s_2a785e8725b062::t_df535bbceb24e0 377
+  s_2a785e8725b062::t_7ee78e1784460a 571-585,589-605
+  s_2a785e8725b062::t_36ad4e4ccdccb6 315-321
+  s_2a785e8725b062::t_aa08ac5b632e5d 52-53
+crates/honmoon-core/src/secret_tokenizer/streaming/mod.rs
+  s_2a785e8725b062::t_98427208bcf432 30
+  s_2a785e8725b062::t_cb43db8a85f6a8 52-63
+  s_2a785e8725b062::t_e2eee27442dd21 7-8
+crates/honmoon-core/src/redact.rs
+  s_2a785e8725b062::t_1bbbb732d079d8 14-17
+  s_2a785e8725b062::t_baf1355e2f3376 6-8
+crates/honmoon-cli/tests/hook_transports.rs
+  s_2a785e8725b062::t_420be274ab0cc0 98
+crates/honmoon-mgmt/src/lib.rs
+  s_2a785e8725b062::t_92bcf66190f59e 74-78,83
+  s_2a785e8725b062::t_b626cbae386180 51,53-54
+crates/honmoon-core/src/claude_code_hook.rs
+  s_2a785e8725b062::t_88cf69493eb78c 25-27
+crates/honmoon-cli/src/main.rs
+  s_2a785e8725b062::t_870ce8a1474854 216
+  s_2a785e8725b062::t_18cf8eb8eb3661 73-83
+  s_2a785e8725b062::t_88e18fc57ae521 14-16
+  s_2a785e8725b062::t_ea4a2cd2f1ea90 142,154
+  s_2a785e8725b062::t_913d8499933a29 270
+  s_2a785e8725b062::t_126ebc55c9e19f 279
+  s_2a785e8725b062::t_cbecbca34e7b84 190
+  s_2a785e8725b062::t_958c98372f2fba 260-261
+crates/honmoon-core/src/secret_tokenizer/mod.rs
+  s_2a785e8725b062::t_9dd3ea025d109e 8-10
+  s_2a785e8725b062::t_19725cfcf4cc8f 354-357
+  s_2a785e8725b062::t_5551cfa805e039 377-387
+  s_2a785e8725b062::t_1245b9fc42c325 418-433
+  s_2a785e8725b062::t_51fbb2f3e56a72 301
+  s_2a785e8725b062::t_1daec672a5946f 417
+crates/honmoon-proxy/src/body.rs
+  s_2a785e8725b062::t_27db2a665bd633 1-2
+  s_2a785e8725b062::t_0ceb5ae70d07b6 283-285
+  s_2a785e8725b062::t_bbbeb5cc676ab8 95-109
+  s_2a785e8725b062::t_50286242241cc1 186
+  s_2a785e8725b062::t_537c4dc68d427c 90-94
+  s_2a785e8725b062::t_d9bec07671e59c 295-301
+  s_2a785e8725b062::t_ddf95a262a0676 311
+  s_2a785e8725b062::t_54d743567690fe 359
+  s_2a785e8725b062::t_9c38907a45cb00 5-7
+  s_2a785e8725b062::t_17ec80b652fddb 181-185,187-203,205-282,286-294,302-310,312-318
+  s_2a785e8725b062::t_251eebe3f1ee8c 435-448
+  s_2a785e8725b062::t_b2fba1f0efb975 204
+  s_2a785e8725b062::t_340a7e32db807d 25
+  s_2a785e8725b062::t_3c71118f4ff051 354-358,360-411,434
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.14",
+  "base_commit_sha": "cd0474fd0c6e61d8586e7c055988cc7a05d0a366",
+  "prompts": {},
+  "sessions": {
+    "s_2a785e8725b062": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "ed7e05ee-01a2-4a4d-95b1-d3c1bb7b9e6b",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
