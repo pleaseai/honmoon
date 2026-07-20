@@ -1,0 +1,22 @@
+crates/honmoon-core/src/claude_code_hook.rs
+  s_6289b0c2852115::t_062a021ee72d74 243-246
+  s_6289b0c2852115::t_ca0a6fd7863f82 355-357
+crates/honmoon-cli/src/main.rs
+  s_6289b0c2852115::t_8c15c910a3878a 55-58
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.14",
+  "base_commit_sha": "92dc5b2acb546a110f509756d667ff9c692cce95",
+  "prompts": {},
+  "sessions": {
+    "s_6289b0c2852115": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "ae6e757b-564f-4346-bd1d-32e70b2d9217",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
