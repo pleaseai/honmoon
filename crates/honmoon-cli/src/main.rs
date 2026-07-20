@@ -7,11 +7,11 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, ValueEnum};
 use honmoon_core::{AuditLog, Policy};
 use honmoon_mgmt::AppState;
 use honmoon_proxy::ca::CaMaterial;
-use honmoon_proxy::gateway::{DEFAULT_PAUSE_TIMEOUT, GatewayState, InterceptPolicy};
+use honmoon_proxy::gateway::{DEFAULT_PAUSE_TIMEOUT, GatewayState, InterceptPolicy, PiiMode};
 
 #[derive(Parser)]
 #[command(
@@ -48,9 +48,13 @@ enum Command {
         #[arg(long, value_name = "FILE")]
         audit_log: Option<PathBuf>,
         /// Terminate TLS (MITM) to inspect request bodies for PII. Agents must
-        /// trust the CA certificate. Detect-only: findings are audited, not blocked.
+        /// trust the CA certificate. See --pii-mode to choose audit or enforcement.
         #[arg(long)]
         tls_intercept: bool,
+        /// How detected PII policy verdicts are handled: detect audits the
+        /// would-be verdict; block enforces allow/deny/pause inline.
+        #[arg(long, value_enum, default_value_t = PiiModeArg::Detect)]
+        pii_mode: PiiModeArg,
         /// CA certificate path (PEM). Auto-generated on first run if missing.
         /// Install this in agents' trust store to enable TLS termination.
         /// Must be given together with --ca-key and --tls-intercept.
@@ -98,6 +102,7 @@ fn main() -> Result<()> {
             mgmt_addr,
             audit_log,
             tls_intercept,
+            pii_mode,
             ca_cert,
             ca_key,
         } => gateway(GatewayArgs {
@@ -106,6 +111,7 @@ fn main() -> Result<()> {
             mgmt_addr,
             audit_log,
             tls_intercept,
+            pii_mode,
             ca_cert,
             ca_key,
         }),
@@ -116,6 +122,21 @@ fn main() -> Result<()> {
     }
 }
 
+#[derive(Clone, Copy, Debug, ValueEnum)]
+enum PiiModeArg {
+    Detect,
+    Block,
+}
+
+impl From<PiiModeArg> for PiiMode {
+    fn from(mode: PiiModeArg) -> Self {
+        match mode {
+            PiiModeArg::Detect => Self::Detect,
+            PiiModeArg::Block => Self::Block,
+        }
+    }
+}
+
 /// Parsed `honmoon gateway` arguments.
 struct GatewayArgs {
     config: PathBuf,
@@ -123,6 +144,7 @@ struct GatewayArgs {
     mgmt_addr: String,
     audit_log: Option<PathBuf>,
     tls_intercept: bool,
+    pii_mode: PiiModeArg,
     ca_cert: Option<PathBuf>,
     ca_key: Option<PathBuf>,
 }
@@ -145,9 +167,14 @@ fn gateway(args: GatewayArgs) -> Result<()> {
         mgmt_addr,
         audit_log,
         tls_intercept,
+        pii_mode,
         ca_cert,
         ca_key,
     } = args;
+
+    if !tls_intercept && matches!(pii_mode, PiiModeArg::Block) {
+        anyhow::bail!("--pii-mode block requires --tls-intercept");
+    }
 
     let policy_yaml = std::fs::read_to_string(&config)
         .with_context(|| format!("reading policy {}", config.display()))?;
@@ -169,7 +196,8 @@ fn gateway(args: GatewayArgs) -> Result<()> {
             .with_context(|| format!("loading CA from {}", ca_cert_path.display()))?;
         tracing::info!(
             ca_cert = %ca_cert_path.display(),
-            "TLS termination enabled (detect-only); agents must trust this CA certificate"
+            pii_mode = ?pii_mode,
+            "TLS termination enabled; agents must trust this CA certificate"
         );
         (ca, InterceptPolicy::All)
     } else {
@@ -189,6 +217,7 @@ fn gateway(args: GatewayArgs) -> Result<()> {
         pause_timeout: DEFAULT_PAUSE_TIMEOUT,
         ca: Arc::new(ca),
         intercept,
+        pii_mode: pii_mode.into(),
     };
 
     // Bind both listeners up front so a bind error is reported before we spawn.

@@ -122,8 +122,9 @@ management and compliance reporting are Paid (Phase 7).
 - [ ] Tier-2 format / dictionary detectors (postal code, medical IDs, DOB / age, …)
 - [x] Expose `pii.types` / `pii.count` / `pii.max_severity` as CEL facts; wire to `allow`/`deny`/`pause`
   (`Facts.pii`, registered in `engine::eval_condition`, carried in the audit `FactsSummary`)
-- [ ] Detect (audit-only) vs block (enforcing) modes — precision-first block, recall-first audit.
-  Detect-only over terminated TLS is live ([ADR-0003](../.please/docs/decisions/0003-adopt-hudsucker-for-tls-termination.md)); enforcing (deny/pause on `pii`) is the fast follow.
+- [x] Detect (audit-only) vs block (enforcing) modes — precision-first block, recall-first audit.
+  `--pii-mode detect` remains the default; `--pii-mode block` enforces body-policy `deny`/`pause`
+  over intercepted TLS.
 - [ ] (optional) NER assist layer for PERSON / ADDRESS, kept **off** the inline path (audit / async)
 - [ ] Benchmark harness ([`pii-benchmark-goals.md`](./pii-benchmark-goals.md)) — `pii_scan` bridge +
   `score.ts` measurement loop in place (Tier-1 F1 1.000 on `honmoon-synth`, §9.1); CI regression gate TODO
