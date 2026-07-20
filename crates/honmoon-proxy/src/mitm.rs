@@ -35,13 +35,13 @@
 //! [`should_intercept`](HonmoonHandler::should_intercept) from the gateway's
 //! [`InterceptPolicy`](crate::gateway::InterceptPolicy).
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
 
 use honmoon_core::{
     AuditDraft, DEFAULT_MIN_PII_SEVERITY, Decision, Facts, FactsSummary, HttpFacts, PiiFacts,
-    Verdict, decide_explained, detect_pii, redact,
+    PiiSpan, Verdict, decide_explained, detect_spans, redact_with_spans, summarize_spans,
 };
 use http_body_util::{BodyExt, Full};
 use hudsucker::hyper::{Method, Request, Response, StatusCode, header};
@@ -49,8 +49,8 @@ use hudsucker::{Body, HttpContext, HttpHandler, RequestOrResponse};
 
 use crate::approval::{ApprovalDecision, NewApproval};
 use crate::body::{
-    Buffered, MAX_INSPECT_BODY, buffer_up_to, decode_for_inspection, decode_for_redaction,
-    detokenizing_body, prefixed_body, utf8_prefix,
+    Buffered, MAX_INSPECT_BODY, StrictDecode, buffer_up_to, decode_strict, detokenizing_body,
+    prefixed_body, utf8_prefix,
 };
 use crate::gateway::{GatewayState, InterceptPolicy, PiiMode, canonical_host};
 
@@ -120,6 +120,16 @@ impl Drop for CancelOnDrop {
             approval_id: Some(self.id),
         });
     }
+}
+
+struct RedactionInput<'a> {
+    scanned: Option<&'a [u8]>,
+    decoded: Option<&'a [u8]>,
+    content_encoding_present: bool,
+    content_encoding: Option<&'a str>,
+    pii_spans: &'a [PiiSpan],
+    is_json: bool,
+    host: &'a str,
 }
 
 /// Outcome of the host-level policy gate.
@@ -288,11 +298,17 @@ impl HonmoonHandler {
     fn forwarded_request(
         &self,
         mut request: Request<Body>,
-        scanned: Option<&[u8]>,
-        content_encoding_present: bool,
-        content_encoding: Option<&str>,
-        host: &str,
+        input: RedactionInput<'_>,
     ) -> Request<Body> {
+        let RedactionInput {
+            scanned,
+            decoded,
+            content_encoding_present,
+            content_encoding,
+            pii_spans,
+            is_json,
+            host,
+        } = input;
         let Some(redaction) = &self.state.redaction else {
             return request;
         };
@@ -304,7 +320,7 @@ impl HonmoonHandler {
             header::HeaderValue::from_static("identity"),
         );
 
-        let Some(raw) = scanned else {
+        let Some(_raw) = scanned else {
             tracing::warn!(
                 domain = %host,
                 limit = MAX_INSPECT_BODY,
@@ -319,7 +335,7 @@ impl HonmoonHandler {
             );
             return request;
         }
-        let Some(decoded) = decode_for_redaction(content_encoding, raw) else {
+        let Some(decoded) = decoded else {
             tracing::warn!(
                 domain = %host,
                 encoding = ?content_encoding,
@@ -329,10 +345,40 @@ impl HonmoonHandler {
         };
         // Rewriting a UTF-8 prefix would discard the remaining request bytes.
         // Only a fully decoded, fully valid text body is eligible for rewriting.
-        let Ok(text) = std::str::from_utf8(&decoded) else {
+        let Ok(text) = std::str::from_utf8(decoded) else {
+            tracing::warn!(
+                domain = %host,
+                "wire redaction bypassed because request body is not valid UTF-8"
+            );
             return request;
         };
-        let outcome = redact(text, &redaction.salt, DEFAULT_MIN_PII_SEVERITY);
+        let eligible_spans = if is_json {
+            let unsafe_surfaces = pii_spans
+                .iter()
+                .filter(|span| !json_span_is_quoted(text, span))
+                .map(|span| span.text.as_str())
+                .collect::<HashSet<_>>();
+            pii_spans
+                .iter()
+                .filter(|span| !unsafe_surfaces.contains(span.text.as_str()))
+                .cloned()
+                .collect::<Vec<_>>()
+        } else {
+            pii_spans.to_vec()
+        };
+        if is_json && eligible_spans.len() != pii_spans.len() {
+            tracing::warn!(
+                domain = %host,
+                skipped = pii_spans.len() - eligible_spans.len(),
+                "wire redaction skipped unquoted JSON PII to preserve valid syntax"
+            );
+        }
+        let outcome = redact_with_spans(
+            text,
+            &redaction.salt,
+            DEFAULT_MIN_PII_SEVERITY,
+            &eligible_spans,
+        );
         if !outcome.redacted {
             return request;
         }
@@ -374,6 +420,16 @@ impl HonmoonHandler {
             .and_then(|v| v.to_str().ok())
             .and_then(|v| v.parse::<usize>().ok());
 
+        let is_json = req
+            .headers()
+            .get(header::CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok())
+            .and_then(|value| value.split(';').next())
+            .map(str::trim)
+            .is_some_and(|mime| {
+                mime.eq_ignore_ascii_case("application/json")
+                    || mime.to_ascii_lowercase().ends_with("+json")
+            });
         let content_encoding_present = req.headers().contains_key(header::CONTENT_ENCODING);
         let content_encoding = req
             .headers()
@@ -417,11 +473,32 @@ impl HonmoonHandler {
         // output that overflows the inspection cap is reported as `None`
         // (leaving the body unscanned, like any other over-cap body) so a
         // content verdict is never applied to a truncated prefix.
-        let decoded = scanned
+        let strict_decode = scanned
             .as_deref()
-            .and_then(|raw| decode_for_inspection(content_encoding.as_deref(), raw));
-        let inspected_text = decoded.as_deref().and_then(utf8_prefix);
-        let pii = inspected_text.and_then(detect_pii);
+            .map(|raw| decode_strict(content_encoding.as_deref(), raw));
+        match strict_decode.as_ref() {
+            Some(StrictDecode::Overflow) => tracing::debug!(
+                encoding = ?content_encoding,
+                "decoded output exceeds inspection cap; leaving body unscanned"
+            ),
+            Some(StrictDecode::Unavailable) => tracing::debug!(
+                encoding = ?content_encoding,
+                "content-encoding unavailable for strict decode; scanning raw bytes"
+            ),
+            Some(StrictDecode::Decoded(_)) | None => {}
+        }
+        let decoded = strict_decode.as_ref().and_then(|decoded| match decoded {
+            StrictDecode::Decoded(bytes) => Some(bytes.as_ref()),
+            StrictDecode::Overflow | StrictDecode::Unavailable => None,
+        });
+        let inspected = match strict_decode.as_ref() {
+            Some(StrictDecode::Decoded(bytes)) => Some(bytes.as_ref()),
+            Some(StrictDecode::Unavailable) => scanned.as_deref(),
+            Some(StrictDecode::Overflow) | None => None,
+        };
+        let inspected_text = inspected.and_then(utf8_prefix);
+        let pii_spans = inspected_text.map(detect_spans).unwrap_or_default();
+        let pii = summarize_spans(&pii_spans);
         let forwarded = Request::from_parts(parts, new_body);
 
         // An oversized, over-cap-decoded, or non-text body was not inspected,
@@ -467,10 +544,15 @@ impl HonmoonHandler {
             return self
                 .forwarded_request(
                     forwarded,
-                    scanned.as_deref(),
-                    content_encoding_present,
-                    content_encoding.as_deref(),
-                    &host,
+                    RedactionInput {
+                        scanned: scanned.as_deref(),
+                        decoded,
+                        content_encoding_present,
+                        content_encoding: content_encoding.as_deref(),
+                        pii_spans: &pii_spans,
+                        is_json,
+                        host: &host,
+                    },
                 )
                 .into();
         }
@@ -493,10 +575,15 @@ impl HonmoonHandler {
                 }
                 self.forwarded_request(
                     forwarded,
-                    scanned.as_deref(),
-                    content_encoding_present,
-                    content_encoding.as_deref(),
-                    &host,
+                    RedactionInput {
+                        scanned: scanned.as_deref(),
+                        decoded,
+                        content_encoding_present,
+                        content_encoding: content_encoding.as_deref(),
+                        pii_spans: &pii_spans,
+                        is_json,
+                        host: &host,
+                    },
                 )
                 .into()
             }
@@ -526,10 +613,15 @@ impl HonmoonHandler {
                     Gate::Proceed => self
                         .forwarded_request(
                             forwarded,
-                            scanned.as_deref(),
-                            content_encoding_present,
-                            content_encoding.as_deref(),
-                            &host,
+                            RedactionInput {
+                                scanned: scanned.as_deref(),
+                                decoded,
+                                content_encoding_present,
+                                content_encoding: content_encoding.as_deref(),
+                                pii_spans: &pii_spans,
+                                is_json,
+                                host: &host,
+                            },
                         )
                         .into(),
                     Gate::Block(response) => *response,
@@ -597,6 +689,10 @@ impl HttpHandler for HonmoonHandler {
             })
             .unwrap_or(true);
         if !identity_encoded {
+            tracing::warn!(
+                encoding = ?res.headers().get(header::CONTENT_ENCODING),
+                "response detokenization bypassed because Content-Encoding is not identity"
+            );
             return res;
         }
 
@@ -621,6 +717,43 @@ impl HttpHandler for HonmoonHandler {
             }
         }
     }
+}
+
+/// Whether a PII span is inside a JSON string. JSON numeric/literal values must
+/// not be replaced with an unquoted placeholder because that would invalidate
+/// the document. Span offsets are UTF-16 code units, so convert the start to a
+/// byte offset before walking JSON string/escape state.
+fn json_span_is_quoted(text: &str, span: &PiiSpan) -> bool {
+    let Some(byte_start) = utf16_to_byte_offset(text, span.start) else {
+        return false;
+    };
+    let mut in_string = false;
+    let mut escaped = false;
+    for byte in text.as_bytes()[..byte_start].iter().copied() {
+        if in_string && escaped {
+            escaped = false;
+        } else if in_string && byte == b'\\' {
+            escaped = true;
+        } else if byte == b'"' {
+            in_string = !in_string;
+        }
+    }
+    in_string
+}
+
+fn utf16_to_byte_offset(text: &str, target: i64) -> Option<usize> {
+    let target = usize::try_from(target).ok()?;
+    let mut utf16 = 0usize;
+    for (byte, ch) in text.char_indices() {
+        if utf16 == target {
+            return Some(byte);
+        }
+        utf16 += ch.len_utf16();
+        if utf16 > target {
+            return None;
+        }
+    }
+    (utf16 == target).then_some(text.len())
 }
 
 /// A `Content-Length: 0` response with the given status.

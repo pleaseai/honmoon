@@ -24,3 +24,4 @@ tokio-rustls = "0.26"
 rustls-pemfile = "2"
 # Compress test bodies for the Content-Encoding inspection tests.
 flate2.workspace = true
+serde_json.workspace = true

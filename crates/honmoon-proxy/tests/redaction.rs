@@ -8,14 +8,17 @@ use std::net::{TcpListener, TcpStream};
 use std::sync::mpsc::{self, Receiver};
 use std::sync::{Arc, Mutex};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
-use honmoon_core::Policy;
-use honmoon_proxy::gateway::{GatewayState, RedactionState};
+use honmoon_core::{MappingStore, Policy};
+use honmoon_proxy::approval::{ApprovalDecision, ApprovalRegistry};
+use honmoon_proxy::gateway::{GatewayState, PiiMode, RedactionState};
 
 const SECRET: &str = "sk-ant-api03-cache-stable-abcDEF123456";
 const RRN: &str = "670125-1230644";
 const SALT: &[u8] = b"proxy-wire-redaction-test-salt";
+
+const MAX_BODY: usize = 2 * 1024 * 1024;
 
 #[derive(Clone, Debug)]
 struct CapturedRequest {
@@ -25,6 +28,10 @@ struct CapturedRequest {
 
 enum ResponseMode {
     Static(Vec<u8>),
+    EncodedStatic {
+        body: Vec<u8>,
+        encoding: &'static str,
+    },
     EchoBody,
     SplitEchoBody,
 }
@@ -85,6 +92,15 @@ fn start_upstream(mode: ResponseMode) -> (u16, Receiver<CapturedRequest>) {
                     .unwrap();
                     stream.write_all(body).unwrap();
                 }
+                ResponseMode::EncodedStatic { body, encoding } => {
+                    write!(
+                        stream,
+                        "HTTP/1.1 200 OK\r\nContent-Encoding: {encoding}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                        body.len()
+                    )
+                    .unwrap();
+                    stream.write_all(body).unwrap();
+                }
                 ResponseMode::EchoBody => {
                     write!(
                         stream,
@@ -118,19 +134,37 @@ fn start_upstream(mode: ResponseMode) -> (u16, Receiver<CapturedRequest>) {
     (port, rx)
 }
 
-fn start_proxy(redaction: bool) -> u16 {
+fn start_proxy(redaction: bool) -> (u16, Option<Arc<MappingStore>>) {
     let policy = Policy::from_yaml("egress:\n  default: allow\n").unwrap();
     let mut state = GatewayState::new(policy);
-    if redaction {
+    let mappings = if redaction {
         state.redaction = Some(RedactionState::new(SALT.to_vec()));
-    }
+        Some(Arc::clone(&state.redaction.as_ref().unwrap().mappings))
+    } else {
+        None
+    };
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port();
     thread::spawn(move || {
         honmoon_proxy::gateway::serve_listener_with_state(state, listener);
     });
     wait_for_port(port);
-    port
+    (port, mappings)
+}
+
+fn start_proxy_with_policy(policy_yaml: &str, pii_mode: PiiMode) -> (u16, Arc<ApprovalRegistry>) {
+    let policy = Policy::from_yaml(policy_yaml).unwrap();
+    let mut state = GatewayState::new(policy);
+    state.pii_mode = pii_mode;
+    state.redaction = Some(RedactionState::new(SALT.to_vec()));
+    let approvals = Arc::clone(&state.approvals);
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    thread::spawn(move || {
+        honmoon_proxy::gateway::serve_listener_with_state(state, listener);
+    });
+    wait_for_port(port);
+    (port, approvals)
 }
 
 fn wait_for_port(port: u16) {
@@ -141,6 +175,17 @@ fn wait_for_port(port: u16) {
         thread::sleep(Duration::from_millis(20));
     }
     panic!("proxy did not listen on {port}");
+}
+
+fn raw_proxy_request(proxy_port: u16, request: &[u8]) -> Vec<u8> {
+    let mut stream = TcpStream::connect(("127.0.0.1", proxy_port)).unwrap();
+    stream
+        .set_read_timeout(Some(Duration::from_secs(15)))
+        .unwrap();
+    stream.write_all(request).unwrap();
+    let mut response = Vec::new();
+    stream.read_to_end(&mut response).unwrap();
+    response
 }
 
 fn proxy_request(
@@ -167,6 +212,15 @@ fn proxy_request(
     let mut response = Vec::new();
     stream.read_to_end(&mut response).unwrap();
     response
+}
+
+fn response_headers(response: &[u8]) -> String {
+    let header_end = response
+        .windows(4)
+        .position(|window| window == b"\r\n\r\n")
+        .expect("response headers")
+        + 4;
+    String::from_utf8(response[..header_end].to_vec()).expect("ASCII response headers")
 }
 
 fn response_body(response: &[u8]) -> Vec<u8> {
@@ -214,7 +268,7 @@ fn header_value<'a>(headers: &'a str, name: &str) -> Option<&'a str> {
 #[test]
 fn wire_redaction_rewrites_secret_and_pii_with_correct_headers() {
     let (upstream, captured) = start_upstream(ResponseMode::Static(b"ok".to_vec()));
-    let proxy = start_proxy(true);
+    let (proxy, _) = start_proxy(true);
     let original = format!("key={SECRET}&rrn={RRN}");
 
     let response = proxy_request(proxy, upstream, original.as_bytes(), &[]);
@@ -237,7 +291,7 @@ fn wire_redaction_rewrites_secret_and_pii_with_correct_headers() {
 #[test]
 fn repeated_multi_turn_body_is_byte_identical_on_the_wire() {
     let (upstream, captured) = start_upstream(ResponseMode::Static(b"ok".to_vec()));
-    let proxy = start_proxy(true);
+    let (proxy, _) = start_proxy(true);
     let body = format!("turn one: {SECRET}\nturn two repeats {SECRET}");
 
     proxy_request(proxy, upstream, body.as_bytes(), &[]);
@@ -254,7 +308,7 @@ fn gzip_request_is_forwarded_as_decoded_redacted_identity_text() {
     use std::io::Write as _;
 
     let (upstream, captured) = start_upstream(ResponseMode::Static(b"ok".to_vec()));
-    let proxy = start_proxy(true);
+    let (proxy, _) = start_proxy(true);
     let original = format!("compressed key={SECRET}");
     let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
     encoder.write_all(original.as_bytes()).unwrap();
@@ -284,10 +338,13 @@ fn gzip_request_is_forwarded_as_decoded_redacted_identity_text() {
 #[test]
 fn response_echo_restores_the_request_secret() {
     let (upstream, captured) = start_upstream(ResponseMode::EchoBody);
-    let proxy = start_proxy(true);
+    let (proxy, _) = start_proxy(true);
     let original = format!("upstream echo {SECRET}");
 
     let response = proxy_request(proxy, upstream, original.as_bytes(), &[]);
+    let headers = response_headers(&response);
+    assert_eq!(header_value(&headers, "content-length"), None);
+    assert_eq!(header_value(&headers, "transfer-encoding"), Some("chunked"));
     let request = captured.recv_timeout(Duration::from_secs(5)).unwrap();
     assert!(
         !request
@@ -301,17 +358,246 @@ fn response_echo_restores_the_request_secret() {
 #[test]
 fn response_placeholder_split_across_upstream_chunks_is_restored() {
     let (upstream, _captured) = start_upstream(ResponseMode::SplitEchoBody);
-    let proxy = start_proxy(true);
+    let (proxy, _) = start_proxy(true);
     let original = format!("split echo {SECRET} suffix");
 
     let response = proxy_request(proxy, upstream, original.as_bytes(), &[]);
+    let headers = response_headers(&response);
+    assert_eq!(header_value(&headers, "content-length"), None);
+    assert_eq!(header_value(&headers, "transfer-encoding"), Some("chunked"));
     assert_eq!(response_body(&response), original.as_bytes());
+}
+
+#[test]
+fn chunked_request_is_redacted_and_reframed_with_content_length() {
+    let (upstream, captured) = start_upstream(ResponseMode::Static(b"ok".to_vec()));
+    let (proxy, _) = start_proxy(true);
+    let body = format!("chunked key={SECRET}");
+    let request = format!(
+        "POST http://127.0.0.1:{upstream}/submit HTTP/1.1\r\nHost: 127.0.0.1:{upstream}\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n{:x}\r\n{}\r\n0\r\n\r\n",
+        body.len(),
+        body
+    );
+
+    let response = raw_proxy_request(proxy, request.as_bytes());
+    assert!(response.starts_with(b"HTTP/1.1 200"));
+    let captured = captured.recv_timeout(Duration::from_secs(5)).unwrap();
+    let text = String::from_utf8(captured.body.clone()).unwrap();
+    assert!(text.contains("<<hs:"));
+    assert!(!text.contains(SECRET));
+    assert_eq!(header_value(&captured.headers, "transfer-encoding"), None);
+    assert_eq!(
+        header_value(&captured.headers, "content-length")
+            .unwrap()
+            .parse::<usize>()
+            .unwrap(),
+        captured.body.len()
+    );
+}
+
+#[test]
+fn fail_open_requests_preserve_wire_bytes_and_record_no_mapping() {
+    struct Case {
+        name: &'static str,
+        body: Vec<u8>,
+        encoding: Option<&'static str>,
+    }
+
+    let cases = vec![
+        Case {
+            name: "unsupported encoding",
+            body: format!("br-labeled {SECRET}").into_bytes(),
+            encoding: Some("br"),
+        },
+        Case {
+            name: "malformed gzip",
+            body: format!("not-gzip {SECRET}").into_bytes(),
+            encoding: Some("gzip"),
+        },
+        Case {
+            name: "non-UTF-8",
+            body: {
+                let mut body = format!("binary {SECRET} ").into_bytes();
+                body.extend_from_slice(b"\xff\xfe");
+                body
+            },
+            encoding: None,
+        },
+    ];
+
+    for case in cases {
+        let (upstream, captured) = start_upstream(ResponseMode::Static(b"ok".to_vec()));
+        let (proxy, mappings) = start_proxy(true);
+        let encoding_header = case
+            .encoding
+            .map(|encoding| format!("Content-Encoding: {encoding}\r\n"))
+            .unwrap_or_default();
+        let mut request = format!(
+            "POST http://127.0.0.1:{upstream}/submit HTTP/1.1\r\nHost: 127.0.0.1:{upstream}\r\n{encoding_header}Content-Length: {}\r\nConnection: close\r\n\r\n",
+            case.body.len()
+        )
+        .into_bytes();
+        request.extend_from_slice(&case.body);
+
+        let response = raw_proxy_request(proxy, &request);
+        assert!(response.starts_with(b"HTTP/1.1 200"), "{}", case.name);
+        let forwarded = captured.recv_timeout(Duration::from_secs(5)).unwrap();
+        assert_eq!(forwarded.body, case.body, "{}", case.name);
+        assert_eq!(
+            header_value(&forwarded.headers, "content-length"),
+            Some(case.body.len().to_string().as_str()),
+            "{}",
+            case.name
+        );
+        assert_eq!(
+            header_value(&forwarded.headers, "content-encoding"),
+            case.encoding,
+            "{}",
+            case.name
+        );
+        assert_eq!(mappings.unwrap().len(), 0, "{}", case.name);
+    }
+}
+
+#[test]
+fn over_cap_request_preserves_bytes_and_records_no_mapping() {
+    let (upstream, captured) = start_upstream(ResponseMode::Static(b"ok".to_vec()));
+    let (proxy, mappings) = start_proxy(true);
+    let mut body = vec![b'x'; MAX_BODY + 1];
+    body[..SECRET.len()].copy_from_slice(SECRET.as_bytes());
+
+    let response = proxy_request(proxy, upstream, &body, &[]);
+    assert!(response.starts_with(b"HTTP/1.1 200"));
+    let forwarded = captured.recv_timeout(Duration::from_secs(10)).unwrap();
+    assert_eq!(forwarded.body, body);
+    assert_eq!(
+        header_value(&forwarded.headers, "content-length"),
+        Some(body.len().to_string().as_str())
+    );
+    assert_eq!(mappings.unwrap().len(), 0);
+}
+
+#[test]
+fn compressed_response_bypasses_detokenization_and_preserves_framing() {
+    use std::io::Write as _;
+
+    let tokenized = honmoon_core::redact(SECRET, SALT, honmoon_core::DEFAULT_MIN_PII_SEVERITY);
+    let placeholder = tokenized.text.into_bytes();
+    let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+    encoder.write_all(&placeholder).unwrap();
+    let gzip = encoder.finish().unwrap();
+
+    for (name, body) in [("marked-only", placeholder), ("valid-gzip", gzip)] {
+        let (upstream, captured) = start_upstream(ResponseMode::EncodedStatic {
+            body: body.clone(),
+            encoding: "gzip",
+        });
+        let (proxy, _) = start_proxy(true);
+        proxy_request(proxy, upstream, SECRET.as_bytes(), &[]);
+        captured.recv_timeout(Duration::from_secs(5)).unwrap();
+
+        let response = proxy_request(proxy, upstream, b"clean", &[]);
+        let headers = response_headers(&response);
+        assert_eq!(
+            header_value(&headers, "content-encoding"),
+            Some("gzip"),
+            "{name}"
+        );
+        assert_eq!(
+            header_value(&headers, "content-length")
+                .unwrap()
+                .parse::<usize>()
+                .unwrap(),
+            body.len(),
+            "{name}"
+        );
+        assert_eq!(response_body(&response), body, "{name}");
+    }
+}
+
+#[test]
+fn unquoted_numeric_json_pii_is_not_rewritten() {
+    let (upstream, captured) = start_upstream(ResponseMode::Static(b"ok".to_vec()));
+    let (proxy, mappings) = start_proxy(true);
+    let body = br#"{"card":4111111111111111,"email":"user@example.com"}"#;
+
+    proxy_request(
+        proxy,
+        upstream,
+        body,
+        &[("Content-Type", "application/json")],
+    );
+    let forwarded = captured.recv_timeout(Duration::from_secs(5)).unwrap();
+    let parsed: serde_json::Value = serde_json::from_slice(&forwarded.body).unwrap();
+    assert_eq!(parsed["card"], serde_json::json!(4111111111111111u64));
+    assert_ne!(parsed["email"], "user@example.com");
+    assert!(parsed["email"].as_str().unwrap().starts_with("<<hs:"));
+    assert_eq!(mappings.unwrap().len(), 1);
+}
+
+#[test]
+fn block_mode_allow_forwards_redacted_body() {
+    let policy = "egress:\n  default: allow\n";
+    let (upstream, captured) = start_upstream(ResponseMode::Static(b"ok".to_vec()));
+    let (proxy, _) = start_proxy_with_policy(policy, PiiMode::Block);
+    let body = format!("allowed rrn={RRN}");
+
+    let response = proxy_request(proxy, upstream, body.as_bytes(), &[]);
+    assert!(response.starts_with(b"HTTP/1.1 200"));
+    let forwarded =
+        String::from_utf8(captured.recv_timeout(Duration::from_secs(5)).unwrap().body).unwrap();
+    assert!(!forwarded.contains(RRN));
+    assert!(forwarded.contains("<<hs:"));
+}
+
+#[test]
+fn block_mode_pause_approved_forwards_redacted_body() {
+    let policy = "egress:\n  default: allow\nrules:\n  - name: review-rrn\n    endpoint: '*'\n    condition: \"pii.count > 0\"\n    verdict: pause\n";
+    let (upstream, captured) = start_upstream(ResponseMode::Static(b"ok".to_vec()));
+    let (proxy, approvals) = start_proxy_with_policy(policy, PiiMode::Block);
+    let body = format!("paused rrn={RRN}");
+    let (tx, rx) = mpsc::channel();
+    thread::spawn(move || {
+        tx.send(proxy_request(proxy, upstream, body.as_bytes(), &[]))
+            .unwrap();
+    });
+
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let pending = loop {
+        if let Some(pending) = approvals.pending().first().cloned() {
+            break pending;
+        }
+        assert!(Instant::now() < deadline, "approval did not appear");
+        thread::sleep(Duration::from_millis(20));
+    };
+    approvals
+        .resolve(pending.id, ApprovalDecision::Approve)
+        .expect("approval exists");
+
+    let response = rx.recv_timeout(Duration::from_secs(10)).unwrap();
+    assert!(response.starts_with(b"HTTP/1.1 200"));
+    let forwarded =
+        String::from_utf8(captured.recv_timeout(Duration::from_secs(5)).unwrap().body).unwrap();
+    assert!(!forwarded.contains(RRN));
+    assert!(forwarded.contains("<<hs:"));
+}
+
+#[test]
+fn block_mode_deny_does_not_forward() {
+    let policy = "egress:\n  default: allow\nrules:\n  - name: block-rrn\n    endpoint: '*'\n    condition: \"pii.count > 0\"\n    verdict: deny\n";
+    let (upstream, captured) = start_upstream(ResponseMode::Static(b"ok".to_vec()));
+    let (proxy, _) = start_proxy_with_policy(policy, PiiMode::Block);
+    let body = format!("denied rrn={RRN}");
+
+    let response = proxy_request(proxy, upstream, body.as_bytes(), &[]);
+    assert!(response.starts_with(b"HTTP/1.1 403"));
+    assert!(captured.recv_timeout(Duration::from_millis(250)).is_err());
 }
 
 #[test]
 fn redaction_is_off_by_default() {
     let (upstream, captured) = start_upstream(ResponseMode::Static(b"ok".to_vec()));
-    let proxy = start_proxy(false);
+    let (proxy, _) = start_proxy(false);
     let body = format!("raw key={SECRET}");
 
     proxy_request(proxy, upstream, body.as_bytes(), &[]);

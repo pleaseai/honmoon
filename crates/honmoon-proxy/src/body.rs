@@ -35,6 +35,35 @@ use hudsucker::hyper::body::{Body as HttpBody, Bytes, Frame, SizeHint};
 /// can never exhaust memory.
 pub(crate) const MAX_INSPECT_BODY: usize = 2 * 1024 * 1024;
 
+/// Result of strictly decoding a buffered request body.
+pub(crate) enum StrictDecode<'a> {
+    Decoded(Cow<'a, [u8]>),
+    Overflow,
+    Unavailable,
+}
+
+/// Strictly decode a buffered request body once for both inspection and wire
+/// redaction. Unsupported or malformed encodings are distinguished from
+/// over-cap inflation because inspection scans the former as raw bytes while an
+/// overflow must stay uninspected.
+pub(crate) fn decode_strict<'a>(encoding: Option<&str>, raw: &'a [u8]) -> StrictDecode<'a> {
+    let token = encoding.map(|e| e.trim().to_ascii_lowercase());
+    let attempt = match token.as_deref() {
+        None | Some("") | Some("identity") => {
+            return StrictDecode::Decoded(Cow::Borrowed(raw));
+        }
+        Some("gzip") | Some("x-gzip") => inflate_capped(flate2::read::MultiGzDecoder::new(raw)),
+        Some("deflate") => inflate_capped(flate2::read::ZlibDecoder::new(raw))
+            .or_else(|_| inflate_capped(flate2::read::DeflateDecoder::new(raw))),
+        Some(_) => return StrictDecode::Unavailable,
+    };
+    match attempt {
+        Ok(Some(out)) => StrictDecode::Decoded(Cow::Owned(out)),
+        Ok(None) => StrictDecode::Overflow,
+        Err(_) => StrictDecode::Unavailable,
+    }
+}
+
 /// Decode a buffered request body for inspection according to its
 /// `Content-Encoding`. Returns the bytes to scan — borrowed for identity /
 /// undecodable inputs, inflated for `gzip`/`deflate` — or `None` when the
@@ -48,39 +77,24 @@ pub(crate) const MAX_INSPECT_BODY: usize = 2 * 1024 * 1024;
 /// plaintext body evade the scan by claiming to be compressed. Only the scan
 /// sees this output — the original (still-encoded) body is what gets
 /// forwarded.
+#[cfg(test)]
 pub(crate) fn decode_for_inspection<'a>(
     encoding: Option<&str>,
     raw: &'a [u8],
 ) -> Option<Cow<'a, [u8]>> {
-    let token = encoding.map(|e| e.trim().to_ascii_lowercase());
-    let attempt = match token.as_deref() {
-        None | Some("") | Some("identity") => return Some(Cow::Borrowed(raw)),
-        Some("gzip") | Some("x-gzip") => inflate_capped(flate2::read::MultiGzDecoder::new(raw)),
-        // HTTP `deflate` is zlib-wrapped (RFC 9110 §8.4.1), but some senders
-        // ship raw DEFLATE — try zlib first, then fall back to raw.
-        Some("deflate") => inflate_capped(flate2::read::ZlibDecoder::new(raw))
-            .or_else(|_| inflate_capped(flate2::read::DeflateDecoder::new(raw))),
-        Some(other) => {
-            // Unsupported codec (e.g. `br`, or a multi-token list): scan the raw
-            // bytes rather than skip — see the untrusted-header invariant above.
-            tracing::debug!(encoding = %other, "unsupported content-encoding; scanning raw bytes");
-            return Some(Cow::Borrowed(raw));
-        }
-    };
-    match attempt {
-        Ok(Some(out)) => Some(Cow::Owned(out)),
-        Ok(None) => {
+    match decode_strict(encoding, raw) {
+        StrictDecode::Decoded(decoded) => Some(decoded),
+        StrictDecode::Overflow => {
             tracing::debug!(
-                encoding = ?token,
+                encoding = ?encoding,
                 "decoded output exceeds inspection cap; leaving body unscanned"
             );
             None
         }
-        Err(e) => {
+        StrictDecode::Unavailable => {
             tracing::debug!(
-                encoding = ?token,
-                error = %e,
-                "declared content-encoding failed to decode; scanning raw bytes"
+                encoding = ?encoding,
+                "content-encoding unavailable for strict decode; scanning raw bytes"
             );
             Some(Cow::Borrowed(raw))
         }
@@ -92,19 +106,15 @@ pub(crate) fn decode_for_inspection<'a>(
 /// Unlike [`decode_for_inspection`], this never falls back to raw bytes for an
 /// unsupported or malformed declared encoding: rewriting those bytes as identity
 /// text would corrupt the request. `None` is the documented fail-open signal.
+#[cfg(test)]
 pub(crate) fn decode_for_redaction<'a>(
     encoding: Option<&str>,
     raw: &'a [u8],
 ) -> Option<Cow<'a, [u8]>> {
-    let token = encoding.map(|e| e.trim().to_ascii_lowercase());
-    let attempt = match token.as_deref() {
-        None | Some("") | Some("identity") => return Some(Cow::Borrowed(raw)),
-        Some("gzip") | Some("x-gzip") => inflate_capped(flate2::read::MultiGzDecoder::new(raw)),
-        Some("deflate") => inflate_capped(flate2::read::ZlibDecoder::new(raw))
-            .or_else(|_| inflate_capped(flate2::read::DeflateDecoder::new(raw))),
-        Some(_) => return None,
-    };
-    attempt.ok().flatten().map(Cow::Owned)
+    match decode_strict(encoding, raw) {
+        StrictDecode::Decoded(decoded) => Some(decoded),
+        StrictDecode::Overflow | StrictDecode::Unavailable => None,
+    }
 }
 
 /// Inflate up to [`MAX_INSPECT_BODY`] bytes, reading one byte past the cap
@@ -355,17 +365,47 @@ impl HttpBody for PrefixedBody {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use std::collections::VecDeque;
+    use std::task::{Context, Poll};
 
-    fn detokenizer(mapping: Mapping) -> DetokenizingBody {
+    use super::*;
+    use hudsucker::hyper::HeaderMap;
+
+    struct ScriptedBody {
+        frames: VecDeque<Result<Frame<Bytes>, hudsucker::Error>>,
+    }
+
+    impl HttpBody for ScriptedBody {
+        type Data = Bytes;
+        type Error = hudsucker::Error;
+
+        fn poll_frame(
+            mut self: Pin<&mut Self>,
+            _cx: &mut Context<'_>,
+        ) -> Poll<Option<Result<Frame<Self::Data>, Self::Error>>> {
+            Poll::Ready(self.frames.pop_front())
+        }
+    }
+
+    fn scripted_body(frames: Vec<Result<Frame<Bytes>, hudsucker::Error>>) -> Body {
+        Body::from(BoxBody::new(ScriptedBody {
+            frames: frames.into(),
+        }))
+    }
+
+    fn detokenizer_with_inner(mapping: Mapping, inner: Body) -> DetokenizingBody {
         DetokenizingBody {
-            inner: Body::empty(),
+            inner,
             detokenizer: Some(StreamingDetokenizer::owned(mapping)),
             carry: Vec::new(),
             pending: None,
             passthrough: false,
             finished: false,
         }
+    }
+
+    fn detokenizer(mapping: Mapping) -> DetokenizingBody {
+        detokenizer_with_inner(mapping, Body::empty())
     }
 
     #[test]
@@ -415,6 +455,47 @@ mod tests {
         assert!(body.finish_bytes().is_none());
     }
 
+    #[tokio::test]
+    async fn response_detokenizer_flushes_partial_placeholder_before_trailers() {
+        let mut trailers = HeaderMap::new();
+        trailers.insert("x-checksum", "preserved".parse().unwrap());
+        let frames = vec![
+            Ok(Frame::data(Bytes::from_static(b"prefix <<hs:"))),
+            Ok(Frame::trailers(trailers.clone())),
+        ];
+        let mut body = detokenizer_with_inner(Mapping::new(), scripted_body(frames));
+
+        let first = body.frame().await.unwrap().unwrap().into_data().unwrap();
+        assert_eq!(&first[..], b"prefix ");
+        let flushed = body.frame().await.unwrap().unwrap().into_data().unwrap();
+        assert_eq!(&flushed[..], b"<<hs:");
+        let preserved = body
+            .frame()
+            .await
+            .unwrap()
+            .unwrap()
+            .into_trailers()
+            .unwrap();
+        assert_eq!(preserved, trailers);
+        assert!(body.frame().await.is_none());
+    }
+
+    #[tokio::test]
+    async fn response_detokenizer_propagates_inner_error_after_partial_output() {
+        let frames = vec![
+            Ok(Frame::data(Bytes::from_static(b"prefix <<hs:"))),
+            Err(hudsucker::Error::Decode),
+        ];
+        let mut body = detokenizer_with_inner(Mapping::new(), scripted_body(frames));
+
+        let first = body.frame().await.unwrap().unwrap().into_data().unwrap();
+        assert_eq!(&first[..], b"prefix ");
+        assert!(matches!(
+            body.frame().await.unwrap(),
+            Err(hudsucker::Error::Decode)
+        ));
+    }
+
     fn gzip(data: &[u8]) -> Vec<u8> {
         use std::io::Write;
         let mut enc = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
@@ -447,6 +528,41 @@ mod tests {
         assert_eq!(
             decode_for_redaction(Some("gzip"), &compressed)
                 .expect("valid gzip")
+                .as_ref(),
+            plain
+        );
+    }
+
+    #[test]
+    fn strict_redaction_decode_supports_gzip_alias_and_both_deflate_formats() {
+        use std::io::Write;
+
+        let plain = b"placeholder <<hs:codec-test>>";
+        let compressed = gzip(plain);
+        assert_eq!(
+            decode_for_redaction(Some("x-gzip"), &compressed)
+                .expect("x-gzip")
+                .as_ref(),
+            plain
+        );
+
+        let mut zlib = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::default());
+        zlib.write_all(plain).unwrap();
+        let zlib = zlib.finish().unwrap();
+        assert_eq!(
+            decode_for_redaction(Some("deflate"), &zlib)
+                .expect("zlib deflate")
+                .as_ref(),
+            plain
+        );
+
+        let mut raw =
+            flate2::write::DeflateEncoder::new(Vec::new(), flate2::Compression::default());
+        raw.write_all(plain).unwrap();
+        let raw = raw.finish().unwrap();
+        assert_eq!(
+            decode_for_redaction(Some("deflate"), &raw)
+                .expect("raw deflate")
                 .as_ref(),
             plain
         );

@@ -151,6 +151,31 @@ fn http_body(raw: &str) -> &str {
         .unwrap_or_default()
 }
 
+fn decode_chunked_body(raw: &[u8]) -> Vec<u8> {
+    let header_end = raw
+        .windows(4)
+        .position(|window| window == b"\r\n\r\n")
+        .expect("response headers")
+        + 4;
+    let mut rest = &raw[header_end..];
+    let mut decoded = Vec::new();
+    loop {
+        let line_end = rest
+            .windows(2)
+            .position(|window| window == b"\r\n")
+            .expect("chunk size");
+        let size = usize::from_str_radix(std::str::from_utf8(&rest[..line_end]).unwrap(), 16)
+            .expect("hex chunk size");
+        rest = &rest[line_end + 2..];
+        if size == 0 {
+            break;
+        }
+        decoded.extend_from_slice(&rest[..size]);
+        rest = &rest[size + 2..];
+    }
+    decoded
+}
+
 /// Poll the approval queue until one appears; return its id.
 fn await_pending_id(mgmt_port: u16) -> u64 {
     let deadline = Instant::now() + Duration::from_secs(3);
@@ -334,7 +359,7 @@ fn claude_code_hook_endpoint_accumulates_live_mappings() {
 }
 
 #[test]
-fn hook_and_proxy_share_store_and_mint_identical_tokens() {
+fn hook_created_mapping_restores_proxy_response_without_request_remint() {
     const SECRET: &str = "sk-ant-api03-hook-wire-parity-abcDEF123456";
     let salt = b"hook-wire-shared-salt".to_vec();
     let policy_yaml = "egress:\n  default: allow\n";
@@ -376,11 +401,12 @@ fn hook_and_proxy_share_store_and_mint_identical_tokens() {
         .unwrap();
     let token_start = hook_output.find("<<hs:").unwrap();
     let token_end = hook_output[token_start..].find(">>").unwrap() + token_start + 2;
-    let hook_token = &hook_output[token_start..token_end];
+    let hook_token = hook_output[token_start..token_end].to_string();
 
     let upstream = TcpListener::bind("127.0.0.1:0").unwrap();
     let upstream_port = upstream.local_addr().unwrap().port();
     let (capture_tx, capture_rx) = std::sync::mpsc::channel();
+    let response_token = hook_token.clone();
     thread::spawn(move || {
         let (mut stream, _) = upstream.accept().unwrap();
         let mut bytes = Vec::new();
@@ -410,12 +436,15 @@ fn hook_and_proxy_share_store_and_mint_identical_tokens() {
         capture_tx
             .send(bytes[header_end..header_end + content_length].to_vec())
             .unwrap();
-        stream
-            .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok")
-            .unwrap();
+        write!(
+            stream,
+            "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{response_token}",
+            response_token.len()
+        )
+        .unwrap();
     });
 
-    let wire_body = format!("proxy sees {SECRET}");
+    let wire_body = "proxy request contains no redactable value";
     let mut client = TcpStream::connect(("127.0.0.1", proxy_port)).unwrap();
     client
         .set_read_timeout(Some(Duration::from_secs(5)))
@@ -432,13 +461,17 @@ fn hook_and_proxy_share_store_and_mint_identical_tokens() {
 
     let captured =
         String::from_utf8(capture_rx.recv_timeout(Duration::from_secs(5)).unwrap()).unwrap();
+    assert_eq!(captured, wire_body);
     assert!(!captured.contains(SECRET));
-    assert!(captured.contains(hook_token));
+    assert!(!captured.contains("<<hs:"));
     assert_eq!(
         proxy_mappings.len(),
         1,
-        "same secret deduplicates in one store"
+        "only the hook-created mapping exists"
     );
+    let restored = String::from_utf8(decode_chunked_body(&response)).unwrap();
+    assert_eq!(restored, SECRET);
+    assert!(!restored.contains(&hook_token));
 }
 
 #[test]

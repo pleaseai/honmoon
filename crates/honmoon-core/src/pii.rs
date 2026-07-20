@@ -164,24 +164,30 @@ pub fn detect_spans(payload: &str) -> Vec<PiiSpan> {
     spans
 }
 
-/// Scan `payload` for Tier-1 PII and summarize. Returns `None` when nothing is
-/// found, mirroring the `Option<…Facts>` convention of the protocol parsers.
-pub fn detect_pii(payload: &str) -> Option<PiiFacts> {
-    let spans = detect_spans(payload);
+/// Summarize precomputed Tier-1 PII spans. Returns `None` when `spans` is empty.
+/// This lets callers that also need the individual spans avoid running every
+/// detector a second time.
+pub fn summarize_spans(spans: &[PiiSpan]) -> Option<PiiFacts> {
     if spans.is_empty() {
         return None;
     }
     let mut labels = BTreeSet::new();
     let mut max_severity = 0i64;
-    for sp in &spans {
-        labels.insert(sp.label.clone());
-        max_severity = max_severity.max(severity_for_label(&sp.label));
+    for span in spans {
+        labels.insert(span.label.clone());
+        max_severity = max_severity.max(severity_for_label(&span.label));
     }
     Some(PiiFacts {
         types: labels.into_iter().collect(),
         count: spans.len() as i64,
         max_severity,
     })
+}
+
+/// Scan `payload` for Tier-1 PII and summarize. Returns `None` when nothing is
+/// found, mirroring the `Option<…Facts>` convention of the protocol parsers.
+pub fn detect_pii(payload: &str) -> Option<PiiFacts> {
+    summarize_spans(&detect_spans(payload))
 }
 
 /// Severity (3 high / 2 medium / 1 low) for a canonical PII label, or 0 if the
