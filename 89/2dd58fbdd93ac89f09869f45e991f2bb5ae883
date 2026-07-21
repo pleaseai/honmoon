@@ -1,0 +1,39 @@
+crates/honmoon-core/src/claude_code_hook.rs
+  s_d381aab2ee5c81::t_f0ab8ad45761d3 304,321,330,341,362,403,465,499
+  s_d381aab2ee5c81::t_129d6dbf27267d 407-408,477-484
+  s_d381aab2ee5c81::t_30869d4fee313a 45-69,72-74,78,82
+  s_d381aab2ee5c81::t_b18d4ae90e28f6 413-459
+  s_d381aab2ee5c81::t_815defbc2f0dd0 101,117-120,122-133,137,139
+  s_d381aab2ee5c81::t_38ded71380b7c9 460
+crates/honmoon-core/src/lib.rs
+  s_d381aab2ee5c81::t_2c9a95e8b001b8 18-20
+crates/honmoon-mgmt/tests/e2e.rs
+  s_d381aab2ee5c81::t_97ded56567a2bb 318-321,326-391,397-398
+  s_d381aab2ee5c81::t_a0b2fc2324863b 17
+  s_d381aab2ee5c81::t_129d6dbf27267d 392-396
+  s_d381aab2ee5c81::t_f09eb264953431 399-400
+crates/honmoon-cli/src/hook.rs
+  s_d381aab2ee5c81::t_82a9b801574fb5 68-74,76,87-95
+crates/honmoon-mgmt/src/lib.rs
+  s_d381aab2ee5c81::t_192b723bbcc84e 27-29
+  s_d381aab2ee5c81::t_129d6dbf27267d 422
+  s_d381aab2ee5c81::t_7ba49d5c035670 336,349-421,423-450
+  s_d381aab2ee5c81::t_22dd70c0ebe931 157-159,165-211
+  s_d381aab2ee5c81::t_d8845251fe35d0 212-213
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.15",
+  "base_commit_sha": "892dd58fbdd93ac89f09869f45e991f2bb5ae883",
+  "prompts": {},
+  "sessions": {
+    "s_d381aab2ee5c81": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "ed05bcd8-942d-49bc-924e-33571293ed09",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
