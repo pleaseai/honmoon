@@ -65,8 +65,15 @@ pub fn run(salt_context: Option<&str>) -> Result<()> {
 /// Resolve symlinks best-effort, then delegate the transport-independent verdict
 /// to `honmoon-core`. Literal path matching remains in core; this filesystem
 /// adapter keeps core free of I/O while preserving symlink protection.
+///
+/// This transport runs in the agent's own process, so relative paths and
+/// symlinks resolve in the agent's real filesystem context. A `canonicalize`
+/// failure here therefore genuinely means the file does not exist (the
+/// legitimate new-file case) — map it to `NotSensitive` and let core's literal
+/// path check apply, rather than the HTTP transport's conservative
+/// `Unresolved` deny (issue #55).
 pub fn handle_hook(payload: &Value, salt: &[u8]) -> Value {
-    let resolved_is_sensitive = payload
+    let resolution = payload
         .get("tool_input")
         .and_then(|input| {
             input
@@ -77,9 +84,15 @@ pub fn handle_hook(payload: &Value, salt: &[u8]) -> Value {
         .and_then(|path| std::fs::canonicalize(path).ok())
         // `to_string_lossy` so a non-UTF-8 path is still checked (fail toward
         // denying) rather than silently skipped by a `to_str()` `None`.
-        .map(|path| honmoon_core::is_sensitive_path(&path.to_string_lossy()))
-        .unwrap_or(false);
-    honmoon_core::claude_code_hook_verdict(payload, salt, resolved_is_sensitive)
+        .map(|path| {
+            if honmoon_core::is_sensitive_path(&path.to_string_lossy()) {
+                honmoon_core::PathResolution::Sensitive
+            } else {
+                honmoon_core::PathResolution::NotSensitive
+            }
+        })
+        .unwrap_or(honmoon_core::PathResolution::NotSensitive);
+    honmoon_core::claude_code_hook_verdict(payload, salt, resolution)
         .into_parts()
         .0
 }
