@@ -596,6 +596,26 @@ mod tests {
     }
 
     #[test]
+    fn mapping_store_evicts_within_a_single_oversized_record_batch() {
+        // A redaction verdict can carry many substitutions, so one `record`
+        // call may itself exceed the cap. Eviction must trim down to the bound
+        // within that single call — the memory-exhaustion guard (issue #54)
+        // must not depend on later calls to trim.
+        let store = MappingStore::with_max_entries(2);
+        let mut batch = Mapping::new();
+        for i in 0..10 {
+            batch.insert(format!("<<hs:{i:04}>>"), format!("sk-{i}"));
+        }
+        store.record(batch);
+        // Bounded to the cap in one call, and the overflow is all accounted for.
+        // (Which entries survive is unspecified — `Mapping` iterates an
+        // unordered `HashMap` — so only counts are asserted.)
+        assert_eq!(store.len(), 2);
+        assert_eq!(store.snapshot().len(), 2);
+        assert_eq!(store.evicted(), 8);
+    }
+
+    #[test]
     fn mapping_store_re_recording_refreshes_eviction_order() {
         // Agent clients resend the whole conversation every turn, so the wire
         // path re-records every mapping still backing it. Re-recording must
@@ -637,6 +657,10 @@ mod tests {
         let (_, mapping_again) = t.tokenize("value=sk-old");
         store.record(mapping_again);
         assert_eq!(store.snapshot().get(&placeholder), Some("sk-old"));
+        // Two overflowing records happened (flood evicted sk-old, then the
+        // re-record evicted flood): the counter is a lifetime total, not a
+        // per-call value.
+        assert_eq!(store.evicted(), 2);
     }
 
     #[test]
