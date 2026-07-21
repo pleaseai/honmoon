@@ -14,7 +14,7 @@ use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
 
-use honmoon_core::{AuditLog, Decision, Policy};
+use honmoon_core::{AuditLog, Decision, PathResolution, Policy};
 use honmoon_mgmt::AppState;
 use honmoon_proxy::approval::ApprovalRegistry;
 use honmoon_proxy::ca::CaMaterial;
@@ -315,11 +315,87 @@ fn claude_code_hook_endpoint_redacts_and_requires_configured_bearer() {
     );
     assert!(authorized.starts_with("HTTP/1.1 200"));
     let actual: serde_json::Value = serde_json::from_str(http_body(&authorized)).unwrap();
-    let expected = honmoon_core::claude_code_hook_verdict(&payload, &salt, false)
-        .into_parts()
-        .0;
+    let expected =
+        honmoon_core::claude_code_hook_verdict(&payload, &salt, PathResolution::NotSensitive)
+            .into_parts()
+            .0;
     assert_eq!(actual, expected, "HTTP transport uses shared core verdict");
     assert!(!actual.to_string().contains("sk-ant-api03-http-parity"));
+}
+
+#[test]
+fn claude_code_hook_resolves_agent_relative_paths_and_denies_unresolved() {
+    let gw = start_gateway_with_hook("egress:\n  default: deny\n", b"cwd-salt".to_vec(), None);
+
+    // Agent-side working directory holding an innocuously-named symlink to key
+    // material — the issue #55 bypass scenario. The gateway runs in a different
+    // cwd, so only the payload's `cwd` can anchor the relative path.
+    let agent_dir = std::env::temp_dir().join(format!("honmoon-e2e-cwd-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&agent_dir);
+    std::fs::create_dir_all(&agent_dir).unwrap();
+    std::fs::write(agent_dir.join("server.pem"), b"key material").unwrap();
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(agent_dir.join("server.pem"), agent_dir.join("config")).unwrap();
+    #[cfg(not(unix))]
+    std::fs::write(agent_dir.join("config"), b"stand-in").unwrap();
+
+    let post = |payload: &serde_json::Value| -> serde_json::Value {
+        let raw = http_request_with_body(
+            gw.mgmt_port,
+            "POST",
+            "/api/hooks/claude-code",
+            &[],
+            &serde_json::to_string(payload).unwrap(),
+        );
+        assert!(raw.starts_with("HTTP/1.1 200"), "unexpected: {raw:?}");
+        serde_json::from_str(http_body(&raw)).unwrap()
+    };
+
+    // With the agent's cwd in the payload the symlink resolves and is denied.
+    #[cfg(unix)]
+    {
+        let verdict = post(&serde_json::json!({
+            "hook_event_name": "PreToolUse",
+            "tool_name": "Read",
+            "cwd": agent_dir.to_string_lossy(),
+            "tool_input": { "file_path": "config" }
+        }));
+        assert_eq!(
+            verdict["hookSpecificOutput"]["permissionDecision"], "deny",
+            "agent-relative symlink to key material must be denied: {verdict}"
+        );
+    }
+
+    // Without a cwd the gateway cannot resolve the relative path at all; it
+    // must deny conservatively (surfacing why) rather than silently pass.
+    let verdict = post(&serde_json::json!({
+        "hook_event_name": "PreToolUse",
+        "tool_name": "Read",
+        "tool_input": { "file_path": "config" }
+    }));
+    assert_eq!(verdict["hookSpecificOutput"]["permissionDecision"], "deny");
+    assert!(
+        verdict["hookSpecificOutput"]["permissionDecisionReason"]
+            .as_str()
+            .unwrap()
+            .contains("could not be resolved"),
+        "reason must surface the failed resolution: {verdict}"
+    );
+
+    // An absolute path to a not-yet-created file stays allowed (new-file case).
+    let verdict = post(&serde_json::json!({
+        "hook_event_name": "PreToolUse",
+        "tool_name": "Write",
+        "cwd": agent_dir.to_string_lossy(),
+        "tool_input": { "file_path": agent_dir.join("new-file.rs").to_string_lossy() }
+    }));
+    assert_eq!(
+        verdict,
+        serde_json::json!({}),
+        "new file must pass: {verdict}"
+    );
+
+    let _ = std::fs::remove_dir_all(&agent_dir);
 }
 
 #[test]

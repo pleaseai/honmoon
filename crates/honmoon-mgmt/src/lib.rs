@@ -24,7 +24,9 @@ use axum::http::{HeaderMap, StatusCode, Uri, header};
 use axum::response::{Html, IntoResponse, Response};
 use axum::routing::{get, post};
 use hmac::{Hmac, Mac};
-use honmoon_core::{AuditEvent, MappingStore, Policy, claude_code_hook_verdict, is_sensitive_path};
+use honmoon_core::{
+    AuditEvent, MappingStore, PathResolution, Policy, claude_code_hook_verdict, is_sensitive_path,
+};
 use honmoon_proxy::approval::{ApprovalDecision, PendingApproval};
 use honmoon_proxy::gateway::GatewayState;
 use serde::{Deserialize, Serialize};
@@ -152,21 +154,83 @@ async fn claude_code_hook(
                 .or_else(|| input.get("notebook_path"))
         })
         .and_then(serde_json::Value::as_str);
-    // Resolve symlinks off the async executor: `tokio::fs::canonicalize` hands
-    // the blocking syscall to the runtime's blocking pool, so concurrent hook
-    // requests don't stall the Tokio worker thread. Use `to_string_lossy` so a
-    // non-UTF-8 path is still checked (fail toward denying) rather than skipped.
-    let resolved_path_is_sensitive = match path_to_resolve {
-        Some(path) => match tokio::fs::canonicalize(path).await {
-            Ok(canonical) => is_sensitive_path(&canonical.to_string_lossy()),
-            Err(_) => false,
-        },
-        None => false,
-    };
-    let verdict = claude_code_hook_verdict(&payload, &state.hook_salt, resolved_path_is_sensitive);
+    let agent_cwd = payload.get("cwd").and_then(serde_json::Value::as_str);
+    let resolution = resolve_agent_path(path_to_resolve, agent_cwd).await;
+    let verdict = claude_code_hook_verdict(&payload, &state.hook_salt, resolution);
     let (output, mapping) = verdict.into_parts();
     state.hook_mappings.record(mapping);
     (StatusCode::OK, Json(output)).into_response()
+}
+
+/// Resolve the tool's file path in the **agent's** filesystem context, never
+/// against the gateway process's cwd.
+///
+/// The agent (Claude Code) and the gateway generally run in different
+/// directories, so canonicalizing an agent-relative path directly would either
+/// fail — silently skipping the symlink-based sensitive-path deny (issue #55) —
+/// or, worse, resolve an unrelated same-named file in the gateway's own cwd.
+/// Claude Code hook payloads carry the agent's `cwd`, so relative paths are
+/// anchored there first. When resolution is still impossible — no usable
+/// absolute `cwd`, or the anchored path does not exist on this host (e.g. a
+/// gateway that cannot see the agent's filesystem) — the check reports
+/// [`PathResolution::Unresolved`], which `PreToolUse` denies conservatively
+/// instead of silently evaluating "not sensitive". An *absolute* path that is
+/// genuinely absent (confirmed via `symlink_metadata`) keeps command-transport
+/// parity: it is the legitimate not-yet-created-file case, and core's literal
+/// path check still applies. An existing dangling symlink, or any other
+/// canonicalize failure (a permission-denied or looping component that hides a
+/// symlink), is [`PathResolution::Unresolved`] — not silently allowed.
+///
+/// Symlinks resolve off the async executor: `tokio::fs::canonicalize` hands the
+/// blocking syscall to the runtime's blocking pool, so concurrent hook requests
+/// don't stall the Tokio worker thread. `to_string_lossy` keeps a non-UTF-8
+/// path checked (fail toward denying) rather than skipped.
+async fn resolve_agent_path(path: Option<&str>, agent_cwd: Option<&str>) -> PathResolution {
+    let Some(path) = path else {
+        return PathResolution::NotSensitive;
+    };
+    let sensitivity = |canonical: std::path::PathBuf| {
+        if is_sensitive_path(&canonical.to_string_lossy()) {
+            PathResolution::Sensitive
+        } else {
+            PathResolution::NotSensitive
+        }
+    };
+    if std::path::Path::new(path).is_absolute() {
+        return match tokio::fs::canonicalize(path).await {
+            Ok(canonical) => sensitivity(canonical),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                // `canonicalize` also returns `NotFound` for an *existing* dangling
+                // symlink (the link is present, its target is not) — a `Write`
+                // through it would create the hidden target, so it must not be
+                // treated as a new file. `symlink_metadata` does not follow the
+                // final component: `NotFound` there means the path genuinely does
+                // not exist (the legitimate not-yet-created-file case, command-
+                // transport parity — core's literal path check still applies).
+                // Anything else means the path exists but could not be verified —
+                // stay conservative rather than fail open (issue #55).
+                match tokio::fs::symlink_metadata(path).await {
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                        PathResolution::NotSensitive
+                    }
+                    _ => PathResolution::Unresolved,
+                }
+            }
+            // Any other error — permission denied, symlink loop, an unreadable
+            // path component — means the target could not be verified: deny.
+            Err(_) => PathResolution::Unresolved,
+        };
+    }
+    let Some(cwd) = agent_cwd
+        .map(std::path::Path::new)
+        .filter(|cwd| cwd.is_absolute())
+    else {
+        return PathResolution::Unresolved;
+    };
+    match tokio::fs::canonicalize(cwd.join(path)).await {
+        Ok(canonical) => sensitivity(canonical),
+        Err(_) => PathResolution::Unresolved,
+    }
 }
 
 fn authorized(state: &AppState, headers: &HeaderMap) -> bool {
@@ -291,7 +355,7 @@ async fn static_handler(uri: Uri) -> Response {
 
 #[cfg(test)]
 mod tests {
-    use super::constant_time_eq;
+    use super::{PathResolution, constant_time_eq, resolve_agent_path};
 
     #[test]
     fn constant_time_eq_matches_only_identical_secrets() {
@@ -303,5 +367,160 @@ mod tests {
         assert!(!constant_time_eq(b"s3cr3t", b"s3cr3t-token"));
         assert!(!constant_time_eq(b"s3cr3t-token-extra", b"s3cr3t-token"));
         assert!(!constant_time_eq(b"", b"s3cr3t-token"));
+    }
+
+    /// Throwaway temp dir under the OS temp root, removed on drop. The `tag`
+    /// keeps concurrently-running tests from colliding on the same path (no
+    /// `tempfile` dev-dependency in this workspace).
+    struct TempDir(std::path::PathBuf);
+
+    impl TempDir {
+        fn new(tag: &str) -> Self {
+            let dir = std::env::temp_dir()
+                .join(format!("honmoon-mgmt-test-{tag}-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir_all(&dir).expect("creating temp dir");
+            TempDir(dir)
+        }
+
+        fn path(&self) -> &std::path::Path {
+            &self.0
+        }
+    }
+
+    impl Drop for TempDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[tokio::test]
+    async fn missing_path_is_not_sensitive() {
+        assert_eq!(
+            resolve_agent_path(None, Some("/tmp")).await,
+            PathResolution::NotSensitive
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn relative_symlink_resolves_against_agent_cwd() {
+        // The issue #55 scenario: an innocuously-named relative symlink pointing
+        // at key material. Anchored to the agent's `cwd` from the payload, the
+        // gateway resolves it and the sensitive-path deny fires — previously
+        // `canonicalize` ran against the gateway's own cwd, failed, and the
+        // check was silently skipped.
+        let tmp = TempDir::new("relative-symlink");
+        std::fs::write(tmp.path().join("server.pem"), b"key material").unwrap();
+        std::os::unix::fs::symlink(tmp.path().join("server.pem"), tmp.path().join("config"))
+            .unwrap();
+        assert_eq!(
+            resolve_agent_path(Some("config"), Some(&tmp.path().to_string_lossy())).await,
+            PathResolution::Sensitive
+        );
+    }
+
+    #[tokio::test]
+    async fn relative_path_without_agent_cwd_is_unresolved() {
+        // No `cwd` in the payload (or a non-absolute one): the gateway must not
+        // fall back to its own cwd — a same-named file there could resolve to a
+        // false "not sensitive".
+        assert_eq!(
+            resolve_agent_path(Some("config"), None).await,
+            PathResolution::Unresolved
+        );
+        assert_eq!(
+            resolve_agent_path(Some("config"), Some("relative/cwd")).await,
+            PathResolution::Unresolved
+        );
+    }
+
+    #[tokio::test]
+    async fn relative_path_missing_on_this_host_is_unresolved() {
+        // Anchored but nonexistent here: possibly a gateway that cannot see the
+        // agent's filesystem hiding an agent-side symlink — stay conservative.
+        let tmp = TempDir::new("missing-relative");
+        assert_eq!(
+            resolve_agent_path(Some("no-such-file"), Some(&tmp.path().to_string_lossy())).await,
+            PathResolution::Unresolved
+        );
+    }
+
+    #[tokio::test]
+    async fn absolute_missing_path_keeps_command_transport_parity() {
+        // A not-yet-created file addressed absolutely stays writable: the
+        // literal path check in core still applies to the raw string.
+        let tmp = TempDir::new("missing-absolute");
+        let path = tmp.path().join("new-file.rs");
+        assert_eq!(
+            resolve_agent_path(Some(&path.to_string_lossy()), None).await,
+            PathResolution::NotSensitive
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn absolute_symlink_to_sensitive_target_is_sensitive() {
+        let tmp = TempDir::new("absolute-symlink");
+        std::fs::write(tmp.path().join("server.pem"), b"key material").unwrap();
+        let link = tmp.path().join("config");
+        std::os::unix::fs::symlink(tmp.path().join("server.pem"), &link).unwrap();
+        assert_eq!(
+            resolve_agent_path(Some(&link.to_string_lossy()), None).await,
+            PathResolution::Sensitive
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn absolute_path_failing_canonicalize_non_notfound_is_unresolved() {
+        // A symlink loop makes `canonicalize` fail with an error that is *not*
+        // `NotFound`, so the target was never verified — it could hide a
+        // sensitive symlink the gateway can't traverse. Only a genuinely
+        // missing file (`NotFound`) is the legitimate new-file case; any other
+        // error must stay conservative (`Unresolved`, deny) rather than fail
+        // open to `NotSensitive` — the absolute-path analogue of issue #55.
+        let tmp = TempDir::new("absolute-loop");
+        let link = tmp.path().join("loop");
+        std::os::unix::fs::symlink(&link, &link).unwrap();
+        assert_eq!(
+            resolve_agent_path(Some(&link.to_string_lossy()), None).await,
+            PathResolution::Unresolved
+        );
+    }
+
+    #[tokio::test]
+    async fn relative_ordinary_path_resolves_against_agent_cwd_not_sensitive() {
+        // The common case: an ordinary agent-relative file anchored to the
+        // payload `cwd` resolves and is allowed. The fail-closed fix must not
+        // deny normal Read/Edit/Write of non-sensitive files.
+        let tmp = TempDir::new("relative-ordinary");
+        std::fs::write(tmp.path().join("main.rs"), b"fn main() {}").unwrap();
+        assert_eq!(
+            resolve_agent_path(Some("main.rs"), Some(&tmp.path().to_string_lossy())).await,
+            PathResolution::NotSensitive
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn absolute_dangling_symlink_is_not_a_new_file() {
+        // A benign-named symlink whose sensitive target does not exist yet:
+        // `canonicalize` returns `NotFound` (the target is missing), but the
+        // link itself exists, so a `Write` through it would create the hidden
+        // sensitive target. It must NOT be treated as a new file — `Unresolved`
+        // (deny), distinguished from a genuinely absent path via
+        // `symlink_metadata` (Greptile/cubic issue #55 follow-up).
+        let tmp = TempDir::new("dangling-symlink");
+        let link = tmp.path().join("config");
+        std::os::unix::fs::symlink(tmp.path().join("server.pem"), &link).unwrap();
+        assert!(
+            tokio::fs::canonicalize(&link).await.is_err(),
+            "target is missing"
+        );
+        assert_eq!(
+            resolve_agent_path(Some(&link.to_string_lossy()), None).await,
+            PathResolution::Unresolved
+        );
     }
 }

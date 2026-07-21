@@ -42,20 +42,44 @@ impl ClaudeCodeHookVerdict {
     }
 }
 
+/// Outcome of a transport's best-effort filesystem resolution of the tool's
+/// requested file path.
+///
+/// Symlink protection lives with the I/O-owning transports so `honmoon-core`
+/// stays free of filesystem access: transports canonicalize the requested path
+/// in the *agent's* filesystem context and report what they found. The variants
+/// deliberately distinguish "resolved and clean" from "could not resolve at
+/// all" — collapsing the two is what let an agent-relative symlink slip past
+/// the HTTP transport's `PreToolUse` deny (issue #55).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PathResolution {
+    /// The canonicalized target matches [`is_sensitive_path`]: deny.
+    Sensitive,
+    /// The path resolved (or resolution is knowably moot, e.g. a not-yet-created
+    /// file in the agent's own filesystem) and the target is not sensitive. The
+    /// literal path check on the raw string still applies.
+    NotSensitive,
+    /// The transport could not resolve the path in the agent's filesystem
+    /// context at all (e.g. the HTTP gateway received a relative path it cannot
+    /// anchor to the agent's `cwd`). `PreToolUse` treats this conservatively —
+    /// deny, surfacing that the check could not run — rather than silently
+    /// evaluating to "not sensitive".
+    Unresolved,
+}
+
 /// Evaluate one Claude Code hook payload.
 ///
-/// `resolved_path_is_sensitive` lets I/O-owning transports preserve symlink
-/// protection without putting filesystem access in `honmoon-core`: transports
-/// resolve the requested path best-effort and pass whether its target matches
-/// [`is_sensitive_path`].
+/// `resolution` lets I/O-owning transports preserve symlink protection without
+/// putting filesystem access in `honmoon-core`: transports resolve the
+/// requested path best-effort and report a [`PathResolution`].
 pub fn claude_code_hook_verdict(
     payload: &Value,
     salt: &[u8],
-    resolved_path_is_sensitive: bool,
+    resolution: PathResolution,
 ) -> ClaudeCodeHookVerdict {
     let (output, mapping) = match payload.get("hook_event_name").and_then(Value::as_str) {
         Some("PreToolUse") => (
-            handle_pre_tool_use(payload, resolved_path_is_sensitive).unwrap_or_else(noop),
+            handle_pre_tool_use(payload, resolution).unwrap_or_else(noop),
             Mapping::new(),
         ),
         Some("PostToolUse") => {
@@ -74,7 +98,7 @@ fn noop() -> Value {
     json!({})
 }
 
-fn handle_pre_tool_use(payload: &Value, resolved_path_is_sensitive: bool) -> Option<Value> {
+fn handle_pre_tool_use(payload: &Value, resolution: PathResolution) -> Option<Value> {
     let tool_name = payload.get("tool_name").and_then(Value::as_str)?;
     if !matches!(
         tool_name,
@@ -90,18 +114,42 @@ fn handle_pre_tool_use(payload: &Value, resolved_path_is_sensitive: bool) -> Opt
                 .or_else(|| input.get("notebook_path"))
         })
         .and_then(Value::as_str)?;
-    if !is_sensitive_path(file_path) && !resolved_path_is_sensitive {
-        return None;
+    // The literal path check on the raw string is independent of any filesystem
+    // resolution and always applies.
+    if is_sensitive_path(file_path) {
+        return Some(pre_tool_use_deny(sensitive_path_deny_reason(file_path)));
     }
-    Some(json!({
+    // Exhaustive so a future `PathResolution` variant forces an explicit
+    // enforcement decision here rather than silently falling through to allow —
+    // the boolean-blindness this enum exists to prevent (issue #55).
+    match resolution {
+        PathResolution::Sensitive => Some(pre_tool_use_deny(sensitive_path_deny_reason(file_path))),
+        PathResolution::Unresolved => {
+            // The symlink check could not run at all; denying is the
+            // conservative choice, and the reason tells the agent how to make it
+            // pass (issue #55).
+            Some(pre_tool_use_deny(format!(
+                "honmoon: access to `{file_path}` is blocked — the path could not be resolved, so the sensitive-path (symlink) check cannot run. If possible, retry with an absolute path to an existing file, or ask the user for the specific value needed."
+            )))
+        }
+        PathResolution::NotSensitive => None,
+    }
+}
+
+fn sensitive_path_deny_reason(file_path: &str) -> String {
+    format!(
+        "honmoon: reading or modifying `{file_path}` is blocked — it matches a known-sensitive path (credentials or key material). If a specific value is genuinely needed, ask the user to provide just that value."
+    )
+}
+
+fn pre_tool_use_deny(reason: String) -> Value {
+    json!({
         "hookSpecificOutput": {
             "hookEventName": "PreToolUse",
             "permissionDecision": "deny",
-            "permissionDecisionReason": format!(
-                "honmoon: reading or modifying `{file_path}` is blocked — it matches a known-sensitive path (credentials or key material). If a specific value is genuinely needed, ask the user to provide just that value."
-            )
+            "permissionDecisionReason": reason
         }
-    }))
+    })
 }
 
 fn handle_post_tool_use(payload: &Value, salt: &[u8]) -> Option<(Value, Mapping)> {
@@ -266,7 +314,7 @@ mod tests {
             "tool_name": "Read",
             "tool_response": format!("key {API_KEY}, rrn {RRN}")
         });
-        let verdict = claude_code_hook_verdict(&payload, SALT, false);
+        let verdict = claude_code_hook_verdict(&payload, SALT, PathResolution::NotSensitive);
         let output = verdict.output().to_string();
         assert!(!output.contains(API_KEY));
         assert!(!output.contains(RRN));
@@ -283,7 +331,7 @@ mod tests {
             "tool_response": "ordinary source"
         });
         assert_eq!(
-            claude_code_hook_verdict(&clean, SALT, false).output(),
+            claude_code_hook_verdict(&clean, SALT, PathResolution::NotSensitive).output(),
             &json!({})
         );
         let unrelated = json!({
@@ -292,7 +340,7 @@ mod tests {
             "tool_response": format!("key {API_KEY}")
         });
         assert_eq!(
-            claude_code_hook_verdict(&unrelated, SALT, false).output(),
+            claude_code_hook_verdict(&unrelated, SALT, PathResolution::NotSensitive).output(),
             &json!({})
         );
     }
@@ -303,7 +351,7 @@ mod tests {
             "hook_event_name": "UserPromptSubmit",
             "prompt": format!("deploy with {API_KEY}, identity {RRN}")
         });
-        let verdict = claude_code_hook_verdict(&payload, SALT, false);
+        let verdict = claude_code_hook_verdict(&payload, SALT, PathResolution::NotSensitive);
         assert_eq!(verdict.output()["decision"], "block");
         let reason = verdict.output()["reason"].as_str().unwrap();
         assert!(reason.contains("ANTHROPIC_KEY"));
@@ -324,7 +372,7 @@ mod tests {
                 "tool_name": tool,
                 "tool_input": { "file_path": path }
             });
-            let verdict = claude_code_hook_verdict(&payload, SALT, false);
+            let verdict = claude_code_hook_verdict(&payload, SALT, PathResolution::NotSensitive);
             assert_eq!(
                 verdict.output()["hookSpecificOutput"]["permissionDecision"],
                 "deny"
@@ -365,12 +413,61 @@ mod tests {
             "tool_input": { "file_path": "/project/config" }
         });
         assert_eq!(
-            claude_code_hook_verdict(&payload, SALT, false).output(),
+            claude_code_hook_verdict(&payload, SALT, PathResolution::NotSensitive).output(),
             &json!({})
         );
         assert_eq!(
-            claude_code_hook_verdict(&payload, SALT, true).output()["hookSpecificOutput"]["permissionDecision"],
+            claude_code_hook_verdict(&payload, SALT, PathResolution::Sensitive).output()["hookSpecificOutput"]
+                ["permissionDecision"],
             "deny"
+        );
+    }
+
+    #[test]
+    fn unresolved_path_is_denied_conservatively() {
+        let payload = json!({
+            "hook_event_name": "PreToolUse",
+            "tool_name": "Read",
+            "tool_input": { "file_path": "config" }
+        });
+        // A resolvable, non-sensitive path stays allowed…
+        assert_eq!(
+            claude_code_hook_verdict(&payload, SALT, PathResolution::NotSensitive).output(),
+            &json!({})
+        );
+        // …but a transport that could not resolve the path at all must deny —
+        // silently skipping the symlink check is the issue #55 bypass.
+        let verdict = claude_code_hook_verdict(&payload, SALT, PathResolution::Unresolved);
+        let output = &verdict.output()["hookSpecificOutput"];
+        assert_eq!(output["permissionDecision"], "deny");
+        let reason = output["permissionDecisionReason"].as_str().unwrap();
+        assert!(
+            reason.contains("could not be resolved"),
+            "reason must surface that resolution failed: {reason}"
+        );
+    }
+
+    #[test]
+    fn unresolved_path_does_not_affect_other_events_or_tools() {
+        // `Unresolved` is a PreToolUse-only signal: an unrelated tool or event
+        // must stay a no-op even when the transport reports it.
+        let unrelated_tool = json!({
+            "hook_event_name": "PreToolUse",
+            "tool_name": "Bash",
+            "tool_input": { "command": "ls config" }
+        });
+        assert_eq!(
+            claude_code_hook_verdict(&unrelated_tool, SALT, PathResolution::Unresolved).output(),
+            &json!({})
+        );
+        let post_tool_use = json!({
+            "hook_event_name": "PostToolUse",
+            "tool_name": "Read",
+            "tool_response": "ordinary source"
+        });
+        assert_eq!(
+            claude_code_hook_verdict(&post_tool_use, SALT, PathResolution::Unresolved).output(),
+            &json!({})
         );
     }
 
@@ -378,7 +475,7 @@ mod tests {
     fn unknown_event_is_noop_json() {
         let payload = json!({ "hook_event_name": "SessionStart" });
         assert_eq!(
-            claude_code_hook_verdict(&payload, SALT, false).output(),
+            claude_code_hook_verdict(&payload, SALT, PathResolution::NotSensitive).output(),
             &json!({})
         );
     }
@@ -390,10 +487,14 @@ mod tests {
             "tool_name": "Read",
             "tool_response": format!("key {API_KEY}")
         });
-        let first =
-            serde_json::to_vec(claude_code_hook_verdict(&payload, SALT, false).output()).unwrap();
-        let second =
-            serde_json::to_vec(claude_code_hook_verdict(&payload, SALT, false).output()).unwrap();
+        let first = serde_json::to_vec(
+            claude_code_hook_verdict(&payload, SALT, PathResolution::NotSensitive).output(),
+        )
+        .unwrap();
+        let second = serde_json::to_vec(
+            claude_code_hook_verdict(&payload, SALT, PathResolution::NotSensitive).output(),
+        )
+        .unwrap();
         assert_eq!(first, second);
     }
 
@@ -408,7 +509,7 @@ mod tests {
             "tool_name": "Read",
             "tool_response": response
         });
-        let output = claude_code_hook_verdict(&payload, SALT, false)
+        let output = claude_code_hook_verdict(&payload, SALT, PathResolution::NotSensitive)
             .output()
             .to_string();
         assert!(!output.contains(API_KEY));
