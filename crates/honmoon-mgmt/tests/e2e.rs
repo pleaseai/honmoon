@@ -18,7 +18,7 @@ use honmoon_core::{AuditLog, Decision, Policy};
 use honmoon_mgmt::AppState;
 use honmoon_proxy::approval::ApprovalRegistry;
 use honmoon_proxy::ca::CaMaterial;
-use honmoon_proxy::gateway::{GatewayState, InterceptPolicy, PiiMode};
+use honmoon_proxy::gateway::{GatewayState, InterceptPolicy, PiiMode, RedactionState};
 
 /// In-process HTTP upstream that answers `200 OK / "ok"`.
 fn start_upstream() -> u16 {
@@ -62,6 +62,7 @@ fn start_gateway_with_hook(
         ca: Arc::new(CaMaterial::generate().unwrap()),
         intercept: InterceptPolicy::None,
         pii_mode: PiiMode::Detect,
+        redaction: None,
     };
 
     let proxy_listener = TcpListener::bind("127.0.0.1:0").unwrap();
@@ -148,6 +149,31 @@ fn http_body(raw: &str) -> &str {
     raw.split_once("\r\n\r\n")
         .map(|(_, body)| body)
         .unwrap_or_default()
+}
+
+fn decode_chunked_body(raw: &[u8]) -> Vec<u8> {
+    let header_end = raw
+        .windows(4)
+        .position(|window| window == b"\r\n\r\n")
+        .expect("response headers")
+        + 4;
+    let mut rest = &raw[header_end..];
+    let mut decoded = Vec::new();
+    loop {
+        let line_end = rest
+            .windows(2)
+            .position(|window| window == b"\r\n")
+            .expect("chunk size");
+        let size = usize::from_str_radix(std::str::from_utf8(&rest[..line_end]).unwrap(), 16)
+            .expect("hex chunk size");
+        rest = &rest[line_end + 2..];
+        if size == 0 {
+            break;
+        }
+        decoded.extend_from_slice(&rest[..size]);
+        rest = &rest[size + 2..];
+    }
+    decoded
 }
 
 /// Poll the approval queue until one appears; return its id.
@@ -330,6 +356,122 @@ fn claude_code_hook_endpoint_accumulates_live_mappings() {
         assert!(raw.starts_with("HTTP/1.1 200"));
     }
     assert_eq!(mappings.len(), 2, "both reversible mappings stay live");
+}
+
+#[test]
+fn hook_created_mapping_restores_proxy_response_without_request_remint() {
+    const SECRET: &str = "sk-ant-api03-hook-wire-parity-abcDEF123456";
+    let salt = b"hook-wire-shared-salt".to_vec();
+    let policy_yaml = "egress:\n  default: allow\n";
+    let mut state = GatewayState::new(Policy::from_yaml(policy_yaml).unwrap());
+    state.redaction = Some(RedactionState::new(salt.clone()));
+    let proxy_mappings = Arc::clone(&state.redaction.as_ref().unwrap().mappings);
+    let app = AppState::with_hook_config(state.clone(), policy_yaml, salt, None);
+    assert!(Arc::ptr_eq(&app.hook_mappings, &proxy_mappings));
+
+    let proxy_listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let proxy_port = proxy_listener.local_addr().unwrap().port();
+    let mgmt_listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let mgmt_port = mgmt_listener.local_addr().unwrap().port();
+    thread::spawn(move || {
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        runtime.block_on(async move {
+            tokio::spawn(async move { honmoon_proxy::gateway::serve(state, proxy_listener).await });
+            honmoon_mgmt::serve(app, mgmt_listener).await.unwrap();
+        });
+    });
+    wait_for_port(proxy_port);
+    wait_for_port(mgmt_port);
+
+    let payload = serde_json::json!({
+        "hook_event_name": "PostToolUse",
+        "tool_name": "Read",
+        "tool_response": format!("hook sees {SECRET}")
+    });
+    let hook_response = http_request_with_body(
+        mgmt_port,
+        "POST",
+        "/api/hooks/claude-code",
+        &[],
+        &serde_json::to_string(&payload).unwrap(),
+    );
+    let hook_json: serde_json::Value = serde_json::from_str(http_body(&hook_response)).unwrap();
+    let hook_output = hook_json["hookSpecificOutput"]["updatedToolOutput"]
+        .as_str()
+        .unwrap();
+    let token_start = hook_output.find("<<hs:").unwrap();
+    let token_end = hook_output[token_start..].find(">>").unwrap() + token_start + 2;
+    let hook_token = hook_output[token_start..token_end].to_string();
+
+    let upstream = TcpListener::bind("127.0.0.1:0").unwrap();
+    let upstream_port = upstream.local_addr().unwrap().port();
+    let (capture_tx, capture_rx) = std::sync::mpsc::channel();
+    let response_token = hook_token.clone();
+    thread::spawn(move || {
+        let (mut stream, _) = upstream.accept().unwrap();
+        let mut bytes = Vec::new();
+        let mut buffer = [0u8; 2048];
+        let header_end = loop {
+            let read = stream.read(&mut buffer).unwrap();
+            assert!(read > 0);
+            bytes.extend_from_slice(&buffer[..read]);
+            if let Some(position) = bytes.windows(4).position(|w| w == b"\r\n\r\n") {
+                break position + 4;
+            }
+        };
+        let headers = String::from_utf8_lossy(&bytes[..header_end]);
+        let content_length = headers
+            .lines()
+            .find_map(|line| {
+                let (name, value) = line.split_once(':')?;
+                name.eq_ignore_ascii_case("content-length")
+                    .then(|| value.trim().parse::<usize>().unwrap())
+            })
+            .unwrap();
+        while bytes.len() < header_end + content_length {
+            let read = stream.read(&mut buffer).unwrap();
+            assert!(read > 0);
+            bytes.extend_from_slice(&buffer[..read]);
+        }
+        capture_tx
+            .send(bytes[header_end..header_end + content_length].to_vec())
+            .unwrap();
+        write!(
+            stream,
+            "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{response_token}",
+            response_token.len()
+        )
+        .unwrap();
+    });
+
+    let wire_body = "proxy request contains no redactable value";
+    let mut client = TcpStream::connect(("127.0.0.1", proxy_port)).unwrap();
+    client
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .unwrap();
+    write!(
+        client,
+        "POST http://127.0.0.1:{upstream_port}/ HTTP/1.1\r\nHost: 127.0.0.1:{upstream_port}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{wire_body}",
+        wire_body.len()
+    )
+    .unwrap();
+    let mut response = Vec::new();
+    client.read_to_end(&mut response).unwrap();
+    assert!(response.starts_with(b"HTTP/1.1 200"));
+
+    let captured =
+        String::from_utf8(capture_rx.recv_timeout(Duration::from_secs(5)).unwrap()).unwrap();
+    assert_eq!(captured, wire_body);
+    assert!(!captured.contains(SECRET));
+    assert!(!captured.contains("<<hs:"));
+    assert_eq!(
+        proxy_mappings.len(),
+        1,
+        "only the hook-created mapping exists"
+    );
+    let restored = String::from_utf8(decode_chunked_body(&response)).unwrap();
+    assert_eq!(restored, SECRET);
+    assert!(!restored.contains(&hook_token));
 }
 
 #[test]

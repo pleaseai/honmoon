@@ -22,9 +22,9 @@ const DEPTH_LIMIT_MARKER: &str = "[honmoon: redacted — nesting exceeds scan de
 /// A Claude Code hook verdict and the reversible substitutions it introduced.
 ///
 /// The mapping is intentionally not serializable or printable. The CLI drops it
-/// when its one-shot process exits; the management API moves it into its live
-/// gateway mapping store. Issue #50 will share that store with the future proxy
-/// wire-tokenization path; the current proxy only detects PII.
+/// when its one-shot process exits; the management API records it in the live
+/// mapping store shared with the proxy wire-redaction path, so either transport's
+/// placeholders can be restored on responses within the same gateway process.
 pub struct ClaudeCodeHookVerdict {
     output: Value,
     mapping: Mapping,

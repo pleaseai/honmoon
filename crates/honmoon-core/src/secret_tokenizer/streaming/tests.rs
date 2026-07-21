@@ -12,6 +12,23 @@ fn one_entry_mapping() -> (Mapping, String, &'static str) {
 }
 
 #[test]
+fn owned_constructor_detokenizes_identically_to_borrowed() {
+    let (mapping, placeholder, secret) = one_entry_mapping();
+    let text = format!("before {placeholder} after");
+
+    let mut borrowed = StreamingDetokenizer::new(&mapping);
+    let mut borrowed_output = borrowed.push(&text);
+    borrowed_output.push_str(&borrowed.finish());
+
+    let mut owned = StreamingDetokenizer::owned(mapping);
+    let mut owned_output = owned.push(&text);
+    owned_output.push_str(&owned.finish());
+
+    assert_eq!(owned_output, borrowed_output);
+    assert_eq!(owned_output, format!("before {secret} after"));
+}
+
+#[test]
 fn streaming_happy_path_recognizes_placeholder_split_across_every_boundary() {
     let (mapping, placeholder, secret) = one_entry_mapping();
     let text = format!("before {placeholder} after");

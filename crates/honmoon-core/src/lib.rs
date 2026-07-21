@@ -17,8 +17,8 @@ pub mod secret_tokenizer;
 pub use audit::{AuditDraft, AuditEvent, AuditLog, Decision, FactsSummary};
 pub use claude_code_hook::{ClaudeCodeHookVerdict, claude_code_hook_verdict, is_sensitive_path};
 pub use engine::{Outcome, decide, decide_explained};
-pub use pii::{PiiFacts, PiiSpan, detect_pii, detect_spans};
-pub use redact::{DEFAULT_MIN_PII_SEVERITY, RedactionOutcome, redact};
+pub use pii::{PiiFacts, PiiSpan, detect_pii, detect_spans, summarize_spans};
+pub use redact::{DEFAULT_MIN_PII_SEVERITY, RedactionOutcome, redact, redact_with_spans};
 pub use secret_detect::{SecretFinding, detect_secrets};
 pub use secret_tokenizer::{
     MAX_PLACEHOLDER_LEN, Mapping, MappingStore, PLACEHOLDER_PREFIX, PLACEHOLDER_SUFFIX,

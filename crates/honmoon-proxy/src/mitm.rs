@@ -27,20 +27,22 @@
 //! In block mode, the same verdict is enforced inline (`deny` returns 403 and
 //! `pause` uses the shared approval registry).
 //! Request-body buffering and `Content-Encoding` decoding live in
-//! [`crate::body`]; the forwarded body is always the original (still-encoded)
-//! bytes — only the scanner sees decoded output.
+//! [`crate::body`]. By default the forwarded body remains the original encoded
+//! bytes; when wire redaction is enabled, a fully buffered/decoded UTF-8 body is
+//! rewritten to identity-encoded placeholder text before the upstream leg.
 //!
 //! Whether a tunnel is TLS-terminated is decided by
 //! [`should_intercept`](HonmoonHandler::should_intercept) from the gateway's
 //! [`InterceptPolicy`](crate::gateway::InterceptPolicy).
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
 
 use honmoon_core::{
-    AuditDraft, Decision, Facts, FactsSummary, HttpFacts, PiiFacts, Verdict, decide_explained,
-    detect_pii,
+    AuditDraft, DEFAULT_MIN_PII_SEVERITY, Decision, Facts, FactsSummary, HttpFacts, Mapping,
+    PiiFacts, PiiSpan, RedactionOutcome, SecretTokenizer, Verdict, decide_explained,
+    detect_secrets, detect_spans, pii::severity_for_label, redact_with_spans, summarize_spans,
 };
 use http_body_util::{BodyExt, Full};
 use hudsucker::hyper::{Method, Request, Response, StatusCode, header};
@@ -48,7 +50,8 @@ use hudsucker::{Body, HttpContext, HttpHandler, RequestOrResponse};
 
 use crate::approval::{ApprovalDecision, NewApproval};
 use crate::body::{
-    Buffered, MAX_INSPECT_BODY, buffer_up_to, decode_for_inspection, prefixed_body, utf8_prefix,
+    Buffered, MAX_INSPECT_BODY, StrictDecode, buffer_up_to, decode_strict, detokenizing_body,
+    prefixed_body, utf8_prefix,
 };
 use crate::gateway::{GatewayState, InterceptPolicy, PiiMode, canonical_host};
 
@@ -56,6 +59,10 @@ use crate::gateway::{GatewayState, InterceptPolicy, PiiMode, canonical_host};
 /// but never individually removed (hudsucker exposes no close event), so this
 /// bounds memory under long-running / hostile traffic.
 const MAX_TRACKED_TUNNELS: usize = 65_536;
+const CONTENT_MD5: header::HeaderName = header::HeaderName::from_static("content-md5");
+const DIGEST: header::HeaderName = header::HeaderName::from_static("digest");
+const CONTENT_DIGEST: header::HeaderName = header::HeaderName::from_static("content-digest");
+const REPR_DIGEST: header::HeaderName = header::HeaderName::from_static("repr-digest");
 
 /// CONNECT-authorized tunnels, keyed by the client socket address.
 ///
@@ -118,6 +125,16 @@ impl Drop for CancelOnDrop {
             approval_id: Some(self.id),
         });
     }
+}
+
+struct RedactionInput<'a> {
+    scanned: Option<&'a [u8]>,
+    decoded: Option<&'a [u8]>,
+    content_encoding_present: bool,
+    content_encoding: Option<&'a str>,
+    pii_spans: &'a [PiiSpan],
+    is_json: bool,
+    host: &'a str,
 }
 
 /// Outcome of the host-level policy gate.
@@ -282,6 +299,126 @@ impl HonmoonHandler {
         }
     }
 
+    /// Finalize a policy-approved request for the upstream leg.
+    fn forwarded_request(
+        &self,
+        mut request: Request<Body>,
+        input: RedactionInput<'_>,
+    ) -> Request<Body> {
+        let RedactionInput {
+            scanned,
+            decoded,
+            content_encoding_present,
+            content_encoding,
+            pii_spans,
+            is_json,
+            host,
+        } = input;
+        let Some(redaction) = &self.state.redaction else {
+            return request;
+        };
+
+        // Ask upstreams for text we can safely detokenize on the response path.
+        // A server may ignore this, in which case handle_response fails open.
+        request.headers_mut().insert(
+            header::ACCEPT_ENCODING,
+            header::HeaderValue::from_static("identity"),
+        );
+
+        // A partial upload's Content-Range describes the original body bytes;
+        // rewriting the body would desynchronize the declared range from the
+        // payload, so fail open and forward the request unmodified.
+        if request.headers().contains_key(header::CONTENT_RANGE) {
+            tracing::warn!(
+                domain = %host,
+                "wire redaction bypassed for Content-Range (partial upload) request"
+            );
+            return request;
+        }
+
+        let Some(_raw) = scanned else {
+            tracing::warn!(
+                domain = %host,
+                limit = MAX_INSPECT_BODY,
+                "wire redaction bypassed for over-cap request body"
+            );
+            return request;
+        };
+        if content_encoding_present && content_encoding.is_none() {
+            tracing::warn!(
+                domain = %host,
+                "wire redaction bypassed because Content-Encoding was not valid text"
+            );
+            return request;
+        }
+        let Some(decoded) = decoded else {
+            tracing::warn!(
+                domain = %host,
+                encoding = ?content_encoding,
+                "wire redaction bypassed because request encoding was not fully decodable"
+            );
+            return request;
+        };
+        // Rewriting a UTF-8 prefix would discard the remaining request bytes.
+        // Only a fully decoded, fully valid text body is eligible for rewriting.
+        let Ok(text) = std::str::from_utf8(decoded) else {
+            tracing::warn!(
+                domain = %host,
+                "wire redaction bypassed because request body is not valid UTF-8"
+            );
+            return request;
+        };
+        let outcome = if is_json {
+            let (eligible_spans, skipped_json_spans) = quoted_json_spans(text, pii_spans);
+            if skipped_json_spans != 0 {
+                tracing::warn!(
+                    domain = %host,
+                    skipped = skipped_json_spans,
+                    "wire redaction skipped unquoted JSON PII to preserve valid syntax"
+                );
+            }
+            redact_json_with_spans(
+                text,
+                &redaction.salt,
+                DEFAULT_MIN_PII_SEVERITY,
+                &eligible_spans,
+            )
+        } else {
+            redact_with_spans(text, &redaction.salt, DEFAULT_MIN_PII_SEVERITY, pii_spans)
+        };
+        if !outcome.redacted {
+            return request;
+        }
+
+        let labels = outcome.labels();
+        let bytes = hudsucker::hyper::body::Bytes::from(outcome.text);
+        let length = bytes.len();
+        redaction.mappings.record(outcome.mapping);
+        tracing::info!(
+            domain = %host,
+            labels = ?labels,
+            label_count = labels.len(),
+            "request body redacted"
+        );
+
+        *request.body_mut() = Body::from(Full::new(bytes));
+        request.headers_mut().insert(
+            header::CONTENT_LENGTH,
+            header::HeaderValue::from_str(&length.to_string())
+                .expect("usize is a valid Content-Length"),
+        );
+        // The replacement is decoded UTF-8 text, not the client's original
+        // compressed representation.
+        request.headers_mut().remove(header::CONTENT_ENCODING);
+        request.headers_mut().remove(header::TRANSFER_ENCODING);
+        for name in [CONTENT_MD5, DIGEST, CONTENT_DIGEST, REPR_DIGEST] {
+            request.headers_mut().remove(name);
+        }
+        // Honmoon cannot re-sign authenticated body bytes; signed-body requests
+        // are incompatible with wire redaction.
+        request
+    }
+
     /// Scan a request body for PII. Detect mode audits findings and forwards;
     /// block mode enforces the resulting policy verdict inline.
     async fn inspect_body(&self, req: Request<Body>) -> RequestOrResponse {
@@ -295,6 +432,17 @@ impl HonmoonHandler {
             .and_then(|v| v.to_str().ok())
             .and_then(|v| v.parse::<usize>().ok());
 
+        let is_json = req
+            .headers()
+            .get(header::CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok())
+            .and_then(|value| value.split(';').next())
+            .map(str::trim)
+            .is_some_and(|mime| {
+                mime.eq_ignore_ascii_case("application/json")
+                    || mime.to_ascii_lowercase().ends_with("+json")
+            });
+        let content_encoding_present = req.headers().contains_key(header::CONTENT_ENCODING);
         let content_encoding = req
             .headers()
             .get(header::CONTENT_ENCODING)
@@ -337,11 +485,32 @@ impl HonmoonHandler {
         // output that overflows the inspection cap is reported as `None`
         // (leaving the body unscanned, like any other over-cap body) so a
         // content verdict is never applied to a truncated prefix.
-        let decoded = scanned
+        let strict_decode = scanned
             .as_deref()
-            .and_then(|raw| decode_for_inspection(content_encoding.as_deref(), raw));
-        let inspected_text = decoded.as_deref().and_then(utf8_prefix);
-        let pii = inspected_text.and_then(detect_pii);
+            .map(|raw| decode_strict(content_encoding.as_deref(), raw));
+        match strict_decode.as_ref() {
+            Some(StrictDecode::Overflow) => tracing::debug!(
+                encoding = ?content_encoding,
+                "decoded output exceeds inspection cap; leaving body unscanned"
+            ),
+            Some(StrictDecode::Unavailable) => tracing::debug!(
+                encoding = ?content_encoding,
+                "content-encoding unavailable for strict decode; scanning raw bytes"
+            ),
+            Some(StrictDecode::Decoded(_)) | None => {}
+        }
+        let decoded = strict_decode.as_ref().and_then(|decoded| match decoded {
+            StrictDecode::Decoded(bytes) => Some(bytes.as_ref()),
+            StrictDecode::Overflow | StrictDecode::Unavailable => None,
+        });
+        let inspected = match strict_decode.as_ref() {
+            Some(StrictDecode::Decoded(bytes)) => Some(bytes.as_ref()),
+            Some(StrictDecode::Unavailable) => scanned.as_deref(),
+            Some(StrictDecode::Overflow) | None => None,
+        };
+        let inspected_text = inspected.and_then(utf8_prefix);
+        let pii_spans = inspected_text.map(detect_spans).unwrap_or_default();
+        let pii = summarize_spans(&pii_spans);
         let forwarded = Request::from_parts(parts, new_body);
 
         // An oversized, over-cap-decoded, or non-text body was not inspected,
@@ -384,7 +553,20 @@ impl HonmoonHandler {
                     approval_id: None,
                 });
             }
-            return forwarded.into();
+            return self
+                .forwarded_request(
+                    forwarded,
+                    RedactionInput {
+                        scanned: scanned.as_deref(),
+                        decoded,
+                        content_encoding_present,
+                        content_encoding: content_encoding.as_deref(),
+                        pii_spans: &pii_spans,
+                        is_json,
+                        host: &host,
+                    },
+                )
+                .into();
         }
 
         match outcome.verdict {
@@ -403,7 +585,19 @@ impl HonmoonHandler {
                         approval_id: None,
                     });
                 }
-                forwarded.into()
+                self.forwarded_request(
+                    forwarded,
+                    RedactionInput {
+                        scanned: scanned.as_deref(),
+                        decoded,
+                        content_encoding_present,
+                        content_encoding: content_encoding.as_deref(),
+                        pii_spans: &pii_spans,
+                        is_json,
+                        host: &host,
+                    },
+                )
+                .into()
             }
             Verdict::Deny => {
                 tracing::info!(domain = %host, rule = ?outcome.rule, "request denied by content policy");
@@ -428,7 +622,20 @@ impl HonmoonHandler {
                     .hold(&host, summary, outcome.rule, approval_summary)
                     .await
                 {
-                    Gate::Proceed => forwarded.into(),
+                    Gate::Proceed => self
+                        .forwarded_request(
+                            forwarded,
+                            RedactionInput {
+                                scanned: scanned.as_deref(),
+                                decoded,
+                                content_encoding_present,
+                                content_encoding: content_encoding.as_deref(),
+                                pii_spans: &pii_spans,
+                                is_json,
+                                host: &host,
+                            },
+                        )
+                        .into(),
                     Gate::Block(response) => *response,
                 }
             }
@@ -465,6 +672,67 @@ impl HttpHandler for HonmoonHandler {
         self.inspect_body(req).await
     }
 
+    async fn handle_response(
+        &mut self,
+        _ctx: &HttpContext,
+        mut res: Response<Body>,
+    ) -> Response<Body> {
+        let Some(redaction) = &self.state.redaction else {
+            return res;
+        };
+        // 1xx/204/304 responses carry no body (RFC 9110), while rewriting a
+        // 206 body would invalidate its byte-range semantics.
+        if res.status().is_informational()
+            || res.status() == StatusCode::NO_CONTENT
+            || res.status() == StatusCode::PARTIAL_CONTENT
+            || res.status() == StatusCode::NOT_MODIFIED
+        {
+            return res;
+        }
+        // A non-identity response is forwarded verbatim regardless of what we've
+        // minted, so make this cheap header check before touching the mapping
+        // mutex.
+        let identity_encoded = res
+            .headers()
+            .get(header::CONTENT_ENCODING)
+            .map(|value| {
+                value.to_str().ok().is_some_and(|value| {
+                    value.trim().is_empty() || value.trim().eq_ignore_ascii_case("identity")
+                })
+            })
+            .unwrap_or(true);
+        if !identity_encoded {
+            tracing::warn!(
+                encoding = ?res.headers().get(header::CONTENT_ENCODING),
+                "response detokenization bypassed because Content-Encoding is not identity"
+            );
+            return res;
+        }
+
+        // handle_request records this request's mapping before the upstream leg,
+        // so this point-in-time snapshot always includes its substitutions. Take
+        // it under a single lock, then skip when nothing has been minted yet;
+        // snapshotting also avoids holding the MappingStore mutex while the body
+        // is polled.
+        let mapping = redaction.mappings.snapshot();
+        if mapping.is_empty() {
+            return res;
+        }
+        let body = std::mem::replace(res.body_mut(), Body::empty());
+        *res.body_mut() = detokenizing_body(body, mapping);
+        // Detokenization changes byte length; let hyper frame the streamed body.
+        res.headers_mut().remove(header::CONTENT_LENGTH);
+        res.headers_mut().remove(header::CONTENT_RANGE);
+        // A strong ETag validates the origin bytes, not the detokenized ones we
+        // deliver; leaving it would let a cache or range revalidation serve or
+        // stitch stale content, so drop it with the other body validators.
+        res.headers_mut().remove(header::ETAG);
+        for name in [CONTENT_MD5, DIGEST, CONTENT_DIGEST, REPR_DIGEST] {
+            res.headers_mut().remove(name);
+        }
+        res
+    }
+
     async fn should_intercept(&mut self, _ctx: &HttpContext, req: &Request<Body>) -> bool {
         match &self.state.intercept {
             InterceptPolicy::None => false,
@@ -474,6 +742,198 @@ impl HttpHandler for HonmoonHandler {
                 hosts.contains(&host)
             }
         }
+    }
+}
+
+/// A JSON PII span whose UTF-16 start was resolved to an exact byte boundary
+/// while the parser was inside a quoted string.
+struct QuotedJsonSpan<'a> {
+    span: &'a PiiSpan,
+    byte_start: usize,
+    byte_end: usize,
+}
+
+/// Incremental scanner that walks a UTF-8 JSON body by UTF-16 offset while
+/// tracking whether the cursor sits inside a quoted string, so a PII span can be
+/// classified as quoted or unquoted in one forward pass.
+struct JsonLexer<'a> {
+    chars: std::str::CharIndices<'a>,
+    byte_offset: usize,
+    utf16_offset: i64,
+    in_string: bool,
+    escaped: bool,
+}
+
+impl<'a> JsonLexer<'a> {
+    fn new(text: &'a str) -> Self {
+        Self {
+            chars: text.char_indices(),
+            byte_offset: 0,
+            utf16_offset: 0,
+            in_string: false,
+            escaped: false,
+        }
+    }
+
+    /// Consume characters until the cursor reaches `target` (a UTF-16 offset) or
+    /// the input ends, folding each into the quoted-string tracking state.
+    fn advance_to(&mut self, target: i64) {
+        while self.utf16_offset < target {
+            let Some((byte, ch)) = self.chars.next() else {
+                break;
+            };
+            self.byte_offset = byte + ch.len_utf8();
+            self.utf16_offset += ch.len_utf16() as i64;
+            self.track_string_state(ch);
+        }
+    }
+
+    /// Update `in_string`/`escaped` for one consumed character.
+    fn track_string_state(&mut self, ch: char) {
+        if self.in_string && self.escaped {
+            self.escaped = false;
+        } else if self.in_string && ch == '\\' {
+            self.escaped = true;
+        } else if ch == '"' {
+            self.in_string = !self.in_string;
+        }
+    }
+}
+
+/// Classify PII spans in one forward pass over the JSON text. A malformed
+/// offset, including one inside a multi-unit character or past the body, is
+/// skipped in the safe direction.
+fn quoted_json_spans<'a>(text: &str, spans: &'a [PiiSpan]) -> (Vec<QuotedJsonSpan<'a>>, usize) {
+    let mut sorted = spans.iter().collect::<Vec<_>>();
+    sorted.sort_by_key(|span| span.start);
+
+    let mut lexer = JsonLexer::new(text);
+    let mut eligible = Vec::with_capacity(spans.len());
+
+    for span in sorted {
+        lexer.advance_to(span.start);
+
+        if lexer.utf16_offset != span.start || !lexer.in_string {
+            continue;
+        }
+        let byte_start = lexer.byte_offset;
+        let byte_end = byte_start.saturating_add(span.text.len());
+        let exact_surface = text
+            .get(byte_start..byte_end)
+            .is_some_and(|surface| surface == span.text)
+            && span.end - span.start == span.text.encode_utf16().count() as i64;
+        if exact_surface {
+            eligible.push(QuotedJsonSpan {
+                span,
+                byte_start,
+                byte_end,
+            });
+        }
+    }
+
+    let skipped = spans.len() - eligible.len();
+    (eligible, skipped)
+}
+
+/// Redact JSON PII at the exact eligible occurrences while retaining the core
+/// tokenizer's global matching behavior for machine-secret findings.
+fn redact_json_with_spans(
+    text: &str,
+    salt: &[u8],
+    min_pii_severity: i64,
+    pii_spans: &[QuotedJsonSpan<'_>],
+) -> RedactionOutcome {
+    let secret_findings = detect_secrets(text);
+    let mut surfaces = Vec::new();
+    let mut surface_indices = HashMap::new();
+    let mut secret_surface_indices = Vec::new();
+    let mut secret_labels = BTreeSet::new();
+    for finding in &secret_findings {
+        secret_labels.insert(finding.label.clone());
+        if !surface_indices.contains_key(&finding.text) {
+            let surface_index = surfaces.len();
+            surface_indices.insert(finding.text.clone(), surface_index);
+            surfaces.push(finding.text.clone());
+            secret_surface_indices.push(surface_index);
+        }
+    }
+
+    let mut pii_labels = BTreeSet::new();
+    let mut max_pii_severity = 0;
+    for eligible in pii_spans {
+        let severity = severity_for_label(&eligible.span.label);
+        if severity < min_pii_severity {
+            continue;
+        }
+        pii_labels.insert(eligible.span.label.clone());
+        max_pii_severity = max_pii_severity.max(severity);
+        if !surface_indices.contains_key(&eligible.span.text) {
+            surface_indices.insert(eligible.span.text.clone(), surfaces.len());
+            surfaces.push(eligible.span.text.clone());
+        }
+    }
+
+    if surfaces.is_empty() {
+        return RedactionOutcome {
+            text: text.to_owned(),
+            redacted: false,
+            secret_labels: secret_labels.into_iter().collect(),
+            pii_labels: pii_labels.into_iter().collect(),
+            max_pii_severity,
+            mapping: Mapping::new(),
+        };
+    }
+
+    let tokenizer = SecretTokenizer::new(salt.to_vec(), surfaces.clone());
+    let mut candidates = Vec::new();
+    for surface_index in secret_surface_indices {
+        let surface = &surfaces[surface_index];
+        candidates.extend(
+            text.match_indices(surface)
+                .map(|(start, surface)| (start, start + surface.len(), surface_index)),
+        );
+    }
+    for eligible in pii_spans {
+        if severity_for_label(&eligible.span.label) >= min_pii_severity {
+            candidates.push((
+                eligible.byte_start,
+                eligible.byte_end,
+                surface_indices[&eligible.span.text],
+            ));
+        }
+    }
+    candidates.sort_unstable_by(|left, right| {
+        left.0
+            .cmp(&right.0)
+            .then_with(|| (right.1 - right.0).cmp(&(left.1 - left.0)))
+            .then_with(|| left.2.cmp(&right.2))
+    });
+
+    let mut output = String::with_capacity(text.len());
+    let mut mapping = Mapping::new();
+    let mut last_end = 0;
+    for (start, end, surface_index) in candidates {
+        if start < last_end {
+            continue;
+        }
+        output.push_str(&text[last_end..start]);
+        let surface = &surfaces[surface_index];
+        let placeholder = tokenizer
+            .placeholder_for(surface)
+            .expect("registered surface has a placeholder");
+        output.push_str(placeholder);
+        mapping.insert(placeholder.to_owned(), surface.clone());
+        last_end = end;
+    }
+    output.push_str(&text[last_end..]);
+
+    RedactionOutcome {
+        redacted: !mapping.is_empty(),
+        text: output,
+        secret_labels: secret_labels.into_iter().collect(),
+        pii_labels: pii_labels.into_iter().collect(),
+        max_pii_severity,
+        mapping,
     }
 }
 
@@ -540,6 +1000,24 @@ mod tests {
         let mut enc = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
         enc.write_all(data).expect("gzip write");
         enc.finish().expect("gzip finish")
+    }
+
+    #[test]
+    fn json_span_classification_rejects_mid_character_and_past_end_offsets() {
+        let text = r#"{"note":"😀user@example.com"}"#;
+        let detected = detect_spans(text);
+        assert_eq!(quoted_json_spans(text, &detected).0.len(), 1);
+
+        let mut mid_character = detected[0].clone();
+        mid_character.start -= 1;
+        let mut past_end = detected[0].clone();
+        past_end.start = 10_000;
+        past_end.end = 10_000 + past_end.text.encode_utf16().count() as i64;
+
+        let malformed = [mid_character, past_end];
+        let (eligible, skipped) = quoted_json_spans(text, &malformed);
+        assert!(eligible.is_empty());
+        assert_eq!(skipped, 2);
     }
 
     #[tokio::test]

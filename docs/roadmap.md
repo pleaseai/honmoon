@@ -180,8 +180,10 @@ needed).
   schema back (no per-call process spawn; tokenization mapping shared with the proxy by
   construction). Deferred: HTTP hooks **fail open** (connection failure / non-2xx continues
   unredacted), so it must not become the silent default; the command transport ships first.
-- [ ] Cache-stable determinism on the proxy path (#20): identical secret → identical token
+- [x] Cache-stable determinism on the proxy path (#20): identical secret → identical token
   across turns, so redacting the resent history preserves the provider prompt-cache prefix
+  (`repeated_multi_turn_body_is_byte_identical_on_the_wire` and
+  `hook_created_mapping_restores_proxy_response_without_request_remint`)
 
 **Exit criteria**: reading a file with a valid-checksum RRN or an API key lands redacted in the
 model context via `PostToolUse` `updatedToolOutput`; a prompt carrying a secret is blocked with

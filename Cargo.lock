@@ -1034,6 +1034,7 @@ name = "honmoon-mgmt"
 version = "0.1.0"
 dependencies = [
  "axum",
+ "hmac",
  "honmoon-core",
  "honmoon-proxy",
  "mime_guess",
@@ -1041,6 +1042,7 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_yaml",
+ "sha2",
  "tokio",
  "tracing",
 ]
@@ -1055,6 +1057,7 @@ dependencies = [
  "hudsucker",
  "rustls-pemfile",
  "serde",
+ "serde_json",
  "thiserror 2.0.18",
  "tokio",
  "tokio-rustls",

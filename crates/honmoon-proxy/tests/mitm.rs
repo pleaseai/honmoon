@@ -155,6 +155,7 @@ fn start_intercepted_request(
         ca: Arc::new(ca),
         intercept: InterceptPolicy::All,
         pii_mode,
+        redaction: None,
     };
     let proxy_port = start_proxy(state);
     let (tx, rx) = mpsc::channel();

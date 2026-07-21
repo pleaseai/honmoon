@@ -3,22 +3,22 @@
 //! ([`crate::SecretTokenizer`]).
 //!
 //! This is the single engine behind the Claude Code plugin's hooks (issue #19)
-//! and, in a later track, the gateway-direct HTTP transport. It stays pure
-//! logic (no I/O): the caller supplies the text and a session salt, and gets
-//! back the redacted text plus what was found. Because the tokenizer mints
+//! and the gateway-direct HTTP wire transport. It stays pure logic (no I/O):
+//! the caller supplies the text and a session salt, and gets back the redacted
+//! text plus what was found. Because the tokenizer mints
 //! deterministic, byte-stable placeholders for a given `(salt, secret)`,
 //! re-redacting resent conversation history is byte-identical across turns
 //! (issue #20) — the caller need do nothing extra to keep a provider's
 //! prompt-cache prefix stable.
 //!
-//! On the plugin path there is no reverse substitution, so the returned
-//! [`Mapping`] is effectively one-way redaction; it is kept in the outcome so
-//! a co-running proxy / HTTP transport can share the same placeholder→secret
-//! mapping when that lands.
+//! The plugin path does not itself reverse substitutions, but the management
+//! hook transport records the returned [`Mapping`] in the same live store as
+//! the proxy wire path. Identity-encoded proxy responses can therefore restore
+//! placeholders minted by either transport within one gateway process.
 
 use std::collections::BTreeSet;
 
-use crate::pii;
+use crate::pii::{self, PiiSpan};
 use crate::secret_detect::detect_secrets;
 use crate::secret_tokenizer::{Mapping, SecretTokenizer};
 
@@ -69,6 +69,21 @@ impl RedactionOutcome {
 /// redact returns early and never reaches the tokenizer, so an empty salt does
 /// not panic in that case — callers must still always pass a real salt.)
 pub fn redact(text: &str, salt: &[u8], min_pii_severity: i64) -> RedactionOutcome {
+    let pii_spans = pii::detect_spans(text);
+    redact_with_spans(text, salt, min_pii_severity, &pii_spans)
+}
+
+/// Redact secrets and the supplied precomputed PII spans.
+///
+/// `pii_spans` must have been detected from `text`. This additive entry point is
+/// useful when a caller needs both PII policy facts and redaction for the same
+/// request, avoiding a second full PII detector pass.
+pub fn redact_with_spans(
+    text: &str,
+    salt: &[u8],
+    min_pii_severity: i64,
+    pii_spans: &[PiiSpan],
+) -> RedactionOutcome {
     // Collect surfaces to register. Secrets go first: registration order is the
     // tokenizer's tie-break for equal-length leftmost-longest matches, and a
     // secret should win over a coincidentally-overlapping PII span.
@@ -85,7 +100,7 @@ pub fn redact(text: &str, salt: &[u8], min_pii_severity: i64) -> RedactionOutcom
 
     let mut pii_labels: BTreeSet<String> = BTreeSet::new();
     let mut max_pii_severity = 0i64;
-    for span in pii::detect_spans(text) {
+    for span in pii_spans {
         let severity = pii::severity_for_label(&span.label);
         if severity < min_pii_severity {
             continue;
@@ -93,7 +108,7 @@ pub fn redact(text: &str, salt: &[u8], min_pii_severity: i64) -> RedactionOutcom
         pii_labels.insert(span.label.clone());
         max_pii_severity = max_pii_severity.max(severity);
         if seen.insert(span.text.clone()) {
-            surfaces.push(span.text);
+            surfaces.push(span.text.clone());
         }
     }
 

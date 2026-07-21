@@ -8,8 +8,10 @@
 //! The proxy runs on [`hudsucker`], a MITM HTTP/S proxy (see [ADR-0003]). Tunnels
 //! selected by [`InterceptPolicy`] are **TLS-terminated**: honmoon mints a
 //! per-host leaf certificate from a local CA (the agent must trust it), decrypts
-//! the inner HTTP, scans request bodies for PII, then re-encrypts to the real
-//! upstream. Non-intercepted tunnels are forwarded raw, so host-level egress
+//! the inner HTTP, scans request bodies for PII, optionally rewrites secrets and
+//! Tier-1 PII to deterministic placeholders, then re-encrypts to the real
+//! upstream. Known placeholders in identity-encoded responses are restored for
+//! the agent. Non-intercepted tunnels are forwarded raw, so host-level egress
 //! filtering keeps working without decryption.
 //!
 //! [ADR-0003]: ../../../.please/docs/decisions/0003-adopt-hudsucker-for-tls-termination.md
@@ -18,7 +20,7 @@ use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::Duration;
 
-use honmoon_core::{AuditLog, Policy};
+use honmoon_core::{AuditLog, MappingStore, Policy};
 use hudsucker::Proxy;
 use hudsucker::rustls::crypto::aws_lc_rs;
 use tokio::net::TcpListener;
@@ -58,6 +60,31 @@ pub enum PiiMode {
     Block,
 }
 
+/// Wire-level secret redaction: present only when the operator opted in with
+/// `--redact-secrets`.
+#[derive(Clone)]
+pub struct RedactionState {
+    /// HMAC salt behind placeholder minting — the same derived salt the
+    /// management hook endpoint uses, so hook and wire tokens match.
+    pub salt: Arc<Vec<u8>>,
+    /// Live placeholder→secret store shared with the management hook endpoint —
+    /// one gateway process, one mapping.
+    pub mappings: Arc<MappingStore>,
+}
+
+impl RedactionState {
+    /// Create enabled wire-redaction state with a known-valid HMAC salt.
+    pub fn new(salt: Vec<u8>) -> Self {
+        // An empty HMAC key makes placeholders reproducible for known secrets;
+        // reject that caller programming error before any traffic is handled.
+        assert!(!salt.is_empty(), "redaction salt must not be empty");
+        Self {
+            salt: Arc::new(salt),
+            mappings: Arc::new(MappingStore::new()),
+        }
+    }
+}
+
 /// Shared runtime state for the egress proxy.
 ///
 /// The data plane (this crate) and the management API (`honmoon-mgmt`) both hold
@@ -76,6 +103,8 @@ pub struct GatewayState {
     pub intercept: InterceptPolicy,
     /// Whether PII policy verdicts are audit-only or enforced inline.
     pub pii_mode: PiiMode,
+    /// Optional wire-level request redaction and response detokenization state.
+    pub redaction: Option<RedactionState>,
 }
 
 impl GatewayState {
@@ -91,6 +120,7 @@ impl GatewayState {
             ca: Arc::new(CaMaterial::generate().expect("generate ephemeral CA")),
             intercept: InterceptPolicy::None,
             pii_mode: PiiMode::Detect,
+            redaction: None,
         }
     }
 }
