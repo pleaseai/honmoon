@@ -325,6 +325,17 @@ impl HonmoonHandler {
             header::HeaderValue::from_static("identity"),
         );
 
+        // A partial upload's Content-Range describes the original body bytes;
+        // rewriting the body would desynchronize the declared range from the
+        // payload, so fail open and forward the request unmodified.
+        if request.headers().contains_key(header::CONTENT_RANGE) {
+            tracing::warn!(
+                domain = %host,
+                "wire redaction bypassed for Content-Range (partial upload) request"
+            );
+            return request;
+        }
+
         let Some(_raw) = scanned else {
             tracing::warn!(
                 domain = %host,
@@ -707,6 +718,10 @@ impl HttpHandler for HonmoonHandler {
         // Detokenization changes byte length; let hyper frame the streamed body.
         res.headers_mut().remove(header::CONTENT_LENGTH);
         res.headers_mut().remove(header::CONTENT_RANGE);
+        // A strong ETag validates the origin bytes, not the detokenized ones we
+        // deliver; leaving it would let a cache or range revalidation serve or
+        // stitch stale content, so drop it with the other body validators.
+        res.headers_mut().remove(header::ETAG);
         for name in [CONTENT_MD5, DIGEST, CONTENT_DIGEST, REPR_DIGEST] {
             res.headers_mut().remove(name);
         }

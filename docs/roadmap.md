@@ -183,7 +183,7 @@ needed).
 - [x] Cache-stable determinism on the proxy path (#20): identical secret → identical token
   across turns, so redacting the resent history preserves the provider prompt-cache prefix
   (`repeated_multi_turn_body_is_byte_identical_on_the_wire` and
-  `hook_and_proxy_share_store_and_mint_identical_tokens`)
+  `hook_created_mapping_restores_proxy_response_without_request_remint`)
 
 **Exit criteria**: reading a file with a valid-checksum RRN or an API key lands redacted in the
 model context via `PostToolUse` `updatedToolOutput`; a prompt carrying a secret is blocked with

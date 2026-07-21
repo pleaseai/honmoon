@@ -349,6 +349,50 @@ fn repeated_multi_turn_body_is_byte_identical_on_the_wire() {
     assert_eq!(first.matches("<<hs:").count(), 2);
 }
 
+// The JSON wire path (`redact_json_with_spans`) does its own occurrence
+// selection instead of delegating wholesale to the core tokenizer, so guard the
+// cache-stable determinism guarantee (#20) on that path directly: a repeated
+// secret in a JSON body must tokenize byte-identically across turns.
+#[test]
+fn repeated_multi_turn_json_body_is_byte_identical_on_the_wire() {
+    let (upstream, captured) = start_upstream(ResponseMode::Static(b"ok".to_vec()));
+    let (proxy, _) = start_proxy(true);
+    let body = format!(r#"{{"turn_one":"{SECRET}","turn_two":"repeat {SECRET}"}}"#);
+
+    let headers = [("Content-Type", "application/json")];
+    proxy_request(proxy, upstream, body.as_bytes(), &headers);
+    proxy_request(proxy, upstream, body.as_bytes(), &headers);
+    let first = captured.recv_timeout(Duration::from_secs(5)).unwrap();
+    let second = captured.recv_timeout(Duration::from_secs(5)).unwrap();
+    assert_eq!(first.body, second.body);
+    let first = String::from_utf8(first.body).unwrap();
+    assert_eq!(first.matches("<<hs:").count(), 2);
+}
+
+// A partial upload's Content-Range describes the original bytes; redacting would
+// change the body length and desynchronize the range, so the request must fail
+// open — forwarded byte-identical with no mapping recorded.
+#[test]
+fn content_range_request_is_forwarded_unredacted() {
+    let (upstream, captured) = start_upstream(ResponseMode::Static(b"ok".to_vec()));
+    let (proxy, mappings) = start_proxy(true);
+    let body = format!("chunk {SECRET}");
+
+    proxy_request(
+        proxy,
+        upstream,
+        body.as_bytes(),
+        &[("Content-Range", "bytes 0-20/40")],
+    );
+    let forwarded = captured.recv_timeout(Duration::from_secs(5)).unwrap();
+    assert_eq!(forwarded.body, body.as_bytes());
+    assert_eq!(
+        header_value(&forwarded.headers, "content-range"),
+        Some("bytes 0-20/40")
+    );
+    assert_eq!(mappings.unwrap().len(), 0);
+}
+
 #[test]
 fn gzip_request_is_forwarded_as_decoded_redacted_identity_text() {
     use std::io::Write as _;
@@ -407,7 +451,7 @@ fn detokenized_response_strips_stale_body_validators() {
     let (upstream, captured) = start_upstream(ResponseMode::StaticWithHeaders {
         status: "200 OK",
         body: tokenized.text.into_bytes(),
-        headers: "Content-MD5: stale\r\nDigest: sha-256=stale\r\nContent-Digest: sha-256=:stale:\r\nRepr-Digest: sha-256=:stale:\r\nContent-Range: bytes 0-41/42\r\n".to_owned(),
+        headers: "Content-MD5: stale\r\nDigest: sha-256=stale\r\nContent-Digest: sha-256=:stale:\r\nRepr-Digest: sha-256=:stale:\r\nContent-Range: bytes 0-41/42\r\nETag: \"stale\"\r\n".to_owned(),
     });
     let (proxy, _) = start_proxy(true);
     proxy_request(proxy, upstream, SECRET.as_bytes(), &[]);
@@ -422,6 +466,7 @@ fn detokenized_response_strips_stale_body_validators() {
         "content-digest",
         "repr-digest",
         "content-range",
+        "etag",
     ] {
         assert_eq!(header_value(&headers, name), None, "{name}");
     }

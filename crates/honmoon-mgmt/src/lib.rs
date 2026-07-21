@@ -71,6 +71,17 @@ impl AppState {
         hook_token: Option<String>,
     ) -> Self {
         assert!(!hook_salt.is_empty(), "hook salt must not be empty");
+        // Hook and wire redaction share one mapping store, so they must mint the
+        // same placeholder for a given secret — which only holds if they key the
+        // HMAC with the same salt. The CLI upholds this by deriving one salt for
+        // both; enforce it here so a future caller can't silently diverge the two
+        // transports and break cache-stable determinism.
+        if let Some(redaction) = gateway.redaction.as_ref() {
+            assert!(
+                redaction.salt.as_slice() == hook_salt.as_slice(),
+                "hook salt must match the wire redaction salt so both transports mint identical placeholders"
+            );
+        }
         let hook_mappings = gateway
             .redaction
             .as_ref()
