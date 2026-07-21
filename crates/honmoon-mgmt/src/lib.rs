@@ -174,9 +174,12 @@ async fn claude_code_hook(
 /// absolute `cwd`, or the anchored path does not exist on this host (e.g. a
 /// gateway that cannot see the agent's filesystem) — the check reports
 /// [`PathResolution::Unresolved`], which `PreToolUse` denies conservatively
-/// instead of silently evaluating "not sensitive". An *absolute* path that
-/// fails to canonicalize keeps command-transport parity: it is the legitimate
-/// not-yet-created-file case, and core's literal path check still applies.
+/// instead of silently evaluating "not sensitive". An *absolute* path that is
+/// merely missing keeps command-transport parity: it is the legitimate
+/// not-yet-created-file case, and core's literal path check still applies — but
+/// an absolute path that fails to canonicalize for any *other* reason (e.g. a
+/// permission-denied or looping component that hides a symlink) is
+/// [`PathResolution::Unresolved`], not silently allowed.
 ///
 /// Symlinks resolve off the async executor: `tokio::fs::canonicalize` hands the
 /// blocking syscall to the runtime's blocking pool, so concurrent hook requests
@@ -196,7 +199,13 @@ async fn resolve_agent_path(path: Option<&str>, agent_cwd: Option<&str>) -> Path
     if std::path::Path::new(path).is_absolute() {
         return match tokio::fs::canonicalize(path).await {
             Ok(canonical) => sensitivity(canonical),
-            Err(_) => PathResolution::NotSensitive,
+            // A genuinely missing file is the legitimate not-yet-created-file
+            // case (command-transport parity); core's literal path check still
+            // applies. Any other error — permission denied, symlink loop, an
+            // unreadable path component — means the symlink target could not be
+            // verified, so stay conservative rather than fail open (issue #55).
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => PathResolution::NotSensitive,
+            Err(_) => PathResolution::Unresolved,
         };
     }
     let Some(cwd) = agent_cwd
@@ -446,6 +455,37 @@ mod tests {
         assert_eq!(
             resolve_agent_path(Some(&link.to_string_lossy()), None).await,
             PathResolution::Sensitive
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn absolute_path_failing_canonicalize_non_notfound_is_unresolved() {
+        // A symlink loop makes `canonicalize` fail with an error that is *not*
+        // `NotFound`, so the target was never verified — it could hide a
+        // sensitive symlink the gateway can't traverse. Only a genuinely
+        // missing file (`NotFound`) is the legitimate new-file case; any other
+        // error must stay conservative (`Unresolved`, deny) rather than fail
+        // open to `NotSensitive` — the absolute-path analogue of issue #55.
+        let tmp = TempDir::new("absolute-loop");
+        let link = tmp.path().join("loop");
+        std::os::unix::fs::symlink(&link, &link).unwrap();
+        assert_eq!(
+            resolve_agent_path(Some(&link.to_string_lossy()), None).await,
+            PathResolution::Unresolved
+        );
+    }
+
+    #[tokio::test]
+    async fn relative_ordinary_path_resolves_against_agent_cwd_not_sensitive() {
+        // The common case: an ordinary agent-relative file anchored to the
+        // payload `cwd` resolves and is allowed. The fail-closed fix must not
+        // deny normal Read/Edit/Write of non-sensitive files.
+        let tmp = TempDir::new("relative-ordinary");
+        std::fs::write(tmp.path().join("main.rs"), b"fn main() {}").unwrap();
+        assert_eq!(
+            resolve_agent_path(Some("main.rs"), Some(&tmp.path().to_string_lossy())).await,
+            PathResolution::NotSensitive
         );
     }
 }

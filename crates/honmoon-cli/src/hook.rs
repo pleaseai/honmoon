@@ -67,31 +67,37 @@ pub fn run(salt_context: Option<&str>) -> Result<()> {
 /// adapter keeps core free of I/O while preserving symlink protection.
 ///
 /// This transport runs in the agent's own process, so relative paths and
-/// symlinks resolve in the agent's real filesystem context. A `canonicalize`
-/// failure here therefore genuinely means the file does not exist (the
+/// symlinks resolve in the agent's real filesystem context. A `NotFound`
+/// `canonicalize` error therefore means the file does not exist yet (the
 /// legitimate new-file case) — map it to `NotSensitive` and let core's literal
-/// path check apply, rather than the HTTP transport's conservative
-/// `Unresolved` deny (issue #55).
+/// path check apply, rather than the HTTP transport's conservative `Unresolved`
+/// deny. Any *other* error (permission denied, symlink loop, …) means the
+/// symlink target could not be verified, so stay conservative and report
+/// `Unresolved` rather than silently treating it as not sensitive (issue #55).
 pub fn handle_hook(payload: &Value, salt: &[u8]) -> Value {
-    let resolution = payload
+    let path = payload
         .get("tool_input")
         .and_then(|input| {
             input
                 .get("file_path")
                 .or_else(|| input.get("notebook_path"))
         })
-        .and_then(Value::as_str)
-        .and_then(|path| std::fs::canonicalize(path).ok())
+        .and_then(Value::as_str);
+    let resolution = match path {
+        None => honmoon_core::PathResolution::NotSensitive,
         // `to_string_lossy` so a non-UTF-8 path is still checked (fail toward
         // denying) rather than silently skipped by a `to_str()` `None`.
-        .map(|path| {
-            if honmoon_core::is_sensitive_path(&path.to_string_lossy()) {
+        Some(path) => match std::fs::canonicalize(path) {
+            Ok(canonical) if honmoon_core::is_sensitive_path(&canonical.to_string_lossy()) => {
                 honmoon_core::PathResolution::Sensitive
-            } else {
+            }
+            Ok(_) => honmoon_core::PathResolution::NotSensitive,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
                 honmoon_core::PathResolution::NotSensitive
             }
-        })
-        .unwrap_or(honmoon_core::PathResolution::NotSensitive);
+            Err(_) => honmoon_core::PathResolution::Unresolved,
+        },
+    };
     honmoon_core::claude_code_hook_verdict(payload, salt, resolution)
         .into_parts()
         .0
@@ -558,5 +564,38 @@ mod tests {
             })
             .count();
         assert_eq!(leftover_temps, 0, "temp files are cleaned up after publish");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn pre_tool_use_denies_when_canonicalize_fails_non_notfound() {
+        // A symlink loop makes `canonicalize` fail with an error that is *not*
+        // `NotFound`, so the symlink target was never verified. The command
+        // transport must not treat that as the new-file case and fail open — it
+        // reports `Unresolved` and core denies (the absolute-path analogue of
+        // the issue #55 bypass). A genuinely missing file (`NotFound`) still
+        // stays allowed for legitimate new-file writes.
+        let tmp = TempDir::new("canon-loop");
+        let link = tmp.path().join("config");
+        std::os::unix::fs::symlink(&link, &link).expect("self-referential symlink");
+        let payload = serde_json::json!({
+            "hook_event_name": "PreToolUse",
+            "tool_name": "Read",
+            "tool_input": { "file_path": link.to_string_lossy() }
+        });
+        let verdict = handle_hook(&payload, b"salt");
+        assert_eq!(
+            verdict["hookSpecificOutput"]["permissionDecision"], "deny",
+            "an unverifiable path must be denied, not allowed: {verdict}"
+        );
+
+        // A path that simply does not exist is the legitimate new-file case and
+        // stays allowed (a no-op verdict).
+        let missing = serde_json::json!({
+            "hook_event_name": "PreToolUse",
+            "tool_name": "Write",
+            "tool_input": { "file_path": tmp.path().join("brand-new.rs").to_string_lossy() }
+        });
+        assert_eq!(handle_hook(&missing, b"salt"), serde_json::json!({}));
     }
 }

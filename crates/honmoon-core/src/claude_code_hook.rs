@@ -114,19 +114,32 @@ fn handle_pre_tool_use(payload: &Value, resolution: PathResolution) -> Option<Va
                 .or_else(|| input.get("notebook_path"))
         })
         .and_then(Value::as_str)?;
-    if is_sensitive_path(file_path) || resolution == PathResolution::Sensitive {
-        return Some(pre_tool_use_deny(format!(
-            "honmoon: reading or modifying `{file_path}` is blocked — it matches a known-sensitive path (credentials or key material). If a specific value is genuinely needed, ask the user to provide just that value."
-        )));
+    // The literal path check on the raw string is independent of any filesystem
+    // resolution and always applies.
+    if is_sensitive_path(file_path) {
+        return Some(pre_tool_use_deny(sensitive_path_deny_reason(file_path)));
     }
-    if resolution == PathResolution::Unresolved {
-        // The symlink check could not run at all; denying is the conservative
-        // choice, and the reason tells the agent how to make it pass (issue #55).
-        return Some(pre_tool_use_deny(format!(
-            "honmoon: access to `{file_path}` is blocked — the path could not be resolved against the agent's working directory, so the sensitive-path (symlink) check cannot run. Retry with an absolute path."
-        )));
+    // Exhaustive so a future `PathResolution` variant forces an explicit
+    // enforcement decision here rather than silently falling through to allow —
+    // the boolean-blindness this enum exists to prevent (issue #55).
+    match resolution {
+        PathResolution::Sensitive => Some(pre_tool_use_deny(sensitive_path_deny_reason(file_path))),
+        PathResolution::Unresolved => {
+            // The symlink check could not run at all; denying is the
+            // conservative choice, and the reason tells the agent how to make it
+            // pass (issue #55).
+            Some(pre_tool_use_deny(format!(
+                "honmoon: access to `{file_path}` is blocked — the path could not be resolved, so the sensitive-path (symlink) check cannot run. If possible, retry with an absolute path to an existing file, or ask the user for the specific value needed."
+            )))
+        }
+        PathResolution::NotSensitive => None,
     }
-    None
+}
+
+fn sensitive_path_deny_reason(file_path: &str) -> String {
+    format!(
+        "honmoon: reading or modifying `{file_path}` is blocked — it matches a known-sensitive path (credentials or key material). If a specific value is genuinely needed, ask the user to provide just that value."
+    )
 }
 
 fn pre_tool_use_deny(reason: String) -> Value {
