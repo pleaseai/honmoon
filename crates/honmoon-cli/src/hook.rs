@@ -67,13 +67,13 @@ pub fn run(salt_context: Option<&str>) -> Result<()> {
 /// adapter keeps core free of I/O while preserving symlink protection.
 ///
 /// This transport runs in the agent's own process, so relative paths and
-/// symlinks resolve in the agent's real filesystem context. A `NotFound`
-/// `canonicalize` error therefore means the file does not exist yet (the
-/// legitimate new-file case) — map it to `NotSensitive` and let core's literal
-/// path check apply, rather than the HTTP transport's conservative `Unresolved`
-/// deny. Any *other* error (permission denied, symlink loop, …) means the
-/// symlink target could not be verified, so stay conservative and report
-/// `Unresolved` rather than silently treating it as not sensitive (issue #55).
+/// symlinks resolve in the agent's real filesystem context. Only a path that is
+/// genuinely absent (confirmed via `symlink_metadata`, which does not follow the
+/// final component) is the legitimate new-file case → `NotSensitive`, letting
+/// core's literal path check apply. A `canonicalize` `NotFound` on an *existing*
+/// dangling symlink, or any other error (permission denied, symlink loop, …),
+/// means the target could not be verified, so report `Unresolved` rather than
+/// silently treating it as not sensitive (issue #55).
 pub fn handle_hook(payload: &Value, salt: &[u8]) -> Value {
     let path = payload
         .get("tool_input")
@@ -93,7 +93,19 @@ pub fn handle_hook(payload: &Value, salt: &[u8]) -> Value {
             }
             Ok(_) => honmoon_core::PathResolution::NotSensitive,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                honmoon_core::PathResolution::NotSensitive
+                // `canonicalize` also returns `NotFound` for an *existing* dangling
+                // symlink (link present, target missing) — a `Write` through it
+                // would create the hidden target, so it must not be treated as a
+                // new file. `symlink_metadata` does not follow the final component:
+                // `NotFound` there means the path genuinely does not exist (the
+                // legitimate new-file case); anything else means it exists but
+                // could not be verified — stay conservative (issue #55).
+                match std::fs::symlink_metadata(path) {
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                        honmoon_core::PathResolution::NotSensitive
+                    }
+                    _ => honmoon_core::PathResolution::Unresolved,
+                }
             }
             Err(_) => honmoon_core::PathResolution::Unresolved,
         },
@@ -597,5 +609,27 @@ mod tests {
             "tool_input": { "file_path": tmp.path().join("brand-new.rs").to_string_lossy() }
         });
         assert_eq!(handle_hook(&missing, b"salt"), serde_json::json!({}));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn pre_tool_use_denies_dangling_symlink() {
+        // A benign-named symlink whose target does not exist yet: `canonicalize`
+        // returns `NotFound`, but the link exists, so a `Write` through it would
+        // create the hidden target. It must be denied, not treated as a new file
+        // — `symlink_metadata` distinguishes it from a genuinely absent path.
+        let tmp = TempDir::new("dangling");
+        let link = tmp.path().join("config");
+        std::os::unix::fs::symlink(tmp.path().join("id_rsa"), &link).expect("dangling symlink");
+        let payload = serde_json::json!({
+            "hook_event_name": "PreToolUse",
+            "tool_name": "Write",
+            "tool_input": { "file_path": link.to_string_lossy() }
+        });
+        let verdict = handle_hook(&payload, b"salt");
+        assert_eq!(
+            verdict["hookSpecificOutput"]["permissionDecision"], "deny",
+            "a dangling symlink must not be allowed as a new file: {verdict}"
+        );
     }
 }

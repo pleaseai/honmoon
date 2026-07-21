@@ -175,11 +175,11 @@ async fn claude_code_hook(
 /// gateway that cannot see the agent's filesystem) — the check reports
 /// [`PathResolution::Unresolved`], which `PreToolUse` denies conservatively
 /// instead of silently evaluating "not sensitive". An *absolute* path that is
-/// merely missing keeps command-transport parity: it is the legitimate
-/// not-yet-created-file case, and core's literal path check still applies — but
-/// an absolute path that fails to canonicalize for any *other* reason (e.g. a
-/// permission-denied or looping component that hides a symlink) is
-/// [`PathResolution::Unresolved`], not silently allowed.
+/// genuinely absent (confirmed via `symlink_metadata`) keeps command-transport
+/// parity: it is the legitimate not-yet-created-file case, and core's literal
+/// path check still applies. An existing dangling symlink, or any other
+/// canonicalize failure (a permission-denied or looping component that hides a
+/// symlink), is [`PathResolution::Unresolved`] — not silently allowed.
 ///
 /// Symlinks resolve off the async executor: `tokio::fs::canonicalize` hands the
 /// blocking syscall to the runtime's blocking pool, so concurrent hook requests
@@ -199,12 +199,25 @@ async fn resolve_agent_path(path: Option<&str>, agent_cwd: Option<&str>) -> Path
     if std::path::Path::new(path).is_absolute() {
         return match tokio::fs::canonicalize(path).await {
             Ok(canonical) => sensitivity(canonical),
-            // A genuinely missing file is the legitimate not-yet-created-file
-            // case (command-transport parity); core's literal path check still
-            // applies. Any other error — permission denied, symlink loop, an
-            // unreadable path component — means the symlink target could not be
-            // verified, so stay conservative rather than fail open (issue #55).
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => PathResolution::NotSensitive,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                // `canonicalize` also returns `NotFound` for an *existing* dangling
+                // symlink (the link is present, its target is not) — a `Write`
+                // through it would create the hidden target, so it must not be
+                // treated as a new file. `symlink_metadata` does not follow the
+                // final component: `NotFound` there means the path genuinely does
+                // not exist (the legitimate not-yet-created-file case, command-
+                // transport parity — core's literal path check still applies).
+                // Anything else means the path exists but could not be verified —
+                // stay conservative rather than fail open (issue #55).
+                match tokio::fs::symlink_metadata(path).await {
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                        PathResolution::NotSensitive
+                    }
+                    _ => PathResolution::Unresolved,
+                }
+            }
+            // Any other error — permission denied, symlink loop, an unreadable
+            // path component — means the target could not be verified: deny.
             Err(_) => PathResolution::Unresolved,
         };
     }
@@ -486,6 +499,28 @@ mod tests {
         assert_eq!(
             resolve_agent_path(Some("main.rs"), Some(&tmp.path().to_string_lossy())).await,
             PathResolution::NotSensitive
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn absolute_dangling_symlink_is_not_a_new_file() {
+        // A benign-named symlink whose sensitive target does not exist yet:
+        // `canonicalize` returns `NotFound` (the target is missing), but the
+        // link itself exists, so a `Write` through it would create the hidden
+        // sensitive target. It must NOT be treated as a new file — `Unresolved`
+        // (deny), distinguished from a genuinely absent path via
+        // `symlink_metadata` (Greptile/cubic issue #55 follow-up).
+        let tmp = TempDir::new("dangling-symlink");
+        let link = tmp.path().join("config");
+        std::os::unix::fs::symlink(tmp.path().join("server.pem"), &link).unwrap();
+        assert!(
+            tokio::fs::canonicalize(&link).await.is_err(),
+            "target is missing"
+        );
+        assert_eq!(
+            resolve_agent_path(Some(&link.to_string_lossy()), None).await,
+            PathResolution::Unresolved
         );
     }
 }
