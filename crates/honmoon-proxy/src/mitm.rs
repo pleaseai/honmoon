@@ -689,9 +689,9 @@ impl HttpHandler for HonmoonHandler {
         {
             return res;
         }
-        if redaction.mappings.is_empty() {
-            return res;
-        }
+        // A non-identity response is forwarded verbatim regardless of what we've
+        // minted, so make this cheap header check before touching the mapping
+        // mutex.
         let identity_encoded = res
             .headers()
             .get(header::CONTENT_ENCODING)
@@ -710,9 +710,14 @@ impl HttpHandler for HonmoonHandler {
         }
 
         // handle_request records this request's mapping before the upstream leg,
-        // so this point-in-time snapshot always includes its substitutions. It
-        // also avoids holding the MappingStore mutex while the body is polled.
+        // so this point-in-time snapshot always includes its substitutions. Take
+        // it under a single lock, then skip when nothing has been minted yet;
+        // snapshotting also avoids holding the MappingStore mutex while the body
+        // is polled.
         let mapping = redaction.mappings.snapshot();
+        if mapping.is_empty() {
+            return res;
+        }
         let body = std::mem::replace(res.body_mut(), Body::empty());
         *res.body_mut() = detokenizing_body(body, mapping);
         // Detokenization changes byte length; let hyper frame the streamed body.
@@ -748,6 +753,53 @@ struct QuotedJsonSpan<'a> {
     byte_end: usize,
 }
 
+/// Incremental scanner that walks a UTF-8 JSON body by UTF-16 offset while
+/// tracking whether the cursor sits inside a quoted string, so a PII span can be
+/// classified as quoted or unquoted in one forward pass.
+struct JsonLexer<'a> {
+    chars: std::str::CharIndices<'a>,
+    byte_offset: usize,
+    utf16_offset: i64,
+    in_string: bool,
+    escaped: bool,
+}
+
+impl<'a> JsonLexer<'a> {
+    fn new(text: &'a str) -> Self {
+        Self {
+            chars: text.char_indices(),
+            byte_offset: 0,
+            utf16_offset: 0,
+            in_string: false,
+            escaped: false,
+        }
+    }
+
+    /// Consume characters until the cursor reaches `target` (a UTF-16 offset) or
+    /// the input ends, folding each into the quoted-string tracking state.
+    fn advance_to(&mut self, target: i64) {
+        while self.utf16_offset < target {
+            let Some((byte, ch)) = self.chars.next() else {
+                break;
+            };
+            self.byte_offset = byte + ch.len_utf8();
+            self.utf16_offset += ch.len_utf16() as i64;
+            self.track_string_state(ch);
+        }
+    }
+
+    /// Update `in_string`/`escaped` for one consumed character.
+    fn track_string_state(&mut self, ch: char) {
+        if self.in_string && self.escaped {
+            self.escaped = false;
+        } else if self.in_string && ch == '\\' {
+            self.escaped = true;
+        } else if ch == '"' {
+            self.in_string = !self.in_string;
+        }
+    }
+}
+
 /// Classify PII spans in one forward pass over the JSON text. A malformed
 /// offset, including one inside a multi-unit character or past the body, is
 /// skipped in the safe direction.
@@ -755,41 +807,25 @@ fn quoted_json_spans<'a>(text: &str, spans: &'a [PiiSpan]) -> (Vec<QuotedJsonSpa
     let mut sorted = spans.iter().collect::<Vec<_>>();
     sorted.sort_by_key(|span| span.start);
 
-    let mut chars = text.char_indices();
-    let mut byte_offset = 0usize;
-    let mut utf16_offset = 0i64;
-    let mut in_string = false;
-    let mut escaped = false;
+    let mut lexer = JsonLexer::new(text);
     let mut eligible = Vec::with_capacity(spans.len());
 
     for span in sorted {
-        while utf16_offset < span.start {
-            let Some((byte, ch)) = chars.next() else {
-                break;
-            };
-            byte_offset = byte + ch.len_utf8();
-            utf16_offset += ch.len_utf16() as i64;
-            if in_string && escaped {
-                escaped = false;
-            } else if in_string && ch == '\\' {
-                escaped = true;
-            } else if ch == '"' {
-                in_string = !in_string;
-            }
-        }
+        lexer.advance_to(span.start);
 
-        if utf16_offset != span.start || !in_string {
+        if lexer.utf16_offset != span.start || !lexer.in_string {
             continue;
         }
-        let byte_end = byte_offset.saturating_add(span.text.len());
+        let byte_start = lexer.byte_offset;
+        let byte_end = byte_start.saturating_add(span.text.len());
         let exact_surface = text
-            .get(byte_offset..byte_end)
+            .get(byte_start..byte_end)
             .is_some_and(|surface| surface == span.text)
             && span.end - span.start == span.text.encode_utf16().count() as i64;
         if exact_surface {
             eligible.push(QuotedJsonSpan {
                 span,
-                byte_start: byte_offset,
+                byte_start,
                 byte_end,
             });
         }
