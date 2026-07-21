@@ -359,39 +359,53 @@ struct StoreEntry {
 
 /// Interior state of [`MappingStore`]: the placeholder→secret map plus a
 /// recency index (`seq → placeholder`) whose first key is always the
-/// least-recently-recorded entry, making eviction `O(log n)`.
+/// least-recently-recorded entry, making eviction `O(log n)`. `bytes` tracks
+/// the summed length of every retained `secret` so eviction can bound total
+/// secret memory, not just the entry count.
 #[derive(Default)]
 struct BoundedMapping {
     entries: HashMap<String, StoreEntry>,
     by_recency: BTreeMap<u64, String>,
     next_seq: u64,
+    /// Sum of `secret.len()` across `entries` — the attacker-controlled memory
+    /// dimension (secret patterns have unbounded upper length; placeholders are
+    /// separately bounded by the entry cap).
+    bytes: usize,
     evicted: u64,
 }
 
 impl BoundedMapping {
-    /// Insert or refresh one entry, bumping its recency either way.
+    /// Insert or refresh one entry, bumping its recency and keeping the retained
+    /// byte total in step either way.
     fn insert(&mut self, placeholder: String, secret: String) {
         let seq = self.next_seq;
         self.next_seq += 1;
+        self.bytes += secret.len();
         if let Some(previous) = self
             .entries
             .insert(placeholder.clone(), StoreEntry { secret, seq })
         {
             self.by_recency.remove(&previous.seq);
+            self.bytes -= previous.secret.len();
         }
         self.by_recency.insert(seq, placeholder);
     }
 
-    /// Drop least-recently-recorded entries until at most `max_entries`
-    /// remain, returning how many this call dropped.
-    fn evict_to(&mut self, max_entries: usize) -> u64 {
+    /// Drop least-recently-recorded entries until at most `max_entries` remain
+    /// **and** at most `max_bytes` of secret bytes are retained (whichever binds
+    /// first), returning how many this call dropped. A single secret larger than
+    /// `max_bytes` is recorded then immediately evicted (net: not retained),
+    /// which is fail-safe — its placeholder passes through un-reversed.
+    fn evict_to(&mut self, max_entries: usize, max_bytes: usize) -> u64 {
         let mut dropped = 0u64;
-        while self.entries.len() > max_entries {
+        while self.entries.len() > max_entries || self.bytes > max_bytes {
             let (_, placeholder) = self
                 .by_recency
                 .pop_first()
                 .expect("recency index tracks every retained entry");
-            self.entries.remove(&placeholder);
+            if let Some(removed) = self.entries.remove(&placeholder) {
+                self.bytes -= removed.secret.len();
+            }
             dropped += 1;
         }
         self.evicted += dropped;
@@ -406,6 +420,7 @@ impl fmt::Debug for BoundedMapping {
                 "entries",
                 &format_args!("<redacted: {} entrie(s)>", self.entries.len()),
             )
+            .field("retained_bytes", &self.bytes)
             .field("evicted", &self.evicted)
             .finish()
     }
@@ -422,11 +437,17 @@ impl fmt::Debug for BoundedMapping {
 ///
 /// Hook traffic is untrusted, so an unbounded process-lifetime store would let
 /// a client flood unique secret-shaped values until memory is exhausted.
-/// Retention is therefore capped ([`DEFAULT_MAX_ENTRIES`][Self::DEFAULT_MAX_ENTRIES]
-/// entries unless overridden via [`with_max_entries`][Self::with_max_entries]);
-/// past the cap, [`record`][Self::record] evicts least-recently-recorded
-/// entries and surfaces the pressure via `tracing` and the
-/// [`evicted`][Self::evicted] counter rather than dropping silently.
+/// Retention is therefore capped on **two** dimensions, whichever binds first:
+/// entry count ([`DEFAULT_MAX_ENTRIES`][Self::DEFAULT_MAX_ENTRIES]) and total
+/// retained secret bytes ([`DEFAULT_MAX_BYTES`][Self::DEFAULT_MAX_BYTES]) —
+/// both overridable via [`with_limits`][Self::with_limits]. The byte cap
+/// matters because a single secret has no bounded upper length (the detectors'
+/// patterns end in open-ended quantifiers), so an entry-count cap alone would
+/// still let a flood of large secret-shaped values grow memory to
+/// `max_entries × max_single_secret`. Past either cap, [`record`][Self::record]
+/// evicts least-recently-recorded entries and surfaces the pressure via
+/// `tracing` and the [`evicted`][Self::evicted] counter rather than dropping
+/// silently.
 ///
 /// Why least-recently-**recorded** eviction is detokenization-safe in
 /// practice: minting is a pure function of `(salt, secret)` (see the module
@@ -445,11 +466,12 @@ impl fmt::Debug for BoundedMapping {
 pub struct MappingStore {
     inner: Mutex<BoundedMapping>,
     max_entries: usize,
+    max_bytes: usize,
 }
 
 impl Default for MappingStore {
     fn default() -> Self {
-        Self::with_max_entries(Self::DEFAULT_MAX_ENTRIES)
+        Self::with_limits(Self::DEFAULT_MAX_ENTRIES, Self::DEFAULT_MAX_BYTES)
     }
 }
 
@@ -459,26 +481,48 @@ impl MappingStore {
     /// worst-case memory for a store fed by untrusted hook traffic.
     pub const DEFAULT_MAX_ENTRIES: usize = 8192;
 
-    /// Create an empty live store with the default retention cap.
+    /// Default cap on total retained secret bytes (8 MiB ≈ 1 KiB per entry at
+    /// the default entry cap). Legitimate secrets are small (API keys are tens
+    /// of bytes; even a PEM private key is a few KiB), so real sessions stay far
+    /// under this, while a flood of large secret-shaped values is bounded to
+    /// this ceiling instead of `max_entries × max_single_secret`.
+    pub const DEFAULT_MAX_BYTES: usize = 8 * 1024 * 1024;
+
+    /// Create an empty live store with the default retention caps.
     pub fn new() -> Self {
         Self::default()
     }
 
-    /// Create an empty live store retaining at most `max_entries` mappings.
+    /// Create an empty live store retaining at most `max_entries` mappings
+    /// (with the default total-byte cap, [`DEFAULT_MAX_BYTES`][Self::DEFAULT_MAX_BYTES]).
     ///
     /// **Panics** if `max_entries` is zero — a store that can retain nothing
     /// would silently break all detokenization.
     pub fn with_max_entries(max_entries: usize) -> Self {
+        Self::with_limits(max_entries, Self::DEFAULT_MAX_BYTES)
+    }
+
+    /// Create an empty live store retaining at most `max_entries` mappings and
+    /// at most `max_bytes` of total secret bytes, whichever binds first.
+    ///
+    /// **Panics** if either bound is zero — a store that can retain nothing
+    /// would silently break all detokenization.
+    pub fn with_limits(max_entries: usize, max_bytes: usize) -> Self {
         assert!(max_entries > 0, "mapping store capacity must not be zero");
+        assert!(
+            max_bytes > 0,
+            "mapping store byte capacity must not be zero"
+        );
         Self {
             inner: Mutex::new(BoundedMapping::default()),
             max_entries,
+            max_bytes,
         }
     }
 
     /// Add all substitutions from one redaction verdict, refreshing recency
     /// for placeholders already retained and evicting least-recently-recorded
-    /// entries if the cap is exceeded.
+    /// entries if either the entry or the total-byte cap is exceeded.
     pub fn record(&self, mapping: Mapping) {
         let mut inner = self
             .inner
@@ -487,12 +531,14 @@ impl MappingStore {
         for (placeholder, secret) in mapping.inner {
             inner.insert(placeholder, secret);
         }
-        let dropped = inner.evict_to(self.max_entries);
+        let dropped = inner.evict_to(self.max_entries, self.max_bytes);
         if dropped > 0 {
             tracing::warn!(
                 evicted = dropped,
                 evicted_total = inner.evicted,
                 max_entries = self.max_entries,
+                max_bytes = self.max_bytes,
+                retained_bytes = inner.bytes,
                 "mapping store over capacity; dropped least-recently-recorded mappings — their placeholders, if echoed in a later response, will no longer detokenize"
             );
         }
@@ -540,12 +586,22 @@ impl MappingStore {
             .expect("tokenization mapping store poisoned")
             .evicted
     }
+
+    /// Total bytes of retained secrets currently held (the sum of every
+    /// retained `secret`'s length) — the live value the total-byte cap bounds.
+    pub fn retained_bytes(&self) -> usize {
+        self.inner
+            .lock()
+            .expect("tokenization mapping store poisoned")
+            .bytes
+    }
 }
 
 impl fmt::Debug for MappingStore {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("MappingStore")
             .field("max_entries", &self.max_entries)
+            .field("max_bytes", &self.max_bytes)
             .field("inner", &self.inner)
             .finish()
     }
@@ -661,6 +717,75 @@ mod tests {
         // re-record evicted flood): the counter is a lifetime total, not a
         // per-call value.
         assert_eq!(store.evicted(), 2);
+    }
+
+    #[test]
+    fn mapping_store_evicts_when_total_secret_bytes_exceed_cap() {
+        // The byte cap bounds total retained secret memory independently of the
+        // (generous) entry cap: an attacker flooding large secret-shaped values
+        // is held under max_bytes by evicting least-recently-recorded entries,
+        // closing the "8192 × unbounded-secret" amplification (secret patterns
+        // have open-ended upper length).
+        let store = MappingStore::with_limits(100, 8); // ample entries, 8-byte cap
+        let mut first = Mapping::new();
+        first.insert("<<hs:aaaa>>", "12345"); // 5 bytes
+        store.record(first);
+        assert_eq!(store.retained_bytes(), 5);
+        assert_eq!(store.evicted(), 0);
+
+        let mut second = Mapping::new();
+        second.insert("<<hs:bbbb>>", "6789"); // +4 → 9 bytes > 8, evict oldest
+        store.record(second);
+
+        assert_eq!(store.len(), 1); // entry cap (100) was never the constraint
+        assert_eq!(store.retained_bytes(), 4);
+        assert_eq!(store.evicted(), 1);
+        let snapshot = store.snapshot();
+        assert_eq!(snapshot.get("<<hs:aaaa>>"), None); // least recent, evicted
+        assert_eq!(snapshot.get("<<hs:bbbb>>"), Some("6789"));
+    }
+
+    #[test]
+    fn mapping_store_replacing_an_entry_updates_retained_bytes() {
+        // Refreshing a placeholder must swap its byte contribution, not add to
+        // it, or the byte total would drift above the real retained size and
+        // evict spuriously.
+        let store = MappingStore::with_limits(100, 1024);
+        let mut first = Mapping::new();
+        first.insert("<<hs:aaaa>>", "ab"); // 2 bytes
+        store.record(first);
+        assert_eq!(store.retained_bytes(), 2);
+
+        let mut refresh = Mapping::new();
+        refresh.insert("<<hs:aaaa>>", "wxyz"); // same placeholder, 4 bytes
+        store.record(refresh);
+
+        assert_eq!(store.len(), 1);
+        assert_eq!(store.retained_bytes(), 4); // 4, not 2 + 4 = 6
+        assert_eq!(store.evicted(), 0);
+    }
+
+    #[test]
+    fn mapping_store_single_secret_larger_than_byte_cap_is_not_retained() {
+        // A single secret exceeding the whole byte budget is recorded then
+        // immediately evicted (net: not retained). That is fail-safe — its
+        // placeholder passes through un-reversed — and proves the eviction loop
+        // terminates when the newest entry alone is over the cap.
+        let store = MappingStore::with_limits(100, 4);
+        let mut mapping = Mapping::new();
+        mapping.insert("<<hs:huge>>", "way-too-long"); // 12 bytes > 4
+        store.record(mapping);
+
+        assert_eq!(store.len(), 0);
+        assert_eq!(store.retained_bytes(), 0);
+        assert_eq!(store.evicted(), 1);
+        assert_eq!(store.snapshot().get("<<hs:huge>>"), None);
+    }
+
+    #[test]
+    #[should_panic(expected = "mapping store byte capacity must not be zero")]
+    fn mapping_store_zero_byte_capacity_panics() {
+        let _ = MappingStore::with_limits(1, 0);
     }
 
     #[test]
