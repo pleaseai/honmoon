@@ -1,0 +1,27 @@
+docs/roadmap.md
+  s_9aca8fce7e6021::t_9551eb54045fde 186
+crates/honmoon-proxy/src/mitm.rs
+  s_9aca8fce7e6021::t_3eef1a1664d710 328-338
+  s_9aca8fce7e6021::t_eabba020f06b5a 721-724
+crates/honmoon-proxy/tests/redaction.rs
+  s_9aca8fce7e6021::t_78fa934cae9f67 454,469
+  s_9aca8fce7e6021::t_594fdddabd778f 352-395
+crates/honmoon-mgmt/src/lib.rs
+  s_9aca8fce7e6021::t_b3f3b64a673a38 74-84
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.15",
+  "base_commit_sha": "079314a9d585081a501afcac8a078ddcd00425f9",
+  "prompts": {},
+  "sessions": {
+    "s_9aca8fce7e6021": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "87c26831-6f0e-483b-963f-88aea1996e11",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
