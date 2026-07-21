@@ -49,6 +49,7 @@
 //! `Debug` manually to redact secret bytes (AC-015/NFR-005) — these types
 //! hold live secret material, not derived facts.
 
+use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::fmt;
@@ -349,29 +350,152 @@ impl fmt::Debug for Mapping {
     }
 }
 
+/// One retained placeholder→secret entry plus the recency sequence number it
+/// was last recorded under.
+struct StoreEntry {
+    secret: String,
+    seq: u64,
+}
+
+/// Interior state of [`MappingStore`]: the placeholder→secret map plus a
+/// recency index (`seq → placeholder`) whose first key is always the
+/// least-recently-recorded entry, making eviction `O(log n)`.
+#[derive(Default)]
+struct BoundedMapping {
+    entries: HashMap<String, StoreEntry>,
+    by_recency: BTreeMap<u64, String>,
+    next_seq: u64,
+    evicted: u64,
+}
+
+impl BoundedMapping {
+    /// Insert or refresh one entry, bumping its recency either way.
+    fn insert(&mut self, placeholder: String, secret: String) {
+        let seq = self.next_seq;
+        self.next_seq += 1;
+        if let Some(previous) = self
+            .entries
+            .insert(placeholder.clone(), StoreEntry { secret, seq })
+        {
+            self.by_recency.remove(&previous.seq);
+        }
+        self.by_recency.insert(seq, placeholder);
+    }
+
+    /// Drop least-recently-recorded entries until at most `max_entries`
+    /// remain, returning how many this call dropped.
+    fn evict_to(&mut self, max_entries: usize) -> u64 {
+        let mut dropped = 0u64;
+        while self.entries.len() > max_entries {
+            let (_, placeholder) = self
+                .by_recency
+                .pop_first()
+                .expect("recency index tracks every retained entry");
+            self.entries.remove(&placeholder);
+            dropped += 1;
+        }
+        self.evicted += dropped;
+        dropped
+    }
+}
+
+impl fmt::Debug for BoundedMapping {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("BoundedMapping")
+            .field(
+                "entries",
+                &format_args!("<redacted: {} entrie(s)>", self.entries.len()),
+            )
+            .field("evicted", &self.evicted)
+            .finish()
+    }
+}
+
 /// Thread-safe live reverse-mapping store for long-running transports.
 ///
 /// A management API and the proxy wire path share one store for their lifetime,
 /// recording every mapping produced by either transport. This lets a response
 /// detokenize placeholders minted by the current request or by the co-running
 /// hook endpoint while keeping the secret-bearing mapping process-local.
-#[derive(Default)]
+///
+/// # Bounded retention (issue #54)
+///
+/// Hook traffic is untrusted, so an unbounded process-lifetime store would let
+/// a client flood unique secret-shaped values until memory is exhausted.
+/// Retention is therefore capped ([`DEFAULT_MAX_ENTRIES`][Self::DEFAULT_MAX_ENTRIES]
+/// entries unless overridden via [`with_max_entries`][Self::with_max_entries]);
+/// past the cap, [`record`][Self::record] evicts least-recently-recorded
+/// entries and surfaces the pressure via `tracing` and the
+/// [`evicted`][Self::evicted] counter rather than dropping silently.
+///
+/// Why least-recently-**recorded** eviction is detokenization-safe in
+/// practice: minting is a pure function of `(salt, secret)` (see the module
+/// docs), so when an evicted secret transits either transport again the
+/// byte-identical entry is simply re-recorded. Agent clients resend the full
+/// conversation every turn and the wire path records before the upstream leg,
+/// so every mapping still backing the ongoing conversation has its recency
+/// refreshed each request. Hook-minted mappings are the long-lived case — the
+/// placeholder replaces the secret *inside* the conversation, so the secret
+/// never recurs to refresh it — which is why the cap is set orders of
+/// magnitude above any legitimate session's distinct-secret count. Only an
+/// adversarial flood reaches the cap, and then bounded memory (with loud
+/// eviction telemetry) is preferred over process exhaustion, accepting that a
+/// flooded-out placeholder echoed in a later response would pass through
+/// unreversed.
 pub struct MappingStore {
-    mapping: Mutex<Mapping>,
+    inner: Mutex<BoundedMapping>,
+    max_entries: usize,
+}
+
+impl Default for MappingStore {
+    fn default() -> Self {
+        Self::with_max_entries(Self::DEFAULT_MAX_ENTRIES)
+    }
 }
 
 impl MappingStore {
-    /// Create an empty live store.
+    /// Default retention cap. Legitimate sessions hold tens to hundreds of
+    /// distinct detected secrets; 8192 leaves ample headroom while bounding
+    /// worst-case memory for a store fed by untrusted hook traffic.
+    pub const DEFAULT_MAX_ENTRIES: usize = 8192;
+
+    /// Create an empty live store with the default retention cap.
     pub fn new() -> Self {
         Self::default()
     }
 
-    /// Add all substitutions from one redaction verdict.
+    /// Create an empty live store retaining at most `max_entries` mappings.
+    ///
+    /// **Panics** if `max_entries` is zero — a store that can retain nothing
+    /// would silently break all detokenization.
+    pub fn with_max_entries(max_entries: usize) -> Self {
+        assert!(max_entries > 0, "mapping store capacity must not be zero");
+        Self {
+            inner: Mutex::new(BoundedMapping::default()),
+            max_entries,
+        }
+    }
+
+    /// Add all substitutions from one redaction verdict, refreshing recency
+    /// for placeholders already retained and evicting least-recently-recorded
+    /// entries if the cap is exceeded.
     pub fn record(&self, mapping: Mapping) {
-        self.mapping
+        let mut inner = self
+            .inner
             .lock()
-            .expect("tokenization mapping store poisoned")
-            .extend(mapping);
+            .expect("tokenization mapping store poisoned");
+        for (placeholder, secret) in mapping.inner {
+            inner.insert(placeholder, secret);
+        }
+        let dropped = inner.evict_to(self.max_entries);
+        if dropped > 0 {
+            tracing::warn!(
+                evicted = dropped,
+                evicted_total = inner.evicted,
+                max_entries = self.max_entries,
+                "mapping store over capacity; dropped least-recently-recorded mappings — their placeholders, if echoed in a later response, will no longer detokenize"
+            );
+        }
     }
 
     /// Take a point-in-time copy of the live mapping.
@@ -379,17 +503,25 @@ impl MappingStore {
     /// Consumers snapshot under the mutex so no lock is held across await points
     /// or while a streaming response is being polled.
     pub fn snapshot(&self) -> Mapping {
-        self.mapping
+        let inner = self
+            .inner
             .lock()
-            .expect("tokenization mapping store poisoned")
-            .clone()
+            .expect("tokenization mapping store poisoned");
+        Mapping {
+            inner: inner
+                .entries
+                .iter()
+                .map(|(placeholder, entry)| (placeholder.clone(), entry.secret.clone()))
+                .collect(),
+        }
     }
 
     /// Number of distinct placeholder mappings currently retained.
     pub fn len(&self) -> usize {
-        self.mapping
+        self.inner
             .lock()
             .expect("tokenization mapping store poisoned")
+            .entries
             .len()
     }
 
@@ -397,12 +529,24 @@ impl MappingStore {
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }
+
+    /// Total mappings evicted over this store's lifetime — the retention
+    /// pressure metric paired with the `tracing` warnings from
+    /// [`record`][Self::record]. Nonzero means hook/wire traffic minted more
+    /// distinct secrets than the cap retains.
+    pub fn evicted(&self) -> u64 {
+        self.inner
+            .lock()
+            .expect("tokenization mapping store poisoned")
+            .evicted
+    }
 }
 
 impl fmt::Debug for MappingStore {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("MappingStore")
-            .field("mapping", &self.mapping)
+            .field("max_entries", &self.max_entries)
+            .field("inner", &self.inner)
             .finish()
     }
 }
@@ -429,6 +573,86 @@ mod tests {
         assert_eq!(snapshot.get("<<hs:first>>"), Some("sk-first"));
         assert_eq!(snapshot.get("<<hs:second>>"), None);
         assert_eq!(store.len(), 2);
+    }
+
+    #[test]
+    fn mapping_store_evicts_least_recently_recorded_beyond_capacity() {
+        let store = MappingStore::with_max_entries(2);
+        for (placeholder, secret) in [
+            ("<<hs:aaaa>>", "sk-a"),
+            ("<<hs:bbbb>>", "sk-b"),
+            ("<<hs:cccc>>", "sk-c"),
+        ] {
+            let mut mapping = Mapping::new();
+            mapping.insert(placeholder, secret);
+            store.record(mapping);
+        }
+        assert_eq!(store.len(), 2);
+        assert_eq!(store.evicted(), 1);
+        let snapshot = store.snapshot();
+        assert_eq!(snapshot.get("<<hs:aaaa>>"), None);
+        assert_eq!(snapshot.get("<<hs:bbbb>>"), Some("sk-b"));
+        assert_eq!(snapshot.get("<<hs:cccc>>"), Some("sk-c"));
+    }
+
+    #[test]
+    fn mapping_store_re_recording_refreshes_eviction_order() {
+        // Agent clients resend the whole conversation every turn, so the wire
+        // path re-records every mapping still backing it. Re-recording must
+        // refresh recency, or an in-use mapping could be evicted ahead of a
+        // genuinely idle one.
+        let store = MappingStore::with_max_entries(2);
+        let record_one = |placeholder: &str, secret: &str| {
+            let mut mapping = Mapping::new();
+            mapping.insert(placeholder, secret);
+            store.record(mapping);
+        };
+        record_one("<<hs:aaaa>>", "sk-a");
+        record_one("<<hs:bbbb>>", "sk-b");
+        record_one("<<hs:aaaa>>", "sk-a"); // refresh: a is now newer than b
+        record_one("<<hs:cccc>>", "sk-c"); // evicts b, not a
+        let snapshot = store.snapshot();
+        assert_eq!(snapshot.get("<<hs:aaaa>>"), Some("sk-a"));
+        assert_eq!(snapshot.get("<<hs:bbbb>>"), None);
+        assert_eq!(snapshot.get("<<hs:cccc>>"), Some("sk-c"));
+        assert_eq!(store.evicted(), 1);
+    }
+
+    #[test]
+    fn mapping_store_evicted_entry_is_restored_by_deterministic_re_record() {
+        // The safety argument for bounding at all: minting is a pure function
+        // of (salt, secret), so when an evicted secret transits again the
+        // byte-identical placeholder→secret entry is re-recorded.
+        let t = SecretTokenizer::new(b"fixed-salt".to_vec(), vec!["sk-old"]);
+        let placeholder = t.placeholder_for("sk-old").unwrap().to_string();
+        let store = MappingStore::with_max_entries(1);
+
+        let (_, mapping) = t.tokenize("value=sk-old");
+        store.record(mapping);
+        let mut flood = Mapping::new();
+        flood.insert("<<hs:flood>>", "sk-flood");
+        store.record(flood);
+        assert_eq!(store.snapshot().get(&placeholder), None);
+
+        let (_, mapping_again) = t.tokenize("value=sk-old");
+        store.record(mapping_again);
+        assert_eq!(store.snapshot().get(&placeholder), Some("sk-old"));
+    }
+
+    #[test]
+    fn mapping_store_debug_redacts_retained_secrets() {
+        let store = MappingStore::new();
+        let mut mapping = Mapping::new();
+        mapping.insert("<<hs:deadbeef>>", "sk-super-secret-value");
+        store.record(mapping);
+        let debug = format!("{store:?}");
+        assert!(!debug.contains("sk-super-secret-value"));
+    }
+
+    #[test]
+    #[should_panic(expected = "mapping store capacity must not be zero")]
+    fn mapping_store_zero_capacity_panics() {
+        let _ = MappingStore::with_max_entries(0);
     }
 
     #[test]
