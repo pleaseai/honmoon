@@ -1,0 +1,20 @@
+apps/dashboard/src/components/PolicyView.tsx
+  s_d77841429059c1::t_9eed8149318f71 3,8-14
+  s_d77841429059c1::t_da631f0425eb99 15
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "7567ca694179a298a8cf3f1fa1ef192a8617d86a",
+  "prompts": {},
+  "sessions": {
+    "s_d77841429059c1": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "7c61a711-dfc8-44c0-961b-7dcade824f85",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
