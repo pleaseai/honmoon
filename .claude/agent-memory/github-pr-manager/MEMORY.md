@@ -1,0 +1,1 @@
+- [honmoon PR conventions](honmoon-pr-conventions.md) — no PR template; Graphite repo-tracked but branches usually untracked, so verify with `gt ls`
