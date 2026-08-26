@@ -15,11 +15,21 @@ bun run --filter '@honmoon/dashboard' build
 bun run dashboard:dev
 ```
 
+Views are hash-routed (no History API, so neither Cloudflare Pages nor the
+rust-embed handler needs a rewrite rule). Unknown hashes fall back to Overview:
+
+| hash | view |
+|------|------|
+| `#/` (or empty) | Overview |
+| `#/audit` | Audit Log |
+| `#/policies` | Policies |
+| `#/approvals` | Approvals |
+
 ## Structure
 
 | Path | What |
 |------|------|
-| `src/main.tsx` / `src/App.tsx` | Entry point; tab shell over the four views. |
+| `src/main.tsx` / `src/App.tsx` | Entry point; hash router + shell over the four views. |
 | `src/components/` | `Overview`, `AuditLog`, `PolicyView`, `Approvals`, `DecisionBadge`. |
 | `src/api.ts` / `src/hooks.ts` / `src/format.ts` | Typed management-API client, `usePolling`, formatters. |
 | `vite.config.ts` | Vite + Tailwind; in dev, proxies `/api` → `127.0.0.1:8444` (a running `honmoon gateway`). |
