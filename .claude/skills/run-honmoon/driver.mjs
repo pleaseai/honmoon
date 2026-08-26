@@ -184,6 +184,17 @@ async function up(opts) {
     args.push('--pii-mode', opts.piiMode)
   }
 
+  // Truncate rather than accumulate: the launch-failure path below dumps this
+  // whole file to explain one failed start, and `logs` shows it verbatim --
+  // carrying previous runs' output into either just buries the line that
+  // matters. Matches the audit log, which `up` already resets.
+  //
+  // Truncate separately, then open O_APPEND rather than passing 'w': a plain
+  // 'w' handle carries its own file offset, so if two `up` calls slip through
+  // the port preflight together their children overwrite each other's records
+  // instead of interleaving -- and the one that loses the bind race is exactly
+  // the one whose diagnostic we need.
+  writeFileSync(F.log, '')
   const out = openSync(F.log, 'a')
   const child = spawn(BIN, args, {
     cwd: UNIT,
