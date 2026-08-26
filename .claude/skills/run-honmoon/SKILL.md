@@ -30,9 +30,16 @@ mise install          # node 24 + bun
 bun install           # JS workspace deps
 ```
 
-Screenshots use `agent-browser` (already installed globally). There is no
-`chromium-cli` on this machine, and this `orca` build has no embedded-browser
-subcommand — `agent-browser` is the backend that works here.
+The driver screenshots via `agent-browser` (installed globally); there is no
+`chromium-cli` on this machine.
+
+Inside an Orca session, Orca's own embedded browser is the org-preferred backend
+and shares your logged-in GitHub/app session — which `agent-browser` does not.
+Its commands are `orca tab create --url … --json`, then `orca snapshot`, `goto`,
+`click`, `upload`, `eval`, `screenshot` (all `--json`). **There is no
+`orca browser` subcommand** — probing that name returns `Unknown command:
+browser` and wrongly suggests Orca cannot drive a browser at all. Reach for it
+over `agent-browser` whenever a page needs your real session.
 
 ## Build
 
