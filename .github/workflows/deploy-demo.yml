@@ -3,7 +3,8 @@ name: Deploy Demo (Cloudflare Pages)
 # Deploys the fixture-backed dashboard demo (apps/dashboard, built with
 # `build:demo`) to Cloudflare Pages (honmoon-demo).
 #   - push to main → production deploy (honmoon-demo.pages.dev)
-#   - manual run   → production deploy from the selected ref
+#   - manual run   → deploy of the selected ref; production only when that ref is
+#                    the Pages production branch (`main`), otherwise a preview URL
 #
 # The demo runs with no gateway attached. The app source contains no demo code:
 # `build:demo` takes the stock `dist/` produced by the ordinary build and writes

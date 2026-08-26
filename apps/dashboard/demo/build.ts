@@ -28,6 +28,8 @@ function fail(message: string): never {
 }
 
 async function main(): Promise<void> {
+  // Always read the *stock* index.html; `dist/` is never written back to, so
+  // re-running `build:demo` re-derives `dist-demo/` from scratch every time.
   let index: string
   try {
     index = await readFile(join(DIST, 'index.html'), 'utf8')
@@ -41,14 +43,14 @@ async function main(): Promise<void> {
   await cp(DIST, DIST_DEMO, { recursive: true })
   await cp(join(APP_ROOT, 'demo', SHIM), join(DIST_DEMO, SHIM))
 
-  // Idempotent: re-running over an already-injected index.html is a no-op.
-  if (!index.includes(TAG)) {
-    const anchor = ANCHOR.exec(index)
-    if (!anchor) {
-      fail('no <script type="module"> tag in dist/index.html — cannot place the shim.')
-    }
-    index = index.replace(anchor[0], `${TAG}\n    ${anchor[0]}`)
+  const anchor = ANCHOR.exec(index)
+  if (!anchor) {
+    fail('no <script type="module"> tag in dist/index.html — cannot place the shim.')
   }
+  // Replacer function, not a replacement string: `$&`/`$'`/`$1` in the matched
+  // tag (a hashed asset name is attacker-free but not charset-guaranteed) would
+  // otherwise be expanded as substitution patterns and corrupt the output.
+  index = index.replace(anchor[0], () => `${TAG}\n    ${anchor[0]}`)
 
   await writeFile(join(DIST_DEMO, 'index.html'), index)
   console.log(`demo/build.ts: wrote ${DIST_DEMO} (stock dist/ + ${SHIM})`)
