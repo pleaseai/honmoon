@@ -75,8 +75,17 @@ node .claude/skills/run-honmoon/driver.mjs up --mitm --redact --pii-mode detect
 node .claude/skills/run-honmoon/driver.mjs status
 node .claude/skills/run-honmoon/driver.mjs logs
 
-node .claude/skills/run-honmoon/driver.mjs probe https://github.com
-node .claude/skills/run-honmoon/driver.mjs probe https://example.com
+node .claude/skills/run-honmoon/driver.mjs probe https://github.com      # ALLOWED
+node .claude/skills/run-honmoon/driver.mjs probe https://api.github.com  # DENIED — exact match
+node .claude/skills/run-honmoon/driver.mjs probe https://example.com     # DENIED — default
+
+# Hold a request for approval. `example.org` is what the demo policy's pause
+# rule matches — every other host above resolves to allow/deny and never
+# reaches the queue. Run it in the background and give it a long --max-time:
+# `probe` is synchronous and gives up after 30s, and a client that gives up
+# resolves its own hold (see Gotchas), which empties the queue before you can
+# act on it.
+curl -s -o /dev/null --proxy http://127.0.0.1:8443 https://example.org --max-time 120 &
 
 node .claude/skills/run-honmoon/driver.mjs approvals       # held-request queue
 node .claude/skills/run-honmoon/driver.mjs approve 1       # resolve via the mgmt API

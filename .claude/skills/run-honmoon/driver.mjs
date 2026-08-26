@@ -152,6 +152,22 @@ async function up(opts) {
     )
   }
 
+  // Validate the flag combinations BEFORE touching any on-disk state. These
+  // throws used to sit after the policy write and the audit unlink, so an
+  // `up --pii-mode block` that never started a gateway still destroyed the
+  // previous run's audit log on its way to being rejected.
+  //
+  // The gateway rejects --redact-secrets and `--pii-mode block` without
+  // --tls-intercept. Say so instead of dropping the flag on the floor: silently
+  // ignoring it starts a gateway with semantics the caller did not ask for
+  // (`up --pii-mode block` would quietly run in `detect`).
+  if (opts.redact && !opts.mitm) {
+    throw new Error('--redact requires --mitm (--redact-secrets requires --tls-intercept)')
+  }
+  if (opts.piiMode === 'block' && !opts.mitm) {
+    throw new Error('--pii-mode block requires --mitm (--tls-intercept)')
+  }
+
   const policy = opts.policy ?? F.policy
   if (!opts.policy) writeFileSync(F.policy, DEMO_POLICY)
   rmSync(F.audit, { force: true })
@@ -169,20 +185,8 @@ async function up(opts) {
     // so no client can ever trust it -- always pass paths when testing MITM.
     args.push('--tls-intercept', '--ca-cert', F.caCert, '--ca-key', F.caKey)
   }
-  // The gateway rejects --redact-secrets and `--pii-mode block` without
-  // --tls-intercept. Say so instead of dropping the flag on the floor: silently
-  // ignoring it starts a gateway with semantics the caller did not ask for
-  // (`up --pii-mode block` would quietly run in `detect`).
-  if (opts.redact) {
-    if (!opts.mitm) throw new Error('--redact requires --mitm (--redact-secrets requires --tls-intercept)')
-    args.push('--redact-secrets')
-  }
-  if (opts.piiMode) {
-    if (opts.piiMode === 'block' && !opts.mitm) {
-      throw new Error('--pii-mode block requires --mitm (--tls-intercept)')
-    }
-    args.push('--pii-mode', opts.piiMode)
-  }
+  if (opts.redact) args.push('--redact-secrets')
+  if (opts.piiMode) args.push('--pii-mode', opts.piiMode)
 
   // Truncate rather than accumulate: the launch-failure path below dumps this
   // whole file to explain one failed start, and `logs` shows it verbatim --
@@ -256,7 +260,13 @@ async function down() {
 
 // Drive the proxy the way an agent would: HTTP CONNECT through it.
 // Returns the observed verdict. A denied CONNECT is a 403 and curl exits 56.
-function probe(url, { mitm = false, method, body } = {}) {
+//
+// Pass `expect: 'allow' | 'deny'` to assert the policy outcome. The two
+// directions are not symmetric: a deny verdict is decided by the proxy alone,
+// so anything else is a real regression, while an allow verdict still needs the
+// upstream to be reachable -- so only a *policy* denial fails the run there, and
+// an unreachable upstream is reported as the environmental noise it is.
+function probe(url, { mitm = false, method, body, expect } = {}) {
   const args = [
     '-s', '-o', '/dev/null',
     '-w', '%{http_code} %{exitcode}',
@@ -285,7 +295,19 @@ function probe(url, { mitm = false, method, body } = {}) {
     : exit === '0' ? `ALLOWED (upstream ${code})`
     : `curl exit ${exit} (http ${code})`
   log(`  ${url.padEnd(42)} -> ${verdict}`)
-  return { code, exit, verdict }
+
+  const denied = exit === '56'
+  if (expect === 'deny' && !denied) {
+    throw new Error(`${url}: policy was expected to DENY this host, got ${verdict}`)
+  }
+  if (expect === 'allow' && denied) {
+    throw new Error(`${url}: policy DENIED a host the allowlist covers (${verdict})`)
+  }
+  if (expect === 'allow' && exit !== '0') {
+    // Policy let it through; the upstream just did not answer. Not a regression.
+    log('      (upstream unreachable - the policy allowed it, so not a policy regression)')
+  }
+  return { code, exit, verdict, denied }
 }
 
 // Fire a request that will be held, without blocking the driver.
@@ -431,10 +453,10 @@ async function smoke({ mitm = false } = {}) {
 
 async function drive({ mitm }) {
   log('\n=== 3. egress filtering ===')
-  probe('https://github.com', { mitm })                  // exact allowlist hit
-  probe('https://api.github.com', { mitm })              // NOT covered by `github.com`
-  probe('https://raw.githubusercontent.com', { mitm })   // wildcard hit
-  probe('https://example.com', { mitm })                 // default deny
+  probe('https://github.com', { mitm, expect: 'allow' })                // exact allowlist hit
+  probe('https://api.github.com', { mitm, expect: 'deny' })             // NOT covered by `github.com`
+  probe('https://raw.githubusercontent.com', { mitm, expect: 'allow' }) // wildcard hit
+  probe('https://example.com', { mitm, expect: 'deny' })                // default deny
 
   log('\n=== 4. pause -> approval queue ===')
   probeAsync('https://example.org', { mitm })
@@ -497,7 +519,13 @@ async function drive({ mitm }) {
   // Guard the nulls: `null === null` would report "deterministic" for an engine
   // that redacted nothing at all.
   if (a === null || b === null) throw new Error('hook minted no placeholder for a known AWS key')
-  log(`   deterministic across calls: ${a === b ? 'yes' : 'NO - cache stability broken'}`)
+  // Throw rather than log: cache-stable redaction is the property this step
+  // exists to prove, so a drift here has to fail the run, not narrate itself
+  // inside a smoke that still exits 0.
+  if (a !== b) {
+    throw new Error(`hook placeholders differ across calls - cache stability broken (${a} vs ${b})`)
+  }
+  log('   deterministic across calls: yes')
 
   log('\n=== 7. audit log ===')
   await audit(12)
