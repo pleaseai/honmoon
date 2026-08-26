@@ -91,10 +91,15 @@ function runningPid() {
   if (!pid) return null
   try {
     process.kill(pid, 0)
-    return pid
   } catch {
     return null
   }
+  // pids are recycled and gateway.pid outlives crashes/reboots, so "some process
+  // holds this pid" is not "our gateway holds this pid" -- confirm before `down()`
+  // signals it, or we eventually SIGTERM an unrelated process.
+  const ps = sh('ps', ['-o', 'command=', '-p', String(pid)])
+  if (ps.status === 0 && !(ps.stdout ?? '').includes('honmoon')) return null
+  return pid
 }
 
 async function waitHealthy(timeoutMs = 20000) {
@@ -135,8 +140,20 @@ async function up(opts) {
     // --tls-intercept. Without explicit paths the CA is ephemeral/in-memory,
     // so no client can ever trust it -- always pass paths when testing MITM.
     args.push('--tls-intercept', '--ca-cert', F.caCert, '--ca-key', F.caKey)
-    if (opts.redact) args.push('--redact-secrets')
-    if (opts.piiMode) args.push('--pii-mode', opts.piiMode)
+  }
+  // The gateway rejects --redact-secrets and `--pii-mode block` without
+  // --tls-intercept. Say so instead of dropping the flag on the floor: silently
+  // ignoring it starts a gateway with semantics the caller did not ask for
+  // (`up --pii-mode block` would quietly run in `detect`).
+  if (opts.redact) {
+    if (!opts.mitm) throw new Error('--redact requires --mitm (--redact-secrets requires --tls-intercept)')
+    args.push('--redact-secrets')
+  }
+  if (opts.piiMode) {
+    if (opts.piiMode === 'block' && !opts.mitm) {
+      throw new Error('--pii-mode block requires --mitm (--tls-intercept)')
+    }
+    args.push('--pii-mode', opts.piiMode)
   }
 
   const out = openSync(F.log, 'a')
@@ -161,7 +178,7 @@ async function up(opts) {
   if (opts.mitm) log(`  ca cert   ${F.caCert}  (curl --cacert / trust store)`)
 }
 
-function down() {
+async function down() {
   const pid = runningPid()
   if (!pid) {
     log('› no gateway running')
@@ -169,6 +186,19 @@ function down() {
     return
   }
   process.kill(pid)
+  // SIGTERM is asynchronous: `smoke` calls `down()` and then `up()` immediately,
+  // and a gateway that has not finished dying still holds 8443/8444 -- the new
+  // one then fails to bind and `up()` reports "did not become healthy".
+  for (let i = 0; i < 100 && runningPid() === pid; i++) await sleep(100)
+  if (runningPid() === pid) {
+    log('  (SIGTERM ignored after 10s - sending SIGKILL)')
+    try {
+      process.kill(pid, 'SIGKILL')
+    } catch {
+      /* already gone */
+    }
+    await sleep(300)
+  }
   rmSync(F.pid, { force: true })
   log('✓ gateway stopped (pid', pid + ')')
 }
@@ -190,7 +220,16 @@ function probe(url, { mitm = false, method, body } = {}) {
   args.push(url)
 
   const r = sh('curl', args)
+  if (r.error) throw new Error(`curl could not be run: ${r.error.message}`)
   const [code, exit] = (r.stdout || '').trim().split(/\s+/)
+  // No write-out at all means curl never reported a verdict (missing binary,
+  // or a curl older than 7.75 that does not know %{exitcode}) -- reporting
+  // `curl exit undefined` as if it were an observation hides that.
+  if (exit === undefined) {
+    throw new Error(
+      `curl produced no write-out (exit ${r.status}): ${(r.stderr || '').trim() || 'no stderr'}`,
+    )
+  }
   const verdict =
     exit === '56' ? 'DENIED (CONNECT 403)'
     : exit === '28' ? 'HELD (pause - timed out waiting for approval)'
@@ -260,8 +299,14 @@ function hook(text, saltContext = 'driver') {
     tool_response: text,
   })
   const r = sh(BIN, ['hook', '--salt-context', saltContext], { input: payload })
-  if (r.status !== 0) throw new Error(`hook failed: ${r.stderr}`)
-  const out = JSON.parse(r.stdout)
+  if (r.error) throw new Error(`could not run ${BIN}: ${r.error.message} - \`driver.mjs build\` first?`)
+  if (r.status !== 0) throw new Error(`hook failed (exit ${r.status}): ${r.stderr ?? ''}`)
+  // `honmoon hook` writes NOTHING when the verdict is `{}` -- i.e. the payload
+  // held nothing to redact. That is a normal outcome, so JSON.parse('') here
+  // would turn "clean text" into `Unexpected end of JSON input`.
+  const stdout = (r.stdout ?? '').trim()
+  if (!stdout) return null
+  const out = JSON.parse(stdout)
   return out.hookSpecificOutput?.updatedToolOutput ?? null
 }
 
@@ -270,6 +315,15 @@ function hook(text, saltContext = 'driver') {
 // agent-browser is the off-the-shelf driver (no chromium-cli on this box).
 function ab(args, { quiet = false } = {}) {
   const r = sh('agent-browser', args)
+  // agent-browser exits non-zero on failure (and spawn sets `error` when it is
+  // not installed). Ignoring both made `shot()` print "✓ screenshot -> path"
+  // for a file that was never written.
+  if (r.error) throw new Error(`agent-browser could not be run: ${r.error.message}`)
+  if (r.status !== 0) {
+    throw new Error(
+      `agent-browser ${args[0]} failed (exit ${r.status}): ${(r.stderr || r.stdout || '').trim()}`,
+    )
+  }
   if (!quiet) process.stdout.write(r.stdout || r.stderr || '')
   return r.stdout ?? ''
 }
@@ -309,7 +363,7 @@ async function smoke({ mitm = false } = {}) {
   build()
 
   log('\n=== 2. launch gateway ===')
-  down()
+  await down()
   await up({ mitm, redact: mitm, piiMode: mitm ? 'detect' : undefined })
 
   log('\n=== 3. egress filtering ===')
@@ -353,8 +407,12 @@ async function smoke({ mitm = false } = {}) {
 
   log('\n=== 6. hook path (direct invocation, no network) ===')
   const redacted = hook('aws key AKIAIOSFODNN7EXAMPLE and email alice@example.com')
+  if (redacted === null) throw new Error('hook returned no verdict - redaction did not fire')
   log('  ', redacted)
   const a = hook('AKIAIOSFODNN7EXAMPLE'), b = hook('AKIAIOSFODNN7EXAMPLE')
+  // Guard the nulls: `null === null` would report "deterministic" for an engine
+  // that redacted nothing at all.
+  if (a === null || b === null) throw new Error('hook minted no placeholder for a known AWS key')
   log(`   deterministic across calls: ${a === b ? 'yes' : 'NO - cache stability broken'}`)
 
   log('\n=== 7. audit log ===')
@@ -368,7 +426,7 @@ async function smoke({ mitm = false } = {}) {
   }
 
   log('\n=== 9. teardown ===')
-  down()
+  await down()
   log('\n✓ smoke complete')
 }
 
@@ -376,10 +434,23 @@ async function smoke({ mitm = false } = {}) {
 
 const [cmd, ...rest] = process.argv.slice(2)
 const has = (f) => rest.includes(f)
+// Flags that consume the following argument -- needed so `pos` does not mistake
+// a flag value for a positional.
+const VALUED = new Set(['--pii-mode', '--policy', '--salt', '-X', '-d'])
 const val = (f) => {
   const i = rest.indexOf(f)
   return i === -1 ? undefined : rest[i + 1]
 }
+// Positional arguments only. Reading `rest[0]` directly made `probe --mitm URL`
+// probe the string "--mitm" and `hook --salt s` redact the string "--salt".
+const pos = (() => {
+  const out = []
+  for (let i = 0; i < rest.length; i++) {
+    if (VALUED.has(rest[i])) i++
+    else if (!rest[i].startsWith('-')) out.push(rest[i])
+  }
+  return out
+})()
 
 try {
   switch (cmd) {
@@ -395,7 +466,7 @@ try {
       })
       break
     case 'down':
-      down()
+      await down()
       break
     case 'status': {
       const pid = runningPid()
@@ -407,27 +478,33 @@ try {
       log(existsSync(F.log) ? readFileSync(F.log, 'utf8') : '(no log yet)')
       break
     case 'probe':
-      probe(rest[0], { mitm: has('--mitm'), method: val('-X'), body: val('-d') })
+      probe(pos[0], { mitm: has('--mitm'), method: val('-X'), body: val('-d') })
       break
     case 'approvals':
       await approvals()
       break
     case 'approve':
-      await resolveApproval(rest[0], 'approve')
+      await resolveApproval(pos[0], 'approve')
       break
     case 'deny':
-      await resolveApproval(rest[0], 'reject')
+      await resolveApproval(pos[0], 'reject')
       break
     case 'audit':
-      await audit(Number(rest[0]) || 20)
+      await audit(Number(pos[0]) || 20)
       break
     case 'hook':
-      log(hook(rest[0] ?? 'aws key AKIAIOSFODNN7EXAMPLE, email alice@example.com', val('--salt') ?? 'driver'))
+      log(
+        hook(pos[0] ?? 'aws key AKIAIOSFODNN7EXAMPLE, email alice@example.com', val('--salt') ?? 'driver') ??
+          '(nothing to redact)',
+      )
       break
     case 'shot':
-      shot(rest[0])
+      shot(pos[0])
       break
     case 'ui-approve': {
+      // agent-browser holds no page until something opens one, so a standalone
+      // `ui-approve` would fail with `nav "Approvals" not found in snapshot`.
+      ab(['open', MGMT_URL], { quiet: true })
       clickNav('Approvals')
       await sleep(500)
       const ref = clickFirst(has('--deny') ? 'Deny' : 'Approve')
@@ -441,8 +518,8 @@ try {
       log(`honmoon driver — usage: node .claude/skills/run-honmoon/driver.mjs <cmd>
 
   build [--no-dashboard]      dashboard (vite) + cargo build --workspace
-  up [--mitm] [--redact]      launch gateway; --policy FILE  --pii-mode detect|block
-     [--pii-mode M] [--policy F]
+  up [--mitm] [--redact]      launch gateway; --redact and --pii-mode block
+     [--pii-mode M] [--policy F]   both require --mitm (--tls-intercept)
   down / status / logs        lifecycle
   probe <url> [--mitm]        CONNECT through the proxy, print the verdict
      [-X METHOD] [-d BODY]

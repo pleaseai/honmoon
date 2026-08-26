@@ -92,6 +92,9 @@ Override with `HONMOON_ADDR` / `HONMOON_MGMT_ADDR`.
 `403` and `curl` exits **56**, an approved-after-hold request exits 0, and a
 hold that times out exits 28.
 
+`--redact` and `--pii-mode block` both require `--mitm`; the driver rejects the
+combination rather than starting a gateway with semantics you did not ask for.
+
 ### Direct invocation (no gateway, no network)
 
 Most recent PRs touch the redaction engine (`hook.rs`, `secret_tokenizer/`,
@@ -111,7 +114,14 @@ echo '{"hook_event_name":"PostToolUse","tool_name":"Read","tool_response":"key A
 
 Placeholders must be **byte-identical across runs for the same salt** — that is
 what keeps re-sent conversation history prompt-cache stable. The `smoke` command
-asserts it.
+asserts it (and rejects a vacuous pass where nothing was redacted at all).
+
+**`honmoon hook` writes nothing to stdout when there is nothing to redact** —
+the verdict is `{}` and the binary skips the write entirely
+(`crates/honmoon-cli/src/hook.rs:54`), still exiting 0. Parsing stdout as JSON
+unconditionally therefore blows up on every clean payload. Treat empty output as
+"no redaction needed", not as failure; the driver's `hook` prints
+`(nothing to redact)`.
 
 ## Run (human path)
 
