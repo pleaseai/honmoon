@@ -26,9 +26,14 @@ Already present via `mise` (`mise.toml` pins node + bun; `rust-toolchain.toml`
 drives rustup). Nothing to `apt-get` / `brew install`:
 
 ```bash
-mise install          # node 24 + bun
-bun install           # JS workspace deps
+mise trust && mise install   # node 24 + bun — `trust` is required, see below
+bun install                  # JS workspace deps
 ```
+
+`mise trust` is not optional on a fresh checkout: until the repo's `mise.toml`
+is trusted, the `bun` shim refuses to run and `driver.mjs build` dies at its
+first command. An existing worktree is usually already trusted, which is
+exactly why this step is easy to leave out.
 
 The driver screenshots via `agent-browser` (installed globally); there is no
 `chromium-cli` on this machine.

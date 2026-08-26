@@ -238,7 +238,15 @@ async function down() {
     rmSync(F.pid, { force: true })
     return
   }
-  process.kill(pid)
+  // The gateway can exit between runningPid() and here (it is a separate
+  // process, and a crash needs no cooperation from us), which makes SIGTERM
+  // throw ESRCH and take the driver down with it. The SIGKILL path below
+  // already guarded this; the first signal did not.
+  try {
+    process.kill(pid)
+  } catch {
+    /* already gone between the check and the signal */
+  }
   // SIGTERM is asynchronous: `smoke` calls `down()` and then `up()` immediately,
   // and a gateway that has not finished dying still holds 8443/8444 -- the new
   // one then fails to bind and `up()` reports "did not become healthy".
@@ -351,7 +359,14 @@ async function resolveApproval(id, decision) {
 
 async function audit(limit = 20) {
   const { json } = await api(`/api/audit?limit=${limit}`)
-  for (const e of json ?? []) {
+  // An error payload parses as an object, not an array, and `{} ?? []` keeps
+  // the object -- so a bare `for...of` would throw "is not iterable" and bury
+  // the actual API error behind a TypeError.
+  if (!Array.isArray(json)) {
+    log(`  (audit API returned no list: ${JSON.stringify(json ?? null).slice(0, 200)})`)
+    return []
+  }
+  for (const e of json) {
     const pii = e.facts?.pii ? `  pii=${e.facts.pii.types.join(',')}` : ''
     const rule = e.rule ? `  rule=${e.rule}` : ''
     log(`  #${e.id} ${e.decision.padEnd(9)} ${e.facts?.domain ?? '-'}${rule}${pii}`)
