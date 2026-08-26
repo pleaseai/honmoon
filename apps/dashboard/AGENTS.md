@@ -11,9 +11,18 @@ over four live views — Overview, Audit Log, Policies (Prism-highlighted), Appr
 bun install                       # from repo root (workspace)
 cd apps/dashboard && bun run dev  # Vite dev server with HMR
 bun run --filter '@honmoon/dashboard' build
+bun run --filter '@honmoon/dashboard' build:demo  # stock build + demo shim → dist-demo/
 # or from root:
 bun run dashboard:dev
 ```
+
+`build:demo` produces the backend-free demo deployed to Cloudflare Pages by
+`.github/workflows/deploy-demo.yml`. **Invariant: the app source contains no demo
+code and no demo build flag.** `build:demo` runs the ordinary `build`, then
+`demo/build.ts` copies the resulting `dist/` to `dist-demo/` (gitignored) and
+injects one `<script src="./demo-mode.js">` tag ahead of the app bundle. The demo
+is the exact shipped artifact plus that shim — keep it that way: anything a
+future demo needs belongs in `demo/`, never behind a flag in `src/`.
 
 Views are hash-routed (no History API, so neither Cloudflare Pages nor the
 rust-embed handler needs a rewrite rule). Unknown hashes fall back to Overview:
@@ -32,6 +41,8 @@ rust-embed handler needs a rewrite rule). Unknown hashes fall back to Overview:
 | `src/main.tsx` / `src/App.tsx` | Entry point; hash router + shell over the four views. |
 | `src/components/` | `Overview`, `AuditLog`, `PolicyView`, `Approvals`, `DecisionBadge`. |
 | `src/api.ts` / `src/hooks.ts` / `src/format.ts` | Typed management-API client, `usePolling`, formatters. |
+| `demo/demo-mode.js` | Demo shim: patches `window.fetch` with in-memory fixtures, runs a scripted timeline, mounts the "demo" badge. Plain browser JS, no bundler. |
+| `demo/build.ts` | Copies `dist/` → `dist-demo/` and injects the shim's `<script>` tag. Run by `build:demo`. |
 | `vite.config.ts` | Vite + Tailwind; in dev, proxies `/api` → `127.0.0.1:8444` (a running `honmoon gateway`). |
 
 ## Code Style
