@@ -227,7 +227,8 @@ bun test                   # 9 tests
 | `curl: (60) SSL certificate problem` under `--mitm` | Pass `--cacert target/honmoon-run/ca.pem`, and make sure the gateway was started with explicit `--ca-cert`/`--ca-key` (otherwise the CA is ephemeral). |
 | Dashboard loads but is blank | `apps/dashboard/dist` was missing at compile time, so `build.rs` embedded a placeholder. Build the dashboard, then rebuild cargo. |
 | `error: the following required arguments were not provided: --ca-key` | `--ca-cert` and `--ca-key` are mutually required and both need `--tls-intercept`. |
-| `gateway did not become healthy` | Read `target/honmoon-run/gateway.log`. Usually port 8443/8444 is already held by an earlier run — `driver.mjs down`, or set `HONMOON_ADDR`/`HONMOON_MGMT_ADDR`. |
+| `gateway did not become healthy` | Read `target/honmoon-run/gateway.log`. The driver kills the process it started, so the ports are free to retry. |
+| `… is already serving /healthz - another gateway is running` | Something already owns the management port (a hand-started gateway, or a run whose `gateway.pid` was lost). `driver.mjs down`, kill it, or set `HONMOON_ADDR`/`HONMOON_MGMT_ADDR`. `up` refuses rather than rewriting `policy.yaml` and unlinking the live gateway's `audit.jsonl`. |
 | `honmoon: command not found` | The binary is `./target/debug/honmoon`; it is not installed on PATH. |
 | `join` errors out immediately | Not implemented yet — expected. |
 | `agent-browser` "Element not found" | The name probably carries a badge count. Use `snapshot` + `@ref`. |

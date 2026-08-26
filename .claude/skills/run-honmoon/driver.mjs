@@ -96,20 +96,38 @@ function runningPid() {
   }
   // pids are recycled and gateway.pid outlives crashes/reboots, so "some process
   // holds this pid" is not "our gateway holds this pid" -- confirm before `down()`
-  // signals it, or we eventually SIGTERM an unrelated process.
+  // signals it, or we eventually SIGTERM an unrelated process. Match the binary
+  // path we actually spawn: a bare "honmoon" substring also matches every
+  // unrelated process launched from a checkout whose directory is named honmoon.
   const ps = sh('ps', ['-o', 'command=', '-p', String(pid)])
-  if (ps.status === 0 && !(ps.stdout ?? '').includes('honmoon')) return null
+  if (ps.status === 0 && !(ps.stdout ?? '').includes(BIN)) return null
   return pid
 }
 
-async function waitHealthy(timeoutMs = 20000) {
+const childAlive = (child) => child.exitCode === null && child.signalCode === null
+
+// Is *something* already answering the management port? Used as a pre-flight:
+// a foreign listener there makes every later health check meaningless.
+async function mgmtAnswers() {
+  try {
+    return (await fetch(`${MGMT_URL}/healthz`)).ok
+  } catch {
+    return false
+  }
+}
+
+// Healthy means "OUR child is serving", not "the port answers". Without the
+// liveness check a gateway that failed to bind (port already held by an
+// unrelated run) exits immediately while the *other* process keeps answering
+// /healthz -- `up` then reports success for a pid that is already dead.
+async function waitHealthy(child, timeoutMs = 20000) {
   const deadline = Date.now() + timeoutMs
   while (Date.now() < deadline) {
-    try {
-      const res = await fetch(`${MGMT_URL}/healthz`)
-      if (res.ok) return true
-    } catch {
-      /* not up yet */
+    if (!childAlive(child)) return false
+    if (await mgmtAnswers()) {
+      // Settle: a bind failure can land just after the foreign /healthz answered.
+      await sleep(300)
+      return childAlive(child)
     }
     await sleep(200)
   }
@@ -123,6 +141,16 @@ async function up(opts) {
     return
   }
   if (!existsSync(BIN)) throw new Error(`missing ${BIN} - run \`driver.mjs build\` first`)
+  // Refuse to launch into an occupied management port. Beyond the doomed bind,
+  // the setup below rewrites policy.yaml and unlinks audit.jsonl -- doing that
+  // while another gateway (e.g. one started by hand) is still using them
+  // destroys its audit log for a run that was never going to start.
+  if (await mgmtAnswers()) {
+    throw new Error(
+      `${MGMT_URL} is already serving /healthz - another gateway is running. ` +
+        'Stop it (`driver.mjs down`, or kill it) or set HONMOON_MGMT_ADDR/HONMOON_ADDR.',
+    )
+  }
 
   const policy = opts.policy ?? F.policy
   if (!opts.policy) writeFileSync(F.policy, DEMO_POLICY)
@@ -166,8 +194,18 @@ async function up(opts) {
   child.unref()
   writeFileSync(F.pid, String(child.pid))
 
-  if (!(await waitHealthy())) {
+  if (!(await waitHealthy(child))) {
     log(readFileSync(F.log, 'utf8'))
+    // Never leave the process we started behind: an unreferenced gateway keeps
+    // holding 8443/8444 and every later `up` then fails the same way.
+    if (childAlive(child)) {
+      try {
+        process.kill(child.pid, 'SIGKILL')
+      } catch {
+        /* already gone */
+      }
+    }
+    rmSync(F.pid, { force: true })
     throw new Error('gateway did not become healthy')
   }
   log(`✓ gateway up (pid ${child.pid})`)
@@ -329,6 +367,9 @@ function ab(args, { quiet = false } = {}) {
 }
 
 function shot(name = 'dashboard') {
+  // `shot` is reachable without ever having run `up` (e.g. against a
+  // hand-started gateway), and agent-browser does not create the directory.
+  ensureRun()
   const path = join(F.shots, `${name}.png`)
   ab(['open', MGMT_URL])
   ab(['screenshot', path])
@@ -366,6 +407,18 @@ async function smoke({ mitm = false } = {}) {
   await down()
   await up({ mitm, redact: mitm, piiMode: mitm ? 'detect' : undefined })
 
+  // Everything past launch runs under a finally: a failed assertion used to
+  // abort before step 9, leaving the gateway holding 8443/8444.
+  try {
+    await drive({ mitm })
+  } finally {
+    log('\n=== 9. teardown ===')
+    await down()
+  }
+  log('\n✓ smoke complete')
+}
+
+async function drive({ mitm }) {
   log('\n=== 3. egress filtering ===')
   probe('https://github.com', { mitm })                  // exact allowlist hit
   probe('https://api.github.com', { mitm })              // NOT covered by `github.com`
@@ -394,14 +447,34 @@ async function smoke({ mitm = false } = {}) {
       '-X', 'POST', 'https://httpbin.org/post',
       '-H', 'content-type: application/json', '-d', body, '--max-time', '30',
     ])
-    try {
-      const echoed = JSON.parse(r.stdout)
-      log(`  body sent by client      : ${body.length} bytes`)
-      log(`  Content-Length upstream  : ${echoed.headers['Content-Length']} (placeholders are wider)`)
-      log(`  data echoed back to client: ${echoed.data}`)
-      log('  ^ upstream received placeholders; the response was detokenized on the way back')
-    } catch {
-      log('  (httpbin unreachable - skipping wire-redaction assertion)')
+    // Distinguish "the echo service is down" from "the proxy/redaction broke".
+    // A blanket catch reported a 5xx from the gateway, a truncated body, or a
+    // redaction regression as `httpbin unreachable` -- exactly the regressions
+    // this step exists to surface.
+    if (r.error || r.status !== 0) {
+      log(`  (curl failed: ${r.error?.message ?? `exit ${r.status}`} - skipping wire-redaction assertion)`)
+    } else {
+      let echoed
+      try {
+        echoed = JSON.parse(r.stdout)
+      } catch {
+        log(`  (non-JSON response - skipping: ${(r.stdout || '').slice(0, 200).trim() || '<empty>'})`)
+      }
+      if (echoed) {
+        const upstreamLen = echoed.headers?.['Content-Length']
+        if (upstreamLen === undefined) {
+          throw new Error(`httpbin echo carried no Content-Length header: ${r.stdout.slice(0, 200)}`)
+        }
+        log(`  body sent by client      : ${body.length} bytes`)
+        log(`  Content-Length upstream  : ${upstreamLen} (placeholders are wider)`)
+        log(`  data echoed back to client: ${echoed.data}`)
+        if (Number(upstreamLen) <= body.length) {
+          throw new Error(
+            `upstream Content-Length ${upstreamLen} <= client body ${body.length} - nothing was tokenized on the wire`,
+          )
+        }
+        log('  ^ upstream received placeholders; the response was detokenized on the way back')
+      }
     }
   }
 
@@ -424,10 +497,6 @@ async function smoke({ mitm = false } = {}) {
   } catch {
     log('  (agent-browser unavailable - skipped)')
   }
-
-  log('\n=== 9. teardown ===')
-  await down()
-  log('\n✓ smoke complete')
 }
 
 // ---------------------------------------------------------------- cli
