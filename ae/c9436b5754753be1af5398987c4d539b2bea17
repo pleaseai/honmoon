@@ -1,0 +1,31 @@
+.claude/skills/run-honmoon/SKILL.md
+  s_26251e4d00f8bf::t_a77394fc1aa5e6 29-30,33-36
+  s_d77841429059c1::t_c27e672495aed0 37
+.claude/skills/run-honmoon/driver.mjs
+  s_26251e4d00f8bf::t_a61b7e5467d144 241-249
+  s_26251e4d00f8bf::t_2548d6c5d8e2b0 362-369
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "aec9436b5754753be1af5398987c4d539b2bea17",
+  "prompts": {},
+  "sessions": {
+    "s_26251e4d00f8bf": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "19921313-ad15-4170-918f-6ad1e06c7635",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    },
+    "s_d77841429059c1": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "7c61a711-dfc8-44c0-961b-7dcade824f85",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
