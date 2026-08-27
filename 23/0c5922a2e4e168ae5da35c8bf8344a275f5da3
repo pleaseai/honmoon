@@ -1,0 +1,19 @@
+apps/dashboard/demo/demo-mode.js
+  s_d77841429059c1::t_cb083fb84ca862 26-31
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "230c5922a2e4e168ae5da35c8bf8344a275f5da3",
+  "prompts": {},
+  "sessions": {
+    "s_d77841429059c1": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "7c61a711-dfc8-44c0-961b-7dcade824f85",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
