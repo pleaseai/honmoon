@@ -23,8 +23,12 @@
   const ago = seconds => at(-seconds * 1000)
 
   // ── Policy ────────────────────────────────────────────────────────────────
-  // Mirrors `policies/agent.yaml`. The timeline below fires these exact rules,
-  // so the audit log visibly corresponds to what the Policies tab shows.
+  // Derived from `policies/agent.yaml`, with the additions the demo scenario
+  // needs: `registry.npmjs.org` on the egress allow-list, and the two trailing
+  // allow rules for benign SQL/k8s reads. It is deliberately not kept in sync
+  // with that file — this is the policy the demo gateway is running, the
+  // Policies tab renders exactly this, and the timeline below fires these rules,
+  // so the audit log corresponds to what a visitor sees there.
 
   const POLICY_YAML = [
     '# Honmoon demo — synthetic policy. No gateway is attached.',
