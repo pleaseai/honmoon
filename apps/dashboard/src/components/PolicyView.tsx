@@ -1,9 +1,17 @@
 import Prism from 'prismjs'
 import { useEffect, useState } from 'react'
-import Editor from 'react-simple-code-editor'
+import EditorModule from 'react-simple-code-editor'
 import { getPolicy } from '../api'
 import 'prismjs/components/prism-yaml'
 import 'prismjs/themes/prism-tomorrow.css'
+
+// `react-simple-code-editor` ships CJS only — no `exports`/`module` field, and
+// 0.14.1 is the latest release — so Vite's dep optimizer double-wraps its default
+// export: `import Editor from …` resolves to `{ default: Component }` instead of
+// the component, and React rejects that with "Element type is invalid … got:
+// object", blanking the whole view. Unwrap the extra layer, falling through when
+// a future Vite (or an ESM release) hands us the component directly.
+const Editor = (EditorModule as unknown as { default?: typeof EditorModule }).default ?? EditorModule
 
 export function PolicyView() {
   const [yaml, setYaml] = useState('')

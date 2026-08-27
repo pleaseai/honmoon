@@ -11,6 +11,8 @@ export default pleaseai({
   ignores: [
     'target',
     '**/dist',
+    // Fixture-backed demo build output (`bun run --filter '@honmoon/dashboard' build:demo`).
+    '**/dist-demo',
     '.please/**',
     'crates/**',
     '**/*.toml',
@@ -21,7 +23,9 @@ export default pleaseai({
   ],
 }, {
   // Bun/Node entrypoints: `process` is a legitimate global; CLI/server log to stdout.
-  files: ['packages/**/*.ts', 'datasets/**/*.ts'],
+  // `apps/dashboard/demo/build.ts` is one of these — a build script run by `bun`,
+  // not app code (it lives outside `src/` so the app bundle can never reach it).
+  files: ['packages/**/*.ts', 'datasets/**/*.ts', 'apps/dashboard/demo/*.ts'],
   rules: {
     'node/prefer-global/process': 'off',
     'no-console': 'off',
