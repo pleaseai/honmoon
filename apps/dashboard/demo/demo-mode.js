@@ -56,6 +56,18 @@
     '    condition: "http.method == \'POST\' && http.body_size > 10485760"',
     '    verdict: deny',
     '',
+    '  # Allow rules come last: the first matching rule wins, so the deny/pause',
+    '  # rules above always get to see a request before these do.',
+    '  - name: sql-allow-reads',
+    '    endpoint: postgres-prod',
+    '    condition: "sql.verb == \'SELECT\' || sql.verb == \'INSERT\'"',
+    '    verdict: allow',
+    '',
+    '  - name: k8s-allow-reads',
+    '    endpoint: k8s-prod',
+    '    condition: "k8s.verb == \'get\' || k8s.verb == \'list\'"',
+    '    verdict: allow',
+    '',
   ].join('\n')
 
   const POLICY_PARSED = {
@@ -84,6 +96,20 @@
         condition: 'http.method == \'POST\' && http.body_size > 10485760',
         verdict: 'deny',
       },
+      // Allow rules come last: the first matching rule wins, so the deny/pause
+      // rules above always get to see a request before these do.
+      {
+        name: 'sql-allow-reads',
+        endpoint: 'postgres-prod',
+        condition: 'sql.verb == \'SELECT\' || sql.verb == \'INSERT\'',
+        verdict: 'allow',
+      },
+      {
+        name: 'k8s-allow-reads',
+        endpoint: 'k8s-prod',
+        condition: 'k8s.verb == \'get\' || k8s.verb == \'list\'',
+        verdict: 'allow',
+      },
     ],
   }
 
@@ -100,6 +126,7 @@
       verdict: 'allow',
       facts: {
         endpoint: 'anthropic',
+        domain: 'api.anthropic.com',
         http: { method: 'POST', host: 'api.anthropic.com', path: '/v1/messages', body_size: 4211 },
       },
     },
@@ -107,6 +134,7 @@
       t: 1604,
       decision: 'allowed',
       verdict: 'allow',
+      rule: 'sql-allow-reads',
       facts: { endpoint: 'postgres-prod', sql: { verb: 'SELECT', table: 'orders' } },
     },
     { t: 1497, decision: 'denied', verdict: 'deny', facts: { domain: 'metrics.internal.corp' } },
@@ -114,6 +142,7 @@
       t: 1388,
       decision: 'allowed',
       verdict: 'allow',
+      rule: 'k8s-allow-reads',
       facts: { endpoint: 'k8s-prod', k8s: { verb: 'get', resource: 'pods', namespace: 'checkout' } },
     },
     {
@@ -155,6 +184,7 @@
       rule: 'http-block-large-upload',
       facts: {
         endpoint: 'artifacts',
+        domain: 'uploads.example.com',
         http: {
           method: 'POST',
           host: 'uploads.example.com',
@@ -169,6 +199,7 @@
       verdict: 'allow',
       facts: {
         endpoint: 'npm',
+        domain: 'registry.npmjs.org',
         http: { method: 'GET', host: 'registry.npmjs.org', path: '/react', body_size: 0 },
       },
     },
@@ -193,6 +224,7 @@
       t: 355,
       decision: 'allowed',
       verdict: 'allow',
+      rule: 'sql-allow-reads',
       facts: { endpoint: 'postgres-prod', sql: { verb: 'INSERT', table: 'audit_trail' } },
     },
     {
@@ -201,6 +233,7 @@
       verdict: 'allow',
       facts: {
         endpoint: 'github',
+        domain: 'github.com',
         http: {
           method: 'GET',
           host: 'github.com',
@@ -213,6 +246,7 @@
       t: 138,
       decision: 'allowed',
       verdict: 'allow',
+      rule: 'k8s-allow-reads',
       facts: {
         endpoint: 'k8s-prod',
         k8s: { verb: 'list', resource: 'configmaps', namespace: 'checkout' },
@@ -224,6 +258,7 @@
       verdict: 'allow',
       facts: {
         endpoint: 'anthropic',
+        domain: 'api.anthropic.com',
         http: { method: 'POST', host: 'api.anthropic.com', path: '/v1/messages', body_size: 9822 },
       },
     },
@@ -358,18 +393,21 @@
       verdict: 'allow',
       facts: {
         endpoint: 'anthropic',
+        domain: 'api.anthropic.com',
         http: { method: 'POST', host: 'api.anthropic.com', path: '/v1/messages', body_size: 6104 },
       },
     },
     {
       decision: 'allowed',
       verdict: 'allow',
+      rule: 'sql-allow-reads',
       facts: { endpoint: 'postgres-prod', sql: { verb: 'SELECT', table: 'orders' } },
     },
     { decision: 'denied', verdict: 'deny', facts: { domain: 'metrics.internal.corp' } },
     {
       decision: 'allowed',
       verdict: 'allow',
+      rule: 'k8s-allow-reads',
       facts: { endpoint: 'k8s-prod', k8s: { verb: 'get', resource: 'pods', namespace: 'search' } },
     },
     { decision: 'allowed', verdict: 'allow', facts: { domain: 'objects.githubusercontent.com' } },
@@ -379,6 +417,7 @@
       rule: 'http-block-large-upload',
       facts: {
         endpoint: 'artifacts',
+        domain: 'uploads.example.com',
         http: {
           method: 'POST',
           host: 'uploads.example.com',
@@ -392,12 +431,14 @@
       verdict: 'allow',
       facts: {
         endpoint: 'npm',
+        domain: 'registry.npmjs.org',
         http: { method: 'GET', host: 'registry.npmjs.org', path: '/vite', body_size: 0 },
       },
     },
     {
       decision: 'allowed',
       verdict: 'allow',
+      rule: 'k8s-allow-reads',
       facts: {
         endpoint: 'k8s-prod',
         k8s: { verb: 'list', resource: 'configmaps', namespace: 'payments' },

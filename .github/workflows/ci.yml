@@ -72,8 +72,11 @@ jobs:
       # deploy-demo.yml only runs on `main`, so without this step a break in
       # `apps/dashboard/demo/build.ts` (which `tsc -b` also does not cover — the
       # app tsconfig includes `src` only) would first surface at deploy time.
+      # The shim is invoked directly rather than via `build:demo`, which would
+      # rebuild the dashboard the Build step above already produced.
       - name: Build dashboard demo
-        run: bun run --filter '@honmoon/dashboard' build:demo
+        run: bun demo/build.ts
+        working-directory: apps/dashboard
 
   pii-benchmark:
     name: PII — Tier-1 benchmark gate
