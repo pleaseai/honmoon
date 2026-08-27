@@ -1,0 +1,19 @@
+.github/workflows/deploy-demo.yml
+  s_d77841429059c1::t_dbd6a136316098 75-85
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "588023d87fe3d656aaafe110a937ee6d3b76bf84",
+  "prompts": {},
+  "sessions": {
+    "s_d77841429059c1": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "7c61a711-dfc8-44c0-961b-7dcade824f85",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
