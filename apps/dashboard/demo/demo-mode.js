@@ -143,7 +143,7 @@
     {
       t: 968,
       decision: 'approved',
-      verdict: 'allow',
+      verdict: 'pause',
       rule: 'sql-no-prod-drop',
       approval_id: 101,
       facts: { endpoint: 'postgres-prod', sql: { verb: 'TRUNCATE', table: 'sessions' } },
@@ -183,7 +183,7 @@
     {
       t: 570,
       decision: 'rejected',
-      verdict: 'deny',
+      verdict: 'pause',
       rule: 'sql-no-prod-drop',
       approval_id: 102,
       facts: { endpoint: 'postgres-prod', sql: { verb: 'DROP', table: 'legacy_invoices' } },
@@ -295,7 +295,10 @@
     record({
       timestamp: new Date().toISOString(),
       decision,
-      verdict: decision === 'approved' ? 'allow' : 'deny',
+      // The policy verdict that drove the event, not its outcome: a held
+      // request matched a `pause` rule, and `honmoon-core::audit` keeps `pause`
+      // on the resolution too (`decision` carries approved/rejected).
+      verdict: 'pause',
       rule: held.rule,
       facts: heldFacts(id),
       approval_id: id,
