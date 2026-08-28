@@ -1,6 +1,7 @@
 //! `honmoon` — policy-based firewall gateway CLI.
 
 mod hook;
+mod isolate;
 
 use std::net::TcpListener;
 use std::path::PathBuf;
@@ -318,6 +319,19 @@ fn run(policy: PathBuf, argv: Vec<String>) -> Result<()> {
 
     let proxy_url = format!("http://{addr}");
     tracing::info!(%proxy_url, "egress proxy ready");
+
+    // Say out loud how much this wrapper is actually worth on this host. Until
+    // ADR-0005 lands, the answer everywhere is "less than it looks": the proxy
+    // env vars below are a request to the child, not a constraint on it.
+    //
+    // Printed rather than logged: the subscriber above filters on `RUST_LOG`,
+    // which is unset in an ordinary run and leaves only ERROR enabled, so a
+    // `tracing::warn!` here would be silent exactly when the operator most
+    // needs to read it.
+    let isolation = isolate::Isolation::probe();
+    if let Some(warning) = isolation.warning() {
+        eprintln!("honmoon: warning: {warning}");
+    }
 
     let status = std::process::Command::new(program)
         .args(args)

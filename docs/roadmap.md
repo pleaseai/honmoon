@@ -144,7 +144,20 @@ Note: fleet-wide DLP policy management and compliance / exfil reporting are Paid
 - [ ] `honmoon join` — route host traffic to a gateway via tunnel (WireGuard)
 - [ ] Policy hot-reload (graceful reload without dropping tunnels)
 
-**Exit criteria**: all three modes work end-to-end on Linux; documented setup.
+**Exit criteria**: all three modes work end-to-end on Linux; documented setup. For `run`
+specifically: an **unprivileged** child that deliberately ignores every proxy environment variable
+still cannot reach a denied host. A child able to escalate to root is out of scope — per-process
+confinement is best-effort egress routing, not a containment wall, and `join` is the answer where
+that boundary matters.
+
+> **`honmoon run` is advisory today.** It sets `http_proxy`/`https_proxy` for the child and
+> nothing more, so a child that ignores those variables reaches the network without ever being
+> evaluated (TD-003). `run` now says so on stderr at startup instead of implying enforcement.
+> [ADR-0005](../.please/docs/decisions/0005-empty-namespace-and-bridged-proxy-sockets.md) records
+> the design that closes it: the child gets **no network at all** — an empty namespace on Linux, a
+> Seatbelt profile on macOS — with honmoon's proxies bridged in on localhost. Ignoring the proxy
+> environment then reaches nothing rather than escaping. macOS needs no system extension and no
+> Apple Developer signing, so it is no longer the expensive half.
 
 ---
 
@@ -234,3 +247,11 @@ Not every layer runs everywhere — record this so scope stays honest:
 |------------|----------------------------|--------------------|
 | HTTP egress filter + control plane | ✅ | ✅ (explicit proxy only) |
 | Wire-level SQL/K8s, `run`/`join`, TLS MITM | ✅ | ❌ (needs OS networking) |
+| **`run` enforcement** (child cannot bypass) | ⚠️ advisory everywhere today; both platforms designed in ADR-0005 (empty namespace / Seatbelt) | ❌ |
+
+One measured caveat for the planned Linux path: **the default Docker seccomp profile blocks
+`unshare(CLONE_NEWUSER)`**, so `honmoon run` inside an ordinary container cannot build the
+namespace and falls back to advisory enforcement. Verified on this project's own toolchain —
+`docker run ubuntu:24.04 unshare -Un` fails with `Operation not permitted`, while the same
+command under `--security-opt seccomp=unconfined` succeeds as a non-root user. Since agents are
+frequently containerized, this is a mainstream case rather than an edge one.
