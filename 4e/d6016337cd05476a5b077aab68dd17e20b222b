@@ -1,0 +1,59 @@
+crates/honmoon-cli/src/isolate/macos.rs
+  s_cf4a5344af068d::t_5f98203939518a 1-190,192-274
+  s_cf4a5344af068d::t_bccd303d91e2d8 191
+crates/honmoon-cli/examples/bypass_probe.rs
+  s_cf4a5344af068d::t_550fe9b84d7efb 15-22,26,31-35,44-49,68-112
+  s_cf4a5344af068d::t_f84147c16c4793 113
+crates/honmoon-cli/tests/enforced_isolation.rs
+  s_cf4a5344af068d::t_41d5aa50fe435f 9-18,20,29,77-81,184,197-201,203-211,213-216,219-238
+  s_cf4a5344af068d::t_da5fe256753b89 202,212
+  s_cf4a5344af068d::t_4e9fac644eb0fd 271-273,337-340,392-453,461-463,481-483
+  s_cf4a5344af068d::t_e2d05e3ca95b68 239
+README.md
+  s_cf4a5344af068d::t_08ecd7b6ee6b6d 81,168-170,172-180,186-192,195-206
+docs/roadmap.md
+  s_cf4a5344af068d::t_02e8bcd27aa3cd 144,154,156-165,255
+wiki/deep-dive/egress-gateway.md
+  s_cf4a5344af068d::t_551beed42ce2e8 200-215
+wiki/onboarding/product-manager-guide.md
+  s_cf4a5344af068d::t_9992d089193ff3 76,95,106,136-138
+crates/honmoon-cli/src/isolate/mod.rs
+  s_cf4a5344af068d::t_ec75844c866b8f 10,12-18,34-36,42-46,62-66,88-109,134-135,187,192-193
+wiki/onboarding/staff-engineer-guide.md
+  s_cf4a5344af068d::t_07a4ddf3058c4a 115,152,175
+wiki/onboarding/executive-guide.md
+  s_cf4a5344af068d::t_9992d089193ff3 42,63,71-72,76-82,88-89,119,164,166
+.github/workflows/ci.yml
+  s_cf4a5344af068d::t_da5fe256753b89 81-120
+crates/honmoon-cli/src/main.rs
+  s_cf4a5344af068d::t_52fd0fae6106a9 347,352-355,357
+  s_cf4a5344af068d::t_da5fe256753b89 349
+wiki/onboarding/contributor-guide.md
+  s_cf4a5344af068d::t_07a4ddf3058c4a 224
+wiki/getting-started/overview.md
+  s_cf4a5344af068d::t_551beed42ce2e8 127,131-145
+wiki/getting-started/quick-start.md
+  s_cf4a5344af068d::t_551beed42ce2e8 18,64,71-80,83-89
+.please/docs/tracks/tech-debt-tracker.md
+  s_cf4a5344af068d::t_02e8bcd27aa3cd 11
+wiki/llms-full.txt
+  s_cf4a5344af068d::t_16ee8515783770 226,476,513,536,603,624,632-633,637-643,649-650,680,725,727,815,834,845,875-877,1107,1748-1763,2129,2133-2147,2353,2399,2406-2415,2418-2424
+wiki/deep-dive/architecture.md
+  s_cf4a5344af068d::t_551beed42ce2e8 210
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "4ed6016337cd05476a5b077aab68dd17e20b222b",
+  "prompts": {},
+  "sessions": {
+    "s_cf4a5344af068d": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "98df4c9f-2e16-4e1a-b5ed-3b2178347463",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
