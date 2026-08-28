@@ -112,7 +112,7 @@ policy that explicitly sets `egress.default: allow` is choosing to opt out of fa
 | SQL parsing | Verb/table heuristic | Full SQL grammar | Enough to gate dangerous verbs cheaply | Not a parser; won't model arbitrary SQL |
 | Policy model | Duplicated Rust + TS (TD-001) | Single generated model | Each plane needs it natively *now* | Manual sync risk until schema-gen lands |
 | Failure mode | Fail closed everywhere | Fail open on parse error | Security correctness | A buggy rule silently denies (needs observability) |
-| `honmoon run` isolation | Env-var proxy (advisory) | netns/NetworkExtension now | Ship Phase 1 fast | Trivially bypassable until TD-003 |
+| `honmoon run` isolation | Empty user+network namespace on Linux (ADR-0005); env-var proxy elsewhere | Every platform hardened at once | Ship Phase 1 fast, then harden the platform agents actually run on | Advisory on macOS; root/`CAP_SYS_ADMIN` escapes; fails open where namespaces are refused |
 
 The two rows that should shape *your* judgment when extending the system are **fail closed** and
 **transport-agnostic core** — they are invariants, not preferences
@@ -149,7 +149,7 @@ Be precise about maturity when you plan work ([tech-debt-tracker.md:9-14](https:
 | Reality | Implication for planning |
 |---------|--------------------------|
 | Parsers are engine-complete but **not on a live socket** (TD-006) | "SQL policy works" is true in the engine, false end-to-end. The next high-leverage data-plane task is the inline relay + per-endpoint listener config. This also gates SQL/K8s `pause` rules. |
-| `honmoon run` is **advisory** (TD-003) | Do not market it as isolation. Real enforcement needs netns/NetworkExtension. |
+| `honmoon run` **enforces on Linux, is advisory elsewhere** (TD-003) | Call it isolation only for an unprivileged child on Linux. root/`CAP_SYS_ADMIN`/passwordless `sudo` still escape, only the *network* namespace is replaced (filesystem Unix sockets stay reachable), and `run` fails open to advisory where the namespace is refused — the default Docker seccomp profile blocks `unshare(CLONE_NEWUSER)`, so containerized agents get the advisory path. macOS waits on the Seatbelt profile (#69). |
 | `pause` **now holds** (Phase 4), but only host-level rules fire | The approval registry + management API are real and tested. Over CONNECT only `http.host`-based pause rules see facts; SQL/K8s pause waits on TD-006. |
 | HTTPS rules are **host-level only** (TD-004) | `http.method`/`path`/`body_size` need TLS termination. Don't write body rules expecting enforcement yet. |
 | Two audit surfaces | The live in-memory ring (Rust `honmoon-mgmt`, can resolve approvals) vs the durable JSONL query layer (`@honmoon/api`, read-only). Don't conflate them. |
@@ -170,8 +170,9 @@ as a fixed assumption, not a temporary gap.
 |----------|---------|--------|---------|
 | ADR-0001 | Pingora for HTTP data plane | Superseded | [0001](https://github.com/pleaseai/honmoon/blob/main/.please/docs/decisions/0001-adopt-pingora-http-data-plane.md) |
 | ADR-0002 | Tokio CONNECT proxy; defer Pingora | Accepted | [0002](https://github.com/pleaseai/honmoon/blob/main/.please/docs/decisions/0002-phase1-connect-proxy-on-tokio.md) |
+| ADR-0005 | Empty namespace + bridged proxy sockets for `run` | Accepted | [0005](https://github.com/pleaseai/honmoon/blob/main/.please/docs/decisions/0005-empty-namespace-and-bridged-proxy-sockets.md) |
 | TD-001 | Dual policy model → schema-gen | Open (Med) | [tracker](https://github.com/pleaseai/honmoon/blob/main/.please/docs/tracks/tech-debt-tracker.md#L9) |
-| TD-003 | Real network isolation for `run` | Open (High) | [tracker](https://github.com/pleaseai/honmoon/blob/main/.please/docs/tracks/tech-debt-tracker.md#L11) |
+| TD-003 | Real network isolation for `run` | Open (High) — Linux done for an unprivileged child; macOS + privileged/fail-open remain | [tracker](https://github.com/pleaseai/honmoon/blob/main/.please/docs/tracks/tech-debt-tracker.md#L11) |
 | TD-006 | Live relay feeding parsers | Open (High) | [tracker](https://github.com/pleaseai/honmoon/blob/main/.please/docs/tracks/tech-debt-tracker.md#L14) |
 | — | CEL over HCL; Rust core + Bun control | Not yet an ADR | [ARCHITECTURE.md:139](https://github.com/pleaseai/honmoon/blob/main/ARCHITECTURE.md#L139) |
 

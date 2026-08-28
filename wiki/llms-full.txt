@@ -223,7 +223,7 @@ the wiki and grounded in the [tech-debt tracker](https://github.com/pleaseai/hon
 | CONNECT proxy + `run` / `gateway` | <span class="status-done">real & tested</span> |
 | `pause` approval hold + audit log + dashboard (Phase 4) | <span class="status-done">real & tested</span> (`honmoon-mgmt`, `honmoon-proxy::approval`, `honmoon-core::audit`) |
 | `@honmoon/api` durable audit query | <span class="status-done">real & tested</span> (`audit.test.ts`) |
-| `honmoon run` network isolation | <span class="status-planned">advisory only — env vars (TD-003)</span> |
+| `honmoon run` network isolation | <span class="status-done">Linux: empty user+network namespace, unprivileged child</span> · <span class="status-planned">macOS advisory; fails open where namespaces are refused (TD-003)</span> |
 | `honmoon join` | <span class="status-planned">stub `bail!`</span> |
 | `honmoonctl validate` | <span class="status-planned">TODO stub</span> |
 | SQL/K8s `pause` over a live socket | <span class="status-planned">parsers tested; live relay TD-006</span> |
@@ -473,7 +473,7 @@ policy that explicitly sets `egress.default: allow` is choosing to opt out of fa
 | SQL parsing | Verb/table heuristic | Full SQL grammar | Enough to gate dangerous verbs cheaply | Not a parser; won't model arbitrary SQL |
 | Policy model | Duplicated Rust + TS (TD-001) | Single generated model | Each plane needs it natively *now* | Manual sync risk until schema-gen lands |
 | Failure mode | Fail closed everywhere | Fail open on parse error | Security correctness | A buggy rule silently denies (needs observability) |
-| `honmoon run` isolation | Env-var proxy (advisory) | netns/NetworkExtension now | Ship Phase 1 fast | Trivially bypassable until TD-003 |
+| `honmoon run` isolation | Empty user+network namespace on Linux (ADR-0005); env-var proxy elsewhere | Every platform hardened at once | Ship Phase 1 fast, then harden the platform agents actually run on | Advisory on macOS; root/`CAP_SYS_ADMIN` escapes; fails open where namespaces are refused |
 
 The two rows that should shape *your* judgment when extending the system are **fail closed** and
 **transport-agnostic core** — they are invariants, not preferences
@@ -510,7 +510,7 @@ Be precise about maturity when you plan work ([tech-debt-tracker.md:9-14](https:
 | Reality | Implication for planning |
 |---------|--------------------------|
 | Parsers are engine-complete but **not on a live socket** (TD-006) | "SQL policy works" is true in the engine, false end-to-end. The next high-leverage data-plane task is the inline relay + per-endpoint listener config. This also gates SQL/K8s `pause` rules. |
-| `honmoon run` is **advisory** (TD-003) | Do not market it as isolation. Real enforcement needs netns/NetworkExtension. |
+| `honmoon run` **enforces on Linux, is advisory elsewhere** (TD-003) | Call it isolation only for an unprivileged child on Linux. root/`CAP_SYS_ADMIN`/passwordless `sudo` still escape, only the *network* namespace is replaced (filesystem Unix sockets stay reachable), and `run` fails open to advisory where the namespace is refused — the default Docker seccomp profile blocks `unshare(CLONE_NEWUSER)`, so containerized agents get the advisory path. macOS waits on the Seatbelt profile (#69). |
 | `pause` **now holds** (Phase 4), but only host-level rules fire | The approval registry + management API are real and tested. Over CONNECT only `http.host`-based pause rules see facts; SQL/K8s pause waits on TD-006. |
 | HTTPS rules are **host-level only** (TD-004) | `http.method`/`path`/`body_size` need TLS termination. Don't write body rules expecting enforcement yet. |
 | Two audit surfaces | The live in-memory ring (Rust `honmoon-mgmt`, can resolve approvals) vs the durable JSONL query layer (`@honmoon/api`, read-only). Don't conflate them. |
@@ -531,8 +531,9 @@ as a fixed assumption, not a temporary gap.
 |----------|---------|--------|---------|
 | ADR-0001 | Pingora for HTTP data plane | Superseded | [0001](https://github.com/pleaseai/honmoon/blob/main/.please/docs/decisions/0001-adopt-pingora-http-data-plane.md) |
 | ADR-0002 | Tokio CONNECT proxy; defer Pingora | Accepted | [0002](https://github.com/pleaseai/honmoon/blob/main/.please/docs/decisions/0002-phase1-connect-proxy-on-tokio.md) |
+| ADR-0005 | Empty namespace + bridged proxy sockets for `run` | Accepted | [0005](https://github.com/pleaseai/honmoon/blob/main/.please/docs/decisions/0005-empty-namespace-and-bridged-proxy-sockets.md) |
 | TD-001 | Dual policy model → schema-gen | Open (Med) | [tracker](https://github.com/pleaseai/honmoon/blob/main/.please/docs/tracks/tech-debt-tracker.md#L9) |
-| TD-003 | Real network isolation for `run` | Open (High) | [tracker](https://github.com/pleaseai/honmoon/blob/main/.please/docs/tracks/tech-debt-tracker.md#L11) |
+| TD-003 | Real network isolation for `run` | Open (High) — Linux done for an unprivileged child; macOS + privileged/fail-open remain | [tracker](https://github.com/pleaseai/honmoon/blob/main/.please/docs/tracks/tech-debt-tracker.md#L11) |
 | TD-006 | Live relay feeding parsers | Open (High) | [tracker](https://github.com/pleaseai/honmoon/blob/main/.please/docs/tracks/tech-debt-tracker.md#L14) |
 | — | CEL over HCL; Rust core + Bun control | Not yet an ADR | [ARCHITECTURE.md:139](https://github.com/pleaseai/honmoon/blob/main/ARCHITECTURE.md#L139) |
 
@@ -599,7 +600,7 @@ flowchart TB
     e["Approval workflow + audit log + dashboard"]
   end
   subgraph planned["On the roadmap (Phases 5-7)"]
-    g["Hardened isolation (netns/tunnel)"]
+    g["Hardened isolation on macOS + tunnel<br>(Linux namespace shipped)"]
     i["SQL/K8s enforcement on live traffic"]
     h["Fleet management, RBAC/SSO, hosted SaaS"]
   end
@@ -620,7 +621,7 @@ flowchart TB
 | Protocol policy engine (CEL) | <span class="status-done">working & tested</span> | The differentiating moat |
 | SQL / K8s parsing | <span class="status-done">working & tested</span> | Not yet driven by live traffic (engineering follow-up) |
 | Approval workflow + audit log + dashboard | <span class="status-done">working & tested (Phase 4)</span> | `pause` holds a request for human approval; embedded dashboard |
-| Hardened isolation | <span class="status-planned">planned (Phase 5)</span> | Today's wrapper is advisory, not enforcing |
+| Hardened isolation | <span class="status-done">working & tested on Linux</span> · <span class="status-planned">macOS planned</span> | The wrapper enforces on Linux for an unprivileged child; advisory elsewhere, and where the OS or container refuses the namespace |
 | Fleet / enterprise / SaaS | <span class="status-planned">planned (Phase 6-7)</span> | The monetization surface |
 
 ## Maturity, honestly stated
@@ -628,20 +629,25 @@ flowchart TB
 This is an **early-stage project**, and its own guidelines forbid overstating it. About half of
 the intended product is built: the policy engine, protocol parsers, and — as of Phase 4 — the
 `pause` approval workflow, audit log, and management dashboard are all real, tested, and safe to
-build on. Hardened isolation and live-traffic protocol enforcement remain roadmap
+build on, and hardened isolation for the single-command wrapper is now real on Linux. Its macOS
+half and live-traffic protocol enforcement remain roadmap
 ([product-guidelines.md:14-17](https://github.com/pleaseai/honmoon/blob/main/.please/docs/knowledge/product-guidelines.md#L14-L17)). Two gaps
 materially affect "is it production-ready":
 
-- **The single-process wrapper is advisory.** It routes a child's traffic by setting proxy
-  environment variables; a process that ignores them bypasses the gateway. True enforcement
-  (network-namespace isolation) is planned, not shipped.
+- **The single-process wrapper enforces on Linux, and only there.** On Linux it runs the child in
+  an empty network namespace, so an unprivileged process that ignores the proxy environment
+  variables reaches nothing rather than bypassing the gateway. On macOS it still only sets those
+  variables, and even on Linux it falls back to that advisory mode — announcing it on stderr — where
+  the kernel or the container refuses the namespace, which the default Docker profile does. A child
+  that can reach root escapes it either way.
 - **Protocol rules are engine-validated, not yet traffic-driven.** The parsers are proven by
   tests; connecting them to live database/Kubernetes traffic is the next major data-plane effort.
   (Host-level `pause` rules over HTTPS *do* fire and hold today.)
 
-The honest read: **adopt the gateway mode for HTTPS egress control + approvals + audit today;
-treat live SQL/K8s enforcement and hardened isolation as near-future capabilities you can
-influence, not yet deploy.**
+The honest read: **adopt the gateway mode for HTTPS egress control + approvals + audit today, and
+the wrapper's hardened isolation where your agents run unprivileged on Linux; treat live SQL/K8s
+enforcement and hardened isolation on macOS as near-future capabilities you can influence, not yet
+deploy.**
 
 ## Risk assessment
 
@@ -649,7 +655,7 @@ influence, not yet deploy.**
 flowchart LR
   subgraph high["Higher impact"]
     r1["Competitor distribution<br>(Deno, GitHub)"]
-    r2["Isolation gap until Phase 5"]
+    r2["Isolation gap off Linux"]
   end
   subgraph med["Medium impact"]
     r3["Dual policy model drift (TD-001)"]
@@ -671,7 +677,7 @@ flowchart LR
 | Risk | Severity | Mitigation in the plan |
 |------|----------|------------------------|
 | Competitors (Deno's clawpatrol, GitHub's gh-aw-firewall) have distribution | High | Differentiate on protocol awareness + self-host + unification ([business-model.md:77-90](https://github.com/pleaseai/honmoon/blob/main/docs/business-model.md#L77-L90)) |
-| Process isolation is advisory until Phase 5 | High | Use gateway mode (not the wrapper) where enforcement matters; TD-003 prioritized High |
+| Process isolation enforces only on Linux, and only for an unprivileged child | High | Run agents unprivileged on Linux to get the namespace; use gateway mode where macOS, root, or a namespace-refusing container is in play; TD-003 stays High until the Seatbelt profile (#69) lands |
 | Two hand-synced policy models can diverge | Medium | Generate both from JSON Schema (TD-001) |
 | Building paid features before a team buyer exists | Medium | Phased strategy: adoption → team entry → monetization ([business-model.md:100-107](https://github.com/pleaseai/honmoon/blob/main/docs/business-model.md#L100-L107)) |
 
@@ -716,9 +722,9 @@ flowchart LR
 
 | Horizon | Recommendation |
 |---------|----------------|
-| **Now** | Pilot **gateway mode** for HTTPS egress control of agent fleets. It is tested and enforcing. Avoid relying on the process-wrapper for hard isolation. |
+| **Now** | Pilot **gateway mode** for HTTPS egress control of agent fleets. It is tested and enforcing. The process-wrapper is hard isolation too on Linux for an unprivileged child — but not on macOS, and not where a container blocks the namespace. |
 | **Now** | Author protocol policies (SQL/K8s) against the engine to validate fit, knowing live-traffic enforcement is the next data-plane milestone (TD-006). |
-| **Near-term** | If protocol-level enforcement is your driver, **fund/track TD-006 (live relay) and TD-003 (real isolation)** — they convert this from "promising engine" to "deployable control." |
+| **Near-term** | If protocol-level enforcement is your driver, **fund/track TD-006 (live relay) and the remaining half of TD-003 (macOS isolation, #69)** — they convert this from "promising engine" to "deployable control" on every platform your agents run on. |
 | **Strategic** | The open-core thesis only works if the free core is generous. Resist pressure to gate the data plane; the moat and the trust both live there ([business-model.md:24-28](https://github.com/pleaseai/honmoon/blob/main/docs/business-model.md#L24-L28)). |
 
 ## Related Pages
@@ -806,7 +812,7 @@ flowchart TB
   end
   subgraph soon["What's coming"]
     s2["Database/cloud rules on live traffic"]
-    s3["Stronger isolation"]
+    s3["Lock-down on macOS<br>(Linux already locked down)"]
     s4["Team management + hosted service"]
   end
   style t1 fill:#161b22,stroke:#3fb950,color:#e6edf3
@@ -825,6 +831,7 @@ flowchart TB
 | "Pause for approval" | <span class="status-done">works</span> | A flagged action is **held** until a human approves it (300s, else auto-deny) |
 | Dashboard | <span class="status-done">works</span> | Built-in screen to review activity and approve/deny requests |
 | Audit log | <span class="status-done">works</span> | Every decision recorded (optionally to a durable file) |
+| Locked-down single-command mode | <span class="status-planned">partly</span> | Works on Linux: the guarded command runs in an empty network sandbox it cannot step out of. Still advisory on macOS |
 | Database / cloud rules | <span class="status-planned">partly</span> | Detection is built & tested; enforcing on **live** DB/cloud traffic is the next step |
 | Team management | <span class="status-planned">planned</span> | Manage many machines and people centrally |
 
@@ -835,7 +842,7 @@ Stated plainly, because honesty is a product principle for a security tool
 
 | Limitation | What it means for users |
 |-----------|--------------------------|
-| Single-command mode is "advisory" | When guarding one command, a well-behaved AI tool is restricted, but a tool that *deliberately ignores standard settings* could slip past. The stronger, locked-down mode is planned. |
+| Single-command mode is locked down on Linux only | On Linux, a guarded command runs inside an empty network sandbox: a tool that *deliberately ignores standard settings* reaches nothing at all. On macOS it is still advisory — such a tool could slip past — and even on Linux the lock-down steps aside, with a warning, where the operating system or the container refuses it (the common Docker default does). A command run as an administrator can also step out. |
 | Database/cloud rules aren't on live traffic yet | The brains that recognize a dangerous query are built and tested, but not yet connected to real live database/cloud traffic. That connection is the next big step. So the approval/hold works today for **website** rules; database/cloud holding waits on that step. |
 | Approvals are single-node | The approval queue and dashboard run on one machine. Fleet-wide management, routing, and notifications are the (paid) roadmap. |
 | Needs a real computer/server | It can't run on certain lightweight cloud-only platforms; it needs a normal host or container. |
@@ -865,8 +872,9 @@ agents, compliance reports, approvals across an organization), not for the core
 
 **Can I use it in production today?**
 You can use the gateway mode now — website control, the audit log, and the approve/deny dashboard
-all work on a single machine. For locked-down isolation and live database/cloud enforcement, plan
-around the roadmap — those are the next milestones.
+all work on a single machine, and on Linux the single-command mode is genuinely locked down for a
+non-administrator command. For that same lock-down on macOS, and for live database/cloud
+enforcement, plan around the roadmap — those are the next milestones.
 
 **Who are the competitors?**
 Two open-source projects inspired Honmoon: GitHub's domain-filtering firewall and Deno's
@@ -1096,7 +1104,7 @@ flowchart LR
     s5["@honmoon/api: audit query"]
   end
   subgraph weak["Fragile / incomplete"]
-    w1["honmoon run: no netns isolation (TD-003)"]
+    w1["honmoon run: Linux netns done;<br>macOS + privileged still open (TD-003)"]
     w2["honmoon join: stub (bail!)"]
     w3["SQL/K8s: no live relay (TD-006)"]
     w4["honmoonctl validate: stub"]
@@ -1106,7 +1114,7 @@ flowchart LR
   style s3 fill:#161b22,stroke:#3fb950,color:#e6edf3
   style s4 fill:#161b22,stroke:#3fb950,color:#e6edf3
   style s5 fill:#161b22,stroke:#3fb950,color:#e6edf3
-  style w1 fill:#161b22,stroke:#f85149,color:#e6edf3
+  style w1 fill:#161b22,stroke:#d29922,color:#e6edf3
   style w2 fill:#161b22,stroke:#f85149,color:#e6edf3
   style w3 fill:#161b22,stroke:#f85149,color:#e6edf3
   style w4 fill:#161b22,stroke:#f85149,color:#e6edf3
@@ -1730,14 +1738,24 @@ then execs the child with every proxy env var (`http_proxy`, `https_proxy`, `all
 uppercase variants) pointed at the ephemeral proxy. The child's exit code is propagated
 ([main.rs:131-165](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-cli/src/main.rs#L131-L165)).
 Binding in one place closes the TOCTOU window where another process could steal the port
-([main.rs:140-148](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-cli/src/main.rs#L140-L148)). `run` uses an
+([main.rs:140-148](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-cli/src/main.rs#L140-L148)).
+On Linux the child no longer shares the host's loopback, so that listener is reached through a
+Unix-socket bridge into the child's namespace instead
+([ADR-0005](https://github.com/pleaseai/honmoon/blob/main/.please/docs/decisions/0005-empty-namespace-and-bridged-proxy-sockets.md)). `run` uses an
 in-memory audit ring and does **not** expose the management API — it is the ephemeral,
 single-command mode.
 
-::: warning Advisory, not enforcing (TD-003)
-`run` only **sets env vars**. A child that ignores them reaches the network directly. Turning
-this into real isolation (Linux netns / macOS NetworkExtension) is the High-priority **TD-003**
-and a Phase 5 goal ([tech-debt-tracker.md:11](https://github.com/pleaseai/honmoon/blob/main/.please/docs/tracks/tech-debt-tracker.md#L11)).
+::: tip Enforcing on Linux, advisory elsewhere (TD-003)
+On **Linux** the child is spawned into an empty user + network namespace containing nothing but
+loopback and the proxy is bridged in over a Unix socket, so an **unprivileged** child that ignores
+the env vars reaches nothing at all
+([ADR-0005](https://github.com/pleaseai/honmoon/blob/main/.please/docs/decisions/0005-empty-namespace-and-bridged-proxy-sockets.md)). Three
+limits keep **TD-003** open: root / `CAP_SYS_ADMIN` / passwordless `sudo` can leave the namespace;
+`run` fails open to advisory where the namespace is refused (the default Docker seccomp profile
+blocks `unshare(CLONE_NEWUSER)`, so an ordinary container is advisory); and macOS still only sets
+env vars until the Seatbelt profile lands
+([#69](https://github.com/pleaseai/honmoon/issues/69),
+[tech-debt-tracker.md:11](https://github.com/pleaseai/honmoon/blob/main/.please/docs/tracks/tech-debt-tracker.md#L11)).
 :::
 
 ### `honmoon gateway`
@@ -2103,14 +2121,20 @@ a stub ([main.rs:58-60](https://github.com/pleaseai/honmoon/blob/main/crates/hon
 
 | Mode | Command | Status | What it does |
 |------|---------|--------|--------------|
-| Process Wrapper | `honmoon run -- <cmd>` | <span class="status-done">Phase 1</span> (env-var isolation only — see caveat) | Start an ephemeral proxy, exec the child with `https_proxy` pointed at it |
+| Process Wrapper | `honmoon run -- <cmd>` | <span class="status-done">Phase 1</span> (Linux-enforced isolation; advisory elsewhere — see caveat) | Start an ephemeral proxy, exec the child with `https_proxy` pointed at it |
 | Gateway | `honmoon gateway` | <span class="status-done">Phase 1</span> | Standalone central proxy loading a policy |
 | Join | `honmoon join` | <span class="status-planned">planned</span> | Route all host traffic to a gateway via tunnel |
 
-::: warning Isolation is advisory today, not enforcing
-`honmoon run` currently only sets proxy environment variables for the child. A child process
-that ignores those variables escapes the policy. Real network-namespace isolation (Linux netns
-/ macOS NetworkExtension) is tracked as **TD-003** and is a Phase 5 goal.
+::: warning Enforcing on Linux, advisory everywhere else
+On **Linux** `honmoon run` spawns the child into an empty user + network namespace holding nothing
+but loopback and bridges the proxy in over a Unix socket
+([ADR-0005](https://github.com/pleaseai/honmoon/blob/main/.please/docs/decisions/0005-empty-namespace-and-bridged-proxy-sockets.md)), so an
+**unprivileged** child that ignores the proxy environment variables reaches nothing rather than
+escaping policy. A child that can reach root (`CAP_SYS_ADMIN`, passwordless `sudo`) can still leave
+the namespace, and where the kernel or a container policy refuses the namespace — the default Docker
+seccomp profile blocks `unshare(CLONE_NEWUSER)` — `run` falls back to advisory and says so on
+stderr. On macOS and every other platform it only sets the variables; the Seatbelt profile is
+[#69](https://github.com/pleaseai/honmoon/issues/69). **TD-003** stays open for those halves.
 See [tech-debt-tracker.md:11](https://github.com/pleaseai/honmoon/blob/main/.please/docs/tracks/tech-debt-tracker.md#L11).
 :::
 
@@ -2317,7 +2341,7 @@ the proxy directly; `run`'s env-var exec wiring is covered by the CLI itself, no
 
 | Command | What happens | Status | Source |
 |---------|--------------|--------|--------|
-| `honmoon run --policy P -- <cmd>` | Ephemeral proxy started, child exec'd with `https_proxy` set | <span class="status-done">works</span> (env-var isolation) | [main.rs:66-98](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-cli/src/main.rs#L66-L98) |
+| `honmoon run --policy P -- <cmd>` | Ephemeral proxy started, child exec'd with `https_proxy` set | <span class="status-done">works</span> (Linux: empty-namespace isolation; advisory elsewhere) | [main.rs:66-98](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-cli/src/main.rs#L66-L98) |
 | `honmoon gateway --config P --addr A` | Standalone CONNECT proxy bound to `A` | <span class="status-done">works</span> | [main.rs:53-57](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-cli/src/main.rs#L53-L57) |
 | `honmoon join --gateway G` | — | <span class="status-planned">stub: `bail!`</span> | [main.rs:58-60](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-cli/src/main.rs#L58-L60) |
 
@@ -2363,12 +2387,25 @@ sequenceDiagram
 ```
 <!-- Sources: crates/honmoon-cli/src/main.rs:66-98, crates/honmoon-proxy/src/gateway.rs:62-112 -->
 
-::: warning The child must honor proxy env vars
-Isolation is **advisory**: `honmoon run` only sets `http_proxy` / `https_proxy` / `all_proxy`
-(and uppercase variants) for the child
-([main.rs:153-161](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-cli/src/main.rs#L153-L161)).
-A process that ignores those variables bypasses Honmoon entirely. Enforcing network isolation
-(netns / NetworkExtension) is tracked as **TD-003** (Phase 5).
+::: warning Enforcing on Linux, advisory everywhere else
+On **Linux** the child is spawned into an empty user + network namespace holding nothing but
+loopback, with honmoon's proxy bridged in over a Unix socket
+([ADR-0005](https://github.com/pleaseai/honmoon/blob/main/.please/docs/decisions/0005-empty-namespace-and-bridged-proxy-sockets.md)). The proxy
+variables `http_proxy` / `https_proxy` / `all_proxy` (and uppercase variants) still point the child
+at that proxy ([main.rs:153-161](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-cli/src/main.rs#L153-L161)), but an
+**unprivileged** child that ignores them reaches nothing over the network rather than bypassing
+policy. The flip side: a client that speaks no proxy at all (`psql`, `ssh`) cannot connect under
+`run` — use `honmoon gateway` for those.
+
+The boundary is narrower than "sandbox". A child that can become root, already holds
+`CAP_SYS_ADMIN`, or has passwordless `sudo` can leave the namespace, and only the *network*
+namespace is replaced, so filesystem Unix sockets (`/var/run/docker.sock` and friends) stay
+reachable. Where the kernel or a container policy refuses the namespace, `run` falls back to
+advisory and says so on stderr — notably the default Docker seccomp profile blocks
+`unshare(CLONE_NEWUSER)`, so `honmoon run` inside an ordinary container is advisory. macOS is
+advisory too until the Seatbelt profile lands ([#69](https://github.com/pleaseai/honmoon/issues/69)),
+so **TD-003** stays open
+([tech-debt-tracker.md:11](https://github.com/pleaseai/honmoon/blob/main/.please/docs/tracks/tech-debt-tracker.md#L11)).
 :::
 
 ## 2. Run the standalone gateway + dashboard
@@ -2686,7 +2723,7 @@ to that boundary and records the key architecture decisions. Sources:
 | 2 — CEL + HTTP facts | `decide()`, CEL engine, `http` facts | OSS | <span class="status-done">done</span> | [roadmap.md:49-60](https://github.com/pleaseai/honmoon/blob/main/docs/roadmap.md#L49-L60) |
 | 3 — SQL / K8s parsers | wire parsers → `sql` / `k8s` facts | OSS | <span class="status-done">done</span> (parsing; live relay = TD-006) | [roadmap.md:63-77](https://github.com/pleaseai/honmoon/blob/main/docs/roadmap.md#L63-L77) |
 | 4 — Verdicts, audit & dashboard | `pause` hold + audit log + embedded dashboard | OSS | <span class="status-done">done</span> | [roadmap.md:81-101](https://github.com/pleaseai/honmoon/blob/main/docs/roadmap.md#L81-L101) |
-| 5 — Isolation modes | hardened `run`, `gateway`, `join` | OSS | <span class="status-planned">planned</span> | [roadmap.md:93-100](https://github.com/pleaseai/honmoon/blob/main/docs/roadmap.md#L93-L100) |
+| 5 — Isolation modes | hardened `run`, `gateway`, `join` | OSS | <span class="status-done">hardened `run` on Linux</span> · <span class="status-planned">macOS, `join` planned</span> | [roadmap.md:93-100](https://github.com/pleaseai/honmoon/blob/main/docs/roadmap.md#L93-L100) |
 | 6 — Team / control plane | fleet policy, RBAC/SSO, approval routing | **Paid** | <span class="status-planned">planned</span> | [roadmap.md:104-112](https://github.com/pleaseai/honmoon/blob/main/docs/roadmap.md#L104-L112) |
 | 7 — Hosted SaaS & intelligence | multi-tenant cloud, threat feeds, key isolation | **Paid** | <span class="status-planned">planned</span> | [roadmap.md:116-122](https://github.com/pleaseai/honmoon/blob/main/docs/roadmap.md#L116-L122) |
 
@@ -2812,7 +2849,7 @@ Not every layer runs everywhere — scope is kept honest
 |----|-------------|----------|--------|--------|
 | TD-001 | Dual Rust/TS policy model → generate from JSON Schema | Medium | maintainability | [tracker:9](https://github.com/pleaseai/honmoon/blob/main/.please/docs/tracks/tech-debt-tracker.md#L9) |
 | TD-002 | `serde_yaml` deprecated | Low | — | [tracker:10](https://github.com/pleaseai/honmoon/blob/main/.please/docs/tracks/tech-debt-tracker.md#L10) |
-| TD-003 | `honmoon run` lacks real netns isolation | High | Phase 5 | [tracker:11](https://github.com/pleaseai/honmoon/blob/main/.please/docs/tracks/tech-debt-tracker.md#L11) |
+| TD-003 | `honmoon run` isolation: Linux namespace shipped for an unprivileged child (ADR-0005); macOS, privileged children and the fail-open path remain | High | Phase 5 (macOS, #69) | [tracker:11](https://github.com/pleaseai/honmoon/blob/main/.please/docs/tracks/tech-debt-tracker.md#L11) |
 | TD-004 | CONNECT sees host only; body rules need TLS termination | Medium | Phase 2 | [tracker:12](https://github.com/pleaseai/honmoon/blob/main/.please/docs/tracks/tech-debt-tracker.md#L12) |
 | TD-006 | SQL/K8s parsers not fed by a live socket | High | Phase 3 follow-up | [tracker:14](https://github.com/pleaseai/honmoon/blob/main/.please/docs/tracks/tech-debt-tracker.md#L14) |
 

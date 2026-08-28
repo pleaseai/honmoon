@@ -190,14 +190,24 @@ then execs the child with every proxy env var (`http_proxy`, `https_proxy`, `all
 uppercase variants) pointed at the ephemeral proxy. The child's exit code is propagated
 ([main.rs:131-165](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-cli/src/main.rs#L131-L165)).
 Binding in one place closes the TOCTOU window where another process could steal the port
-([main.rs:140-148](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-cli/src/main.rs#L140-L148)). `run` uses an
+([main.rs:140-148](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-cli/src/main.rs#L140-L148)).
+On Linux the child no longer shares the host's loopback, so that listener is reached through a
+Unix-socket bridge into the child's namespace instead
+([ADR-0005](https://github.com/pleaseai/honmoon/blob/main/.please/docs/decisions/0005-empty-namespace-and-bridged-proxy-sockets.md)). `run` uses an
 in-memory audit ring and does **not** expose the management API — it is the ephemeral,
 single-command mode.
 
-::: warning Advisory, not enforcing (TD-003)
-`run` only **sets env vars**. A child that ignores them reaches the network directly. Turning
-this into real isolation (Linux netns / macOS NetworkExtension) is the High-priority **TD-003**
-and a Phase 5 goal ([tech-debt-tracker.md:11](https://github.com/pleaseai/honmoon/blob/main/.please/docs/tracks/tech-debt-tracker.md#L11)).
+::: tip Enforcing on Linux, advisory elsewhere (TD-003)
+On **Linux** the child is spawned into an empty user + network namespace containing nothing but
+loopback and the proxy is bridged in over a Unix socket, so an **unprivileged** child that ignores
+the env vars reaches nothing at all
+([ADR-0005](https://github.com/pleaseai/honmoon/blob/main/.please/docs/decisions/0005-empty-namespace-and-bridged-proxy-sockets.md)). Three
+limits keep **TD-003** open: root / `CAP_SYS_ADMIN` / passwordless `sudo` can leave the namespace;
+`run` fails open to advisory where the namespace is refused (the default Docker seccomp profile
+blocks `unshare(CLONE_NEWUSER)`, so an ordinary container is advisory); and macOS still only sets
+env vars until the Seatbelt profile lands
+([#69](https://github.com/pleaseai/honmoon/issues/69),
+[tech-debt-tracker.md:11](https://github.com/pleaseai/honmoon/blob/main/.please/docs/tracks/tech-debt-tracker.md#L11)).
 :::
 
 ### `honmoon gateway`
