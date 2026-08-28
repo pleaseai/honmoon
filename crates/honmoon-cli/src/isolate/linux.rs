@@ -156,7 +156,7 @@ impl HostBridge {
     /// Open the socket and start pumping to `proxy`.
     fn open(proxy: SocketAddr) -> io::Result<Self> {
         let dir = private_scratch_dir()?;
-        let socket = dir.join("proxy.sock");
+        let socket = dir.join(SOCKET_FILE);
 
         // Own the directory before anything else can fail, so an error below
         // takes the scratch directory with it rather than leaving one behind
@@ -181,9 +181,23 @@ impl Drop for HostBridge {
 
 /// How many random bytes name a scratch directory.
 ///
-/// 128 bits, so an attacker cannot enumerate the name this run is about to ask
-/// for — which is the entire reason the name is random rather than derived.
-const SCRATCH_NAME_BYTES: usize = 16;
+/// 96 bits. The name only has to be unguessable *before* the directory exists —
+/// the attack it defeats is squatting the path this run is about to ask for —
+/// and 2^96 is far past reach for that. The reason not to spend more is
+/// [`SUN_PATH_LIMIT`]: every hex character here costs a byte of the socket path
+/// budget, and running out of that budget is itself a fail-open.
+const SCRATCH_NAME_BYTES: usize = 12;
+
+/// How many bytes fit in `sockaddr_un::sun_path`, NUL included.
+///
+/// Fixed by the AF_UNIX ABI. A `bind` past it fails, and a failed bind means
+/// [`HostBridge::open`] errors and the run drops to advisory — so the path is
+/// kept inside the limit by construction rather than discovered to be too long
+/// at bind time.
+const SUN_PATH_LIMIT: usize = 108;
+
+/// The socket file created inside the scratch directory.
+const SOCKET_FILE: &str = "proxy.sock";
 
 /// Fill `buffer` from the kernel's random pool.
 ///
@@ -244,12 +258,25 @@ fn fill_random(buffer: &mut [u8]) -> io::Result<()> {
 ///
 /// A taken name is still stepped over rather than treated as fatal — a random
 /// collision is not a reason to stop enforcing either.
+///
+/// The directory goes under `TMPDIR` only when the resulting socket path fits in
+/// [`SUN_PATH_LIMIT`], and under `/tmp` otherwise. A long `TMPDIR` would
+/// otherwise push the socket past the AF_UNIX limit and fail the bind — the same
+/// silent downgrade to advisory this function's random name exists to prevent,
+/// arriving by a different route.
 fn private_scratch_dir() -> io::Result<PathBuf> {
     use std::fmt::Write as _;
     use std::fs::DirBuilder;
     use std::os::unix::fs::DirBuilderExt;
 
-    let temp = std::env::temp_dir();
+    // "/honmoon-" + the hex name + "/" + the socket file + the trailing NUL.
+    let suffix = 1 + "honmoon-".len() + SCRATCH_NAME_BYTES * 2 + 1 + SOCKET_FILE.len() + 1;
+    let preferred = std::env::temp_dir();
+    let temp = if preferred.as_os_str().len() + suffix <= SUN_PATH_LIMIT {
+        preferred
+    } else {
+        PathBuf::from("/tmp")
+    };
     for _ in 0..16 {
         let mut random = [0_u8; SCRATCH_NAME_BYTES];
         fill_random(&mut random)?;
@@ -430,9 +457,13 @@ fn bring_loopback_up() -> io::Result<()> {
 /// keeps the peer it had when it was opened, so it still carries traffic inside
 /// the empty namespace: exactly the route this module exists to remove.
 ///
-/// Failure is not fatal. A descriptor that cannot be closed is not a reason to
-/// refuse to run the command, and the ones that matter are closed by then.
-fn close_inherited_descriptors() {
+/// An individual `close` that fails is ignored — a descriptor that will not
+/// close is not a reason to refuse the run, and the ones that matter are gone by
+/// then. What is *not* ignored is being unable to enumerate the descriptors at
+/// all: an `Err` here means no tier could establish what to close, and the
+/// caller refuses to launch rather than running the command with the escape
+/// route possibly still open.
+fn close_inherited_descriptors() -> io::Result<()> {
     // `close_range` is one syscall for the whole span, so nothing can be opened
     // between two closes. Invoked through `syscall` rather than a wrapper so the
     // build does not depend on which targets the `libc` crate re-exports it for.
@@ -450,7 +481,7 @@ fn close_inherited_descriptors() {
     let closed_everything =
         unsafe { libc::syscall(libc::SYS_close_range, first, last, flags) == 0 };
     if closed_everything {
-        return;
+        return Ok(());
     }
 
     // Older kernels (pre-5.9) and seccomp profiles that do not know the syscall
@@ -458,8 +489,7 @@ fn close_inherited_descriptors() {
     // closed, because the directory handle is itself one of the entries and
     // closing it mid-iteration would end the walk early, leaving the rest open.
     let Ok(entries) = std::fs::read_dir("/proc/self/fd") else {
-        close_up_to_the_descriptor_limit();
-        return;
+        return close_up_to_the_descriptor_limit();
     };
     let open: Vec<i32> = entries
         .filter_map(|entry| {
@@ -476,43 +506,56 @@ fn close_inherited_descriptors() {
             }
         }
     }
+    Ok(())
 }
 
 /// The last resort: close every descriptor from 3 up to the process limit.
 ///
-/// This one cannot fail to do something. A `close` on a number that was never
-/// open returns `EBADF`, which is exactly the outcome being ignored, so the
-/// sweep is correct however many descriptors are actually there. It is last
-/// because it is the expensive one — up to tens of thousands of syscalls where
-/// the other two tiers cost one apiece — and it is reached only when both cheap
-/// mechanisms are gone at once: a kernel without `close_range` on a host with no
-/// `/proc` mounted. The alternative in that case was returning having closed
-/// nothing at all, which leaves open the escape route this function exists to
-/// remove.
-fn close_up_to_the_descriptor_limit() {
-    // A ceiling, because `RLIMIT_NOFILE` may be `RLIM_INFINITY` and a loop to
-    // `u64::MAX` does not end. 65536 is well above any limit a sane host sets
-    // for a CLI, and the sweep is cheap enough at that size to be unnoticeable.
-    const CEILING: libc::rlim_t = 65_536;
-
+/// A `close` on a number that was never open returns `EBADF`, which is exactly
+/// the outcome being ignored, so sweeping the whole range is correct however
+/// many descriptors are actually there. It is last because it is the expensive
+/// one — up to the soft limit in syscalls, where the other two tiers cost one
+/// apiece — and it is reached only when both cheap mechanisms are gone at once:
+/// a kernel without `close_range` on a host with no `/proc` mounted.
+///
+/// The **entire** soft limit is swept, not a convenient prefix of it. A sweep
+/// that stopped early would leave descriptors open above the cut while still
+/// reporting success, which is worse than an honest failure: the caller would
+/// run the command believing the escape route was closed.
+///
+/// So when the limit is `RLIM_INFINITY` — nothing to enumerate, and no way to
+/// know where to stop — this fails rather than guessing a bound. That combination
+/// (no `close_range`, no `/proc`, no finite limit) should not occur in practice,
+/// and refusing to launch is the right direction for a function whose job is
+/// removing a way out of the sandbox.
+fn close_up_to_the_descriptor_limit() -> io::Result<()> {
     let mut limit = libc::rlimit {
         rlim_cur: 0,
         rlim_max: 0,
     };
     // SAFETY: `getrlimit` writes into an `rlimit` this frame owns.
-    let bound = if unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &mut limit) } == 0 {
-        limit.rlim_cur.min(CEILING)
-    } else {
-        // Not knowing the limit is not a reason to close nothing.
-        CEILING
-    };
+    if unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &mut limit) } != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    if limit.rlim_cur == libc::RLIM_INFINITY {
+        return Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "cannot enumerate the descriptors to close: no close_range, no \
+             /proc, and no finite descriptor limit",
+        ));
+    }
 
-    for fd in 3..bound as libc::c_int {
+    // A descriptor number is a `c_int`, so a soft limit above `c_int::MAX`
+    // describes numbers that cannot exist; stopping there still sweeps every
+    // descriptor the process could actually hold.
+    let bound = limit.rlim_cur.min(libc::c_int::MAX as libc::rlim_t) as libc::c_int;
+    for fd in 3..bound {
         // SAFETY: `close` on a descriptor that is not open returns `EBADF`.
         unsafe {
             libc::close(fd);
         }
     }
+    Ok(())
 }
 
 /// The in-namespace half: listen on loopback, pump to the host's Unix socket,
@@ -534,8 +577,10 @@ pub fn supervise(bridge_socket: &Path, argv: &[String]) -> io::Result<ExitStatus
     // make a failed spawn look like a successful one. This process is past both
     // execs, so the only descriptors left are stdio and whatever leaked in. It
     // sits after the argv check so the "nothing to supervise" path — which the
-    // unit tests take in-process — does not shut the caller's descriptors.
-    close_inherited_descriptors();
+    // unit tests take in-process — does not shut the caller's descriptors. A
+    // failure to enumerate is propagated rather than swallowed: running the
+    // command anyway would be claiming a confinement that was never applied.
+    close_inherited_descriptors()?;
 
     // Port 0: the supervisor picks the child's proxy port itself and puts it in
     // the environment, so nothing has to agree on a fixed number, and two
