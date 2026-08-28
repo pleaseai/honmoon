@@ -35,7 +35,26 @@ jobs:
 
       - uses: taiki-e/install-action@9458fed45835344deb5e69e06e831be047c96abf # cargo-llvm-cov
 
+      # `honmoon run` enforces policy by putting the child in an empty user +
+      # network namespace (ADR-0005). Ubuntu 24.04 ships AppArmor's restriction
+      # on unprivileged user namespaces enabled, under which `run` correctly
+      # falls back to advisory — and the isolation tests would then skip. The
+      # probe at the end fails the step if namespaces are still unavailable, so
+      # this can never silently stop taking effect.
+      - name: Permit unprivileged user namespaces
+        run: |
+          if [ -e /proc/sys/kernel/apparmor_restrict_unprivileged_userns ]; then
+            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          fi
+          unshare -Un true
+          echo "unprivileged user namespaces are available"
+
       - name: Test + coverage
+        # HONMOON_REQUIRE_ENFORCEMENT turns "this host cannot confine, so skip"
+        # into a failure. Without it a runner that lost the capability would
+        # report the ADR-0005 isolation tests as green without running them.
+        env:
+          HONMOON_REQUIRE_ENFORCEMENT: "1"
         run: cargo llvm-cov --workspace --all-targets --lcov --output-path lcov.info
 
       - name: Upload coverage to Codecov

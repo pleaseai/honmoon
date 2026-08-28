@@ -140,7 +140,8 @@ Note: fleet-wide DLP policy management and compliance / exfil reporting are Paid
 ## Phase 6 — Isolation modes `OSS`
 
 - [ ] `honmoon gateway` — standalone central proxy loading policy, accepting clients
-- [ ] `honmoon run` hardened isolation (Linux netns / macOS NetworkExtension)
+- [x] `honmoon run` hardened isolation — Linux (empty user+network namespace, ADR-0005)
+- [ ] `honmoon run` hardened isolation — macOS (Seatbelt profile, ADR-0005)
 - [ ] `honmoon join` — route host traffic to a gateway via tunnel (WireGuard)
 - [ ] Policy hot-reload (graceful reload without dropping tunnels)
 
@@ -150,14 +151,15 @@ still cannot reach a denied host. A child able to escalate to root is out of sco
 confinement is best-effort egress routing, not a containment wall, and `join` is the answer where
 that boundary matters.
 
-> **`honmoon run` is advisory today.** It sets `http_proxy`/`https_proxy` for the child and
-> nothing more, so a child that ignores those variables reaches the network without ever being
-> evaluated (TD-003). `run` now says so on stderr at startup instead of implying enforcement.
-> [ADR-0005](../.please/docs/decisions/0005-empty-namespace-and-bridged-proxy-sockets.md) records
-> the design that closes it: the child gets **no network at all** — an empty namespace on Linux, a
-> Seatbelt profile on macOS — with honmoon's proxies bridged in on localhost. Ignoring the proxy
-> environment then reaches nothing rather than escaping. macOS needs no system extension and no
-> Apple Developer signing, so it is no longer the expensive half.
+> **`honmoon run` enforces on Linux and stays advisory everywhere else.** Per
+> [ADR-0005](../.please/docs/decisions/0005-empty-namespace-and-bridged-proxy-sockets.md) the child
+> is spawned into an empty user + network namespace holding nothing but loopback, with the proxy
+> bridged in over a Unix socket. Ignoring `http_proxy` there reaches nothing rather than escaping,
+> which the `enforced_isolation` integration tests assert against an unsandboxed control. Where the
+> kernel refuses the namespace, `run` falls back to advisory and says so on stderr rather than
+> implying enforcement it does not have. macOS is still that fallback until the Seatbelt profile
+> lands (#69); it needs no system extension and no Apple Developer signing, so it is no longer the
+> expensive half. TD-003 stays open until it does.
 
 ---
 

@@ -30,14 +30,16 @@ Honmoon is a monorepo that separates languages by responsibility.
     local rcgen CA agents must trust. See [ADR-0003](../decisions/0003-adopt-hudsucker-for-tls-termination.md).
 - `honmoon-cli` — `honmoon` binary (`run` / `gateway` / `join`).
   - deps: `honmoon-core`, `honmoon-proxy`, `tokio`, `clap`, `anyhow`, `tracing`, `tracing-subscriber`
-  - `run` isolation is **advisory on every platform today**: the child is pointed at the proxy
-    through `http_proxy` and its five spellings, and one that ignores them reaches the network
-    directly without meeting a verdict (TD-003). `run` prints that posture on stderr rather than
-    letting it pass for enforcement.
-  - *Planned, not implemented:* enforced `run` isolation, giving the child **no network** and
-    bridging honmoon's proxies in — an empty user+network+mount namespace on Linux, a Seatbelt
-    profile allowing only the proxy's localhost port on macOS (`sandbox-exec`, no system
-    extension), fail-open where unavailable. Designed in
+  - **Linux:** `run` is enforcing. The child is spawned into a new user + network namespace holding
+    nothing but loopback, and the proxy is bridged in over a Unix socket — addressed by filesystem
+    path, so it crosses the namespace boundary that an address cannot. A child that ignores
+    `http_proxy` reaches nothing rather than reaching the network (TD-003). Implemented in
+    `isolate::linux`; `deps: libc` on this target only.
+  - **Everywhere else:** `run` is advisory — the proxy variables are set and nothing enforces them.
+    `run` prints that posture on stderr rather than letting it pass for enforcement. Isolation is
+    fail-open, so a Linux host that refuses the namespace degrades to this same path.
+  - *Planned, not implemented:* the macOS half — a Seatbelt profile allowing only the proxy's
+    localhost port (`sandbox-exec`, no system extension). Both halves are designed in
     [ADR-0005](../decisions/0005-empty-namespace-and-bridged-proxy-sockets.md); the superseded
     TUN + `tun2proxy` design is [ADR-0004](../decisions/0004-unprivileged-userns-tun-for-honmoon-run.md).
 
