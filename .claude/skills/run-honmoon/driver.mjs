@@ -312,6 +312,18 @@ function probe(url, { mitm = false, method, body, expect } = {}) {
     throw new Error(`${url}: policy DENIED a host the allowlist covers (${verdict})`)
   }
   if (expect === 'allow' && exit !== '0') {
+    // A hold is not an upstream problem. Exit 28 means curl gave up while the
+    // request was still waiting on an approval -- i.e. a rule started matching
+    // a host the allowlist covers, and the allow verdict was never observed.
+    // It is ambiguous with a genuinely slow upstream, and deliberately
+    // resolved as a failure: a 30s timeout to github.com is itself anomalous,
+    // whereas passing a silently HELD allow-host defeats the whole step.
+    if (exit === '28') {
+      throw new Error(
+        `${url}: expected ALLOW but the request was still held after 30s (curl exit 28) - ` +
+          'a pause rule is matching a host the allowlist covers',
+      )
+    }
     // Policy let it through; the upstream just did not answer. Not a regression.
     log('      (upstream unreachable - the policy allowed it, so not a policy regression)')
   }
@@ -336,7 +348,13 @@ function probeAsync(url, { mitm = false, method, body } = {}) {
 // wait -- and the already-exited check covers a probe curl rejected outright,
 // whose `exit` fired before we could attach.
 function waitExit(child, ms) {
-  if (child.exitCode !== null) return Promise.resolve({ code: child.exitCode })
+  // `signalCode` as well as `exitCode`: a child killed by a signal leaves
+  // `exitCode` null, so an exitCode-only check would attach a listener to an
+  // already-dead process and then sit out the full timeout before reporting a
+  // "never resumed" that never happened.
+  if (child.exitCode !== null || child.signalCode !== null) {
+    return Promise.resolve({ code: child.exitCode ?? 1 })
+  }
   return new Promise((resolve) => {
     const t = setTimeout(() => resolve({ timedOut: true }), ms)
     child.once('exit', (code) => {
@@ -515,12 +533,23 @@ async function drive({ mitm }) {
   if (resumed.timedOut) {
     throw new Error('held request never resumed after approval (still hanging after 60s)')
   }
-  if (resumed.code !== 0) {
+  if (resumed.code === 56) {
+    // Exit 56 is the CONNECT being refused -- the approval did not take. Every
+    // other failure (DNS, connect, TLS) is example.org being unreachable,
+    // which says nothing about the gateway and must not fail a run that has
+    // already shown the hold was resolved.
     throw new Error(
-      `held request resumed but curl exited ${resumed.code} - approval did not let the tunnel through`,
+      'held request resumed but the tunnel was refused (curl exit 56) - the approval did not take',
     )
   }
-  log('  held request resumed after approval: curl exit 0')
+  if (resumed.code !== 0) {
+    log(
+      `  held request resumed after approval (curl exit ${resumed.code} - example.org unreachable, ` +
+        'not a gateway regression)',
+    )
+  } else {
+    log('  held request resumed after approval: curl exit 0')
+  }
 
   if (mitm) {
     log('\n=== 5. wire redaction (upstream sees placeholders) ===')
