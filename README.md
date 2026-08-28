@@ -182,7 +182,10 @@ Two consequences worth knowing before you hit them:
 
 The boundary is honest about privilege too: this confines an **unprivileged** child. A child that
 can become root, already holds `CAP_SYS_ADMIN`, or has passwordless `sudo` can leave the namespace —
-use `honmoon join` where that matters.
+use `honmoon join` where that matters. Only the *network* namespace is replaced, so Unix sockets
+that live in the filesystem — `/var/run/docker.sock` and friends — stay reachable, and anything a
+local daemon behind one will do on the child's behalf is still a way out. Keep those sockets away
+from the uid you run under.
 
 When a request hits a `pause` rule the gateway holds the connection and surfaces it
 on the dashboard's **approval queue**; approving it lets the request through, denying

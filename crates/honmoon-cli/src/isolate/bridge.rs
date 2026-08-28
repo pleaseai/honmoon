@@ -84,14 +84,59 @@ pub trait Upstream: Send + Clone + 'static {
     fn connect(&self) -> io::Result<Self::Stream>;
 }
 
+/// How many `accept` failures in a row before the pump concludes the listener is
+/// gone rather than merely having a bad moment.
+///
+/// A cap rather than an unconditional retry: a listener that is genuinely broken
+/// — a closed descriptor, say — fails instantly and forever, and an uncapped
+/// loop would spin on it.
+const ACCEPT_FAILURE_LIMIT: u32 = 64;
+
+/// How long to wait before retrying a failed `accept`.
+///
+/// Short enough to be invisible to a client that is merely unlucky, long enough
+/// that the retry budget above spans seconds rather than microseconds.
+const ACCEPT_RETRY_PAUSE: std::time::Duration = std::time::Duration::from_millis(20);
+
 /// Accept forever, and splice each connection onto a fresh upstream one.
 ///
-/// Runs until the listener fails, which for our listeners means the process is
-/// going away. A connection that cannot reach its upstream is dropped: the
-/// client sees a closed connection, which is the correct signal that policy did
-/// not carry it, and one failed dial must not take the accept loop down with it.
+/// A connection that cannot reach its upstream is dropped: the client sees a
+/// closed connection, which is the correct signal that policy did not carry it,
+/// and one failed dial must not take the accept loop down with it.
+///
+/// Neither may one failed *accept*. `ECONNABORTED` (the peer went away mid
+/// handshake) and `EMFILE` (the process is momentarily out of descriptors) are
+/// each about a single client and each routine under load; ending the loop on one
+/// would leave the sandbox with no route to the proxy for the rest of the run —
+/// and, since nothing else watches the listener, would do it silently.
 pub fn serve<L: Listener, U: Upstream>(listener: L, upstream: U) {
-    while let Ok(inbound) = listener.accept_one() {
+    let mut consecutive_failures: u32 = 0;
+    loop {
+        let inbound = match listener.accept_one() {
+            Ok(inbound) => {
+                consecutive_failures = 0;
+                inbound
+            }
+            Err(error) => {
+                consecutive_failures += 1;
+                if consecutive_failures >= ACCEPT_FAILURE_LIMIT {
+                    tracing::warn!(
+                        %error,
+                        "bridge stopped accepting; the sandbox has no route to the proxy"
+                    );
+                    return;
+                }
+                // A beat before retrying. The cited failures clear on their own
+                // — a descriptor is returned, the next peer completes its
+                // handshake — but only if some time passes; retrying 64 times
+                // in one instant burst would exhaust the budget while the
+                // condition is still there and end the pump anyway.
+                tracing::debug!(%error, "bridge accept failed, still listening");
+                thread::sleep(ACCEPT_RETRY_PAUSE);
+                continue;
+            }
+        };
+
         let upstream = upstream.clone();
         thread::spawn(move || match upstream.connect() {
             Ok(outbound) => splice(inbound, outbound),
@@ -177,6 +222,55 @@ mod tests {
         assert_eq!(
             reply, "HONMOON",
             "the bridge must carry bytes to the upstream and the answer back"
+        );
+    }
+
+    /// A listener that refuses a fixed number of times before behaving, standing
+    /// in for `ECONNABORTED` / `EMFILE` — failures that are about one client, not
+    /// about the listener.
+    struct Flaky {
+        inner: TcpListener,
+        remaining_failures: std::sync::Mutex<u32>,
+    }
+
+    impl Listener for Flaky {
+        type Stream = TcpStream;
+
+        fn accept_one(&self) -> io::Result<Self::Stream> {
+            {
+                let mut remaining = self.remaining_failures.lock().expect("failure counter");
+                if *remaining > 0 {
+                    *remaining -= 1;
+                    return Err(io::Error::from(io::ErrorKind::ConnectionAborted));
+                }
+            }
+            self.inner.accept().map(|(stream, _)| stream)
+        }
+    }
+
+    #[test]
+    fn a_transient_accept_failure_does_not_stop_the_accept_loop() {
+        let echo = spawn_shouting_echo();
+        let front = TcpListener::bind("127.0.0.1:0").expect("bind bridge front door");
+        let front_addr = front.local_addr().expect("bridge address");
+        let flaky = Flaky {
+            inner: front,
+            remaining_failures: std::sync::Mutex::new(5),
+        };
+        thread::spawn(move || serve(flaky, Tcp(echo)));
+
+        let mut client = TcpStream::connect(front_addr).expect("reach the bridge");
+        client.write_all(b"honmoon").expect("write through bridge");
+        client
+            .shutdown(std::net::Shutdown::Write)
+            .expect("half-close so the echo server sees EOF");
+
+        let mut reply = String::new();
+        client.read_to_string(&mut reply).expect("read the reply");
+        assert_eq!(
+            reply, "HONMOON",
+            "an aborted handshake concerns one client; ending the accept loop on \
+             it would leave the sandbox with no route to the proxy at all"
         );
     }
 

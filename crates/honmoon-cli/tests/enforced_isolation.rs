@@ -142,7 +142,11 @@ fn enforcing_or_skip(policy: &Path, test: &str) -> bool {
         std::env::var_os("HONMOON_REQUIRE_ENFORCEMENT").is_none(),
         "{test}: HONMOON_REQUIRE_ENFORCEMENT is set, but {explanation}"
     );
-    eprintln!("SKIPPED {test}: {explanation}");
+    // Written to the stderr handle rather than with `eprintln!`: libtest
+    // captures the print macros and shows them only for a *failing* test, so
+    // the macro form would make this skip invisible in exactly the run where it
+    // matters — a plain `cargo test` reporting green tests that never executed.
+    let _ = writeln!(std::io::stderr(), "SKIPPED {test}: {explanation}");
     false
 }
 

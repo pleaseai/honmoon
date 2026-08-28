@@ -23,6 +23,14 @@
 //! The honest boundary is unchanged from ADR-0004: this confines an
 //! **unprivileged** child. A child that can become root on the host, already
 //! holds `CAP_SYS_ADMIN`, or has passwordless `sudo` can leave the namespace.
+//!
+//! One more limit is worth naming, because "no network" reads stronger than it
+//! is: only the *network* namespace is unshared, not the mount namespace. IP is
+//! gone and so are abstract Unix sockets (they are per-netns), but Unix sockets
+//! that live in the filesystem are not — a child that can open
+//! `/var/run/docker.sock`, or any other local daemon's socket, still reaches
+//! whatever that daemon will do for it. Keep such sockets away from the uid you
+//! run under, or use `honmoon join` where that matters.
 
 use std::ffi::CStr;
 use std::io;
@@ -125,22 +133,17 @@ impl Upstream for SocketUpstream {
 impl HostBridge {
     /// Open the socket and start pumping to `proxy`.
     fn open(proxy: SocketAddr) -> io::Result<Self> {
-        use std::os::unix::fs::PermissionsExt;
-
-        // `0700` on the directory is what keeps the socket off-limits to other
-        // users on the box: a Unix socket's own mode is not honoured everywhere,
-        // but the containing directory's traverse bit always is. Anyone who
-        // could connect here would be handed an unauthenticated path to the
-        // proxy, and through it to whatever the policy allows.
-        let dir = std::env::temp_dir().join(format!("honmoon-{}", std::process::id()));
-        std::fs::create_dir(&dir)?;
-        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700))?;
-
+        let dir = private_scratch_dir()?;
         let socket = dir.join("proxy.sock");
-        let listener = UnixListener::bind(&socket)?;
+
+        // Own the directory before anything else can fail, so an error below
+        // takes the scratch directory with it rather than leaving one behind
+        // that the *next* run would then trip over.
+        let opened = Self { dir, socket };
+        let listener = UnixListener::bind(&opened.socket)?;
         thread::spawn(move || bridge::serve(listener, ProxyUpstream(proxy)));
 
-        Ok(Self { dir, socket })
+        Ok(opened)
     }
 
     fn socket(&self) -> &Path {
@@ -154,14 +157,59 @@ impl Drop for HostBridge {
     }
 }
 
+/// Create a directory only this user can enter, under a name nobody else holds.
+///
+/// `0700` is what keeps the socket off-limits to other users on the box: a Unix
+/// socket's own mode is not honoured everywhere, but the containing directory's
+/// traverse bit always is. Anyone who could connect there would be handed an
+/// unauthenticated path to the proxy, and through it to whatever policy allows.
+/// The mode is set *at creation* rather than by a following `chmod`, because
+/// `create_dir` honours the umask and the gap between the two calls is a window
+/// in which a world-writable directory exists under a predictable name.
+///
+/// The pid-derived name can already be taken — by a run that was killed before
+/// its `Drop` ran, by a pid recycled inside a short-lived container, or by
+/// another local user who guessed it — and treating that as fatal would hand
+/// anyone a way to silently downgrade the run to advisory. A taken name is
+/// stepped over instead.
+fn private_scratch_dir() -> io::Result<PathBuf> {
+    use std::fs::DirBuilder;
+    use std::os::unix::fs::DirBuilderExt;
+
+    let base = std::env::temp_dir().join(format!("honmoon-{}", std::process::id()));
+    for attempt in 0..16 {
+        let dir = match attempt {
+            0 => base.clone(),
+            n => base.with_file_name(format!(
+                "{}-{n}",
+                base.file_name().unwrap_or_default().to_string_lossy()
+            )),
+        };
+        match DirBuilder::new().mode(0o700).create(&dir) {
+            Ok(()) => return Ok(dir),
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(error),
+        }
+    }
+    Err(io::Error::new(
+        io::ErrorKind::AlreadyExists,
+        "no free scratch directory for the bridge socket",
+    ))
+}
+
 /// Run `program` with `args` confined to an empty network namespace.
 ///
 /// An `Err` here always means the setup failed *before* the user's command could
 /// run, so the caller may fall back to the advisory path without any risk of
-/// running the command twice. Once the supervisor has been exec'd, everything
-/// that follows is reported as its exit status.
+/// running the command twice. That invariant is why the spawn and the wait are
+/// separate calls rather than one `status()`: everything `spawn` can report
+/// happens before the `exec`, while a failed `wait` would be a *post*-exec error
+/// that a caller reading it as "setup failed" would answer by starting the
+/// command a second time — unconfined, alongside the first.
 pub fn run_confined(proxy: SocketAddr, program: &str, args: &[String]) -> io::Result<ExitStatus> {
-    // Held as a local, never handed to the caller: `status()` already blocks
+    use std::os::unix::process::ExitStatusExt;
+
+    // Held as a local, never handed to the caller: the wait below already blocks
     // until the child is gone, so the bridge has no reason to outlive this
     // frame — and a guard returned into a caller that ends in
     // `std::process::exit` would never be dropped at all, leaking the scratch
@@ -193,7 +241,16 @@ pub fn run_confined(proxy: SocketAddr, program: &str, args: &[String]) -> io::Re
         command.pre_exec(move || enter_empty_namespace(&uid_map, &gid_map));
     }
 
-    let status = command.status()?;
+    let mut child = command.spawn()?;
+
+    // Past this line the user's command is running. Losing the child — a
+    // reaped-elsewhere `ECHILD`, say — is reported as a failing exit status
+    // rather than an `Err`, because an `Err` here would be read as "isolation
+    // never started" and answered by running the command again.
+    let status = child.wait().unwrap_or_else(|error| {
+        tracing::error!(%error, "lost track of the sandboxed command");
+        ExitStatus::from_raw(1 << 8)
+    });
     drop(host_bridge);
     Ok(status)
 }
@@ -237,10 +294,16 @@ fn write_once(path: &CStr, data: &[u8]) -> io::Result<()> {
         let error = io::Error::last_os_error();
         libc::close(fd);
         if failed {
+            // Both branches build an `io::Error` without allocating: an errno
+            // error is stored inline, and `From<ErrorKind>` is a bare tag. The
+            // `io::Error::new(_, "message")` spelling would box the message,
+            // which is a heap allocation — forbidden here, because this runs
+            // between `fork` and `exec` where another thread may have held the
+            // allocator lock at the moment of the fork.
             return Err(if written < 0 {
                 error
             } else {
-                io::Error::new(io::ErrorKind::WriteZero, "short write to a namespace map")
+                io::Error::from(io::ErrorKind::WriteZero)
             });
         }
     }
@@ -312,6 +375,11 @@ pub fn supervise(bridge_socket: &Path, argv: &[String]) -> io::Result<ExitStatus
     for (key, value) in super::proxy_env(&proxy_url) {
         command.env(key, value);
     }
+    // An inherited `no_proxy` is meaningless in here and actively harmful: the
+    // hosts it exempts have no route out of this namespace, so a client that
+    // honours it stops using the one channel that works and fails on a name the
+    // operator listed precisely because they wanted it reachable.
+    command.env_remove("no_proxy").env_remove("NO_PROXY");
     command.status()
 }
 
@@ -339,6 +407,41 @@ mod tests {
         assert!(
             error.raw_os_error().is_some(),
             "the OS error has to reach the caller, got: {error}"
+        );
+    }
+
+    #[test]
+    fn a_scratch_directory_is_private_from_the_moment_it_exists() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = private_scratch_dir().expect("create a scratch directory");
+        let mode = std::fs::metadata(&dir)
+            .expect("stat the scratch directory")
+            .permissions()
+            .mode()
+            & 0o777;
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(
+            mode, 0o700,
+            "another local user who can enter this directory gets an \
+             unauthenticated path to the proxy"
+        );
+    }
+
+    #[test]
+    fn a_taken_scratch_name_is_stepped_over_rather_than_fatal() {
+        // The name is derived from the pid, so a run killed before its `Drop`, a
+        // recycled pid, or another user squatting the predictable path all land
+        // here. Failing would downgrade the whole run to advisory.
+        let first = private_scratch_dir().expect("create a scratch directory");
+        let second = private_scratch_dir().expect("a taken name must not be fatal");
+        let distinct = first != second;
+        let _ = std::fs::remove_dir_all(&first);
+        let _ = std::fs::remove_dir_all(&second);
+        assert!(
+            distinct,
+            "the second directory has to be a different one, not the same path \
+             handed out twice"
         );
     }
 
