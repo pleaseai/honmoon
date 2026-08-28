@@ -1,0 +1,32 @@
+crates/honmoon-cli/src/isolate/linux.rs
+  s_e67799db97482b::t_df76f6caa53b66 204-208,210-212,244-253
+  s_e67799db97482b::t_84e94dcac22925 26-33
+  s_e67799db97482b::t_797fcd9cba600e 136,138-143,146
+  s_e67799db97482b::t_1c5c27d72eda75 297-302,306
+  s_e67799db97482b::t_e87d07d16bac43 378-382
+  s_e67799db97482b::t_8b9de7d1f95778 187,197,413-447
+  s_e67799db97482b::t_0e434d6d11fc85 160-186,188-196,198-199
+crates/honmoon-cli/src/isolate/bridge.rs
+  s_e67799db97482b::t_d1ae460b32b87a 87-100,103-111,113-139
+  s_e67799db97482b::t_7e9f1173b03080 228-276
+README.md
+  s_e67799db97482b::t_2bcbf6685e3eae 185-188
+crates/honmoon-cli/tests/enforced_isolation.rs
+  s_e67799db97482b::t_7ebc9ddfc9958d 145-149
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "d09a6952223aa13ec4797609d7de5806d53eaa5d",
+  "prompts": {},
+  "sessions": {
+    "s_e67799db97482b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "bc95a367-b71a-4b38-b391-8ba4e19c6bf9",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
