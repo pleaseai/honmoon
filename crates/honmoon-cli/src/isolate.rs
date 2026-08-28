@@ -6,9 +6,10 @@
 //! That is **TD-003**, and it is the gap between "firewall" and "suggestion".
 //!
 //! Closing it needs the operating system to delete the alternative rather than the
-//! child to decline it — an unprivileged user namespace holding a TUN device whose
-//! only peer is our proxy. That work is tracked in
-//! [ADR-0004](../../../.please/docs/decisions/0004-unprivileged-userns-tun-for-honmoon-run.md)
+//! child to decline it — a namespace with no network at all on Linux, a Seatbelt
+//! profile on macOS, and honmoon's proxy bridged in over a Unix socket. That work
+//! is tracked in
+//! [ADR-0005](../../../.please/docs/decisions/0005-empty-namespace-and-bridged-proxy-sockets.md)
 //! and is not yet implemented, so every platform reports [`Isolation::Advisory`]
 //! today.
 //!
@@ -20,7 +21,7 @@
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Isolation {
     /// The child has no network route that avoids the proxy.
-    #[allow(dead_code)] // Produced once the ADR-0004 Linux path lands.
+    #[allow(dead_code)] // Produced once the ADR-0005 isolation paths land.
     Enforced,
     /// Only the proxy environment variables were set. A child that ignores them
     /// bypasses policy entirely. `reason` says why enforcement was unavailable.
@@ -53,12 +54,17 @@ impl Isolation {
 
 #[cfg(target_os = "linux")]
 fn unavailable_reason() -> &'static str {
-    "namespace isolation is not implemented yet (ADR-0004)"
+    "namespace isolation is not implemented yet (ADR-0005)"
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(target_os = "macos")]
 fn unavailable_reason() -> &'static str {
-    "enforced isolation is implemented for Linux only; this host is not Linux"
+    "Seatbelt isolation is not implemented yet (ADR-0005)"
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+fn unavailable_reason() -> &'static str {
+    "enforced isolation has no design for this platform yet; ADR-0005 covers Linux and macOS"
 }
 
 #[cfg(test)]
@@ -92,7 +98,7 @@ mod tests {
     #[test]
     fn probe_explains_why_this_host_cannot_enforce() {
         let Isolation::Advisory { reason } = Isolation::probe() else {
-            panic!("no platform enforces yet; see ADR-0004");
+            panic!("no platform enforces yet; see ADR-0005");
         };
         assert!(
             !reason.is_empty(),
