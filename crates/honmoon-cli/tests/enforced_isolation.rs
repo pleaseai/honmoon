@@ -14,9 +14,11 @@
 #![cfg(target_os = "linux")]
 
 use std::io::{Read, Write};
-use std::net::{SocketAddr, TcpListener};
+use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 
 /// Exit code the probe uses for "I could not get there".
@@ -73,12 +75,43 @@ impl Drop for Scratch {
     }
 }
 
-/// An origin server on host loopback, outside whatever namespace the child gets.
-fn spawn_origin() -> SocketAddr {
+/// An origin server on host loopback, outside whatever namespace the child gets,
+/// that stops accepting when this value is dropped.
+///
+/// Without the guard the acceptor loops on `accept` forever, so every test that
+/// wanted an origin left a bound port and a permanently blocked thread behind for
+/// the life of the test process.
+struct Origin {
+    address: SocketAddr,
+    stop: Arc<AtomicBool>,
+}
+
+impl Origin {
+    fn address(&self) -> SocketAddr {
+        self.address
+    }
+}
+
+impl Drop for Origin {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::SeqCst);
+        // The acceptor only looks at the flag between connections, so it has to
+        // be woken from the `accept` it is sitting in. A throwaway connection is
+        // the one portable way to do that; whether it succeeds is irrelevant.
+        let _ = TcpStream::connect(self.address);
+    }
+}
+
+fn spawn_origin() -> Origin {
     let listener = TcpListener::bind("127.0.0.1:0").expect("bind the origin server");
     let address = listener.local_addr().expect("origin address");
+    let stop = Arc::new(AtomicBool::new(false));
+    let acceptor_stop = Arc::clone(&stop);
     thread::spawn(move || {
         while let Ok((mut stream, _)) = listener.accept() {
+            if acceptor_stop.load(Ordering::SeqCst) {
+                break;
+            }
             thread::spawn(move || {
                 // Read just enough to let the client finish its request; the
                 // body is irrelevant, only reachability is being measured.
@@ -90,7 +123,7 @@ fn spawn_origin() -> SocketAddr {
             });
         }
     });
-    address
+    Origin { address, stop }
 }
 
 fn run_sandboxed(policy: &Path, probe_args: &[&str]) -> Output {
@@ -163,7 +196,7 @@ fn a_child_that_ignores_the_proxy_environment_reaches_nothing() {
     }
 
     let origin = spawn_origin();
-    let target = origin.to_string();
+    let target = origin.address().to_string();
     let args = ["direct", target.as_str()];
 
     // The control comes first: if the probe cannot reach the origin even without
@@ -213,7 +246,10 @@ fn a_cooperating_child_still_reaches_an_allowed_host() {
     }
 
     let origin = spawn_origin();
-    let confined = run_sandboxed(&scratch.policy(), &["via-proxy", &origin.to_string()]);
+    let confined = run_sandboxed(
+        &scratch.policy(),
+        &["via-proxy", &origin.address().to_string()],
+    );
     let status = String::from_utf8_lossy(&confined.stdout);
     assert_eq!(
         status.trim(),

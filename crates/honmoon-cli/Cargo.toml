@@ -27,6 +27,10 @@ hmac.workspace = true
 sha2.workspace = true
 
 # Enforced `run` isolation is a Linux-only code path (ADR-0005): empty user +
-# network namespaces, with the proxy bridged in over a Unix socket.
-[target.'cfg(target_os = "linux")'.dependencies]
+# network namespaces, with the proxy bridged in over a Unix socket. The
+# dependency is `cfg(unix)` rather than Linux-only because the socket pump that
+# path is built on is deliberately portable — its tests run on every developer's
+# machine — and it names errno constants that only `libc` spells correctly on
+# both platforms.
+[target.'cfg(unix)'.dependencies]
 libc.workspace = true

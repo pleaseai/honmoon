@@ -82,8 +82,8 @@ pub fn proxy_env(proxy_url: &str) -> [(&'static str, &str); 6] {
 
 #[cfg(target_os = "linux")]
 fn unavailable_reason() -> &'static str {
-    "unprivileged user namespaces are unavailable on this host — a kernel or \
-     container policy refused CLONE_NEWUSER"
+    "Linux namespace isolation is unavailable on this host — a kernel or \
+     container policy refused a required namespace"
 }
 
 #[cfg(target_os = "macos")]

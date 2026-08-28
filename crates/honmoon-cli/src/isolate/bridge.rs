@@ -23,6 +23,8 @@
 use std::io::{self, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::os::unix::net::{UnixListener, UnixStream};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::thread;
 
 /// A stream this module can copy bytes through in both directions.
@@ -96,7 +98,75 @@ const ACCEPT_FAILURE_LIMIT: u32 = 64;
 ///
 /// Short enough to be invisible to a client that is merely unlucky, long enough
 /// that the retry budget above spans seconds rather than microseconds.
+///
+/// Lowered under `cfg(test)` so the sustained-pressure test below — which has to
+/// out-fail the retry budget to prove anything — finishes in well under a second
+/// instead of the three quarters of a minute the production pauses would cost.
+#[cfg(not(test))]
 const ACCEPT_RETRY_PAUSE: std::time::Duration = std::time::Duration::from_millis(20);
+#[cfg(test)]
+const ACCEPT_RETRY_PAUSE: std::time::Duration = std::time::Duration::from_millis(1);
+
+/// The ceiling the retry pause escalates to while a recoverable failure lasts.
+///
+/// Descriptor exhaustion can persist for as long as whatever is holding the
+/// descriptors holds them, and retrying every 20ms for that whole time is a
+/// busy-wait. Backing off to half a second costs a client at most that much
+/// latency on the connection that finally gets through, and costs nothing at all
+/// in the overwhelmingly common case where the first retry succeeds.
+#[cfg(not(test))]
+const ACCEPT_RETRY_PAUSE_MAX: std::time::Duration = std::time::Duration::from_millis(500);
+#[cfg(test)]
+const ACCEPT_RETRY_PAUSE_MAX: std::time::Duration = std::time::Duration::from_millis(5);
+
+/// How many connections may be bridged at once.
+///
+/// The cap exists because the child on the other end chooses how many
+/// connections to open and how long to hold them, and every one of them costs
+/// this process two threads. Without a ceiling a child that opens and retains
+/// connections in a loop exhausts the host's thread or memory limits and takes
+/// the supervisor down with it — which is to say it ends enforcement, the one
+/// outcome this module exists to prevent.
+///
+/// The newest connection is the one dropped rather than the oldest: the client
+/// reads a dropped connection as a closed one, which is exactly the signal a
+/// denied dial already produces, so nothing downstream has to learn a new
+/// failure mode.
+const MAX_CONCURRENT_CONNECTIONS: usize = 256;
+
+/// Is this `accept` failure one that clears on its own?
+///
+/// `ECONNABORTED` is a single peer that went away mid-handshake, `EINTR` is a
+/// signal that happened to land on the call, and `EAGAIN` is a listener that had
+/// nothing ready — none of the three say anything about the listener's health.
+/// `EMFILE`/`ENFILE` mean this process or this host is momentarily out of
+/// descriptors and `ENOBUFS`/`ENOMEM` that the kernel is out of socket buffers;
+/// all four end when whatever is holding the resource releases it.
+fn is_recoverable(error: &io::Error) -> bool {
+    matches!(
+        error.kind(),
+        io::ErrorKind::ConnectionAborted | io::ErrorKind::Interrupted | io::ErrorKind::WouldBlock
+    ) || matches!(
+        error.raw_os_error(),
+        Some(libc::EMFILE | libc::ENFILE | libc::ENOBUFS | libc::ENOMEM)
+    )
+}
+
+/// Holds one of the [`MAX_CONCURRENT_CONNECTIONS`] slots until its connection
+/// ends, however it ends.
+///
+/// A guard rather than a `fetch_sub` at each exit point, because the spliced
+/// path and the failed-dial path both leave the spawned closure and a count that
+/// only decremented on one of them would drift upward until the cap refused
+/// every connection — turning an admission-control measure into the outage it
+/// was added to prevent.
+struct ConnectionSlot(Arc<AtomicUsize>);
+
+impl Drop for ConnectionSlot {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::SeqCst);
+    }
+}
 
 /// Accept forever, and splice each connection onto a fresh upstream one.
 ///
@@ -104,18 +174,35 @@ const ACCEPT_RETRY_PAUSE: std::time::Duration = std::time::Duration::from_millis
 /// closed connection, which is the correct signal that policy did not carry it,
 /// and one failed dial must not take the accept loop down with it.
 ///
-/// Neither may one failed *accept*. `ECONNABORTED` (the peer went away mid
-/// handshake) and `EMFILE` (the process is momentarily out of descriptors) are
-/// each about a single client and each routine under load; ending the loop on one
-/// would leave the sandbox with no route to the proxy for the rest of the run —
-/// and, since nothing else watches the listener, would do it silently.
+/// Neither may one failed *accept*. Failures that clear on their own —
+/// `ECONNABORTED` from a peer that went away mid-handshake, `EMFILE` and friends
+/// from momentary resource exhaustion — are retried indefinitely, with a backoff
+/// that escalates so a condition lasting minutes is not answered with a
+/// busy-wait. Only a listener that fails for a reason that will not clear (a
+/// closed descriptor, say) ends the loop, and only after the capped number of
+/// tries; ending it on anything less would leave the sandbox with no route to
+/// the proxy for the rest of the run and, since nothing else watches the
+/// listener, would do it silently.
 pub fn serve<L: Listener, U: Upstream>(listener: L, upstream: U) {
+    let live = Arc::new(AtomicUsize::new(0));
     let mut consecutive_failures: u32 = 0;
+    let mut retry_pause = ACCEPT_RETRY_PAUSE;
     loop {
         let inbound = match listener.accept_one() {
             Ok(inbound) => {
                 consecutive_failures = 0;
+                retry_pause = ACCEPT_RETRY_PAUSE;
                 inbound
+            }
+            Err(error) if is_recoverable(&error) => {
+                // Deliberately outside the failure budget. Descriptor
+                // exhaustion under load is a condition that outlasts 64 tries
+                // and then goes away; counting it would end the pump for the
+                // rest of the run over something that had already fixed itself.
+                tracing::debug!(%error, "bridge accept failed, still listening");
+                thread::sleep(retry_pause);
+                retry_pause = (retry_pause * 2).min(ACCEPT_RETRY_PAUSE_MAX);
+                continue;
             }
             Err(error) => {
                 consecutive_failures += 1;
@@ -126,22 +213,31 @@ pub fn serve<L: Listener, U: Upstream>(listener: L, upstream: U) {
                     );
                     return;
                 }
-                // A beat before retrying. The cited failures clear on their own
-                // — a descriptor is returned, the next peer completes its
-                // handshake — but only if some time passes; retrying 64 times
-                // in one instant burst would exhaust the budget while the
-                // condition is still there and end the pump anyway.
+                // A beat before retrying. A listener that is merely in a bad
+                // state may come back, and retrying 64 times in one instant
+                // burst would exhaust the budget before it had the chance.
                 tracing::debug!(%error, "bridge accept failed, still listening");
                 thread::sleep(ACCEPT_RETRY_PAUSE);
                 continue;
             }
         };
 
+        if live.fetch_add(1, Ordering::SeqCst) >= MAX_CONCURRENT_CONNECTIONS {
+            live.fetch_sub(1, Ordering::SeqCst);
+            tracing::warn!("bridge is at its connection cap; dropping the newest connection");
+            drop(inbound);
+            continue;
+        }
+        let slot = ConnectionSlot(Arc::clone(&live));
+
         let upstream = upstream.clone();
-        thread::spawn(move || match upstream.connect() {
-            Ok(outbound) => splice(inbound, outbound),
-            Err(error) => {
-                tracing::debug!(%error, "bridge could not reach its upstream");
+        thread::spawn(move || {
+            let _slot = slot;
+            match upstream.connect() {
+                Ok(outbound) => splice(inbound, outbound),
+                Err(error) => {
+                    tracing::debug!(%error, "bridge could not reach its upstream");
+                }
             }
         });
     }
@@ -228,9 +324,14 @@ mod tests {
     /// A listener that refuses a fixed number of times before behaving, standing
     /// in for `ECONNABORTED` / `EMFILE` — failures that are about one client, not
     /// about the listener.
+    ///
+    /// The failure is supplied by the caller because the two cases differ in how
+    /// they reach the pump: `ECONNABORTED` arrives as an `io::ErrorKind`, while
+    /// `EMFILE` has no kind of its own and is only visible as a raw errno.
     struct Flaky {
         inner: TcpListener,
         remaining_failures: std::sync::Mutex<u32>,
+        failure: fn() -> io::Error,
     }
 
     impl Listener for Flaky {
@@ -241,7 +342,7 @@ mod tests {
                 let mut remaining = self.remaining_failures.lock().expect("failure counter");
                 if *remaining > 0 {
                     *remaining -= 1;
-                    return Err(io::Error::from(io::ErrorKind::ConnectionAborted));
+                    return Err((self.failure)());
                 }
             }
             self.inner.accept().map(|(stream, _)| stream)
@@ -256,6 +357,7 @@ mod tests {
         let flaky = Flaky {
             inner: front,
             remaining_failures: std::sync::Mutex::new(5),
+            failure: || io::Error::from(io::ErrorKind::ConnectionAborted),
         };
         thread::spawn(move || serve(flaky, Tcp(echo)));
 
@@ -271,6 +373,37 @@ mod tests {
             reply, "HONMOON",
             "an aborted handshake concerns one client; ending the accept loop on \
              it would leave the sandbox with no route to the proxy at all"
+        );
+    }
+
+    #[test]
+    fn sustained_resource_pressure_does_not_end_the_accept_loop() {
+        let echo = spawn_shouting_echo();
+        let front = TcpListener::bind("127.0.0.1:0").expect("bind bridge front door");
+        let front_addr = front.local_addr().expect("bridge address");
+        // Comfortably more failures than the budget a *permanent* listener
+        // failure gets: descriptor exhaustion that lasts longer than 64 tries
+        // and then clears is ordinary under load, and must not be the thing that
+        // ends the pump.
+        let flaky = Flaky {
+            inner: front,
+            remaining_failures: std::sync::Mutex::new(100),
+            failure: || io::Error::from_raw_os_error(libc::EMFILE),
+        };
+        thread::spawn(move || serve(flaky, Tcp(echo)));
+
+        let mut client = TcpStream::connect(front_addr).expect("reach the bridge");
+        client.write_all(b"honmoon").expect("write through bridge");
+        client
+            .shutdown(std::net::Shutdown::Write)
+            .expect("half-close so the echo server sees EOF");
+
+        let mut reply = String::new();
+        client.read_to_string(&mut reply).expect("read the reply");
+        assert_eq!(
+            reply, "HONMOON",
+            "descriptor exhaustion clears on its own, so it must be retried \
+             rather than counted against the budget that ends the pump"
         );
     }
 

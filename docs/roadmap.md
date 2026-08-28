@@ -249,11 +249,11 @@ Not every layer runs everywhere — record this so scope stays honest:
 |------------|----------------------------|--------------------|
 | HTTP egress filter + control plane | ✅ | ✅ (explicit proxy only) |
 | Wire-level SQL/K8s, `run`/`join`, TLS MITM | ✅ | ❌ (needs OS networking) |
-| **`run` enforcement** (child cannot bypass) | ⚠️ advisory everywhere today; both platforms designed in ADR-0005 (empty namespace / Seatbelt) | ❌ |
+| **`run` enforcement** (child cannot bypass) | ✅ Linux, for an unprivileged child, via the empty namespace of ADR-0005; ⚠️ macOS still advisory until the Seatbelt profile (#69) | ❌ |
 
-One measured caveat for the planned Linux path: **the default Docker seccomp profile blocks
+One measured caveat for the Linux path: **the default Docker seccomp profile blocks
 `unshare(CLONE_NEWUSER)`**, so `honmoon run` inside an ordinary container cannot build the
-namespace and falls back to advisory enforcement. Verified on this project's own toolchain —
+namespace and falls back to advisory mode. Verified on this project's own toolchain —
 `docker run ubuntu:24.04 unshare -Un` fails with `Operation not permitted`, while the same
 command under `--security-opt seccomp=unconfined` succeeds as a non-root user. Since agents are
 frequently containerized, this is a mainstream case rather than an edge one.

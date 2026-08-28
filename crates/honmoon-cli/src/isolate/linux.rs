@@ -91,9 +91,18 @@ pub fn namespaces_available() -> bool {
                 libc::_exit(if unshared == 0 { 0 } else { 1 });
             }
             child => {
+                // `waitpid` returning `EINTR` says a signal arrived, not that
+                // the probe failed. Treating it as failure would downgrade the
+                // whole run to advisory because something unrelated — a
+                // `SIGWINCH`, a profiler's timer — happened to land here.
                 let mut status: libc::c_int = 0;
-                if libc::waitpid(child, &mut status, 0) < 0 {
-                    return false;
+                loop {
+                    if libc::waitpid(child, &mut status, 0) >= 0 {
+                        break;
+                    }
+                    if io::Error::last_os_error().raw_os_error() != Some(libc::EINTR) {
+                        return false;
+                    }
                 }
                 libc::WIFEXITED(status) && libc::WEXITSTATUS(status) == 0
             }
@@ -347,6 +356,58 @@ fn bring_loopback_up() -> io::Result<()> {
     Ok(())
 }
 
+/// Close every descriptor above stdio before the sandboxed command can inherit
+/// one.
+///
+/// Rust opens its own sockets and files `O_CLOEXEC`, so nothing this process
+/// created reaches here. What can is a descriptor that leaked into `honmoon`
+/// from *its* parent without that flag — a shell's stray redirect, a C
+/// library's socket — which survives both execs. An already-connected socket
+/// keeps the peer it had when it was opened, so it still carries traffic inside
+/// the empty namespace: exactly the route this module exists to remove.
+///
+/// Failure is not fatal. A descriptor that cannot be closed is not a reason to
+/// refuse to run the command, and the ones that matter are closed by then.
+fn close_inherited_descriptors() {
+    // `close_range` is one syscall for the whole span, so nothing can be opened
+    // between two closes. Invoked through `syscall` rather than a wrapper so the
+    // build does not depend on which targets the `libc` crate re-exports it for,
+    // and with the bounds bound to typed locals because a variadic call promotes
+    // whatever it is handed.
+    let first: libc::c_uint = 3;
+    let last: libc::c_uint = libc::c_uint::MAX;
+    let flags: libc::c_uint = 0;
+    // SAFETY: a syscall with three integer arguments and no pointers.
+    let closed_everything =
+        unsafe { libc::syscall(libc::SYS_close_range, first, last, flags) == 0 };
+    if closed_everything {
+        return;
+    }
+
+    // Older kernels (pre-5.9) and seccomp profiles that do not know the syscall
+    // land here. `/proc/self/fd` is collected in full *before* anything is
+    // closed, because the directory handle is itself one of the entries and
+    // closing it mid-iteration would end the walk early, leaving the rest open.
+    let Ok(entries) = std::fs::read_dir("/proc/self/fd") else {
+        return;
+    };
+    let open: Vec<i32> = entries
+        .filter_map(|entry| {
+            let name = entry.ok()?.file_name();
+            name.to_str()?.parse().ok()
+        })
+        .collect();
+    for fd in open {
+        if fd > 2 {
+            // SAFETY: `close` on a descriptor that is already gone returns
+            // `EBADF`, which is exactly the outcome being ignored here.
+            unsafe {
+                libc::close(fd);
+            }
+        }
+    }
+}
+
 /// The in-namespace half: listen on loopback, pump to the host's Unix socket,
 /// and run the user's command against that port.
 ///
@@ -359,6 +420,15 @@ pub fn supervise(bridge_socket: &Path, argv: &[String]) -> io::Result<ExitStatus
             "no command to supervise inside the sandbox",
         )
     })?;
+
+    // Here rather than in `run_confined`'s `pre_exec` hook, and deliberately so:
+    // between `fork` and `exec` Rust's `Command` still holds a `CLOEXEC` pipe it
+    // uses to report a failed `exec` to the parent, and closing that pipe would
+    // make a failed spawn look like a successful one. This process is past both
+    // execs, so the only descriptors left are stdio and whatever leaked in. It
+    // sits after the argv check so the "nothing to supervise" path — which the
+    // unit tests take in-process — does not shut the caller's descriptors.
+    close_inherited_descriptors();
 
     // Port 0: the supervisor picks the child's proxy port itself and puts it in
     // the environment, so nothing has to agree on a fixed number, and two
@@ -378,8 +448,15 @@ pub fn supervise(bridge_socket: &Path, argv: &[String]) -> io::Result<ExitStatus
     // An inherited `no_proxy` is meaningless in here and actively harmful: the
     // hosts it exempts have no route out of this namespace, so a client that
     // honours it stops using the one channel that works and fails on a name the
-    // operator listed precisely because they wanted it reachable.
-    command.env_remove("no_proxy").env_remove("NO_PROXY");
+    // operator listed precisely because they wanted it reachable. It is replaced
+    // rather than removed, because loopback has to stay direct: the child's own
+    // `127.0.0.1` lives inside this namespace, and sending a request for it
+    // through the proxy would bridge it out and resolve it against the *host's*
+    // loopback — a different machine's worth of services than the child meant.
+    let loopback_direct = "localhost,127.0.0.1,::1";
+    command
+        .env("no_proxy", loopback_direct)
+        .env("NO_PROXY", loopback_direct);
     command.status()
 }
 

@@ -168,7 +168,8 @@ honmoon join --gateway honmoon.internal:8443
 On **Linux**, the wrapped command is spawned into a new user and network namespace that contains
 nothing but a loopback interface. honmoon's proxy is bridged in over a Unix socket, and the proxy
 variables point the child at it. A child that ignores those variables does not slip past policy —
-it reaches nothing, because its namespace has nothing in it.
+it reaches nothing over the network, because its namespace has no route out of it. (Unix sockets on
+the filesystem are the documented exception — see below.)
 
 Two consequences worth knowing before you hit them:
 
