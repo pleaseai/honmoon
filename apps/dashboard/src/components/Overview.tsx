@@ -8,7 +8,7 @@ function count(events: AuditEvent[], decision: Decision): number {
   return events.filter(e => e.decision === decision).length
 }
 
-export function Overview({ onNavigate }: { onNavigate: (view: string) => void }) {
+export function Overview() {
   const { data: audit, error: auditError } = usePolling(getAudit, 2000)
   const { data: approvals, error: approvalsError } = usePolling(getApprovals, 1500)
 
@@ -19,10 +19,10 @@ export function Overview({ onNavigate }: { onNavigate: (view: string) => void })
   const error = auditError ?? approvalsError
 
   const stats = [
-    { label: 'Pending approvals', value: pending, accent: pending > 0 },
-    { label: 'Allowed', value: count(events, 'allowed') + count(events, 'approved') },
-    { label: 'Denied', value: count(events, 'denied') + count(events, 'rejected') },
-    { label: 'Events recorded', value: events.length },
+    { label: 'Pending approvals', value: pending, href: '#/approvals', accent: pending > 0 },
+    { label: 'Allowed', value: count(events, 'allowed') + count(events, 'approved'), href: '#/audit' },
+    { label: 'Denied', value: count(events, 'denied') + count(events, 'rejected'), href: '#/audit' },
+    { label: 'Events recorded', value: events.length, href: '#/audit' },
   ]
 
   return (
@@ -39,10 +39,9 @@ export function Overview({ onNavigate }: { onNavigate: (view: string) => void })
 
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
         {stats.map(s => (
-          <button
-            type="button"
+          <a
             key={s.label}
-            onClick={() => onNavigate(s.label === 'Pending approvals' ? 'Approvals' : 'Audit Log')}
+            href={s.href}
             className={`rounded-lg border p-4 text-left ${
               s.accent
                 ? 'border-amber-300 bg-amber-50 dark:border-amber-800 dark:bg-amber-950/40'
@@ -51,7 +50,7 @@ export function Overview({ onNavigate }: { onNavigate: (view: string) => void })
           >
             <div className="text-2xl font-semibold tabular-nums">{s.value}</div>
             <div className="mt-1 text-xs text-zinc-500">{s.label}</div>
-          </button>
+          </a>
         ))}
       </div>
 

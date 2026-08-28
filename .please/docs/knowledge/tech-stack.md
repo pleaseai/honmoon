@@ -21,10 +21,25 @@ Honmoon is a monorepo that separates languages by responsibility.
   host allowlist and, when `--tls-intercept` is set, terminating TLS to scan request bodies.
   `--pii-mode detect` audits body-policy verdicts (default); `--pii-mode block` enforces them inline.
   - deps: `honmoon-core`, `tokio`, `hudsucker`, `http-body-util`, `serde`, `thiserror`, `tracing`
+  - *Planned, not implemented:* a **SOCKS5 listener** beside the CONNECT proxy, carrying the
+    non-HTTP protocols (PostgreSQL, SSH) that cannot speak `CONNECT`. Its handshake declares the
+    destination host:port, which is what would select the endpoint and its protocol runtime —
+    the live data source the `protocols` parsers still lack (TD-006). Designed in
+    [ADR-0005](../decisions/0005-empty-namespace-and-bridged-proxy-sockets.md).
   - Host-level allowlist applies to every tunnel (intercepted or raw); TLS termination (MITM) uses a
     local rcgen CA agents must trust. See [ADR-0003](../decisions/0003-adopt-hudsucker-for-tls-termination.md).
 - `honmoon-cli` — `honmoon` binary (`run` / `gateway` / `join`).
   - deps: `honmoon-core`, `honmoon-proxy`, `tokio`, `clap`, `anyhow`, `tracing`, `tracing-subscriber`
+  - `run` isolation is **advisory on every platform today**: the child is pointed at the proxy
+    through `http_proxy` and its five spellings, and one that ignores them reaches the network
+    directly without meeting a verdict (TD-003). `run` prints that posture on stderr rather than
+    letting it pass for enforcement.
+  - *Planned, not implemented:* enforced `run` isolation, giving the child **no network** and
+    bridging honmoon's proxies in — an empty user+network+mount namespace on Linux, a Seatbelt
+    profile allowing only the proxy's localhost port on macOS (`sandbox-exec`, no system
+    extension), fail-open where unavailable. Designed in
+    [ADR-0005](../decisions/0005-empty-namespace-and-bridged-proxy-sockets.md); the superseded
+    TUN + `tun2proxy` design is [ADR-0004](../decisions/0004-unprivileged-userns-tun-for-honmoon-run.md).
 
 Workspace deps are pinned centrally in the root `Cargo.toml` `[workspace.dependencies]`.
 
