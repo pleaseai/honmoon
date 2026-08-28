@@ -186,7 +186,9 @@ can become root, already holds `CAP_SYS_ADMIN`, or has passwordless `sudo` can l
 use `honmoon join` where that matters. Only the *network* namespace is replaced, so Unix sockets
 that live in the filesystem — `/var/run/docker.sock` and friends — stay reachable, and anything a
 local daemon behind one will do on the child's behalf is still a way out. Keep those sockets away
-from the uid you run under.
+from the uid you run under. For the same reason, do not hand honmoon a connected network socket as
+its own stdin, stdout or stderr and expect the child not to reach that peer: the child needs those
+three descriptors, so it inherits them, and a socket keeps its binding inside the new namespace.
 
 When a request hits a `pause` rule the gateway holds the connection and surfaces it
 on the dashboard's **approval queue**; approving it lets the request through, denying

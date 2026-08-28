@@ -31,6 +31,15 @@
 //! `/var/run/docker.sock`, or any other local daemon's socket, still reaches
 //! whatever that daemon will do for it. Keep such sockets away from the uid you
 //! run under, or use `honmoon join` where that matters.
+//!
+//! Stdio is the same shape of exception. Descriptor cleanup starts above the
+//! first three, because the child needs a stdin, stdout and stderr to be a
+//! usable command at all — so a *connected network socket* handed to `honmoon`
+//! as one of those three is inherited by the child and stays a live channel to
+//! that one peer, empty namespace or not. A socket keeps its binding across
+//! `unshare`. This is a property of how honmoon was launched rather than
+//! anything the child can arrange for itself: it needs an operator to have
+//! already wired honmoon's stdio to a network peer.
 
 use std::ffi::CStr;
 use std::io;
@@ -166,6 +175,50 @@ impl Drop for HostBridge {
     }
 }
 
+/// How many random bytes name a scratch directory.
+///
+/// 128 bits, so an attacker cannot enumerate the name this run is about to ask
+/// for — which is the entire reason the name is random rather than derived.
+const SCRATCH_NAME_BYTES: usize = 16;
+
+/// Fill `buffer` from the kernel's random pool.
+///
+/// `getrandom` first because it needs no descriptor, and the fallback does: a
+/// process that has run out of descriptors is precisely one that cannot open
+/// `/dev/urandom` either. Both can return short or be interrupted, so both are
+/// looped rather than called once.
+///
+/// There is deliberately no time- or pid-derived last resort. A guessable name
+/// is the failure this exists to prevent, so no randomness means no run: the
+/// caller reports a setup error, which happens before the child exists and which
+/// [`run_confined`]'s contract already handles.
+fn fill_random(buffer: &mut [u8]) -> io::Result<()> {
+    let mut filled = 0;
+    while filled < buffer.len() {
+        // SAFETY: the pointer and length describe the unfilled tail of a slice
+        // this call borrows exclusively.
+        let read = unsafe {
+            libc::getrandom(
+                buffer[filled..].as_mut_ptr().cast(),
+                buffer.len() - filled,
+                0,
+            )
+        };
+        if read > 0 {
+            filled += read as usize;
+            continue;
+        }
+        if read < 0 && io::Error::last_os_error().raw_os_error() == Some(libc::EINTR) {
+            continue;
+        }
+        // `ENOSYS` on a kernel older than 3.17, `EPERM` under a seccomp filter
+        // that denies the syscall: the device node answers both.
+        use std::io::Read as _;
+        return std::fs::File::open("/dev/urandom")?.read_exact(&mut buffer[filled..]);
+    }
+    Ok(())
+}
+
 /// Create a directory only this user can enter, under a name nobody else holds.
 ///
 /// `0700` is what keeps the socket off-limits to other users on the box: a Unix
@@ -176,26 +229,33 @@ impl Drop for HostBridge {
 /// `create_dir` honours the umask and the gap between the two calls is a window
 /// in which a world-writable directory exists under a predictable name.
 ///
-/// The pid-derived name can already be taken — by a run that was killed before
-/// its `Drop` ran, by a pid recycled inside a short-lived container, or by
-/// another local user who guessed it — and treating that as fatal would hand
-/// anyone a way to silently downgrade the run to advisory. A taken name is
-/// stepped over instead.
+/// The name is random for a reason worth spelling out. It used to be derived
+/// from the pid, which meant another local user with write access to the temp
+/// directory could pre-create every candidate — `honmoon-<pid>` and each of its
+/// numbered retries, or the whole plausible pid range on a shared runner — and
+/// every attempt would come back `AlreadyExists`. That is a fail-open an
+/// unprivileged outsider can trigger at will: the bridge never opens,
+/// [`run_confined`] returns an error, and the run silently drops to advisory,
+/// which is the one state where ignoring `http_proxy` works.
+///
+/// A taken name is still stepped over rather than treated as fatal — a random
+/// collision is not a reason to stop enforcing either.
 fn private_scratch_dir() -> io::Result<PathBuf> {
+    use std::fmt::Write as _;
     use std::fs::DirBuilder;
     use std::os::unix::fs::DirBuilderExt;
 
-    let base = std::env::temp_dir().join(format!("honmoon-{}", std::process::id()));
-    for attempt in 0..16 {
-        let dir = match attempt {
-            0 => base.clone(),
-            n => base.with_file_name(format!(
-                "{}-{n}",
-                base.file_name().unwrap_or_default().to_string_lossy()
-            )),
-        };
-        match DirBuilder::new().mode(0o700).create(&dir) {
-            Ok(()) => return Ok(dir),
+    let temp = std::env::temp_dir();
+    for _ in 0..16 {
+        let mut random = [0_u8; SCRATCH_NAME_BYTES];
+        fill_random(&mut random)?;
+        let mut name = String::from("honmoon-");
+        for byte in random {
+            let _ = write!(name, "{byte:02x}");
+        }
+
+        match DirBuilder::new().mode(0o700).create(temp.join(&name)) {
+            Ok(()) => return Ok(temp.join(name)),
             Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
             Err(error) => return Err(error),
         }
@@ -389,6 +449,7 @@ fn close_inherited_descriptors() {
     // closed, because the directory handle is itself one of the entries and
     // closing it mid-iteration would end the walk early, leaving the rest open.
     let Ok(entries) = std::fs::read_dir("/proc/self/fd") else {
+        close_up_to_the_descriptor_limit();
         return;
     };
     let open: Vec<i32> = entries
@@ -404,6 +465,43 @@ fn close_inherited_descriptors() {
             unsafe {
                 libc::close(fd);
             }
+        }
+    }
+}
+
+/// The last resort: close every descriptor from 3 up to the process limit.
+///
+/// This one cannot fail to do something. A `close` on a number that was never
+/// open returns `EBADF`, which is exactly the outcome being ignored, so the
+/// sweep is correct however many descriptors are actually there. It is last
+/// because it is the expensive one — up to tens of thousands of syscalls where
+/// the other two tiers cost one apiece — and it is reached only when both cheap
+/// mechanisms are gone at once: a kernel without `close_range` on a host with no
+/// `/proc` mounted. The alternative in that case was returning having closed
+/// nothing at all, which leaves open the escape route this function exists to
+/// remove.
+fn close_up_to_the_descriptor_limit() {
+    // A ceiling, because `RLIMIT_NOFILE` may be `RLIM_INFINITY` and a loop to
+    // `u64::MAX` does not end. 65536 is well above any limit a sane host sets
+    // for a CLI, and the sweep is cheap enough at that size to be unnoticeable.
+    const CEILING: libc::rlim_t = 65_536;
+
+    let mut limit = libc::rlimit {
+        rlim_cur: 0,
+        rlim_max: 0,
+    };
+    // SAFETY: `getrlimit` writes into an `rlimit` this frame owns.
+    let bound = if unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &mut limit) } == 0 {
+        limit.rlim_cur.min(CEILING)
+    } else {
+        // Not knowing the limit is not a reason to close nothing.
+        CEILING
+    };
+
+    for fd in 3..bound as libc::c_int {
+        // SAFETY: `close` on a descriptor that is not open returns `EBADF`.
+        unsafe {
+            libc::close(fd);
         }
     }
 }
@@ -506,12 +604,26 @@ mod tests {
     }
 
     #[test]
-    fn a_taken_scratch_name_is_stepped_over_rather_than_fatal() {
-        // The name is derived from the pid, so a run killed before its `Drop`, a
-        // recycled pid, or another user squatting the predictable path all land
-        // here. Failing would downgrade the whole run to advisory.
+    fn successive_scratch_directories_are_distinct_and_private() {
+        // This used to squat the pid-derived name to exercise the
+        // `AlreadyExists` retry. The name is random now — precisely so that a
+        // local user *cannot* squat it and force the run down to advisory —
+        // which leaves no name a test could pre-create either. What is left to
+        // assert is the property that makes the retry near-unreachable in the
+        // first place: two calls are handed two different directories, and each
+        // is private from the moment it exists rather than after a later
+        // `chmod`.
+        use std::os::unix::fs::PermissionsExt;
+
         let first = private_scratch_dir().expect("create a scratch directory");
-        let second = private_scratch_dir().expect("a taken name must not be fatal");
+        let second = private_scratch_dir().expect("create a second scratch directory");
+        let modes = [&first, &second].map(|dir| {
+            std::fs::metadata(dir)
+                .expect("stat the scratch directory")
+                .permissions()
+                .mode()
+                & 0o777
+        });
         let distinct = first != second;
         let _ = std::fs::remove_dir_all(&first);
         let _ = std::fs::remove_dir_all(&second);
@@ -519,6 +631,12 @@ mod tests {
             distinct,
             "the second directory has to be a different one, not the same path \
              handed out twice"
+        );
+        assert_eq!(
+            modes,
+            [0o700, 0o700],
+            "another local user who can enter one of these gets an \
+             unauthenticated path to the proxy"
         );
     }
 
