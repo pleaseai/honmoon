@@ -72,7 +72,11 @@ const IFF_RUNNING: libc::c_short = 0x40;
 /// The real union is 24 bytes wide; the tail is padding here because only
 /// `ifr_flags` is ever read or written, and a wrong total size would corrupt the
 /// caller's stack on the `SIOCGIFFLAGS` copy-out.
-#[repr(C)]
+/// `align(8)` because the kernel's `struct ifreq` carries a union of pointers
+/// and sockaddrs and is 8-byte aligned; the narrowed form here would otherwise
+/// inherit `c_short`'s 2-byte alignment and model the C type more weakly than
+/// the ioctl it is handed to expects.
+#[repr(C, align(8))]
 struct IfReq {
     name: [libc::c_char; 16],
     flags: libc::c_short,
@@ -431,12 +435,17 @@ fn bring_loopback_up() -> io::Result<()> {
 fn close_inherited_descriptors() {
     // `close_range` is one syscall for the whole span, so nothing can be opened
     // between two closes. Invoked through `syscall` rather than a wrapper so the
-    // build does not depend on which targets the `libc` crate re-exports it for,
-    // and with the bounds bound to typed locals because a variadic call promotes
-    // whatever it is handed.
-    let first: libc::c_uint = 3;
-    let last: libc::c_uint = libc::c_uint::MAX;
-    let flags: libc::c_uint = 0;
+    // build does not depend on which targets the `libc` crate re-exports it for.
+    //
+    // The bounds are `c_long` because Rust, unlike C, passes a variadic argument
+    // as exactly the type it was given — there is no promotion to `long` here.
+    // Handing a 32-bit value to a variadic that reads register-sized arguments
+    // leaves the top half of the register to chance, and a garbage `flags` is
+    // `EINVAL`: the sweep would report failure and fall through to the slower
+    // tiers on every run.
+    let first: libc::c_long = 3;
+    let last: libc::c_long = libc::c_uint::MAX as libc::c_long;
+    let flags: libc::c_long = 0;
     // SAFETY: a syscall with three integer arguments and no pointers.
     let closed_everything =
         unsafe { libc::syscall(libc::SYS_close_range, first, last, flags) == 0 };

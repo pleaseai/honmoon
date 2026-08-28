@@ -16,6 +16,11 @@
 //! believes `honmoon run` is enforcing, when it is advisory, is worse off than one
 //! who knows.
 
+// The pump is built on `std::os::unix` sockets and errno constants, so it only
+// exists where those do. A non-Unix target compiles neither it nor `linux`
+// below, and reaches the advisory fallback that `unavailable_reason` already
+// spells out for platforms without an implementation.
+#[cfg(unix)]
 mod bridge;
 
 #[cfg(target_os = "linux")]
