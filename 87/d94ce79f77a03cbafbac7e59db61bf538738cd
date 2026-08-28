@@ -1,0 +1,31 @@
+crates/honmoon-cli/src/isolate/mod.rs
+  s_e67799db97482b::t_94cd286b88cf27 10-168
+crates/honmoon-cli/src/isolate/linux.rs
+  s_e67799db97482b::t_6445a2d2773ca2 1-352
+crates/honmoon-cli/src/isolate/bridge.rs
+  s_e67799db97482b::t_97b4f63d6f1132 1-207
+Cargo.lock
+  s_e67799db97482b::t_b67628ccdb33a4 1007
+Cargo.toml
+  s_e67799db97482b::t_2db563b0b5e56e 45-46
+crates/honmoon-cli/Cargo.toml
+  s_e67799db97482b::t_60a5c685325dbf 28-32
+crates/honmoon-cli/src/main.rs
+  s_e67799db97482b::t_1b116ac46be578 125-139,179-187,347-374,384-389
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "87d94ce79f77a03cbafbac7e59db61bf538738cd",
+  "prompts": {},
+  "sessions": {
+    "s_e67799db97482b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "bc95a367-b71a-4b38-b391-8ba4e19c6bf9",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
