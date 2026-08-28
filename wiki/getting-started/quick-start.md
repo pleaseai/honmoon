@@ -65,8 +65,10 @@ sequenceDiagram
 On **Linux** the child is spawned into an empty user + network namespace holding nothing but
 loopback, with honmoon's proxy bridged in over a Unix socket
 ([ADR-0005](https://github.com/pleaseai/honmoon/blob/main/.please/docs/decisions/0005-empty-namespace-and-bridged-proxy-sockets.md)). The proxy
-variables `http_proxy` / `https_proxy` / `all_proxy` (and uppercase variants) still point the child
-at that proxy ([main.rs:153-161](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-cli/src/main.rs#L153-L161)), but an
+variables `http_proxy` / `https_proxy` / `all_proxy` (and uppercase variants) are set by the
+in-namespace supervisor and point the child at the loopback port *inside* its own namespace rather
+than at the host's proxy
+([linux.rs:615-626](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-cli/src/isolate/linux.rs#L615-L626)), but an
 **unprivileged** child that ignores them reaches nothing over the network rather than bypassing
 policy. The flip side: a client that speaks no proxy at all (`psql`, `ssh`) cannot connect under
 `run` — use `honmoon gateway` for those.

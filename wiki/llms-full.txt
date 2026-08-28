@@ -1104,7 +1104,7 @@ flowchart LR
     s5["@honmoon/api: audit query"]
   end
   subgraph weak["Fragile / incomplete"]
-    w1["honmoon run: Linux netns done;<br>macOS + privileged still open (TD-003)"]
+    w1["honmoon run: Linux netns; advisory fallback where refused;<br>macOS + privileged still open (TD-003)"]
     w2["honmoon join: stub (bail!)"]
     w3["SQL/K8s: no live relay (TD-006)"]
     w4["honmoonctl validate: stub"]
@@ -1748,8 +1748,11 @@ single-command mode.
 ::: tip Enforcing on Linux, advisory elsewhere (TD-003)
 On **Linux** the child is spawned into an empty user + network namespace containing nothing but
 loopback and the proxy is bridged in over a Unix socket, so an **unprivileged** child that ignores
-the env vars reaches nothing at all
-([ADR-0005](https://github.com/pleaseai/honmoon/blob/main/.please/docs/decisions/0005-empty-namespace-and-bridged-proxy-sockets.md)). Three
+the env vars reaches nothing over the network rather than bypassing policy
+([ADR-0005](https://github.com/pleaseai/honmoon/blob/main/.please/docs/decisions/0005-empty-namespace-and-bridged-proxy-sockets.md)). Only the
+*network* namespace is replaced, so Unix sockets that live in the filesystem — `/var/run/docker.sock`
+and friends — stay reachable, and anything a local daemon behind one will do on the child's behalf
+is still a way out. Three
 limits keep **TD-003** open: root / `CAP_SYS_ADMIN` / passwordless `sudo` can leave the namespace;
 `run` fails open to advisory where the namespace is refused (the default Docker seccomp profile
 blocks `unshare(CLONE_NEWUSER)`, so an ordinary container is advisory); and macOS still only sets
@@ -2391,8 +2394,10 @@ sequenceDiagram
 On **Linux** the child is spawned into an empty user + network namespace holding nothing but
 loopback, with honmoon's proxy bridged in over a Unix socket
 ([ADR-0005](https://github.com/pleaseai/honmoon/blob/main/.please/docs/decisions/0005-empty-namespace-and-bridged-proxy-sockets.md)). The proxy
-variables `http_proxy` / `https_proxy` / `all_proxy` (and uppercase variants) still point the child
-at that proxy ([main.rs:153-161](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-cli/src/main.rs#L153-L161)), but an
+variables `http_proxy` / `https_proxy` / `all_proxy` (and uppercase variants) are set by the
+in-namespace supervisor and point the child at the loopback port *inside* its own namespace rather
+than at the host's proxy
+([linux.rs:615-626](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-cli/src/isolate/linux.rs#L615-L626)), but an
 **unprivileged** child that ignores them reaches nothing over the network rather than bypassing
 policy. The flip side: a client that speaks no proxy at all (`psql`, `ssh`) cannot connect under
 `run` — use `honmoon gateway` for those.

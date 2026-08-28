@@ -200,8 +200,11 @@ single-command mode.
 ::: tip Enforcing on Linux, advisory elsewhere (TD-003)
 On **Linux** the child is spawned into an empty user + network namespace containing nothing but
 loopback and the proxy is bridged in over a Unix socket, so an **unprivileged** child that ignores
-the env vars reaches nothing at all
-([ADR-0005](https://github.com/pleaseai/honmoon/blob/main/.please/docs/decisions/0005-empty-namespace-and-bridged-proxy-sockets.md)). Three
+the env vars reaches nothing over the network rather than bypassing policy
+([ADR-0005](https://github.com/pleaseai/honmoon/blob/main/.please/docs/decisions/0005-empty-namespace-and-bridged-proxy-sockets.md)). Only the
+*network* namespace is replaced, so Unix sockets that live in the filesystem — `/var/run/docker.sock`
+and friends — stay reachable, and anything a local daemon behind one will do on the child's behalf
+is still a way out. Three
 limits keep **TD-003** open: root / `CAP_SYS_ADMIN` / passwordless `sudo` can leave the namespace;
 `run` fails open to advisory where the namespace is refused (the default Docker seccomp profile
 blocks `unshare(CLONE_NEWUSER)`, so an ordinary container is advisory); and macOS still only sets
