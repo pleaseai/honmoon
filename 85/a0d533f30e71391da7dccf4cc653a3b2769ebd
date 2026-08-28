@@ -1,0 +1,25 @@
+wiki/getting-started/quick-start.md
+  s_cf4a5344af068d::t_b0e3e3f0702db2 68-71
+wiki/llms-full.txt
+  s_cf4a5344af068d::t_f303f7ee0d7018 1107,1751-1755,2397-2400
+wiki/deep-dive/architecture.md
+  s_cf4a5344af068d::t_b0e3e3f0702db2 210
+wiki/deep-dive/egress-gateway.md
+  s_cf4a5344af068d::t_b0e3e3f0702db2 203-207
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "85a0d533f30e71391da7dccf4cc653a3b2769ebd",
+  "prompts": {},
+  "sessions": {
+    "s_cf4a5344af068d": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "98df4c9f-2e16-4e1a-b5ed-3b2178347463",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
