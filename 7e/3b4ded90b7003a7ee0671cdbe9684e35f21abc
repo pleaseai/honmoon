@@ -1,0 +1,23 @@
+.please/docs/decisions/index.md
+  s_e67799db97482b::t_533a78bd84df02 9-10
+.please/docs/decisions/0004-unprivileged-userns-tun-for-honmoon-run.md
+  s_e67799db97482b::t_b2f5686998ee3d 1-107
+.please/docs/knowledge/tech-stack.md
+  s_e67799db97482b::t_3ab2abc52e6549 28-32
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "7e3b4ded90b7003a7ee0671cdbe9684e35f21abc",
+  "prompts": {},
+  "sessions": {
+    "s_e67799db97482b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "bc95a367-b71a-4b38-b391-8ba4e19c6bf9",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
