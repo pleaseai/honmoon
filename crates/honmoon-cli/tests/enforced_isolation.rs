@@ -220,6 +220,62 @@ fn a_child_that_ignores_the_proxy_environment_reaches_nothing() {
 }
 
 #[test]
+fn a_restrictive_umask_does_not_downgrade_enforcement() {
+    let scratch = Scratch::with_policy("umask", ALLOW_LOOPBACK);
+    if !enforcing_or_skip(&scratch.policy(), "umask") {
+        return;
+    }
+
+    let origin = spawn_origin();
+    let target = origin.address().to_string();
+
+    // The control first, for the same reason the bypass test has one: a probe
+    // that cannot reach the origin unsandboxed would make the assertion below
+    // meaningless.
+    let control = run_unsandboxed(&["direct", target.as_str()]);
+    assert_eq!(
+        control.status.code(),
+        Some(0),
+        "the probe must reach the origin when honmoon is not involved, or this \
+         test cannot distinguish confinement from a broken fixture"
+    );
+
+    // The umask is set in a *spawned* shell rather than in this process, because
+    // `umask` is process-wide and libtest runs every test in this binary on
+    // threads of one process: setting it here would change the mode of files
+    // other tests create at the same moment.
+    //
+    // What it exercises: `mkdir` intersects its mode argument with the umask, so
+    // the bridge's scratch directory would arrive 0600 rather than 0700 without
+    // the `set_permissions` restore in `private_scratch_dir`. A directory its own
+    // owner cannot traverse takes the bridge socket with it — the bind fails,
+    // `run` reports a setup error, and the run silently falls back to advisory,
+    // which is the one state in which ignoring `http_proxy` works.
+    let confined = Command::new("sh")
+        .arg("-c")
+        .arg(r#"umask 0177; exec "$0" run --policy "$1" -- "$2" direct "$3""#)
+        .arg(honmoon())
+        .arg(scratch.policy())
+        .arg(probe())
+        .arg(&target)
+        .output()
+        .expect("run honmoon under a restrictive umask");
+
+    let stderr = String::from_utf8_lossy(&confined.stderr);
+    assert!(
+        !stderr.contains("ADVISORY"),
+        "a restrictive umask must not knock the run down to advisory.\nstderr: {stderr}"
+    );
+    assert_eq!(
+        confined.status.code(),
+        Some(UNREACHABLE),
+        "with a restrictive umask the run must still confine the child; it \
+         reached the origin instead, so the umask bought a policy bypass \
+         (TD-003).\nstderr: {stderr}"
+    );
+}
+
+#[test]
 fn a_child_that_ignores_the_proxy_environment_cannot_leave_loopback_either() {
     let scratch = Scratch::with_policy("offbox", ALLOW_LOOPBACK);
     if !enforcing_or_skip(&scratch.policy(), "offbox") {

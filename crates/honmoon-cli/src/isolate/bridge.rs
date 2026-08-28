@@ -183,6 +183,14 @@ impl Drop for ConnectionSlot {
 /// tries; ending it on anything less would leave the sandbox with no route to
 /// the proxy for the rest of the run and, since nothing else watches the
 /// listener, would do it silently.
+///
+/// A connection thread that cannot be *started* — `thread::Builder` reporting
+/// `EAGAIN` under a low pids cgroup limit or `RLIMIT_NPROC` — is handled the
+/// same way as a failed dial: it costs that one connection, not the loop. This
+/// is why the spawn goes through `Builder` at all; `thread::spawn` panics on
+/// that error, and the panic would unwind the accept loop and leave the sandbox
+/// with no route to the proxy for the rest of the run, well before the
+/// [`MAX_CONCURRENT_CONNECTIONS`] cap had a chance to apply.
 pub fn serve<L: Listener, U: Upstream>(listener: L, upstream: U) {
     let live = Arc::new(AtomicUsize::new(0));
     let mut consecutive_failures: u32 = 0;
@@ -231,7 +239,7 @@ pub fn serve<L: Listener, U: Upstream>(listener: L, upstream: U) {
         let slot = ConnectionSlot(Arc::clone(&live));
 
         let upstream = upstream.clone();
-        thread::spawn(move || {
+        let started = thread::Builder::new().spawn(move || {
             let _slot = slot;
             match upstream.connect() {
                 Ok(outbound) => splice(inbound, outbound),
@@ -240,6 +248,19 @@ pub fn serve<L: Listener, U: Upstream>(listener: L, upstream: U) {
                 }
             }
         });
+        if let Err(error) = started {
+            // The failed `spawn` drops the closure, and with it both the
+            // connection and its `ConnectionSlot` — so the slot is returned
+            // here rather than counted forever against a connection that never
+            // ran. A leaked slot would be permanent: nothing else decrements
+            // the count, so enough of them would leave the cap refusing every
+            // later connection.
+            tracing::warn!(
+                %error,
+                "bridge could not start a connection thread; dropping the connection"
+            );
+            continue;
+        }
     }
 }
 
