@@ -54,8 +54,20 @@ jobs:
         # into a failure. Without it a runner that lost the capability would
         # report the ADR-0005 isolation tests as green without running them.
         env:
-          HONMOON_REQUIRE_ENFORCEMENT: "1"
-        run: cargo llvm-cov --workspace --all-targets --lcov --output-path lcov.info
+          HONMOON_REQUIRE_ENFORCEMENT: '1'
+        # cargo-llvm-cov's documented manual sequence rather than the one-shot
+        # form, because the isolation tests exec `bypass_probe` as a fixture out
+        # of `target/.../debug/examples` and nothing else puts it there. Measured:
+        # `--all-targets` compiles examples as *test* targets, and the one-shot
+        # `cargo llvm-cov` runs `cargo test --tests`, so neither leaves a runnable
+        # binary. `show-env` points the explicit build at the same instrumented
+        # target directory the run uses.
+        run: |
+          source <(cargo llvm-cov show-env --export-prefix)
+          cargo llvm-cov clean --workspace
+          cargo build -p honmoon-cli --example bypass_probe
+          cargo test --workspace
+          cargo llvm-cov report --lcov --output-path lcov.info
 
       - name: Upload coverage to Codecov
         uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f # v7.0.0

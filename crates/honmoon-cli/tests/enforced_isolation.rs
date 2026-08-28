@@ -28,10 +28,12 @@ fn honmoon() -> PathBuf {
 
 /// The probe is an example, so it sits beside the binary rather than next to it.
 ///
-/// Examples are built by `cargo test` and by CI's `--all-targets` run, but *not*
-/// by `cargo test --test enforced_isolation`, which narrows the build to this
-/// one target. Say that out loud instead of letting it surface as a bare
-/// `No such file or directory` from deep inside the sandbox.
+/// A plain `cargo test` builds it; two narrower invocations do not, and both
+/// have already broken this suite once. `cargo test --test enforced_isolation`
+/// narrows the build to this one target, and `--all-targets` compiles examples
+/// as *test* targets rather than leaving a runnable binary here. Say so out
+/// loud instead of letting it surface as a bare `No such file or directory`
+/// from deep inside the sandbox.
 fn probe() -> PathBuf {
     let path = honmoon()
         .parent()
@@ -41,8 +43,9 @@ fn probe() -> PathBuf {
     assert!(
         path.exists(),
         "the probe fixture is missing at {path:?} — build it with \
-         `cargo build -p honmoon-cli --example bypass_probe`, or run the whole \
-         suite with `cargo test -p honmoon-cli`, which builds examples"
+         `cargo build -p honmoon-cli --example bypass_probe`, or run the suite \
+         as a plain `cargo test -p honmoon-cli`. Note that `--all-targets` does \
+         *not* produce it: it compiles examples as test targets instead."
     );
     path
 }
