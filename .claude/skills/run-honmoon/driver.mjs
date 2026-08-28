@@ -604,6 +604,15 @@ async function drive({ mitm }) {
             `upstream Content-Length ${upstreamLen} <= client body ${body.length} - nothing was tokenized on the wire`,
           )
         }
+        // The Content-Length check only proves the *request* was tokenized. If
+        // response detokenization regressed, the echo comes back still holding
+        // `<<hs:...>>` while the length check passes exactly as before -- so the
+        // half of this step that the log line claims went unverified.
+        if (echoed.data !== body) {
+          throw new Error(
+            `response was not detokenized: client got ${JSON.stringify(echoed.data)}, sent ${JSON.stringify(body)}`,
+          )
+        }
         log('  ^ upstream received placeholders; the response was detokenized on the way back')
       }
     }
