@@ -1,0 +1,21 @@
+.claude/agent-memory/github-pr-manager/MEMORY.md
+  s_e67799db97482b::t_bdd4177bb91f38 1
+.claude/agent-memory/github-pr-manager/pr-conventions-honmoon.md
+  s_e67799db97482b::t_a7dca3b82bafb7 1-24
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "c277558e73c8487ddca880f15b43a7c9a90f7067",
+  "prompts": {},
+  "sessions": {
+    "s_e67799db97482b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "bc95a367-b71a-4b38-b391-8ba4e19c6bf9",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
