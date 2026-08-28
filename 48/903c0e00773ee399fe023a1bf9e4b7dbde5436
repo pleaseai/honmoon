@@ -1,0 +1,59 @@
+.please/docs/decisions/index.md
+  s_26251e4d00f8bf::t_16d83b06d0348f 9-11
+.please/docs/decisions/0004-unprivileged-userns-tun-for-honmoon-run.md
+  s_26251e4d00f8bf::t_16d83b06d0348f 1-157
+apps/dashboard/src/components/Overview.tsx
+  s_26251e4d00f8bf::t_16d83b06d0348f 11,22-25,42,44,53
+apps/dashboard/demo/demo-mode.js
+  s_26251e4d00f8bf::t_16d83b06d0348f 1-547
+apps/dashboard/demo/build.ts
+  s_26251e4d00f8bf::t_16d83b06d0348f 1-61
+.github/workflows/deploy-demo.yml
+  s_26251e4d00f8bf::t_16d83b06d0348f 1-87
+apps/dashboard/src/App.tsx
+  s_26251e4d00f8bf::t_16d83b06d0348f 1,9-32,35-36,55-58,60,65-66,71,78-81
+eslint.config.mjs
+  s_26251e4d00f8bf::t_16d83b06d0348f 14-15,26-28
+apps/dashboard/package.json
+  s_26251e4d00f8bf::t_16d83b06d0348f 9
+apps/dashboard/.gitignore
+  s_26251e4d00f8bf::t_16d83b06d0348f 12
+crates/honmoon-cli/src/isolate.rs
+  s_26251e4d00f8bf::t_16d83b06d0348f 1-108
+.github/workflows/ci.yml
+  s_26251e4d00f8bf::t_16d83b06d0348f 60,72-80,96
+apps/dashboard/src/components/PolicyView.tsx
+  s_26251e4d00f8bf::t_16d83b06d0348f 3,8-14
+  s_26251e4d00f8bf::t_1862d847ee45f5 15
+.claude/agent-memory/github-pr-manager/MEMORY.md
+  s_26251e4d00f8bf::t_16d83b06d0348f 1
+crates/honmoon-cli/src/main.rs
+  s_26251e4d00f8bf::t_16d83b06d0348f 4,323-334
+  s_26251e4d00f8bf::t_d28b97f245319b 335
+docs/roadmap.md
+  s_26251e4d00f8bf::t_16d83b06d0348f 147-160,250-257
+.claude/agent-memory/github-pr-manager/pr-conventions-honmoon.md
+  s_26251e4d00f8bf::t_16d83b06d0348f 1-24
+.please/docs/knowledge/tech-stack.md
+  s_26251e4d00f8bf::t_16d83b06d0348f 24-28,33-42
+.please/docs/decisions/0005-empty-namespace-and-bridged-proxy-sockets.md
+  s_26251e4d00f8bf::t_16d83b06d0348f 1-102
+apps/dashboard/AGENTS.md
+  s_26251e4d00f8bf::t_16d83b06d0348f 14,19-36,41,44-45
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "48903c0e00773ee399fe023a1bf9e4b7dbde5436",
+  "prompts": {},
+  "sessions": {
+    "s_26251e4d00f8bf": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "19921313-ad15-4170-918f-6ad1e06c7635",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
