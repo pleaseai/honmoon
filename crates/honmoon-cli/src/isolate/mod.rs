@@ -7,21 +7,28 @@
 //!
 //! Closing it needs the operating system to delete the alternative rather than the
 //! child to decline it — a namespace with no network at all on Linux, a Seatbelt
-//! profile on macOS, and honmoon's proxy bridged in over a Unix socket. That work
-//! is tracked in
-//! [ADR-0005](../../../.please/docs/decisions/0005-empty-namespace-and-bridged-proxy-sockets.md)
-//! and is not yet implemented, so every platform reports [`Isolation::Advisory`]
-//! today.
+//! profile on macOS, and honmoon's proxy bridged in over a Unix socket, per
+//! [ADR-0005](../../../.please/docs/decisions/0005-empty-namespace-and-bridged-proxy-sockets.md).
+//! The Linux half is implemented in [`linux`]; macOS still reports
+//! [`Isolation::Advisory`].
 //!
 //! This module exists so the weakness is *stated* rather than silent. A user who
 //! believes `honmoon run` is enforcing, when it is advisory, is worse off than one
 //! who knows.
 
+mod bridge;
+
+#[cfg(target_os = "linux")]
+pub mod linux;
+
 /// How much of the policy the wrapped child is actually held to.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Isolation {
     /// The child has no network route that avoids the proxy.
-    #[allow(dead_code)] // Produced once the ADR-0005 isolation paths land.
+    #[cfg_attr(
+        not(target_os = "linux"),
+        allow(dead_code, reason = "only Linux can produce this today (ADR-0005)")
+    )]
     Enforced,
     /// Only the proxy environment variables were set. A child that ignores them
     /// bypasses policy entirely. `reason` says why enforcement was unavailable.
@@ -31,6 +38,11 @@ pub enum Isolation {
 impl Isolation {
     /// Decide what this host can offer for a child about to be spawned.
     pub fn probe() -> Self {
+        #[cfg(target_os = "linux")]
+        if linux::namespaces_available() {
+            return Self::Enforced;
+        }
+
         Self::Advisory {
             reason: unavailable_reason().to_string(),
         }
@@ -52,9 +64,26 @@ impl Isolation {
     }
 }
 
+/// The proxy variables handed to a wrapped child.
+///
+/// Six spellings because there is no single convention: curl reads the lowercase
+/// forms, many Go and Java clients read the uppercase ones, and `all_proxy`
+/// catches clients that route non-HTTP schemes through the same setting.
+pub fn proxy_env(proxy_url: &str) -> [(&'static str, &str); 6] {
+    [
+        ("http_proxy", proxy_url),
+        ("https_proxy", proxy_url),
+        ("HTTP_PROXY", proxy_url),
+        ("HTTPS_PROXY", proxy_url),
+        ("all_proxy", proxy_url),
+        ("ALL_PROXY", proxy_url),
+    ]
+}
+
 #[cfg(target_os = "linux")]
 fn unavailable_reason() -> &'static str {
-    "namespace isolation is not implemented yet (ADR-0005)"
+    "unprivileged user namespaces are unavailable on this host — a kernel or \
+     container policy refused CLONE_NEWUSER"
 }
 
 #[cfg(target_os = "macos")]
@@ -73,9 +102,11 @@ mod tests {
 
     #[test]
     fn advisory_warning_names_the_bypass() {
-        let warning = Isolation::probe()
-            .warning()
-            .expect("an advisory host must warn");
+        let warning = Isolation::Advisory {
+            reason: "a stated reason".to_string(),
+        }
+        .warning()
+        .expect("an advisory host must warn");
         assert!(
             warning.contains("ADVISORY"),
             "the operator has to see the posture, got: {warning}"
@@ -96,13 +127,43 @@ mod tests {
     }
 
     #[test]
-    fn probe_explains_why_this_host_cannot_enforce() {
-        let Isolation::Advisory { reason } = Isolation::probe() else {
-            panic!("no platform enforces yet; see ADR-0005");
-        };
+    fn a_downgrade_always_explains_itself() {
+        // What `probe()` returns now depends on the host — Linux with user
+        // namespaces enforces, everything else does not — so the invariant worth
+        // asserting is not *which* answer comes back, but that a downgrade never
+        // arrives unexplained.
+        if let Isolation::Advisory { reason } = Isolation::probe() {
+            assert!(
+                !reason.is_empty(),
+                "an unexplained downgrade is not actionable"
+            );
+        }
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    #[test]
+    fn platforms_without_an_implementation_stay_advisory() {
         assert!(
-            !reason.is_empty(),
-            "an unexplained downgrade is not actionable"
+            matches!(Isolation::probe(), Isolation::Advisory { .. }),
+            "only Linux implements enforcement today; claiming otherwise would be \
+             the exact overstatement this module exists to prevent"
+        );
+    }
+
+    #[test]
+    fn proxy_env_covers_every_spelling_a_client_might_read() {
+        let env = proxy_env("http://127.0.0.1:8080");
+        for name in ["http_proxy", "HTTP_PROXY", "all_proxy", "ALL_PROXY"] {
+            assert!(
+                env.iter().any(|(key, _)| *key == name),
+                "{name} must be set — a client reading only that spelling would \
+                 otherwise reach the network unproxied"
+            );
+        }
+        assert!(
+            env.iter()
+                .all(|(_, value)| *value == "http://127.0.0.1:8080"),
+            "every variable must point at the same proxy"
         );
     }
 }

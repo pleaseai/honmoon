@@ -25,3 +25,8 @@ tracing-subscriber.workspace = true
 serde_json.workspace = true
 hmac.workspace = true
 sha2.workspace = true
+
+# Enforced `run` isolation is a Linux-only code path (ADR-0005): empty user +
+# network namespaces, with the proxy bridged in over a Unix socket.
+[target.'cfg(target_os = "linux")'.dependencies]
+libc.workspace = true

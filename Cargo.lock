@@ -1004,6 +1004,7 @@ dependencies = [
  "honmoon-core",
  "honmoon-mgmt",
  "honmoon-proxy",
+ "libc",
  "serde_json",
  "sha2",
  "tokio",
