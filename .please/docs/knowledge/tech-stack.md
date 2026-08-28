@@ -25,6 +25,11 @@ Honmoon is a monorepo that separates languages by responsibility.
     local rcgen CA agents must trust. See [ADR-0003](../decisions/0003-adopt-hudsucker-for-tls-termination.md).
 - `honmoon-cli` — `honmoon` binary (`run` / `gateway` / `join`).
   - deps: `honmoon-core`, `honmoon-proxy`, `tokio`, `clap`, `anyhow`, `tracing`, `tracing-subscriber`
+  - Linux only: `tun2proxy` + `nix` for enforced `run` isolation — an unprivileged user namespace
+    holding a TUN device whose descriptor is driven against the ephemeral CONNECT proxy, so a child
+    that ignores `https_proxy` has no route out. See
+    [ADR-0004](../decisions/0004-unprivileged-userns-tun-for-honmoon-run.md). macOS keeps the
+    advisory environment-variable path; isolation is fail-open where unavailable.
 
 Workspace deps are pinned centrally in the root `Cargo.toml` `[workspace.dependencies]`.
 
