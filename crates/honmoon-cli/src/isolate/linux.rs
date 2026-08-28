@@ -267,7 +267,7 @@ fn fill_random(buffer: &mut [u8]) -> io::Result<()> {
 fn private_scratch_dir() -> io::Result<PathBuf> {
     use std::fmt::Write as _;
     use std::fs::DirBuilder;
-    use std::os::unix::fs::DirBuilderExt;
+    use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
 
     // "/honmoon-" + the hex name + "/" + the socket file + the trailing NUL.
     let suffix = 1 + "honmoon-".len() + SCRATCH_NAME_BYTES * 2 + 1 + SOCKET_FILE.len() + 1;
@@ -285,8 +285,26 @@ fn private_scratch_dir() -> io::Result<PathBuf> {
             let _ = write!(name, "{byte:02x}");
         }
 
-        match DirBuilder::new().mode(0o700).create(temp.join(&name)) {
-            Ok(()) => return Ok(temp.join(name)),
+        let dir = temp.join(&name);
+        match DirBuilder::new().mode(0o700).create(&dir) {
+            Ok(()) => {
+                // `mkdir` intersects the requested mode with the umask, so the
+                // 0700 above is a ceiling rather than a guarantee: under
+                // `umask 0100` the directory arrives 0600, and under
+                // `umask 0777` it arrives 000. Either way nobody can traverse
+                // it, the socket below cannot be bound, and the run drops to
+                // advisory — the same fail-open this function's random name
+                // exists to prevent, arriving through the caller's umask.
+                //
+                // Restoring the mode afterwards is not the window a
+                // create-then-chmod would open. That pattern is unsafe because
+                // it starts *wider* than intended; this one only ever moves
+                // from more restrictive to 0700, and the group and world bits
+                // were never requested, so there is no instant at which anyone
+                // else could enter.
+                std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700))?;
+                return Ok(dir);
+            }
             Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
             Err(error) => return Err(error),
         }
@@ -616,6 +634,51 @@ pub fn supervise(bridge_socket: &Path, argv: &[String]) -> io::Result<ExitStatus
 mod tests {
     use super::*;
 
+    /// Serializes every test that creates a scratch directory.
+    ///
+    /// `umask` is process-wide and `cargo test` runs these on threads, so the
+    /// hostile-umask test below would otherwise change the mode of directories
+    /// the other two are creating at the same moment.
+    static UMASK_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn umask_guard() -> std::sync::MutexGuard<'static, ()> {
+        // A panic in one of these tests poisons the lock; the value it guards is
+        // `()`, so there is nothing corrupted to protect the others from.
+        UMASK_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    #[test]
+    fn a_hostile_umask_cannot_make_the_scratch_directory_untraversable() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let _guard = umask_guard();
+        // Strips owner write and execute, so the `mkdir` mode of 0700 lands as
+        // 0600: a directory its own owner cannot enter. The bridge socket could
+        // not be bound inside it and the run would fall back to advisory.
+        // SAFETY: `umask` replaces a process-wide value and cannot fail; the
+        // lock above keeps the window off the other scratch tests.
+        let previous = unsafe { libc::umask(0o177) };
+        let created = private_scratch_dir();
+        // SAFETY: restoring the value read above.
+        unsafe { libc::umask(previous) };
+
+        let dir = created.expect("a restrictive umask must not fail the run");
+        let mode = std::fs::metadata(&dir)
+            .expect("stat the scratch directory")
+            .permissions()
+            .mode()
+            & 0o777;
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(
+            mode, 0o700,
+            "the caller's umask must not be able to strip the owner bits: a \
+             directory that cannot be entered takes the bridge socket with it \
+             and drops the run to advisory"
+        );
+    }
+
     #[test]
     fn ifreq_matches_the_kernel_layout() {
         // A wrong size means `SIOCGIFFLAGS` writes past our struct. The kernel's
@@ -643,6 +706,7 @@ mod tests {
     fn a_scratch_directory_is_private_from_the_moment_it_exists() {
         use std::os::unix::fs::PermissionsExt;
 
+        let _guard = umask_guard();
         let dir = private_scratch_dir().expect("create a scratch directory");
         let mode = std::fs::metadata(&dir)
             .expect("stat the scratch directory")
@@ -669,6 +733,7 @@ mod tests {
         // `chmod`.
         use std::os::unix::fs::PermissionsExt;
 
+        let _guard = umask_guard();
         let first = private_scratch_dir().expect("create a scratch directory");
         let second = private_scratch_dir().expect("create a second scratch directory");
         let modes = [&first, &second].map(|dir| {
