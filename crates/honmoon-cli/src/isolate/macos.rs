@@ -1,0 +1,274 @@
+//! Enforced `honmoon run` isolation on macOS: a Seatbelt profile that leaves the
+//! child exactly one reachable socket — the ephemeral proxy on loopback
+//! (ADR-0005).
+//!
+//! This path is far smaller than the Linux one, and the reason is worth stating
+//! rather than leaving to be noticed. Linux replaces the child's *network
+//! namespace*, which puts the child and the proxy on two different loopbacks and
+//! forces a Unix-socket pump between them. Seatbelt replaces nothing: the child
+//! keeps the host's loopback, where honmoon's proxy is already listening. So
+//! there is no bridge, no scratch directory, and no re-exec through a supervisor
+//! — the profile's entire job is to take away every *other* socket.
+//!
+//! The mechanism is `sandbox-exec`, which ships with macOS. No system extension,
+//! no `NetworkExtension` entitlement, no signing, notarization, app bundle or
+//! install-time approval, and so no dependency on Apple Developer Program
+//! membership. `anthropic-experimental/sandbox-runtime` — the sandbox behind
+//! Claude Code — confines egress the same way.
+//!
+//! # What the profile allows, and why
+//!
+//! `(allow default)` first, then `(deny network*)`, then a short list of things
+//! handed back. Seatbelt is last-match-wins, so the order is the policy.
+//!
+//! - **The filesystem is left alone, deliberately.** honmoon's remit is egress.
+//!   A profile that also policed reads and writes would be making a containment
+//!   claim this product does not test, cannot tune per policy, and would break
+//!   ordinary tools to honour. `srt` restricts the filesystem in the same
+//!   profile; honmoon does not, and that is a choice rather than an omission.
+//! - **One remote address: the proxy.** `remote ip` matches the port as well as
+//!   the host, so a neighbouring service on loopback stays unreachable — which
+//!   the integration suite asserts by putting an origin server there.
+//! - **Filesystem `AF_UNIX` sockets stay reachable**, matching Linux, where only
+//!   the network namespace is replaced. On both platforms this is a *documented
+//!   escape* rather than an oversight: a local daemon behind a socket
+//!   (`/var/run/docker.sock` and friends) will still act on the child's behalf.
+//!   Keep such sockets away from the uid you run under.
+//! - **Except the system resolver.** `mDNSResponder` is one of those daemons,
+//!   and it is a route off the machine that an empty network namespace does not
+//!   have: a hostname is a message, and the resolver will carry it. Denying its
+//!   socket puts macOS level with Linux, where a child in an empty namespace
+//!   cannot resolve either. A proxied client does not need DNS — it hands the
+//!   proxy a name and the proxy resolves it.
+//!
+//! # Limits, stated rather than discovered
+//!
+//! - The resolver rule is **defence in depth, not a boundary**. The path is
+//!   Apple's to move, and if it moves the rule silently stops matching. What it
+//!   can never do is hand back a TCP route; that is the `deny network*` above,
+//!   which names an operation rather than a path.
+//! - Seatbelt's `remote ip` filter accepts only `*` or `localhost` as a host —
+//!   a literal `127.0.0.1` is rejected by the profile compiler — and `localhost`
+//!   covers `::1` as well as `127.0.0.1`. The proxy binds IPv4 loopback, so if
+//!   some unrelated process happens to hold the *same port number* on `::1`, the
+//!   child can reach that too. The window is one port on one host, and the
+//!   dialect gives no way to narrow it further.
+//! - The child shares the host's loopback, so a listener it binds there is
+//!   visible to other processes on this machine. Under Linux that loopback is
+//!   private to the namespace. Nothing off-box can reach it on either platform.
+//! - As on Linux, a **connected network socket handed to `honmoon` as its own
+//!   stdin, stdout or stderr** is inherited by the child and stays a live
+//!   channel to that one peer. The child needs those three descriptors to be a
+//!   usable command at all. This needs an operator to have wired honmoon's stdio
+//!   to a network peer; it is not something the child can arrange.
+//! - `sandbox-exec` is formally deprecated by Apple. It is what Claude Code
+//!   ships on today, so it is serviceable, but the deprecation is real. If Apple
+//!   removes it, the `NETransparentProxyProvider` design in the history of #69
+//!   is the fallback.
+
+use std::io;
+use std::net::SocketAddr;
+use std::process::{Command, ExitStatus, Stdio};
+
+/// Absolute rather than resolved through `PATH`.
+///
+/// `run` inherits its environment from whoever launched it, so a `PATH` entry
+/// under someone else's control would otherwise choose what "the sandbox" is —
+/// and a `sandbox-exec` that simply execs its argument would leave the child
+/// unconfined while every message still said `Enforced`.
+const SANDBOX_EXEC: &str = "/usr/bin/sandbox-exec";
+
+/// A port no run will use, for compiling the profile during the probe.
+///
+/// Only its syntax matters there; nothing binds it.
+const PROBE_PORT: u16 = u16::MAX;
+
+/// Can this host actually confine a child?
+///
+/// Asks the mechanism rather than the filesystem, and asks it with **the real
+/// profile** rather than a trivial one. That second part is the point: the
+/// deprecation warning on `sandbox-exec` is not theoretical, and the failure it
+/// would arrive as is a dialect change — `path-literal` dropped, `unix-socket`
+/// renamed — that a `(version 1)(allow default)` probe would sail straight
+/// through while every real run failed. Compiling the profile honmoon actually
+/// uses turns that into an advisory downgrade with a warning, which is the
+/// documented behaviour, instead of a run that dies with a compiler backtrace.
+///
+/// It also means the only thing that varies between here and [`run_confined`]
+/// is a `u16` rendered by `format!`, so a profile that compiles now compiles
+/// then.
+pub fn sandbox_available() -> bool {
+    Command::new(SANDBOX_EXEC)
+        .arg("-p")
+        .arg(profile(PROBE_PORT))
+        .arg("--")
+        .arg("/usr/bin/true")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map(|status| status.success())
+        .unwrap_or(false)
+}
+
+/// Run `program` under a Seatbelt profile that leaves only `proxy` reachable.
+///
+/// Returns the command's own exit status. `Err` means the sandbox could not be
+/// set up and the command has **not** run, which is what lets the caller fall
+/// back to advisory without any risk of running it twice.
+pub fn run_confined(proxy: SocketAddr, program: &str, args: &[String]) -> io::Result<ExitStatus> {
+    // The profile can only name `localhost`, so a proxy anywhere else would be
+    // unreachable from inside it and every child would fail to connect. `run`
+    // binds `127.0.0.1:0`, so this is unreachable in practice — it is here so
+    // that if it ever stops being true, the run downgrades to advisory with a
+    // stated reason instead of confining children into a dead end.
+    if !proxy.ip().is_loopback() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "the egress proxy is on {proxy}, but a Seatbelt profile can only \
+                 open a hole to loopback"
+            ),
+        ));
+    }
+
+    let mut command = Command::new(SANDBOX_EXEC);
+    // `--` because `program` comes from the user's command line: without it a
+    // command whose name begins with a dash would be read as an option to
+    // `sandbox-exec` rather than as the thing to confine.
+    command
+        .arg("-p")
+        .arg(profile(proxy.port()))
+        .arg("--")
+        .arg(program)
+        .args(args);
+
+    let proxy_url = format!("http://{proxy}");
+    for (key, value) in super::proxy_env(&proxy_url) {
+        command.env(key, value);
+    }
+    // Cleared rather than replaced, which is the opposite of what the Linux
+    // supervisor does, and for a reason that does not carry over. There, the
+    // child's `127.0.0.1` is a *different* loopback from the host's, so
+    // loopback has to stay direct or a request for it would be bridged out and
+    // answered by another machine's worth of services. Here the child is on the
+    // host's loopback and Seatbelt has already taken it away, so an exemption
+    // buys nothing: with `no_proxy` set, a client asking for a loopback address
+    // dials it directly and is refused by the kernel; with it cleared, the same
+    // request goes to the proxy and gets a policy verdict. An inherited
+    // `no_proxy` is worse still — it carves holes in policy that the operator
+    // meant for a context this one is not.
+    command.env_remove("no_proxy").env_remove("NO_PROXY");
+
+    // `sandbox-exec` applies the profile and then `exec`s, so this status is the
+    // command's own. A profile that failed to compile would exit 65 here without
+    // running anything — indistinguishable from a child that chose to exit 65 —
+    // but `sandbox_available()` compiled this exact profile moments ago and the
+    // only thing that has changed since is a `u16` rendered by `format!`.
+    command.status()
+}
+
+/// The Seatbelt profile, as a single argument to `sandbox-exec -p`.
+///
+/// Built inline rather than written to a file: the Linux path's scratch
+/// directory produced a whole class of bugs — a squattable name, a `sun_path`
+/// overflow, a umask that stripped the owner bits — and none of them can exist
+/// for a string that never touches the filesystem. `proxy_port` is a `u16`
+/// rendered by `format!`, so there is nothing here to inject into.
+fn profile(proxy_port: u16) -> String {
+    format!(
+        r#"(version 1)
+
+;; Seatbelt is last-match-wins, so this file reads top to bottom as: everything,
+;; then no sockets, then these sockets.
+
+;; The filesystem, processes and IPC are left exactly as they were. honmoon's
+;; remit is egress; policing reads and writes here would claim a containment
+;; this product does not test and cannot express in a policy.
+(allow default)
+
+;; Take away every socket the child could open, in any address family.
+(deny network*)
+
+;; Hand back exactly one remote address: honmoon's ephemeral proxy. The filter
+;; matches the port too, so the rest of loopback stays unreachable. `localhost`
+;; is not a convenience spelling — the profile compiler rejects a literal IP.
+(allow network-outbound (remote ip "localhost:{proxy_port}"))
+
+;; Filesystem AF_UNIX sockets stay reachable, matching Linux, where only the
+;; network namespace is replaced. A documented escape on both platforms: a local
+;; daemon behind a socket still acts on the child's behalf.
+(allow network-bind network-outbound (local unix-socket))
+(allow network-outbound (remote unix-socket))
+
+;; Except the resolver, which is such a daemon and is also a route off the
+;; machine that an empty network namespace does not have. A proxied client does
+;; not need it: it hands the proxy a name and the proxy resolves it.
+(deny network-outbound (remote unix-socket (path-literal "/private/var/run/mDNSResponder")))
+"#
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::net::{IpAddr, Ipv4Addr};
+
+    #[test]
+    fn the_profile_opens_the_proxy_port_and_nothing_else_on_the_network() {
+        let text = profile(41234);
+        assert!(
+            text.contains(r#"(deny network*)"#),
+            "the profile has to start from no sockets at all, or the allow below \
+             is an addition to the host's network rather than a replacement for \
+             it:\n{text}"
+        );
+        assert!(
+            text.contains(r#"(allow network-outbound (remote ip "localhost:41234"))"#),
+            "the proxy's exact port must be the hole, not a wildcard:\n{text}"
+        );
+        assert!(
+            !text.contains(r#"remote ip "*"#),
+            "a wildcard remote would hand back the whole network the deny above \
+             just took away:\n{text}"
+        );
+    }
+
+    #[test]
+    fn the_profile_denies_the_resolver_after_allowing_unix_sockets() {
+        let text = profile(1024);
+        let allow = text
+            .find("(allow network-outbound (remote unix-socket))")
+            .expect("filesystem Unix sockets stay reachable, matching Linux");
+        let deny = text
+            .find("mDNSResponder")
+            .expect("the resolver is a route off the machine that Linux does not have");
+        assert!(
+            deny > allow,
+            "Seatbelt is last-match-wins: a resolver deny placed above the \
+             blanket Unix-socket allow is overridden by it, and DNS quietly comes \
+             back:\n{text}"
+        );
+    }
+
+    #[test]
+    fn a_proxy_off_loopback_is_refused_rather_than_confined_into_a_dead_end() {
+        let off_box = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 8080);
+        let error = run_confined(off_box, "/usr/bin/true", &[])
+            .expect_err("a profile cannot open a hole to anything but loopback");
+        assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+    }
+
+    /// The profile is generated, so a dialect change is the realistic way it
+    /// breaks — and it would break silently, as an advisory downgrade, if the
+    /// probe compiled something simpler than the real thing.
+    #[test]
+    fn the_real_profile_compiles_on_this_host() {
+        assert!(
+            sandbox_available(),
+            "every macOS host ships /usr/bin/sandbox-exec, so a failure here \
+             means the profile no longer compiles — the SBPL dialect moved and \
+             `honmoon run` has silently gone advisory on this OS version"
+        );
+    }
+}

@@ -197,20 +197,22 @@ Unix-socket bridge into the child's namespace instead
 in-memory audit ring and does **not** expose the management API — it is the ephemeral,
 single-command mode.
 
-::: tip Enforcing on Linux, advisory elsewhere (TD-003)
-On **Linux** the child is spawned into an empty user + network namespace containing nothing but
-loopback and the proxy is bridged in over a Unix socket, so an **unprivileged** child that ignores
-the env vars reaches nothing over the network rather than bypassing policy
-([ADR-0005](https://github.com/pleaseai/honmoon/blob/main/.please/docs/decisions/0005-empty-namespace-and-bridged-proxy-sockets.md)). Only the
-*network* namespace is replaced, so Unix sockets that live in the filesystem — `/var/run/docker.sock`
-and friends — stay reachable, and anything a local daemon behind one will do on the child's behalf
-is still a way out. Three
-limits keep **TD-003** open: root / `CAP_SYS_ADMIN` / passwordless `sudo` can leave the namespace;
-`run` fails open to advisory where the namespace is refused (the default Docker seccomp profile
-blocks `unshare(CLONE_NEWUSER)`, so an ordinary container is advisory); and macOS still only sets
-env vars until the Seatbelt profile lands
-([#69](https://github.com/pleaseai/honmoon/issues/69),
-[tech-debt-tracker.md:11](https://github.com/pleaseai/honmoon/blob/main/.please/docs/tracks/tech-debt-tracker.md#L11)).
+::: tip Enforcing on Linux and macOS, advisory elsewhere (TD-003)
+An **unprivileged** child that ignores the env vars reaches nothing over the network rather than
+bypassing policy ([ADR-0005](https://github.com/pleaseai/honmoon/blob/main/.please/docs/decisions/0005-empty-namespace-and-bridged-proxy-sockets.md)). On
+**Linux** that is an empty user + network namespace containing nothing but loopback, with the proxy
+bridged in over a Unix socket; on **macOS** a Seatbelt profile under `sandbox-exec` that denies every
+socket except the proxy's loopback port — no system extension, no entitlement, no signing. Neither
+replaces the filesystem, so Unix sockets that live there — `/var/run/docker.sock` and friends — stay
+reachable, and anything a local daemon behind one will do on the child's behalf is still a way out.
+(macOS denies one of them deliberately, the system resolver's, so that DNS is no more available
+there than it is inside an empty namespace.)
+
+Three limits keep **TD-003** open: root / `CAP_SYS_ADMIN` / passwordless `sudo` can leave either
+sandbox; `run` fails open to advisory where the namespace is refused (the default Docker seccomp
+profile blocks `unshare(CLONE_NEWUSER)`, so an ordinary container is advisory) or where the Seatbelt
+profile no longer compiles; and every platform other than these two still only sets env vars
+([tech-debt-tracker.md:11](https://github.com/pleaseai/honmoon/blob/main/.please/docs/tracks/tech-debt-tracker.md#L11)).
 :::
 
 ### `honmoon gateway`

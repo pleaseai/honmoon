@@ -344,17 +344,17 @@ fn run(policy: PathBuf, argv: Vec<String>) -> Result<()> {
     let proxy_url = format!("http://{addr}");
     tracing::info!(%proxy_url, "egress proxy ready");
 
-    // Only the Linux path can actually hold the child; `mut` carries a
+    // Only Linux and macOS can actually hold the child; `mut` carries a
     // downgrade if that path turns out to be unusable at spawn time.
-    #[cfg_attr(not(target_os = "linux"), allow(unused_mut))]
+    #[cfg_attr(not(any(target_os = "linux", target_os = "macos")), allow(unused_mut))]
     let mut isolation = isolate::Isolation::probe();
 
-    // Enforced: the child gets a namespace with no network, reachable only
-    // through the bridged proxy socket. It never returns on success — the
-    // sandboxed command's exit code is this process's exit code.
-    #[cfg(target_os = "linux")]
+    // Enforced: the child is left with no network route that avoids the proxy —
+    // an empty namespace on Linux, a Seatbelt profile on macOS. It never returns
+    // on success: the sandboxed command's exit code is this process's exit code.
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     if isolation == isolate::Isolation::Enforced {
-        match isolate::linux::run_confined(addr, program, args) {
+        match isolate::run_confined(addr, program, args) {
             Ok(status) => std::process::exit(status.code().unwrap_or(1)),
             Err(error) => {
                 // Fail open, per ADR-0005. `run_confined` reports only setup

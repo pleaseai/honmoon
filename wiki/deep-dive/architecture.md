@@ -207,7 +207,7 @@ flowchart LR
     s5["@honmoon/api: audit query"]
   end
   subgraph weak["Fragile / incomplete"]
-    w1["honmoon run: Linux netns; advisory fallback where refused;<br>macOS + privileged still open (TD-003)"]
+    w1["honmoon run: Linux netns + macOS Seatbelt;<br>advisory fallback where refused; privileged still open (TD-003)"]
     w2["honmoon join: stub (bail!)"]
     w3["SQL/K8s: no live relay (TD-006)"]
     w4["honmoonctl validate: stub"]

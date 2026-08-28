@@ -124,21 +124,25 @@ a stub ([main.rs:58-60](https://github.com/pleaseai/honmoon/blob/main/crates/hon
 
 | Mode | Command | Status | What it does |
 |------|---------|--------|--------------|
-| Process Wrapper | `honmoon run -- <cmd>` | <span class="status-done">Phase 1</span> (Linux-enforced isolation; advisory elsewhere — see caveat) | Start an ephemeral proxy, exec the child with `https_proxy` pointed at it |
+| Process Wrapper | `honmoon run -- <cmd>` | <span class="status-done">Phase 1</span> (enforced on Linux and macOS; advisory elsewhere — see caveat) | Start an ephemeral proxy, exec the child with `https_proxy` pointed at it |
 | Gateway | `honmoon gateway` | <span class="status-done">Phase 1</span> | Standalone central proxy loading a policy |
 | Join | `honmoon join` | <span class="status-planned">planned</span> | Route all host traffic to a gateway via tunnel |
 
-::: warning Enforcing on Linux, advisory everywhere else
-On **Linux** `honmoon run` spawns the child into an empty user + network namespace holding nothing
-but loopback and bridges the proxy in over a Unix socket
-([ADR-0005](https://github.com/pleaseai/honmoon/blob/main/.please/docs/decisions/0005-empty-namespace-and-bridged-proxy-sockets.md)), so an
-**unprivileged** child that ignores the proxy environment variables reaches nothing rather than
-escaping policy. A child that can reach root (`CAP_SYS_ADMIN`, passwordless `sudo`) can still leave
-the namespace, and where the kernel or a container policy refuses the namespace — the default Docker
-seccomp profile blocks `unshare(CLONE_NEWUSER)` — `run` falls back to advisory and says so on
-stderr. On macOS and every other platform it only sets the variables; the Seatbelt profile is
-[#69](https://github.com/pleaseai/honmoon/issues/69). **TD-003** stays open for those halves.
-See [tech-debt-tracker.md:11](https://github.com/pleaseai/honmoon/blob/main/.please/docs/tracks/tech-debt-tracker.md#L11).
+::: warning Enforcing on Linux and macOS, advisory everywhere else
+`honmoon run` leaves the child with no network route that avoids the proxy
+([ADR-0005](https://github.com/pleaseai/honmoon/blob/main/.please/docs/decisions/0005-empty-namespace-and-bridged-proxy-sockets.md)): on **Linux** an empty
+user + network namespace holding nothing but loopback, with the proxy bridged in over a Unix socket;
+on **macOS** a Seatbelt profile under `sandbox-exec` that denies every socket but the proxy's
+loopback port. On both, an **unprivileged** child that ignores the proxy environment variables
+reaches nothing rather than escaping policy — and so does a descendant it detaches from its own
+process tree, because the confinement is kernel state a process carries rather than a lineage it
+can step out of.
+
+A child that can reach root (`CAP_SYS_ADMIN`, passwordless `sudo`) can still leave the sandbox.
+`run` falls back to advisory, and says so on stderr, where the kernel or a container policy refuses
+the namespace — the default Docker seccomp profile blocks `unshare(CLONE_NEWUSER)` — or where the
+Seatbelt profile no longer compiles. Every other platform only sets the variables, so **TD-003**
+stays open for those. See [tech-debt-tracker.md:11](https://github.com/pleaseai/honmoon/blob/main/.please/docs/tracks/tech-debt-tracker.md#L11).
 :::
 
 ## Where to go next

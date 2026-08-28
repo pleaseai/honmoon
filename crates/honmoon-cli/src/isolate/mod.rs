@@ -7,10 +7,15 @@
 //!
 //! Closing it needs the operating system to delete the alternative rather than the
 //! child to decline it — a namespace with no network at all on Linux, a Seatbelt
-//! profile on macOS, and honmoon's proxy bridged in over a Unix socket, per
+//! profile on macOS, and honmoon's proxy reachable as the one exception, per
 //! [ADR-0005](../../../.please/docs/decisions/0005-empty-namespace-and-bridged-proxy-sockets.md).
-//! The Linux half is implemented in [`linux`]; macOS still reports
-//! [`Isolation::Advisory`].
+//! Both halves are implemented: [`linux`] and [`macos`]. Every other platform
+//! reports [`Isolation::Advisory`].
+//!
+//! The two differ in more than syntax. Linux gives the child a *different*
+//! loopback from the proxy's and has to bridge a Unix socket between them;
+//! macOS leaves the child on the host's loopback and simply takes away every
+//! address but one. Each module's own docs carry the consequences.
 //!
 //! This module exists so the weakness is *stated* rather than silent. A user who
 //! believes `honmoon run` is enforcing, when it is advisory, is worse off than one
@@ -26,13 +31,19 @@ mod bridge;
 #[cfg(target_os = "linux")]
 pub mod linux;
 
+#[cfg(target_os = "macos")]
+pub mod macos;
+
 /// How much of the policy the wrapped child is actually held to.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Isolation {
     /// The child has no network route that avoids the proxy.
     #[cfg_attr(
-        not(target_os = "linux"),
-        allow(dead_code, reason = "only Linux can produce this today (ADR-0005)")
+        not(any(target_os = "linux", target_os = "macos")),
+        allow(
+            dead_code,
+            reason = "only Linux and macOS have an implementation (ADR-0005)"
+        )
     )]
     Enforced,
     /// Only the proxy environment variables were set. A child that ignores them
@@ -45,6 +56,11 @@ impl Isolation {
     pub fn probe() -> Self {
         #[cfg(target_os = "linux")]
         if linux::namespaces_available() {
+            return Self::Enforced;
+        }
+
+        #[cfg(target_os = "macos")]
+        if macos::sandbox_available() {
             return Self::Enforced;
         }
 
@@ -67,6 +83,28 @@ impl Isolation {
             )),
         }
     }
+}
+
+/// Run `program` with no network route that avoids `proxy`.
+///
+/// Only called after [`Isolation::probe`] answered [`Isolation::Enforced`]. An
+/// `Err` means the sandbox could not be set up and the command has **not** run,
+/// so the caller is free to fall back to the advisory path without any risk of
+/// running it twice; `Ok` carries the command's own exit status.
+///
+/// The `cfg` tree lives here rather than at the call site so that adding a third
+/// platform does not mean editing `run`.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+pub fn run_confined(
+    proxy: std::net::SocketAddr,
+    program: &str,
+    args: &[String],
+) -> std::io::Result<std::process::ExitStatus> {
+    #[cfg(target_os = "linux")]
+    return linux::run_confined(proxy, program, args);
+
+    #[cfg(target_os = "macos")]
+    return macos::run_confined(proxy, program, args);
 }
 
 /// The proxy variables handed to a wrapped child.
@@ -93,7 +131,8 @@ fn unavailable_reason() -> &'static str {
 
 #[cfg(target_os = "macos")]
 fn unavailable_reason() -> &'static str {
-    "Seatbelt isolation is not implemented yet (ADR-0005)"
+    "Seatbelt isolation is unavailable on this host — /usr/bin/sandbox-exec \
+     could not apply honmoon's profile"
 }
 
 #[cfg(not(any(target_os = "linux", target_os = "macos")))]
@@ -145,13 +184,13 @@ mod tests {
         }
     }
 
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     #[test]
     fn platforms_without_an_implementation_stay_advisory() {
         assert!(
             matches!(Isolation::probe(), Isolation::Advisory { .. }),
-            "only Linux implements enforcement today; claiming otherwise would be \
-             the exact overstatement this module exists to prevent"
+            "only Linux and macOS implement enforcement; claiming otherwise would \
+             be the exact overstatement this module exists to prevent"
         );
     }
 

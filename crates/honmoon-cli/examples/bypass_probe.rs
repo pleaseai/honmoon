@@ -12,13 +12,26 @@
 //!   `bypass_probe via-proxy <host:port>`  — read `http_proxy` and fetch the
 //!                                           address through it. Prints the HTTP
 //!                                           status code.
+//!   `bypass_probe detached <host:port> <report>`
+//!                                         — hand the dial to a process that
+//!                                           outlives this one, then exit 0
+//!                                           immediately. The grandchild writes
+//!                                           its own outcome to `<report>`.
+//!   `bypass_probe orphan <host:port> <report> <parent-pid>`
+//!                                         — the detached half. Not called
+//!                                           directly by tests.
 
 use std::io::{BufRead, BufReader, Write};
 use std::net::{SocketAddr, TcpStream, ToSocketAddrs};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 const TIMEOUT: Duration = Duration::from_secs(10);
 const UNREACHABLE: i32 = 7;
+
+/// How long `orphan` waits to be re-parented before giving up and dialling
+/// anyway. Generous: a slow CI runner must not turn "not re-parented yet" into a
+/// green test, and the report says which it was either way.
+const REPARENT_TIMEOUT: Duration = Duration::from_secs(5);
 
 fn main() {
     let mut args = std::env::args().skip(1);
@@ -28,6 +41,12 @@ fn main() {
     match mode.as_str() {
         "direct" => direct(&target),
         "via-proxy" => via_proxy(&target),
+        "detached" => detached(&target, &args.next().unwrap_or_default()),
+        "orphan" => orphan(
+            &target,
+            &args.next().unwrap_or_default(),
+            args.next().unwrap_or_default().parse().unwrap_or(0),
+        ),
         other => {
             eprintln!("bypass_probe: unknown mode {other:?}");
             std::process::exit(2);
@@ -44,6 +63,52 @@ fn direct(target: &str) {
             std::process::exit(UNREACHABLE);
         }
     }
+}
+
+/// The escape attempt that a PPID-matching sandbox would miss.
+///
+/// Spawns a grandchild and exits **without waiting for it**, so the grandchild
+/// is re-parented away and no longer belongs to any process tree the sandbox
+/// could have been watching. A design that confines by process lineage lets it
+/// through; one that confines by kernel state — a namespace, a Seatbelt profile
+/// — does not, because that state is inherited and cannot be dropped.
+///
+/// The outcome goes to a file rather than to stdout: by the time the grandchild
+/// has an answer, the pipe every process between it and the test has already
+/// closed.
+fn detached(target: &str, report: &str) {
+    if report.is_empty() {
+        eprintln!("bypass_probe: detached needs a report path");
+        std::process::exit(2);
+    }
+    let executable = std::env::current_exe().expect("locate this probe");
+    std::process::Command::new(executable)
+        .arg("orphan")
+        .arg(target)
+        .arg(report)
+        .arg(std::process::id().to_string())
+        .spawn()
+        .expect("spawn the detached dialler");
+    // No `wait`: exiting here is what orphans the grandchild.
+    std::process::exit(0);
+}
+
+/// The detached half: outlive the parent, then try the network.
+fn orphan(target: &str, report: &str, parent: u32) {
+    // Wait to actually be re-parented before dialling, so a pass cannot come
+    // from having raced ahead while the original process tree was still intact.
+    let deadline = Instant::now() + REPARENT_TIMEOUT;
+    while std::os::unix::process::parent_id() == parent && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let reparented = std::os::unix::process::parent_id() != parent;
+
+    let code = match dial(target) {
+        Ok(_) => 0,
+        Err(_) => UNREACHABLE,
+    };
+    std::fs::write(report, format!("reparented={reparented} exit={code}\n"))
+        .expect("write the detached report");
 }
 
 /// The cooperative path: go through whatever `http_proxy` names.
