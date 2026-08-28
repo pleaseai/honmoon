@@ -1,0 +1,31 @@
+.please/docs/knowledge/tech-stack.md
+  s_e67799db97482b::t_55def83bc2a6e5 24-27,33-40
+crates/honmoon-cli/src/isolate.rs
+  s_e67799db97482b::t_46e207f6c63890 9-12,24,57,60,62-67,101
+crates/honmoon-cli/src/main.rs
+  s_7bd59347bcdfa3::t_da5be3a412f168 324,326-330
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "f7fdca5db791653609a017aaf138f69e1e28f8d4",
+  "prompts": {},
+  "sessions": {
+    "s_7bd59347bcdfa3": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "2e270637-4563-4b9f-9852-43ec849e5f79",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    },
+    "s_e67799db97482b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "bc95a367-b71a-4b38-b391-8ba4e19c6bf9",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
