@@ -1,0 +1,28 @@
+.please/docs/knowledge/tech-stack.md
+  s_e67799db97482b::t_1f09ad5fbca7c4 24-28
+  s_e67799db97482b::t_23e12cc2d02ecf 33-39
+.please/docs/decisions/0004-unprivileged-userns-tun-for-honmoon-run.md
+  s_e67799db97482b::t_f75507dec046ab 5-11
+.please/docs/decisions/0005-empty-namespace-and-bridged-proxy-sockets.md
+  s_e67799db97482b::t_1df9b27db53c95 1-102
+.please/docs/decisions/index.md
+  s_e67799db97482b::t_84a57d8f35ebda 10-11
+docs/roadmap.md
+  s_e67799db97482b::t_bb99ae1769911f 156-160,250
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "a312bf52b553c9808482fd7cf15ec2165234d5d7",
+  "prompts": {},
+  "sessions": {
+    "s_e67799db97482b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "bc95a367-b71a-4b38-b391-8ba4e19c6bf9",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
