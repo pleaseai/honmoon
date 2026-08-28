@@ -1,0 +1,51 @@
+crates/honmoon-cli/src/isolate/linux.rs
+  s_cf4a5344af068d::t_f23d446e2f7f27 451-459
+  s_cf4a5344af068d::t_a4547912800850 94-97,99-105
+  s_cf4a5344af068d::t_35a43e0c8210f5 359-373,380,383-394,399-410
+  s_cf4a5344af068d::t_8bd4b0a0a3bbc3 374-379,381-382
+  s_cf4a5344af068d::t_d6d20d4611f0f6 424-432
+  s_cf4a5344af068d::t_5a1f022c2e9a6a 395-398
+crates/honmoon-cli/Cargo.toml
+  s_cf4a5344af068d::t_ee08122075def9 30-35
+crates/honmoon-cli/src/isolate/bridge.rs
+  s_cf4a5344af068d::t_6675ab4ed39af2 26-27
+  s_cf4a5344af068d::t_e994862398a83a 101-105,107-169,177-185,187,189,194,197-206,216-218,225-232,234-240,408
+  s_cf4a5344af068d::t_5a6ddb39f6bc08 327-330,334,345,360,379-406
+  s_07fdbbc6685e80::t_68b7be1462a579 407,409
+crates/honmoon-cli/tests/enforced_isolation.rs
+  s_cf4a5344af068d::t_b7259cab1f07a9 78-105,108-109,112-114,126
+  s_cf4a5344af068d::t_ca96d01610f276 249-252
+  s_cf4a5344af068d::t_6e1db4496daa97 17,20-21,199
+.please/docs/tracks/tech-debt-tracker.md
+  s_cf4a5344af068d::t_f40f971992a25c 11
+README.md
+  s_cf4a5344af068d::t_bbef214ed74d27 171-172
+crates/honmoon-cli/src/isolate/mod.rs
+  s_cf4a5344af068d::t_7d310ba6c1627d 85-86
+docs/roadmap.md
+  s_cf4a5344af068d::t_f40f971992a25c 252,254,256
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "505b759f32e763058e327934a2c7235947b2562c",
+  "prompts": {},
+  "sessions": {
+    "s_07fdbbc6685e80": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d33657d3-c799-488d-a41d-bc6316878f2a",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    },
+    "s_cf4a5344af068d": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "98df4c9f-2e16-4e1a-b5ed-3b2178347463",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
