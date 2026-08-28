@@ -160,11 +160,12 @@ impl Drop for HostBridge {
 /// run, so the caller may fall back to the advisory path without any risk of
 /// running the command twice. Once the supervisor has been exec'd, everything
 /// that follows is reported as its exit status.
-pub fn run_confined(
-    proxy: SocketAddr,
-    program: &str,
-    args: &[String],
-) -> io::Result<(ExitStatus, HostBridgeGuard)> {
+pub fn run_confined(proxy: SocketAddr, program: &str, args: &[String]) -> io::Result<ExitStatus> {
+    // Held as a local, never handed to the caller: `status()` already blocks
+    // until the child is gone, so the bridge has no reason to outlive this
+    // frame — and a guard returned into a caller that ends in
+    // `std::process::exit` would never be dropped at all, leaking the scratch
+    // directory on every run.
     let host_bridge = HostBridge::open(proxy)?;
 
     // Built before the fork: `pre_exec` runs between `fork` and `exec` in a
@@ -193,11 +194,9 @@ pub fn run_confined(
     }
 
     let status = command.status()?;
-    Ok((status, HostBridgeGuard(host_bridge)))
+    drop(host_bridge);
+    Ok(status)
 }
-
-/// Keeps the host bridge alive for as long as the caller holds it.
-pub struct HostBridgeGuard(#[allow(dead_code)] HostBridge);
 
 /// Unshare into a new user + network namespace and make loopback usable.
 ///

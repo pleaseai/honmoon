@@ -355,7 +355,7 @@ fn run(policy: PathBuf, argv: Vec<String>) -> Result<()> {
     #[cfg(target_os = "linux")]
     if isolation == isolate::Isolation::Enforced {
         match isolate::linux::run_confined(addr, program, args) {
-            Ok((status, _bridge)) => std::process::exit(status.code().unwrap_or(1)),
+            Ok(status) => std::process::exit(status.code().unwrap_or(1)),
             Err(error) => {
                 // Fail open, per ADR-0005. `run_confined` reports only setup
                 // failures, so the command has not run yet and falling through

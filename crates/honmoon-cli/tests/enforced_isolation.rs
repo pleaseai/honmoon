@@ -262,3 +262,34 @@ fn the_sandboxed_command_keeps_its_own_exit_code() {
         "the sandboxed command's exit code must reach the caller unchanged"
     );
 }
+
+#[test]
+fn the_sandbox_leaves_no_scratch_directory_behind() {
+    let scratch = Scratch::with_policy("cleanup", ALLOW_LOOPBACK);
+    if !enforcing_or_skip(&scratch.policy(), "cleanup") {
+        return;
+    }
+
+    // Spawned rather than run to completion in one call so the honmoon pid is
+    // known: the bridge directory is named after it, and checking that exact
+    // path keeps this test immune to other tests running in parallel.
+    let mut child = Command::new(honmoon())
+        .arg("run")
+        .arg("--policy")
+        .arg(scratch.policy())
+        .arg("--")
+        .arg("/bin/true")
+        .spawn()
+        .expect("run honmoon");
+    let pid = child.id();
+    child.wait().expect("wait for honmoon");
+
+    let bridge_dir = std::env::temp_dir().join(format!("honmoon-{pid}"));
+    assert!(
+        !bridge_dir.exists(),
+        "the bridge's scratch directory {bridge_dir:?} outlived the run. \
+         `run` ends in std::process::exit, which runs no destructors, so \
+         anything relying on Drop across that call leaks one directory per \
+         invocation."
+    );
+}
