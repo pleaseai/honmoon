@@ -1,0 +1,19 @@
+.claude/skills/run-honmoon/driver.mjs
+  s_26251e4d00f8bf::t_1b972b754b7a69 607-615
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "19da7186352a4cfa3b9815745bf39819c6811e4e",
+  "prompts": {},
+  "sessions": {
+    "s_26251e4d00f8bf": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "19921313-ad15-4170-918f-6ad1e06c7635",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
