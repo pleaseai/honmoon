@@ -8,7 +8,7 @@ metadata:
 `pleaseai/honmoon` PR creation notes (verified 2026-08-26, PR #64):
 
 - **No repository PR template.** `find-templates.sh pr` returns `status: not-found` — fall back to the skill's generic template (Summary / Changes / Test Plan / Related Issues).
-- **Graphite is initialized in the repo** (`detect-stack-tool.sh` prints `STACK_TOOL=graphite`), but most feature branches are *not* tracked by `gt`. Always check `gt state` / `gt ls` before assuming a stack — for an untracked branch use `gh please pr create`, not `gt submit`.
+- **Graphite is initialized in the repo** (`detect-stack-tool.sh` prints `STACK_TOOL=graphite`), but most feature branches are *not* tracked by `gt`. Always check `gt state` / `gt ls` before assuming a stack — for an untracked branch use `gh pr create`, not `gt submit`.
 - Base branch is `main`. pleaseai org → draft by default.
 
 **Why:** the graphite signal at repo level is misleading here and would otherwise push the wrong submit command.

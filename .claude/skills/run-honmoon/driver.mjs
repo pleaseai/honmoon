@@ -330,6 +330,22 @@ function probeAsync(url, { mitm = false, method, body } = {}) {
   return c
 }
 
+// Wait for a held probe to finish, so a caller can assert the tunnel actually
+// resumed. `probeAsync` unrefs its child (a never-resolved hold must not wedge
+// the driver), so the timer below is what keeps the event loop alive while we
+// wait -- and the already-exited check covers a probe curl rejected outright,
+// whose `exit` fired before we could attach.
+function waitExit(child, ms) {
+  if (child.exitCode !== null) return Promise.resolve({ code: child.exitCode })
+  return new Promise((resolve) => {
+    const t = setTimeout(() => resolve({ timedOut: true }), ms)
+    child.once('exit', (code) => {
+      clearTimeout(t)
+      resolve({ code })
+    })
+  })
+}
+
 // ---------------------------------------------------------------- mgmt API
 
 const api = async (path, init) => {
@@ -355,6 +371,13 @@ async function approvals() {
 async function resolveApproval(id, decision) {
   const { status, json, text } = await api(`/api/approvals/${id}/${decision}`, { method: 'POST' })
   log(`  ${decision} #${id} -> ${status} ${JSON.stringify(json ?? text)}`)
+  // A stale id, a hold that already auto-expired, or an approval-API regression
+  // answers 404/5xx. Logging that and returning let `approve`/`deny` exit 0 and
+  // let smoke carry on as though the request had been resolved -- which is the
+  // one outcome this call exists to guarantee.
+  if (status < 200 || status >= 300) {
+    throw new Error(`${decision} #${id} failed: HTTP ${status} ${JSON.stringify(json ?? text)}`)
+  }
 }
 
 async function audit(limit = 20) {
@@ -474,17 +497,30 @@ async function drive({ mitm }) {
   probe('https://example.com', { mitm, expect: 'deny' })                // default deny
 
   log('\n=== 4. pause -> approval queue ===')
-  probeAsync('https://example.org', { mitm })
+  const held = probeAsync('https://example.org', { mitm })
   await sleep(2500)
   const pending = await approvals()
-  if (pending.length) {
-    await resolveApproval(pending[0].id, 'approve')
-    await sleep(1500)
-    log('  queue after approve:')
-    await approvals()
-  } else {
+  if (!pending.length) {
     throw new Error('expected a held request - pause rule did not fire')
   }
+  await resolveApproval(pending[0].id, 'approve')
+  await sleep(1500)
+  log('  queue after approve:')
+  await approvals()
+  // Draining the queue is not the property under test -- the held CONNECT has
+  // to resume. Without this the smoke passed whenever the approval removed the
+  // item but the tunnel then came back 403 or simply timed out, i.e. exactly
+  // when pause->approve->resume was broken.
+  const resumed = await waitExit(held, 60_000)
+  if (resumed.timedOut) {
+    throw new Error('held request never resumed after approval (still hanging after 60s)')
+  }
+  if (resumed.code !== 0) {
+    throw new Error(
+      `held request resumed but curl exited ${resumed.code} - approval did not let the tunnel through`,
+    )
+  }
+  log('  held request resumed after approval: curl exit 0')
 
   if (mitm) {
     log('\n=== 5. wire redaction (upstream sees placeholders) ===')
@@ -492,6 +528,10 @@ async function drive({ mitm }) {
     const body = JSON.stringify({ note: `aws key ${secret}, email alice@example.com` })
     const r = sh('curl', [
       '-s', '--proxy', PROXY_URL, '--cacert', F.caCert,
+      // curl exits 0 for a 403/502 unless it is asked to fail, and --fail
+      // would land those in the `curl failed` branch below and be reported as
+      // an unreachable upstream. Carry the status out-of-band instead.
+      '-w', '\n%{http_code}',
       '-X', 'POST', 'https://httpbin.org/post',
       '-H', 'content-type: application/json', '-d', body, '--max-time', '30',
     ])
@@ -502,16 +542,30 @@ async function drive({ mitm }) {
     if (r.error || r.status !== 0) {
       log(`  (curl failed: ${r.error?.message ?? `exit ${r.status}`} - skipping wire-redaction assertion)`)
     } else {
+      // Split the write-out status off the tail of the body.
+      const out = r.stdout ?? ''
+      const nl = out.lastIndexOf('\n')
+      const httpCode = nl === -1 ? '' : out.slice(nl + 1).trim()
+      const payload = nl === -1 ? out : out.slice(0, nl)
+      // An empty 403/502 from the gateway used to parse as non-JSON, log a
+      // skip, and let `smoke --mitm` exit 0 without ever proving wire
+      // redaction -- indistinguishable from a flaky httpbin.
+      if (!/^2\d\d$/.test(httpCode)) {
+        throw new Error(
+          `MITM POST returned HTTP ${httpCode || '<none>'} - the gateway refused the request: ` +
+            `${payload.slice(0, 200).trim() || '<empty body>'}`,
+        )
+      }
       let echoed
       try {
-        echoed = JSON.parse(r.stdout)
+        echoed = JSON.parse(payload)
       } catch {
-        log(`  (non-JSON response - skipping: ${(r.stdout || '').slice(0, 200).trim() || '<empty>'})`)
+        log(`  (non-JSON response - skipping: ${payload.slice(0, 200).trim() || '<empty>'})`)
       }
       if (echoed) {
         const upstreamLen = echoed.headers?.['Content-Length']
         if (upstreamLen === undefined) {
-          throw new Error(`httpbin echo carried no Content-Length header: ${r.stdout.slice(0, 200)}`)
+          throw new Error(`httpbin echo carried no Content-Length header: ${payload.slice(0, 200)}`)
         }
         log(`  body sent by client      : ${body.length} bytes`)
         log(`  Content-Length upstream  : ${upstreamLen} (placeholders are wider)`)
