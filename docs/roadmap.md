@@ -145,8 +145,10 @@ Note: fleet-wide DLP policy management and compliance / exfil reporting are Paid
 - [ ] Policy hot-reload (graceful reload without dropping tunnels)
 
 **Exit criteria**: all three modes work end-to-end on Linux; documented setup. For `run`
-specifically: a child that deliberately ignores every proxy environment variable still cannot
-reach a denied host.
+specifically: an **unprivileged** child that deliberately ignores every proxy environment variable
+still cannot reach a denied host. A child able to escalate to root is out of scope — per-process
+confinement is best-effort egress routing, not a containment wall, and `join` is the answer where
+that boundary matters.
 
 > **`honmoon run` is advisory today.** It sets `http_proxy`/`https_proxy` for the child and
 > nothing more, so a child that ignores those variables reaches the network without ever being

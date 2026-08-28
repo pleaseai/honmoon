@@ -44,6 +44,19 @@ considered for Linux:
 The critical insight is that **no veth is required**. A TUN device created *inside* the new
 namespace, with its fd handed outward, needs no privilege over host networking at all.
 
+Their **transport**, however, is not ours, and the difference constrains what `run` can ever
+police. Clawpatrol carries the confined traffic as **L3 over userspace WireGuard**
+(`wireguard-go` inside `tsnet.Server`, or a temporary WireGuard peer in the namespace) to a
+gateway running gVisor's network stack; per their architecture docs, "the agent never sees a proxy
+URL or a CA bundle" and keeps dialing ordinary hostnames. Working at L3 is what lets them claim
+destination IPs for Postgres and SSH, answer DNS on port 53 with gateway-assigned virtual IPs, and
+relay anything unclaimed. Honmoon's `run` is proxy-shaped instead: the child is pointed at an HTTP
+CONNECT proxy. `tun2proxy` fits that shape — it terminates a TUN and forwards TCP to an HTTP proxy
+— but it inherits the shape's ceiling: **TCP that the proxy can carry, and nothing else.** Non-TCP
+egress from the namespace has no path, which is a behavior change for the child, not just a
+coverage gap. (Clawpatrol drops non-DNS UDP too, so the ceiling is not unique to us; it is simply
+reached from a different direction.)
+
 ### Rust equivalent of the userspace stack
 
 gVisor netstack has no Rust counterpart. `tun2proxy` (crates.io `0.8.3`, MIT) is a closer fit than a
@@ -90,10 +103,35 @@ so explicitly; the `NETransparentProxyProvider` extension is tracked separately.
 proxy environment variables only. This matches `clawpatrol`, which prints
 `⚠ session register: … (proceeding without tunnel)` and proceeds (`run_darwin.go:43-48`).
 
+## What this does and does not buy
+
+This is **best-effort egress routing, not a containment wall** — the same claim clawpatrol makes
+for its own per-process mode, and worth stating plainly before anyone reads "enforced" as
+"unescapable":
+
+- It holds against an **unprivileged** child. With ambient capabilities cleared before `exec`, the
+  child cannot `setns()` back into the host network namespace (that needs `CAP_SYS_ADMIN` in the
+  namespace's owning user namespace, which it does not have), and a fresh user namespace of its
+  own yields a network namespace with no interfaces.
+- It does **not** hold against a child that can become root on the host, already holds
+  `CAP_SYS_ADMIN`, or has passwordless `sudo`. Clawpatrol states the equivalent: "an agent with
+  sufficient privilege can leave the network namespace", and "passwordless `sudo` for the agent
+  user defeats the entire model."
+- It does **not** address anything the child can already read locally. Confining egress does not
+  stop exfiltration through a channel that escapes interception; it only removes the credentialed,
+  policy-evaluated path.
+- Honmoon is weaker than clawpatrol's local mode in one respect worth recording: their model
+  assumes the agent runs as **a separate unprivileged UNIX user** from the gateway service, so the
+  agent cannot read the gateway's state or replace its executable. `honmoon run` spawns the child
+  as the same user that runs the proxy. Closing that gap is a separate piece of work from this ADR.
+- Whole-host routing (`honmoon join`, #37) avoids the per-process limitations entirely. If `run`
+  enforcement proves leaky in practice, `join` — not a harder `run` — is the stronger answer.
+
 ## Consequences
 
-- `honmoon run` becomes genuinely enforcing on Linux: the child's namespace has one device and no
-  route around it, so ignoring `https_proxy` fails rather than escapes.
+- `honmoon run` becomes genuinely enforcing on Linux **for an unprivileged child**: its namespace
+  has one device and no route around it, so ignoring `https_proxy` fails rather than escapes. A
+  child that can escalate to root is outside this boundary — see the section above.
 - No `sudo`, no external helper binary, no change to how the proxy or policy engine work — the
   isolation layer sits entirely in `honmoon-cli` and feeds the existing CONNECT proxy.
 - Unprivileged user namespaces must be enabled in the kernel. Where they are not (some hardened
@@ -103,5 +141,11 @@ proxy environment variables only. This matches `clawpatrol`, which prints
   only signal, and it is easy to miss in agent output. Revisiting this posture — or gating it behind
   an explicit flag — is a reasonable follow-up once the Linux path has real usage.
 - UDP and DNS need deliberate handling: the CONNECT proxy carries TCP only, so DNS has to be
-  resolved through the tunnel or pinned to a resolver reachable across it.
+  resolved through the tunnel or pinned to a resolver reachable across it, and non-DNS UDP has no
+  path out of the namespace at all.
+- The proxy-shaped transport caps what `run` can ever enforce at TCP-over-CONNECT. The live
+  SQL/K8s relay (#39, TD-006) wants destination-IP claiming and DNS interception — the things an
+  L3 transport gives and a CONNECT proxy does not. Whether `run` eventually needs an L3 transport
+  of its own, or whether wire-level protocol policing belongs to `gateway`/`join` instead, is an
+  open question this ADR does not settle.
 - A second platform-specific code path enters `honmoon-cli`, which until now was portable.
