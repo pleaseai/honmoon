@@ -72,15 +72,16 @@ jobs:
             --branch=${{ github.ref_name }}
 
 # ── One-time Cloudflare setup ────────────────────────────────────────────────
-# 1. Reuses the same secrets as deploy-web.yml — if that workflow already runs,
-#    there is nothing to do here.
-# 2. Otherwise: create an API token (Cloudflare dashboard › My Profile › API
-#    Tokens › Create Token › "Edit Cloudflare Workers" template, OR a custom
-#    token with permission  Account › Cloudflare Pages › Edit), grab your
-#    Account ID (dashboard › any domain › right sidebar, or Workers & Pages),
-#    and add both as GitHub repo secrets:
+# 1. Create the Pages project. `wrangler pages deploy` does NOT create a missing
+#    one — it stops with `The Pages project "honmoon-demo" does not exist`, which
+#    is exactly how the first run of this workflow failed. Once, from an account
+#    holding the token in step 2:
+#      bunx wrangler pages project create honmoon-demo --production-branch=main
+# 2. Secrets: the same two deploy-web.yml uses, so if that workflow already runs
+#    there is nothing to add. Otherwise create an API token (Cloudflare dashboard
+#    › My Profile › API Tokens › Create Token › "Edit Cloudflare Workers"
+#    template, OR a custom token with permission  Account › Cloudflare Pages ›
+#    Edit), grab your Account ID (dashboard › any domain › right sidebar, or
+#    Workers & Pages), and add both as GitHub repo secrets:
 #      gh secret set CLOUDFLARE_API_TOKEN
 #      gh secret set CLOUDFLARE_ACCOUNT_ID
-# 3. The first deploy on `main` auto-creates the `honmoon-demo` Pages project with
-#    `main` as its production branch. (Or pre-create it once:
-#      bunx wrangler pages project create honmoon-demo --production-branch=main )
