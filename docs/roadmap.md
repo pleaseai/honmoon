@@ -144,7 +144,16 @@ Note: fleet-wide DLP policy management and compliance / exfil reporting are Paid
 - [ ] `honmoon join` — route host traffic to a gateway via tunnel (WireGuard)
 - [ ] Policy hot-reload (graceful reload without dropping tunnels)
 
-**Exit criteria**: all three modes work end-to-end on Linux; documented setup.
+**Exit criteria**: all three modes work end-to-end on Linux; documented setup. For `run`
+specifically: a child that deliberately ignores every proxy environment variable still cannot
+reach a denied host.
+
+> **`honmoon run` is advisory today.** It sets `http_proxy`/`https_proxy` for the child and
+> nothing more, so a child that ignores those variables reaches the network without ever being
+> evaluated (TD-003). `run` now says so on stderr at startup instead of implying enforcement.
+> [ADR-0004](../.please/docs/decisions/0004-unprivileged-userns-tun-for-honmoon-run.md) records
+> the design that closes it on Linux — an unprivileged user namespace holding a TUN device whose
+> descriptor is driven against the ephemeral proxy: no root, no external helper binary, no veth.
 
 ---
 
@@ -234,3 +243,11 @@ Not every layer runs everywhere — record this so scope stays honest:
 |------------|----------------------------|--------------------|
 | HTTP egress filter + control plane | ✅ | ✅ (explicit proxy only) |
 | Wire-level SQL/K8s, `run`/`join`, TLS MITM | ✅ | ❌ (needs OS networking) |
+| **`run` enforcement** (child cannot bypass) | ⚠️ advisory everywhere today; Linux path designed in ADR-0004, macOS needs a signed NetworkExtension | ❌ |
+
+One measured caveat for the planned Linux path: **the default Docker seccomp profile blocks
+`unshare(CLONE_NEWUSER)`**, so `honmoon run` inside an ordinary container cannot build the
+namespace and falls back to advisory enforcement. Verified on this project's own toolchain —
+`docker run ubuntu:24.04 unshare -Un` fails with `Operation not permitted`, while the same
+command under `--security-opt seccomp=unconfined` succeeds as a non-root user. Since agents are
+frequently containerized, this is a mainstream case rather than an edge one.
