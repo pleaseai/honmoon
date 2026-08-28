@@ -61,12 +61,13 @@ jobs:
         # `--all-targets` compiles examples as *test* targets, and the one-shot
         # `cargo llvm-cov` runs `cargo test --tests`, so neither leaves a runnable
         # binary. `show-env` points the explicit build at the same instrumented
-        # target directory the run uses.
+        # target directory the run uses. `--locked` keeps both resolving from the
+        # committed Cargo.lock rather than re-resolving in CI.
         run: |
           source <(cargo llvm-cov show-env --export-prefix)
           cargo llvm-cov clean --workspace
-          cargo build -p honmoon-cli --example bypass_probe
-          cargo test --workspace
+          cargo build --locked -p honmoon-cli --example bypass_probe
+          cargo test --locked --workspace
           cargo llvm-cov report --lcov --output-path lcov.info
 
       - name: Upload coverage to Codecov
