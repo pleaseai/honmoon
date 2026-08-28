@@ -21,15 +21,22 @@ Honmoon is a monorepo that separates languages by responsibility.
   host allowlist and, when `--tls-intercept` is set, terminating TLS to scan request bodies.
   `--pii-mode detect` audits body-policy verdicts (default); `--pii-mode block` enforces them inline.
   - deps: `honmoon-core`, `tokio`, `hudsucker`, `http-body-util`, `serde`, `thiserror`, `tracing`
+  - A **SOCKS5 listener** sits beside the CONNECT proxy: it carries non-HTTP protocols (PostgreSQL,
+    SSH) that cannot speak `CONNECT`, and its handshake declares the destination host:port, which
+    is what selects the endpoint and its protocol runtime. This is the live data source the
+    `protocols` parsers lacked (TD-006). See
+    [ADR-0005](../decisions/0005-empty-namespace-and-bridged-proxy-sockets.md).
   - Host-level allowlist applies to every tunnel (intercepted or raw); TLS termination (MITM) uses a
     local rcgen CA agents must trust. See [ADR-0003](../decisions/0003-adopt-hudsucker-for-tls-termination.md).
 - `honmoon-cli` — `honmoon` binary (`run` / `gateway` / `join`).
   - deps: `honmoon-core`, `honmoon-proxy`, `tokio`, `clap`, `anyhow`, `tracing`, `tracing-subscriber`
-  - Linux only: `tun2proxy` + `nix` for enforced `run` isolation — an unprivileged user namespace
-    holding a TUN device whose descriptor is driven against the ephemeral CONNECT proxy, so a child
-    that ignores `https_proxy` has no route out. See
-    [ADR-0004](../decisions/0004-unprivileged-userns-tun-for-honmoon-run.md). macOS keeps the
-    advisory environment-variable path; isolation is fail-open where unavailable.
+  - Enforced `run` isolation gives the child **no network** and bridges honmoon's proxies in:
+    an empty user+network+mount namespace on Linux, a Seatbelt profile allowing only the proxy's
+    localhost port on macOS (`sandbox-exec`, no system extension). A child that ignores
+    `https_proxy` reaches nothing rather than escaping. See
+    [ADR-0005](../decisions/0005-empty-namespace-and-bridged-proxy-sockets.md); the superseded
+    TUN + `tun2proxy` design is [ADR-0004](../decisions/0004-unprivileged-userns-tun-for-honmoon-run.md).
+    Isolation is fail-open where unavailable.
 
 Workspace deps are pinned centrally in the root `Cargo.toml` `[workspace.dependencies]`.
 

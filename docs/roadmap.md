@@ -153,9 +153,11 @@ that boundary matters.
 > **`honmoon run` is advisory today.** It sets `http_proxy`/`https_proxy` for the child and
 > nothing more, so a child that ignores those variables reaches the network without ever being
 > evaluated (TD-003). `run` now says so on stderr at startup instead of implying enforcement.
-> [ADR-0004](../.please/docs/decisions/0004-unprivileged-userns-tun-for-honmoon-run.md) records
-> the design that closes it on Linux — an unprivileged user namespace holding a TUN device whose
-> descriptor is driven against the ephemeral proxy: no root, no external helper binary, no veth.
+> [ADR-0005](../.please/docs/decisions/0005-empty-namespace-and-bridged-proxy-sockets.md) records
+> the design that closes it: the child gets **no network at all** — an empty namespace on Linux, a
+> Seatbelt profile on macOS — with honmoon's proxies bridged in on localhost. Ignoring the proxy
+> environment then reaches nothing rather than escaping. macOS needs no system extension and no
+> Apple Developer signing, so it is no longer the expensive half.
 
 ---
 
@@ -245,7 +247,7 @@ Not every layer runs everywhere — record this so scope stays honest:
 |------------|----------------------------|--------------------|
 | HTTP egress filter + control plane | ✅ | ✅ (explicit proxy only) |
 | Wire-level SQL/K8s, `run`/`join`, TLS MITM | ✅ | ❌ (needs OS networking) |
-| **`run` enforcement** (child cannot bypass) | ⚠️ advisory everywhere today; Linux path designed in ADR-0004, macOS needs a signed NetworkExtension | ❌ |
+| **`run` enforcement** (child cannot bypass) | ⚠️ advisory everywhere today; both platforms designed in ADR-0005 (empty namespace / Seatbelt) | ❌ |
 
 One measured caveat for the planned Linux path: **the default Docker seccomp profile blocks
 `unshare(CLONE_NEWUSER)`**, so `honmoon run` inside an ordinary container cannot build the

@@ -2,7 +2,13 @@
 
 ## Status
 
-Accepted
+**Superseded by [ADR-0005](0005-empty-namespace-and-bridged-proxy-sockets.md).**
+
+The problem statement, the prior-art reading of clawpatrol, and the "What this does and does
+not buy" boundary all still hold and are worth keeping. The *mechanism* does not: ADR-0005
+confines the child by giving its namespace no network at all and bridging honmoon's proxies in
+over a Unix socket, which is less code and stronger than building a TUN and driving it with a
+userspace TCP/IP stack. Read this ADR for the reasoning; take the decision from ADR-0005.
 
 ## Context
 
