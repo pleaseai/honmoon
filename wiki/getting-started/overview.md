@@ -124,14 +124,20 @@ a stub ([main.rs:58-60](https://github.com/pleaseai/honmoon/blob/main/crates/hon
 
 | Mode | Command | Status | What it does |
 |------|---------|--------|--------------|
-| Process Wrapper | `honmoon run -- <cmd>` | <span class="status-done">Phase 1</span> (env-var isolation only — see caveat) | Start an ephemeral proxy, exec the child with `https_proxy` pointed at it |
+| Process Wrapper | `honmoon run -- <cmd>` | <span class="status-done">Phase 1</span> (Linux-enforced isolation; advisory elsewhere — see caveat) | Start an ephemeral proxy, exec the child with `https_proxy` pointed at it |
 | Gateway | `honmoon gateway` | <span class="status-done">Phase 1</span> | Standalone central proxy loading a policy |
 | Join | `honmoon join` | <span class="status-planned">planned</span> | Route all host traffic to a gateway via tunnel |
 
-::: warning Isolation is advisory today, not enforcing
-`honmoon run` currently only sets proxy environment variables for the child. A child process
-that ignores those variables escapes the policy. Real network-namespace isolation (Linux netns
-/ macOS NetworkExtension) is tracked as **TD-003** and is a Phase 5 goal.
+::: warning Enforcing on Linux, advisory everywhere else
+On **Linux** `honmoon run` spawns the child into an empty user + network namespace holding nothing
+but loopback and bridges the proxy in over a Unix socket
+([ADR-0005](https://github.com/pleaseai/honmoon/blob/main/.please/docs/decisions/0005-empty-namespace-and-bridged-proxy-sockets.md)), so an
+**unprivileged** child that ignores the proxy environment variables reaches nothing rather than
+escaping policy. A child that can reach root (`CAP_SYS_ADMIN`, passwordless `sudo`) can still leave
+the namespace, and where the kernel or a container policy refuses the namespace — the default Docker
+seccomp profile blocks `unshare(CLONE_NEWUSER)` — `run` falls back to advisory and says so on
+stderr. On macOS and every other platform it only sets the variables; the Seatbelt profile is
+[#69](https://github.com/pleaseai/honmoon/issues/69). **TD-003** stays open for those halves.
 See [tech-debt-tracker.md:11](https://github.com/pleaseai/honmoon/blob/main/.please/docs/tracks/tech-debt-tracker.md#L11).
 :::
 

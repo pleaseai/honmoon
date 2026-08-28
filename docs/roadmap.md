@@ -140,7 +140,8 @@ Note: fleet-wide DLP policy management and compliance / exfil reporting are Paid
 ## Phase 6 — Isolation modes `OSS`
 
 - [ ] `honmoon gateway` — standalone central proxy loading policy, accepting clients
-- [ ] `honmoon run` hardened isolation (Linux netns / macOS NetworkExtension)
+- [x] `honmoon run` hardened isolation — Linux (empty user+network namespace, ADR-0005)
+- [ ] `honmoon run` hardened isolation — macOS (Seatbelt profile, ADR-0005)
 - [ ] `honmoon join` — route host traffic to a gateway via tunnel (WireGuard)
 - [ ] Policy hot-reload (graceful reload without dropping tunnels)
 
@@ -150,14 +151,15 @@ still cannot reach a denied host. A child able to escalate to root is out of sco
 confinement is best-effort egress routing, not a containment wall, and `join` is the answer where
 that boundary matters.
 
-> **`honmoon run` is advisory today.** It sets `http_proxy`/`https_proxy` for the child and
-> nothing more, so a child that ignores those variables reaches the network without ever being
-> evaluated (TD-003). `run` now says so on stderr at startup instead of implying enforcement.
-> [ADR-0005](../.please/docs/decisions/0005-empty-namespace-and-bridged-proxy-sockets.md) records
-> the design that closes it: the child gets **no network at all** — an empty namespace on Linux, a
-> Seatbelt profile on macOS — with honmoon's proxies bridged in on localhost. Ignoring the proxy
-> environment then reaches nothing rather than escaping. macOS needs no system extension and no
-> Apple Developer signing, so it is no longer the expensive half.
+> **`honmoon run` enforces on Linux and stays advisory everywhere else.** Per
+> [ADR-0005](../.please/docs/decisions/0005-empty-namespace-and-bridged-proxy-sockets.md) the child
+> is spawned into an empty user + network namespace holding nothing but loopback, with the proxy
+> bridged in over a Unix socket. Ignoring `http_proxy` there reaches nothing rather than escaping,
+> which the `enforced_isolation` integration tests assert against an unsandboxed control. Where the
+> kernel refuses the namespace, `run` falls back to advisory and says so on stderr rather than
+> implying enforcement it does not have. macOS is still that fallback until the Seatbelt profile
+> lands (#69); it needs no system extension and no Apple Developer signing, so it is no longer the
+> expensive half. TD-003 stays open until it does.
 
 ---
 
@@ -247,11 +249,11 @@ Not every layer runs everywhere — record this so scope stays honest:
 |------------|----------------------------|--------------------|
 | HTTP egress filter + control plane | ✅ | ✅ (explicit proxy only) |
 | Wire-level SQL/K8s, `run`/`join`, TLS MITM | ✅ | ❌ (needs OS networking) |
-| **`run` enforcement** (child cannot bypass) | ⚠️ advisory everywhere today; both platforms designed in ADR-0005 (empty namespace / Seatbelt) | ❌ |
+| **`run` enforcement** (child cannot bypass) | ✅ Linux, for an unprivileged child, via the empty namespace of ADR-0005; ⚠️ macOS still advisory until the Seatbelt profile (#69) | ❌ |
 
-One measured caveat for the planned Linux path: **the default Docker seccomp profile blocks
+One measured caveat for the Linux path: **the default Docker seccomp profile blocks
 `unshare(CLONE_NEWUSER)`**, so `honmoon run` inside an ordinary container cannot build the
-namespace and falls back to advisory enforcement. Verified on this project's own toolchain —
+namespace and falls back to advisory mode. Verified on this project's own toolchain —
 `docker run ubuntu:24.04 unshare -Un` fails with `Operation not permitted`, while the same
 command under `--security-opt seccomp=unconfined` succeeds as a non-root user. Since agents are
 frequently containerized, this is a mainstream case rather than an edge one.

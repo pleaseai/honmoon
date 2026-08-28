@@ -15,7 +15,7 @@ the proxy directly; `run`'s env-var exec wiring is covered by the CLI itself, no
 
 | Command | What happens | Status | Source |
 |---------|--------------|--------|--------|
-| `honmoon run --policy P -- <cmd>` | Ephemeral proxy started, child exec'd with `https_proxy` set | <span class="status-done">works</span> (env-var isolation) | [main.rs:66-98](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-cli/src/main.rs#L66-L98) |
+| `honmoon run --policy P -- <cmd>` | Ephemeral proxy started, child exec'd with `https_proxy` set | <span class="status-done">works</span> (Linux: empty-namespace isolation; advisory elsewhere) | [main.rs:66-98](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-cli/src/main.rs#L66-L98) |
 | `honmoon gateway --config P --addr A` | Standalone CONNECT proxy bound to `A` | <span class="status-done">works</span> | [main.rs:53-57](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-cli/src/main.rs#L53-L57) |
 | `honmoon join --gateway G` | — | <span class="status-planned">stub: `bail!`</span> | [main.rs:58-60](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-cli/src/main.rs#L58-L60) |
 
@@ -61,12 +61,27 @@ sequenceDiagram
 ```
 <!-- Sources: crates/honmoon-cli/src/main.rs:66-98, crates/honmoon-proxy/src/gateway.rs:62-112 -->
 
-::: warning The child must honor proxy env vars
-Isolation is **advisory**: `honmoon run` only sets `http_proxy` / `https_proxy` / `all_proxy`
-(and uppercase variants) for the child
-([main.rs:153-161](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-cli/src/main.rs#L153-L161)).
-A process that ignores those variables bypasses Honmoon entirely. Enforcing network isolation
-(netns / NetworkExtension) is tracked as **TD-003** (Phase 5).
+::: warning Enforcing on Linux, advisory everywhere else
+On **Linux** the child is spawned into an empty user + network namespace holding nothing but
+loopback, with honmoon's proxy bridged in over a Unix socket
+([ADR-0005](https://github.com/pleaseai/honmoon/blob/main/.please/docs/decisions/0005-empty-namespace-and-bridged-proxy-sockets.md)). The proxy
+variables `http_proxy` / `https_proxy` / `all_proxy` (and uppercase variants) are set by the
+in-namespace supervisor and point the child at the loopback port *inside* its own namespace rather
+than at the host's proxy
+([linux.rs:615-626](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-cli/src/isolate/linux.rs#L615-L626)), but an
+**unprivileged** child that ignores them reaches nothing over the network rather than bypassing
+policy. The flip side: a client that speaks no proxy at all (`psql`, `ssh`) cannot connect under
+`run` — use `honmoon gateway` for those.
+
+The boundary is narrower than "sandbox". A child that can become root, already holds
+`CAP_SYS_ADMIN`, or has passwordless `sudo` can leave the namespace, and only the *network*
+namespace is replaced, so filesystem Unix sockets (`/var/run/docker.sock` and friends) stay
+reachable. Where the kernel or a container policy refuses the namespace, `run` falls back to
+advisory and says so on stderr — notably the default Docker seccomp profile blocks
+`unshare(CLONE_NEWUSER)`, so `honmoon run` inside an ordinary container is advisory. macOS is
+advisory too until the Seatbelt profile lands ([#69](https://github.com/pleaseai/honmoon/issues/69)),
+so **TD-003** stays open
+([tech-debt-tracker.md:11](https://github.com/pleaseai/honmoon/blob/main/.please/docs/tracks/tech-debt-tracker.md#L11)).
 :::
 
 ## 2. Run the standalone gateway + dashboard

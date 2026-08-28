@@ -35,8 +35,40 @@ jobs:
 
       - uses: taiki-e/install-action@9458fed45835344deb5e69e06e831be047c96abf # cargo-llvm-cov
 
+      # `honmoon run` enforces policy by putting the child in an empty user +
+      # network namespace (ADR-0005). Ubuntu 24.04 ships AppArmor's restriction
+      # on unprivileged user namespaces enabled, under which `run` correctly
+      # falls back to advisory — and the isolation tests would then skip. The
+      # probe at the end fails the step if namespaces are still unavailable, so
+      # this can never silently stop taking effect.
+      - name: Permit unprivileged user namespaces
+        run: |
+          if [ -e /proc/sys/kernel/apparmor_restrict_unprivileged_userns ]; then
+            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          fi
+          unshare -Un true
+          echo "unprivileged user namespaces are available"
+
       - name: Test + coverage
-        run: cargo llvm-cov --workspace --all-targets --lcov --output-path lcov.info
+        # HONMOON_REQUIRE_ENFORCEMENT turns "this host cannot confine, so skip"
+        # into a failure. Without it a runner that lost the capability would
+        # report the ADR-0005 isolation tests as green without running them.
+        env:
+          HONMOON_REQUIRE_ENFORCEMENT: '1'
+        # cargo-llvm-cov's documented manual sequence rather than the one-shot
+        # form, because the isolation tests exec `bypass_probe` as a fixture out
+        # of `target/.../debug/examples` and nothing else puts it there. Measured:
+        # `--all-targets` compiles examples as *test* targets, and the one-shot
+        # `cargo llvm-cov` runs `cargo test --tests`, so neither leaves a runnable
+        # binary. `show-env` points the explicit build at the same instrumented
+        # target directory the run uses. `--locked` keeps both resolving from the
+        # committed Cargo.lock rather than re-resolving in CI.
+        run: |
+          source <(cargo llvm-cov show-env --export-prefix)
+          cargo llvm-cov clean --workspace
+          cargo build --locked -p honmoon-cli --example bypass_probe
+          cargo test --locked --workspace
+          cargo llvm-cov report --lcov --output-path lcov.info
 
       - name: Upload coverage to Codecov
         uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f # v7.0.0

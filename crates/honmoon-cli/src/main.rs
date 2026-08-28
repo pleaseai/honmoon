@@ -122,6 +122,21 @@ enum Command {
         #[arg(long, value_name = "CONTEXT")]
         salt_context: Option<String>,
     },
+    /// Internal: the in-namespace half of enforced `run` isolation (ADR-0005).
+    ///
+    /// Hidden because it is not a user-facing command — `run` re-execs the
+    /// binary into it after entering the namespace, since a `pre_exec` hook can
+    /// only be followed by an `exec`.
+    #[cfg(target_os = "linux")]
+    #[command(name = isolate::linux::SUPERVISE_SUBCOMMAND, hide = true)]
+    SuperviseSandbox {
+        /// Host-side Unix socket that bridges to the egress proxy.
+        #[arg(long, value_name = "PATH")]
+        bridge_socket: PathBuf,
+        /// Command to execute (after `--`).
+        #[arg(last = true)]
+        argv: Vec<String>,
+    },
 }
 
 fn main() -> Result<()> {
@@ -161,6 +176,15 @@ fn main() -> Result<()> {
             anyhow::bail!("`join` not yet implemented (gateway: {gateway})");
         }
         Command::Hook { salt_context } => hook::run(salt_context.as_deref()),
+        #[cfg(target_os = "linux")]
+        Command::SuperviseSandbox {
+            bridge_socket,
+            argv,
+        } => {
+            let status = isolate::linux::supervise(&bridge_socket, &argv)
+                .context("supervising the sandboxed command")?;
+            std::process::exit(status.code().unwrap_or(1));
+        }
     }
 }
 
@@ -320,27 +344,49 @@ fn run(policy: PathBuf, argv: Vec<String>) -> Result<()> {
     let proxy_url = format!("http://{addr}");
     tracing::info!(%proxy_url, "egress proxy ready");
 
-    // Say out loud how much this wrapper is actually worth on this host. Until
-    // ADR-0005 lands, the answer everywhere is "less than it looks": the proxy
-    // env vars below are a request to the child, not a constraint on it.
+    // Only the Linux path can actually hold the child; `mut` carries a
+    // downgrade if that path turns out to be unusable at spawn time.
+    #[cfg_attr(not(target_os = "linux"), allow(unused_mut))]
+    let mut isolation = isolate::Isolation::probe();
+
+    // Enforced: the child gets a namespace with no network, reachable only
+    // through the bridged proxy socket. It never returns on success — the
+    // sandboxed command's exit code is this process's exit code.
+    #[cfg(target_os = "linux")]
+    if isolation == isolate::Isolation::Enforced {
+        match isolate::linux::run_confined(addr, program, args) {
+            Ok(status) => std::process::exit(status.code().unwrap_or(1)),
+            Err(error) => {
+                // Fail open, per ADR-0005. `run_confined` reports only setup
+                // failures, so the command has not run yet and falling through
+                // cannot run it twice. The downgrade is announced below rather
+                // than swallowed — a silent drop to advisory is the worst of
+                // both worlds.
+                isolation = isolate::Isolation::Advisory {
+                    reason: format!("enforced isolation could not start ({error})"),
+                };
+            }
+        }
+    }
+
+    // Say out loud how much this wrapper is worth on this host. Where isolation
+    // is advisory, the proxy env vars below are a request to the child, not a
+    // constraint on it.
     //
     // Printed rather than logged: the subscriber above filters on `RUST_LOG`,
     // which is unset in an ordinary run and leaves only ERROR enabled, so a
     // `tracing::warn!` here would be silent exactly when the operator most
     // needs to read it.
-    let isolation = isolate::Isolation::probe();
     if let Some(warning) = isolation.warning() {
         eprintln!("honmoon: warning: {warning}");
     }
 
-    let status = std::process::Command::new(program)
-        .args(args)
-        .env("http_proxy", &proxy_url)
-        .env("https_proxy", &proxy_url)
-        .env("HTTP_PROXY", &proxy_url)
-        .env("HTTPS_PROXY", &proxy_url)
-        .env("all_proxy", &proxy_url)
-        .env("ALL_PROXY", &proxy_url)
+    let mut command = std::process::Command::new(program);
+    command.args(args);
+    for (key, value) in isolate::proxy_env(&proxy_url) {
+        command.env(key, value);
+    }
+    let status = command
         .status()
         .with_context(|| format!("failed to spawn `{program}`"))?;
 

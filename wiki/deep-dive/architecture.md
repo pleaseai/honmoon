@@ -207,7 +207,7 @@ flowchart LR
     s5["@honmoon/api: audit query"]
   end
   subgraph weak["Fragile / incomplete"]
-    w1["honmoon run: no netns isolation (TD-003)"]
+    w1["honmoon run: Linux netns; advisory fallback where refused;<br>macOS + privileged still open (TD-003)"]
     w2["honmoon join: stub (bail!)"]
     w3["SQL/K8s: no live relay (TD-006)"]
     w4["honmoonctl validate: stub"]
@@ -217,7 +217,7 @@ flowchart LR
   style s3 fill:#161b22,stroke:#3fb950,color:#e6edf3
   style s4 fill:#161b22,stroke:#3fb950,color:#e6edf3
   style s5 fill:#161b22,stroke:#3fb950,color:#e6edf3
-  style w1 fill:#161b22,stroke:#f85149,color:#e6edf3
+  style w1 fill:#161b22,stroke:#d29922,color:#e6edf3
   style w2 fill:#161b22,stroke:#f85149,color:#e6edf3
   style w3 fill:#161b22,stroke:#f85149,color:#e6edf3
   style w4 fill:#161b22,stroke:#f85149,color:#e6edf3

@@ -21,7 +21,7 @@ to that boundary and records the key architecture decisions. Sources:
 | 2 — CEL + HTTP facts | `decide()`, CEL engine, `http` facts | OSS | <span class="status-done">done</span> | [roadmap.md:49-60](https://github.com/pleaseai/honmoon/blob/main/docs/roadmap.md#L49-L60) |
 | 3 — SQL / K8s parsers | wire parsers → `sql` / `k8s` facts | OSS | <span class="status-done">done</span> (parsing; live relay = TD-006) | [roadmap.md:63-77](https://github.com/pleaseai/honmoon/blob/main/docs/roadmap.md#L63-L77) |
 | 4 — Verdicts, audit & dashboard | `pause` hold + audit log + embedded dashboard | OSS | <span class="status-done">done</span> | [roadmap.md:81-101](https://github.com/pleaseai/honmoon/blob/main/docs/roadmap.md#L81-L101) |
-| 5 — Isolation modes | hardened `run`, `gateway`, `join` | OSS | <span class="status-planned">planned</span> | [roadmap.md:93-100](https://github.com/pleaseai/honmoon/blob/main/docs/roadmap.md#L93-L100) |
+| 5 — Isolation modes | hardened `run`, `gateway`, `join` | OSS | <span class="status-done">hardened `run` on Linux</span> · <span class="status-planned">macOS, `join` planned</span> | [roadmap.md:93-100](https://github.com/pleaseai/honmoon/blob/main/docs/roadmap.md#L93-L100) |
 | 6 — Team / control plane | fleet policy, RBAC/SSO, approval routing | **Paid** | <span class="status-planned">planned</span> | [roadmap.md:104-112](https://github.com/pleaseai/honmoon/blob/main/docs/roadmap.md#L104-L112) |
 | 7 — Hosted SaaS & intelligence | multi-tenant cloud, threat feeds, key isolation | **Paid** | <span class="status-planned">planned</span> | [roadmap.md:116-122](https://github.com/pleaseai/honmoon/blob/main/docs/roadmap.md#L116-L122) |
 
@@ -147,7 +147,7 @@ Not every layer runs everywhere — scope is kept honest
 |----|-------------|----------|--------|--------|
 | TD-001 | Dual Rust/TS policy model → generate from JSON Schema | Medium | maintainability | [tracker:9](https://github.com/pleaseai/honmoon/blob/main/.please/docs/tracks/tech-debt-tracker.md#L9) |
 | TD-002 | `serde_yaml` deprecated | Low | — | [tracker:10](https://github.com/pleaseai/honmoon/blob/main/.please/docs/tracks/tech-debt-tracker.md#L10) |
-| TD-003 | `honmoon run` lacks real netns isolation | High | Phase 5 | [tracker:11](https://github.com/pleaseai/honmoon/blob/main/.please/docs/tracks/tech-debt-tracker.md#L11) |
+| TD-003 | `honmoon run` isolation: Linux namespace shipped for an unprivileged child (ADR-0005); macOS, privileged children and the fail-open path remain | High | Phase 5 (macOS, #69) | [tracker:11](https://github.com/pleaseai/honmoon/blob/main/.please/docs/tracks/tech-debt-tracker.md#L11) |
 | TD-004 | CONNECT sees host only; body rules need TLS termination | Medium | Phase 2 | [tracker:12](https://github.com/pleaseai/honmoon/blob/main/.please/docs/tracks/tech-debt-tracker.md#L12) |
 | TD-006 | SQL/K8s parsers not fed by a live socket | High | Phase 3 follow-up | [tracker:14](https://github.com/pleaseai/honmoon/blob/main/.please/docs/tracks/tech-debt-tracker.md#L14) |
 
