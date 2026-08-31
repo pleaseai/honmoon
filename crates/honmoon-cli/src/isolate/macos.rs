@@ -409,27 +409,68 @@ mod tests {
         );
     }
 
+    /// Set on the re-exec below, so the child knows to run the fixture rather
+    /// than fork again.
+    const LOWERED_LIMIT_FIXTURE: &str = "HONMOON_TEST_LOWERED_DESCRIPTOR_LIMIT";
+
+    /// The test to run in that child. `--exact` needs the full path.
+    const LOWERED_LIMIT_TEST: &str =
+        "isolate::macos::tests::a_descriptor_above_a_lowered_limit_is_still_marked";
+
+    /// Printed by the fixture, checked by the parent.
+    ///
+    /// libtest exits 0 when a filter matches nothing, so a renamed test would
+    /// make the child run *no* tests, exit successfully, and pass this by
+    /// checking nothing — the silent pass this whole file argues against.
+    const LOWERED_LIMIT_RAN: &str = "the lowered-limit fixture ran";
+
     /// A launcher may open a descriptor and *then* lower `RLIMIT_NOFILE`,
     /// leaving it open above the new limit. The bounded `3..RLIMIT_NOFILE` walk
     /// this replaced would not have looked there, and Seatbelt cannot cover for
     /// it: the profile gates `connect`, and that peer is already connected.
     ///
-    /// So the test builds that exact state — descriptor first, lowered limit
-    /// second — rather than just parking a descriptor at a high number, which
-    /// a bounded walk would have reached anyway (stock macOS allows 1048576).
-    /// The limit is lowered only to the descriptor's own number, leaving the
-    /// rest of the suite ~500 descriptors to work with, and restored before any
-    /// assertion can panic past it.
+    /// So the fixture builds that exact state — descriptor first, lowered limit
+    /// second — rather than just parking a descriptor at a high number, which a
+    /// bounded walk would have reached anyway (stock macOS allows 1048576).
+    ///
+    /// And it builds it in a process of its own, because `RLIMIT_NOFILE` is
+    /// process-wide while libtest runs tests on threads: a sibling test that
+    /// opens a file during the window would fail with `EMFILE` over something
+    /// neither test is about. Re-exec is the cheapest isolation available here —
+    /// `fork` would have to survive `read_dir` allocating in a threaded child,
+    /// which is not a promise `malloc` makes.
     #[test]
     fn a_descriptor_above_a_lowered_limit_is_still_marked() {
         use std::os::unix::io::AsRawFd;
 
+        if std::env::var_os(LOWERED_LIMIT_FIXTURE).is_none() {
+            let binary = std::env::current_exe().expect("the running test binary");
+            let output = Command::new(binary)
+                .args(["--exact", LOWERED_LIMIT_TEST, "--nocapture"])
+                .env(LOWERED_LIMIT_FIXTURE, "1")
+                .output()
+                .expect("re-exec the test binary to isolate the fixture");
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            assert!(
+                stdout.contains(LOWERED_LIMIT_RAN),
+                "the fixture never ran — {LOWERED_LIMIT_TEST} no longer names a \
+                 test, so this was passing without checking anything.\n{stdout}\
+                 {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert!(
+                output.status.success(),
+                "the fixture failed in its own process:\n{stdout}{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            return;
+        }
+        println!("{LOWERED_LIMIT_RAN}");
+
         let inherited = std::fs::File::open("/dev/null").expect("open /dev/null");
         // `F_DUPFD` (not `F_DUPFD_CLOEXEC`) hands back the lowest free
         // descriptor at or above the floor, with `FD_CLOEXEC` clear — the
-        // fixture and a high number in one call. Asking for the lowest *free*
-        // one rather than a fixed number keeps it from clobbering a descriptor
-        // another test thread is holding.
+        // fixture and a high number in one call.
         // SAFETY: duplicating a descriptor this test owns.
         let sparse = unsafe { libc::fcntl(inherited.as_raw_fd(), libc::F_DUPFD, 500) };
         assert!(sparse >= 500, "F_DUPFD: {}", io::Error::last_os_error());
@@ -460,11 +501,9 @@ mod tests {
 
         let swept = close_inherited_descriptors_on_exec();
 
-        // Read the flag and put the process back the way it was before any
-        // assertion runs: `RLIMIT_NOFILE` is process-wide, so a panic between
-        // here and the restore would take the rest of the suite with it.
-        // SAFETY: reading one flag on a descriptor this test owns, closing it,
-        // and restoring a limit this test lowered.
+        // SAFETY: reading one flag on a descriptor this process owns, closing
+        // it, and restoring a limit this process lowered. Done before the
+        // assertions so the state is unwound whether or not they hold.
         let flags = unsafe { libc::fcntl(sparse, libc::F_GETFD) };
         let restored = unsafe {
             libc::close(sparse);
