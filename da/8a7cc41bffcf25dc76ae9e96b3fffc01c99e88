@@ -1,0 +1,22 @@
+crates/honmoon-cli/src/isolate/macos.rs
+  s_cf4a5344af068d::t_fd1ef0c08847ff 83-88,211-214,216,220,226-228,235,237-249,251-288,290
+  s_cf4a5344af068d::t_d58e64973b8a8b 410-444
+crates/honmoon-cli/src/main.rs
+  s_cf4a5344af068d::t_d4b40aea34a1dd 339-346
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "da8a7cc41bffcf25dc76ae9e96b3fffc01c99e88",
+  "prompts": {},
+  "sessions": {
+    "s_cf4a5344af068d": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "98df4c9f-2e16-4e1a-b5ed-3b2178347463",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
