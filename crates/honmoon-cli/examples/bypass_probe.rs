@@ -41,7 +41,14 @@ fn main() {
     match mode.as_str() {
         "direct" => direct(&target),
         "via-proxy" => via_proxy(&target),
+        // Unix-gated: re-parenting is observed through
+        // `std::os::unix::process::parent_id`, which has no portable
+        // equivalent. The suite that drives these modes is itself Linux/macOS
+        // only, and the rest of this crate keeps its unix-isms behind the same
+        // gate, so an unrelated target still compiles the example.
+        #[cfg(unix)]
         "detached" => detached(&target, &args.next().unwrap_or_default()),
+        #[cfg(unix)]
         "orphan" => orphan(
             &target,
             &args.next().unwrap_or_default(),
@@ -76,6 +83,7 @@ fn direct(target: &str) {
 /// The outcome goes to a file rather than to stdout: by the time the grandchild
 /// has an answer, the pipe every process between it and the test has already
 /// closed.
+#[cfg(unix)]
 fn detached(target: &str, report: &str) {
     if report.is_empty() {
         eprintln!("bypass_probe: detached needs a report path");
@@ -94,6 +102,7 @@ fn detached(target: &str, report: &str) {
 }
 
 /// The detached half: outlive the parent, then try the network.
+#[cfg(unix)]
 fn orphan(target: &str, report: &str, parent: u32) {
     // Wait to actually be re-parented before dialling, so a pass cannot come
     // from having raced ahead while the original process tree was still intact.

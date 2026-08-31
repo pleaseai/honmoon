@@ -132,8 +132,10 @@ a stub ([main.rs:58-60](https://github.com/pleaseai/honmoon/blob/main/crates/hon
 `honmoon run` leaves the child with no network route that avoids the proxy
 ([ADR-0005](https://github.com/pleaseai/honmoon/blob/main/.please/docs/decisions/0005-empty-namespace-and-bridged-proxy-sockets.md)): on **Linux** an empty
 user + network namespace holding nothing but loopback, with the proxy bridged in over a Unix socket;
-on **macOS** a Seatbelt profile under `sandbox-exec` that denies every socket but the proxy's
-loopback port. On both, an **unprivileged** child that ignores the proxy environment variables
+on **macOS** a Seatbelt profile under `sandbox-exec` that denies every network socket but the
+proxy's loopback port. Neither replaces the filesystem, so Unix sockets living there stay reachable
+on both — a documented escape, detailed below. On both, an **unprivileged** child that ignores the
+proxy environment variables
 reaches nothing rather than escaping policy — and so does a descendant it detaches from its own
 process tree, because the confinement is kernel state a process carries rather than a lineage it
 can step out of.

@@ -94,9 +94,9 @@ live SQL/K8s enforcement as a near-future capability you can influence, not yet 
 flowchart LR
   subgraph high["Higher impact"]
     r1["Competitor distribution<br>(Deno, GitHub)"]
-    r2["Isolation gap off Linux"]
   end
   subgraph med["Medium impact"]
+    r2["Isolation gap off Linux/macOS<br>(and privileged children)"]
     r3["Dual policy model drift (TD-001)"]
     r4["Monetization timing"]
   end

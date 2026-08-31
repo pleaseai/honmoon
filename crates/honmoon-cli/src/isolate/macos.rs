@@ -49,10 +49,12 @@
 //!   which names an operation rather than a path.
 //! - Seatbelt's `remote ip` filter accepts only `*` or `localhost` as a host —
 //!   a literal `127.0.0.1` is rejected by the profile compiler — and `localhost`
-//!   covers `::1` as well as `127.0.0.1`. The proxy binds IPv4 loopback, so if
-//!   some unrelated process happens to hold the *same port number* on `::1`, the
-//!   child can reach that too. The window is one port on one host, and the
-//!   dialect gives no way to narrow it further.
+//!   covers `::1` as well as `127.0.0.1`. The hole is therefore two addresses
+//!   wide, so `run` binds the proxy on **both** loopback families at one port
+//!   (`bind_loopback_pair` in `main.rs`) rather than on IPv4 alone. Without
+//!   that, an unrelated process holding the same port number on `::1` would be
+//!   sitting inside the one exception this profile makes, reachable by the child
+//!   with no policy in the way.
 //! - The child shares the host's loopback, so a listener it binds there is
 //!   visible to other processes on this machine. Under Linux that loopback is
 //!   private to the namespace. Nothing off-box can reach it on either platform.
