@@ -221,7 +221,7 @@ the wiki and grounded in the [tech-debt tracker](https://github.com/pleaseai/hon
 | CONNECT proxy + `run` / `gateway` | <span class="status-done">real & tested</span> |
 | `pause` approval hold + audit log + dashboard (Phase 4) | <span class="status-done">real & tested</span> (`honmoon-mgmt`, `honmoon-proxy::approval`, `honmoon-core::audit`) |
 | `@honmoon/api` durable audit query | <span class="status-done">real & tested</span> (`audit.test.ts`) |
-| `honmoon run` network isolation | <span class="status-done">Linux: empty user+network namespace, unprivileged child</span> · <span class="status-planned">macOS advisory; fails open where namespaces are refused (TD-003)</span> |
+| `honmoon run` network isolation | <span class="status-done">Linux: empty user+network namespace · macOS: Seatbelt profile — both for an unprivileged child</span> · <span class="status-planned">advisory on other platforms; fails open where the sandbox is refused (TD-003)</span> |
 | `honmoon join` | <span class="status-planned">stub `bail!`</span> |
 | `honmoonctl validate` | <span class="status-planned">TODO stub</span> |
 | SQL/K8s `pause` over a live socket | <span class="status-planned">parsers tested; live relay TD-006</span> |

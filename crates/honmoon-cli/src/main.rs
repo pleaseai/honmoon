@@ -3,7 +3,7 @@
 mod hook;
 mod isolate;
 
-use std::net::TcpListener;
+use std::net::{Ipv4Addr, Ipv6Addr, TcpListener};
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -334,27 +334,64 @@ fn run(policy: PathBuf, argv: Vec<String>) -> Result<()> {
     // Bind the proxy socket here and hand it to the proxy thread. Binding in one
     // place (rather than allocating a port, dropping it, and rebinding) closes
     // the TOCTOU window where another process could steal the port.
-    let listener = TcpListener::bind("127.0.0.1:0").context("binding egress proxy")?;
-    let addr = listener.local_addr()?;
+    let (v4, v6) = bind_loopback_pair().context("binding egress proxy")?;
+    let addr = v4.local_addr()?;
+    // Built here rather than inside the thread, because a failure to build one
+    // is not a failure the thread can report. `expect` there would unwind the
+    // closure, dropping the listeners it captured and handing the proxy port
+    // back to the first process that asked for it — while `run` carried on to
+    // spawn the child under a profile that opens `localhost:<that port>`. A
+    // silent panic on a background thread would have turned a startup error
+    // into an unowned port inside the sandbox's one hole. Here it is a `?`.
+    let runtime = tokio::runtime::Runtime::new().context("building the proxy runtime")?;
     {
-        let policy = policy.clone();
-        std::thread::spawn(move || honmoon_proxy::gateway::serve_listener(policy, listener));
+        // One `GatewayState` behind both listeners rather than one each: it is
+        // `Arc`s throughout, and splitting it would split the audit ring and the
+        // approval registry with it, so a verdict's visibility would depend on
+        // which loopback family the client happened to use.
+        let state = GatewayState::new(policy.clone());
+        std::thread::spawn(move || {
+            runtime.block_on(async move {
+                // `select!` rather than `tokio::spawn` for the IPv6 half, and
+                // the reason is the whole point of binding it. `serve` ends
+                // only by panicking, and a panic inside a spawned task is
+                // caught by tokio and parked in a `JoinHandle` nobody joins —
+                // so the IPv6 accept loop could die, drop its listener, and
+                // hand `::1:<port>` back to the first process that asked for
+                // it, while `run` carried on serving IPv4 and still reported
+                // `Enforced`. That is the reopened hole, arrived at silently.
+                //
+                // Polled in one task, either loop failing takes the proxy down
+                // with it: the child is then pointed at a dead port and fails
+                // closed, which is the honest outcome. It does not leave a live
+                // child talking to a boundary with half of it missing.
+                match v6 {
+                    Some(v6) => {
+                        tokio::select! {
+                            _ = honmoon_proxy::gateway::serve(state.clone(), v6) => {}
+                            _ = honmoon_proxy::gateway::serve(state, v4) => {}
+                        }
+                    }
+                    None => honmoon_proxy::gateway::serve(state, v4).await,
+                }
+            });
+        });
     }
 
     let proxy_url = format!("http://{addr}");
     tracing::info!(%proxy_url, "egress proxy ready");
 
-    // Only the Linux path can actually hold the child; `mut` carries a
+    // Only Linux and macOS can actually hold the child; `mut` carries a
     // downgrade if that path turns out to be unusable at spawn time.
-    #[cfg_attr(not(target_os = "linux"), allow(unused_mut))]
+    #[cfg_attr(not(any(target_os = "linux", target_os = "macos")), allow(unused_mut))]
     let mut isolation = isolate::Isolation::probe();
 
-    // Enforced: the child gets a namespace with no network, reachable only
-    // through the bridged proxy socket. It never returns on success — the
-    // sandboxed command's exit code is this process's exit code.
-    #[cfg(target_os = "linux")]
+    // Enforced: the child is left with no network route that avoids the proxy —
+    // an empty namespace on Linux, a Seatbelt profile on macOS. It never returns
+    // on success: the sandboxed command's exit code is this process's exit code.
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     if isolation == isolate::Isolation::Enforced {
-        match isolate::linux::run_confined(addr, program, args) {
+        match isolate::run_confined(addr, program, args) {
             Ok(status) => std::process::exit(status.code().unwrap_or(1)),
             Err(error) => {
                 // Fail open, per ADR-0005. `run_confined` reports only setup
@@ -393,8 +430,96 @@ fn run(policy: PathBuf, argv: Vec<String>) -> Result<()> {
     std::process::exit(status.code().unwrap_or(1));
 }
 
+/// How many ports to try before giving up on finding one free on both loopbacks.
+const LOOPBACK_PORT_ATTEMPTS: u32 = 16;
+
+/// Bind the ephemeral proxy on `127.0.0.1` **and** `::1`, at one shared port.
+///
+/// Why both, when the child is only ever handed the IPv4 address: macOS's
+/// Seatbelt dialect cannot express a literal address in a `remote ip` filter, so
+/// the hole the profile opens for the proxy is `localhost:<port>` — and
+/// `localhost` there covers `::1` as well as `127.0.0.1`. Binding only IPv4
+/// would leave the IPv6 half of that hole pointing at whatever unrelated process
+/// happened to hold the same port number on `::1`, which a confined child could
+/// then reach with no policy in the way. Owning both makes the profile's single
+/// exception mean exactly what its comment claims.
+///
+/// The retry is here because the two binds cannot be made atomic: the kernel
+/// chooses the port when the IPv4 socket binds, and `::1` may already be taken
+/// at that number. A host with no IPv6 loopback at all is not a failure — if
+/// nothing can bind `::1`, there is no second half of the hole to close.
+fn bind_loopback_pair() -> Result<(TcpListener, Option<TcpListener>)> {
+    let mut taken = None;
+    for _ in 0..LOOPBACK_PORT_ATTEMPTS {
+        let v4 = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))?;
+        let port = v4.local_addr()?.port();
+        match TcpListener::bind((Ipv6Addr::LOCALHOST, port)) {
+            Ok(v6) => return Ok((v4, Some(v6))),
+            // Occupied on `::1`. Drop this pair and let the kernel pick again;
+            // holding the IPv4 half would only make it likelier to recur.
+            Err(error) if error.kind() == std::io::ErrorKind::AddrInUse => taken = Some(error),
+            // Only a *proven absent* IPv6 loopback may downgrade to IPv4 alone:
+            // if nothing on this host can bind `::1`, no squatter can either, so
+            // there is no second half of the hole to close. Every other failure
+            // — descriptor pressure, a sandbox refusing the socket — leaves
+            // `::1:<port>` unowned while macOS still opens the profile's
+            // `localhost:<port>` exception, which is precisely the state this
+            // function exists to prevent. Those fail closed.
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::AddrNotAvailable | std::io::ErrorKind::Unsupported
+                ) =>
+            {
+                return Ok((v4, None));
+            }
+            Err(error) => return Err(error.into()),
+        }
+    }
+    Err(anyhow::anyhow!(
+        "could not find a port free on both 127.0.0.1 and ::1 in \
+         {LOOPBACK_PORT_ATTEMPTS} attempts (last: {})",
+        taken
+            .map(|error| error.to_string())
+            .unwrap_or_else(|| "unknown".to_string())
+    ))
+}
+
 fn load_policy(path: &PathBuf) -> Result<Policy> {
     let src = std::fs::read_to_string(path)
         .with_context(|| format!("reading policy {}", path.display()))?;
     Ok(Policy::from_yaml(&src)?)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The macOS Seatbelt hole is `localhost:<port>`, which covers `::1` as well
+    /// as `127.0.0.1`. Owning the port on both families is what makes that hole
+    /// point at honmoon and nothing else, so it is a security property rather
+    /// than a tidiness one.
+    #[test]
+    fn the_proxy_port_is_owned_on_both_loopback_families() {
+        let (v4, v6) = bind_loopback_pair().expect("bind the proxy's loopback pair");
+        let port = v4.local_addr().expect("v4 address").port();
+
+        let Some(v6) = v6 else {
+            // No IPv6 loopback on this host, so there is no second half of the
+            // hole for anyone to occupy either.
+            return;
+        };
+        assert_eq!(
+            v6.local_addr().expect("v6 address").port(),
+            port,
+            "the two listeners must share one port — the profile opens a single \
+             port number, not two"
+        );
+        assert!(
+            TcpListener::bind((Ipv6Addr::LOCALHOST, port)).is_err(),
+            "::1:{port} was still bindable, so an unrelated process could sit \
+             inside the profile's one exception and take traffic the child \
+             believes is going to the proxy"
+        );
+    }
 }

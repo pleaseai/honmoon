@@ -39,7 +39,7 @@ flowchart TB
     e["Approval workflow + audit log + dashboard"]
   end
   subgraph planned["On the roadmap (Phases 5-7)"]
-    g["Hardened isolation on macOS + tunnel<br>(Linux namespace shipped)"]
+    g["Tunnel mode (join)<br>(hardened isolation shipped: Linux + macOS)"]
     i["SQL/K8s enforcement on live traffic"]
     h["Fleet management, RBAC/SSO, hosted SaaS"]
   end
@@ -60,7 +60,7 @@ flowchart TB
 | Protocol policy engine (CEL) | <span class="status-done">working & tested</span> | The differentiating moat |
 | SQL / K8s parsing | <span class="status-done">working & tested</span> | Not yet driven by live traffic (engineering follow-up) |
 | Approval workflow + audit log + dashboard | <span class="status-done">working & tested (Phase 4)</span> | `pause` holds a request for human approval; embedded dashboard |
-| Hardened isolation | <span class="status-done">working & tested on Linux</span> · <span class="status-planned">macOS planned</span> | The wrapper enforces on Linux for an unprivileged child; advisory elsewhere, and where the OS or container refuses the namespace |
+| Hardened isolation | <span class="status-done">working & tested on Linux and macOS</span> | The wrapper enforces for an unprivileged child on both; advisory on other platforms, and where the OS or container refuses the sandbox |
 | Fleet / enterprise / SaaS | <span class="status-planned">planned (Phase 6-7)</span> | The monetization surface |
 
 ## Maturity, honestly stated
@@ -68,25 +68,25 @@ flowchart TB
 This is an **early-stage project**, and its own guidelines forbid overstating it. About half of
 the intended product is built: the policy engine, protocol parsers, and — as of Phase 4 — the
 `pause` approval workflow, audit log, and management dashboard are all real, tested, and safe to
-build on, and hardened isolation for the single-command wrapper is now real on Linux. Its macOS
-half and live-traffic protocol enforcement remain roadmap
+build on, and hardened isolation for the single-command wrapper is now real on both platforms
+developers and agents actually run on. Live-traffic protocol enforcement remains roadmap
 ([product-guidelines.md:14-17](https://github.com/pleaseai/honmoon/blob/main/.please/docs/knowledge/product-guidelines.md#L14-L17)). Two gaps
 materially affect "is it production-ready":
 
-- **The single-process wrapper enforces on Linux, and only there.** On Linux it runs the child in
-  an empty network namespace, so an unprivileged process that ignores the proxy environment
-  variables reaches nothing rather than bypassing the gateway. On macOS it still only sets those
-  variables, and even on Linux it falls back to that advisory mode — announcing it on stderr — where
-  the kernel or the container refuses the namespace, which the default Docker profile does. A child
-  that can reach root escapes it either way.
+- **The single-process wrapper enforces on Linux and macOS, and only there.** It runs the child
+  with no network route that avoids the gateway — an empty network namespace on Linux, a Seatbelt
+  sandbox on macOS — so an unprivileged process that ignores the proxy environment variables reaches
+  nothing rather than bypassing policy. On every other platform it still only sets those variables,
+  and on Linux it falls back to that advisory mode — announcing it on stderr — where the kernel or
+  the container refuses the namespace, which the default Docker profile does. A child that can reach
+  root escapes it either way.
 - **Protocol rules are engine-validated, not yet traffic-driven.** The parsers are proven by
   tests; connecting them to live database/Kubernetes traffic is the next major data-plane effort.
   (Host-level `pause` rules over HTTPS *do* fire and hold today.)
 
 The honest read: **adopt the gateway mode for HTTPS egress control + approvals + audit today, and
-the wrapper's hardened isolation where your agents run unprivileged on Linux; treat live SQL/K8s
-enforcement and hardened isolation on macOS as near-future capabilities you can influence, not yet
-deploy.**
+the wrapper's hardened isolation wherever your agents run unprivileged on Linux or macOS; treat
+live SQL/K8s enforcement as a near-future capability you can influence, not yet deploy.**
 
 ## Risk assessment
 
@@ -94,9 +94,9 @@ deploy.**
 flowchart LR
   subgraph high["Higher impact"]
     r1["Competitor distribution<br>(Deno, GitHub)"]
-    r2["Isolation gap off Linux"]
   end
   subgraph med["Medium impact"]
+    r2["Isolation gap off Linux/macOS<br>(and privileged children)"]
     r3["Dual policy model drift (TD-001)"]
     r4["Monetization timing"]
   end
@@ -105,7 +105,7 @@ flowchart LR
     r6["Single-node scope today"]
   end
   style r1 fill:#161b22,stroke:#f85149,color:#e6edf3
-  style r2 fill:#161b22,stroke:#f85149,color:#e6edf3
+  style r2 fill:#161b22,stroke:#d29922,color:#e6edf3
   style r3 fill:#161b22,stroke:#d29922,color:#e6edf3
   style r4 fill:#161b22,stroke:#d29922,color:#e6edf3
   style r5 fill:#161b22,stroke:#3fb950,color:#e6edf3
@@ -116,7 +116,7 @@ flowchart LR
 | Risk | Severity | Mitigation in the plan |
 |------|----------|------------------------|
 | Competitors (Deno's clawpatrol, GitHub's gh-aw-firewall) have distribution | High | Differentiate on protocol awareness + self-host + unification ([business-model.md:77-90](https://github.com/pleaseai/honmoon/blob/main/docs/business-model.md#L77-L90)) |
-| Process isolation enforces only on Linux, and only for an unprivileged child | High | Run agents unprivileged on Linux to get the namespace; use gateway mode where macOS, root, or a namespace-refusing container is in play; TD-003 stays High until the Seatbelt profile (#69) lands |
+| Process isolation enforces only on Linux and macOS, and only for an unprivileged child | Medium | Run agents unprivileged to get the sandbox; use gateway mode where root, another platform, or a namespace-refusing container is in play. TD-003 stays open for those cases |
 | Two hand-synced policy models can diverge | Medium | Generate both from JSON Schema (TD-001) |
 | Building paid features before a team buyer exists | Medium | Phased strategy: adoption → team entry → monetization ([business-model.md:100-107](https://github.com/pleaseai/honmoon/blob/main/docs/business-model.md#L100-L107)) |
 
@@ -161,9 +161,9 @@ flowchart LR
 
 | Horizon | Recommendation |
 |---------|----------------|
-| **Now** | Pilot **gateway mode** for HTTPS egress control of agent fleets. It is tested and enforcing. The process-wrapper is hard isolation too on Linux for an unprivileged child — but not on macOS, and not where a container blocks the namespace. |
+| **Now** | Pilot **gateway mode** for HTTPS egress control of agent fleets. It is tested and enforcing. The process-wrapper is hard isolation too, on Linux and macOS, for an unprivileged child — but not on other platforms, and not where a container blocks the namespace. |
 | **Now** | Author protocol policies (SQL/K8s) against the engine to validate fit, knowing live-traffic enforcement is the next data-plane milestone (TD-006). |
-| **Near-term** | If protocol-level enforcement is your driver, **fund/track TD-006 (live relay) and the remaining half of TD-003 (macOS isolation, #69)** — they convert this from "promising engine" to "deployable control" on every platform your agents run on. |
+| **Near-term** | If protocol-level enforcement is your driver, **fund/track TD-006 (live relay)** — it converts this from "promising engine" to "deployable control" for database and cloud traffic. |
 | **Strategic** | The open-core thesis only works if the free core is generous. Resist pressure to gate the data plane; the moat and the trust both live there ([business-model.md:24-28](https://github.com/pleaseai/honmoon/blob/main/docs/business-model.md#L24-L28)). |
 
 ## Related Pages

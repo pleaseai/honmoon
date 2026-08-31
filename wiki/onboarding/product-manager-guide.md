@@ -73,7 +73,7 @@ flowchart TB
   end
   subgraph soon["What's coming"]
     s2["Database/cloud rules on live traffic"]
-    s3["Lock-down on macOS<br>(Linux already locked down)"]
+    s3["Tunnel mode for a whole machine<br>(single-command lock-down already ships)"]
     s4["Team management + hosted service"]
   end
   style t1 fill:#161b22,stroke:#3fb950,color:#e6edf3
@@ -92,7 +92,7 @@ flowchart TB
 | "Pause for approval" | <span class="status-done">works</span> | A flagged action is **held** until a human approves it (300s, else auto-deny) |
 | Dashboard | <span class="status-done">works</span> | Built-in screen to review activity and approve/deny requests |
 | Audit log | <span class="status-done">works</span> | Every decision recorded (optionally to a durable file) |
-| Locked-down single-command mode | <span class="status-planned">partly</span> | Works on Linux: the guarded command runs in an empty network sandbox it cannot step out of. Still advisory on macOS |
+| Locked-down single-command mode | <span class="status-done">works</span> | On Linux and macOS the guarded command runs in a sandbox with no way to the network except through Honmoon. Advisory on other platforms |
 | Database / cloud rules | <span class="status-planned">partly</span> | Detection is built & tested; enforcing on **live** DB/cloud traffic is the next step |
 | Team management | <span class="status-planned">planned</span> | Manage many machines and people centrally |
 
@@ -103,7 +103,7 @@ Stated plainly, because honesty is a product principle for a security tool
 
 | Limitation | What it means for users |
 |-----------|--------------------------|
-| Single-command mode is locked down on Linux only | On Linux, a guarded command runs inside an empty network sandbox: a tool that *deliberately ignores standard settings* reaches nothing at all. On macOS it is still advisory — such a tool could slip past — and even on Linux the lock-down steps aside, with a warning, where the operating system or the container refuses it (the common Docker default does). A command run as an administrator can also step out. |
+| Single-command mode is locked down on Linux and macOS only | On those two, a guarded command runs inside a sandbox with no route to the network except through Honmoon: a tool that *deliberately ignores standard settings* reaches nothing at all, and neither does anything it launches in the background. On other platforms it is still advisory — such a tool could slip past — and the lock-down also steps aside, with a warning, where the operating system or the container refuses it (the common Docker default does). A command run as an administrator can also step out. |
 | Database/cloud rules aren't on live traffic yet | The brains that recognize a dangerous query are built and tested, but not yet connected to real live database/cloud traffic. That connection is the next big step. So the approval/hold works today for **website** rules; database/cloud holding waits on that step. |
 | Approvals are single-node | The approval queue and dashboard run on one machine. Fleet-wide management, routing, and notifications are the (paid) roadmap. |
 | Needs a real computer/server | It can't run on certain lightweight cloud-only platforms; it needs a normal host or container. |
@@ -133,9 +133,9 @@ agents, compliance reports, approvals across an organization), not for the core
 
 **Can I use it in production today?**
 You can use the gateway mode now — website control, the audit log, and the approve/deny dashboard
-all work on a single machine, and on Linux the single-command mode is genuinely locked down for a
-non-administrator command. For that same lock-down on macOS, and for live database/cloud
-enforcement, plan around the roadmap — those are the next milestones.
+all work on a single machine, and on Linux and macOS the single-command mode is genuinely locked
+down for a non-administrator command. For live database/cloud enforcement, plan around the
+roadmap — that is the next milestone.
 
 **Who are the competitors?**
 Two open-source projects inspired Honmoon: GitHub's domain-filtering firewall and Deno's

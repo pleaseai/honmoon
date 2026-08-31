@@ -15,7 +15,7 @@ the proxy directly; `run`'s env-var exec wiring is covered by the CLI itself, no
 
 | Command | What happens | Status | Source |
 |---------|--------------|--------|--------|
-| `honmoon run --policy P -- <cmd>` | Ephemeral proxy started, child exec'd with `https_proxy` set | <span class="status-done">works</span> (Linux: empty-namespace isolation; advisory elsewhere) | [main.rs:66-98](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-cli/src/main.rs#L66-L98) |
+| `honmoon run --policy P -- <cmd>` | Ephemeral proxy started, child exec'd with `https_proxy` set | <span class="status-done">works</span> (Linux: empty-namespace isolation; macOS: Seatbelt profile; advisory elsewhere) | [main.rs:66-98](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-cli/src/main.rs#L66-L98) |
 | `honmoon gateway --config P --addr A` | Standalone CONNECT proxy bound to `A` | <span class="status-done">works</span> | [main.rs:53-57](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-cli/src/main.rs#L53-L57) |
 | `honmoon join --gateway G` | — | <span class="status-planned">stub: `bail!`</span> | [main.rs:58-60](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-cli/src/main.rs#L58-L60) |
 
@@ -61,26 +61,32 @@ sequenceDiagram
 ```
 <!-- Sources: crates/honmoon-cli/src/main.rs:66-98, crates/honmoon-proxy/src/gateway.rs:62-112 -->
 
-::: warning Enforcing on Linux, advisory everywhere else
+::: warning Enforcing on Linux and macOS, advisory everywhere else
 On **Linux** the child is spawned into an empty user + network namespace holding nothing but
 loopback, with honmoon's proxy bridged in over a Unix socket
 ([ADR-0005](https://github.com/pleaseai/honmoon/blob/main/.please/docs/decisions/0005-empty-namespace-and-bridged-proxy-sockets.md)). The proxy
 variables `http_proxy` / `https_proxy` / `all_proxy` (and uppercase variants) are set by the
 in-namespace supervisor and point the child at the loopback port *inside* its own namespace rather
 than at the host's proxy
-([linux.rs:615-626](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-cli/src/isolate/linux.rs#L615-L626)), but an
-**unprivileged** child that ignores them reaches nothing over the network rather than bypassing
-policy. The flip side: a client that speaks no proxy at all (`psql`, `ssh`) cannot connect under
-`run` — use `honmoon gateway` for those.
+([linux.rs:615-626](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-cli/src/isolate/linux.rs#L615-L626)).
+On **macOS** there is no namespace and nothing to bridge: the child keeps the host's loopback, where
+the proxy is already listening, and a Seatbelt profile under `sandbox-exec` denies every other
+socket
+([macos.rs](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-cli/src/isolate/macos.rs)).
+On both, an **unprivileged** child that ignores the variables reaches nothing over the network
+rather than bypassing policy. The flip side: a client that speaks no proxy at all (`psql`, `ssh`)
+cannot connect under `run` — use `honmoon gateway` for those. Nor is there DNS inside the sandbox on
+either platform; a proxied client does not need it, but a tool that resolves before it proxies will
+fail.
 
 The boundary is narrower than "sandbox". A child that can become root, already holds
-`CAP_SYS_ADMIN`, or has passwordless `sudo` can leave the namespace, and only the *network*
-namespace is replaced, so filesystem Unix sockets (`/var/run/docker.sock` and friends) stay
-reachable. Where the kernel or a container policy refuses the namespace, `run` falls back to
-advisory and says so on stderr — notably the default Docker seccomp profile blocks
-`unshare(CLONE_NEWUSER)`, so `honmoon run` inside an ordinary container is advisory. macOS is
-advisory too until the Seatbelt profile lands ([#69](https://github.com/pleaseai/honmoon/issues/69)),
-so **TD-003** stays open
+`CAP_SYS_ADMIN`, or has passwordless `sudo` can leave it, and neither platform touches the
+filesystem, so Unix sockets that live there (`/var/run/docker.sock` and friends) stay reachable.
+`run` falls back to advisory and says so on stderr where the kernel or a container policy refuses
+the namespace — notably the default Docker seccomp profile blocks `unshare(CLONE_NEWUSER)`, so
+`honmoon run` inside an ordinary container is advisory — or where the Seatbelt profile no longer
+compiles. `sandbox-exec` is formally deprecated by Apple; Claude Code ships on it today, so it is
+serviceable, but the deprecation is real. Every other platform is advisory, so **TD-003** stays open
 ([tech-debt-tracker.md:11](https://github.com/pleaseai/honmoon/blob/main/.please/docs/tracks/tech-debt-tracker.md#L11)).
 :::
 

@@ -6,12 +6,18 @@
 //! probe the same way, because "the connection failed" only means something once
 //! you have shown it succeeds when honmoon is not in the picture.
 //!
-//! Linux only — it is the one platform where ADR-0005's enforcement is
-//! implemented. On a host that cannot create unprivileged user namespaces the
-//! tests skip loudly rather than passing quietly; CI additionally asserts that
-//! the runner *can* enforce, so a skip cannot become permanent unnoticed.
+//! Linux and macOS — the two platforms where ADR-0005's enforcement exists. The
+//! mechanisms could hardly be less alike (an empty network namespace with a
+//! bridged Unix socket; a Seatbelt profile with one open port), which is exactly
+//! why the *claims* are asserted here rather than the mechanisms: both platforms
+//! run the same cases and have to answer the same way. Anything platform-shaped
+//! is gated and says why.
+//!
+//! On a host that cannot enforce the tests skip loudly rather than passing
+//! quietly; CI additionally asserts that the runner *can* enforce, so a skip
+//! cannot become permanent unnoticed.
 
-#![cfg(target_os = "linux")]
+#![cfg(any(target_os = "linux", target_os = "macos"))]
 
 use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
@@ -20,6 +26,7 @@ use std::process::{Command, Output};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
+use std::time::{Duration, Instant};
 
 /// Exit code the probe uses for "I could not get there".
 const UNREACHABLE: i32 = 7;
@@ -66,6 +73,11 @@ impl Scratch {
 
     fn policy(&self) -> PathBuf {
         self.0.join("policy.yaml")
+    }
+
+    /// A path inside the scratch directory, for a child to write its result to.
+    fn scratch_file(&self, name: &str) -> PathBuf {
+        self.0.join(name)
     }
 }
 
@@ -169,11 +181,7 @@ fn enforcing_or_skip(policy: &Path, test: &str) -> bool {
     if enforcement_available(policy) {
         return true;
     }
-    let explanation = "this host cannot create unprivileged user namespaces, so `honmoon run` \
-         is advisory here and there is no confinement to test. Under Docker this \
-         usually means the default seccomp profile — retry with \
-         `--security-opt seccomp=unconfined`. On Ubuntu 24.04 it usually means \
-         `kernel.apparmor_restrict_unprivileged_userns`.";
+    let explanation = NO_ENFORCEMENT_HERE;
     assert!(
         std::env::var_os("HONMOON_REQUIRE_ENFORCEMENT").is_none(),
         "{test}: HONMOON_REQUIRE_ENFORCEMENT is set, but {explanation}"
@@ -186,7 +194,50 @@ fn enforcing_or_skip(policy: &Path, test: &str) -> bool {
     false
 }
 
+/// Why this host cannot enforce, and what to do about it.
+///
+/// Split by platform because the two failures share nothing: one is a kernel
+/// policy the operator can lift, the other is a profile that stopped compiling.
+#[cfg(target_os = "linux")]
+const NO_ENFORCEMENT_HERE: &str = "this host cannot create unprivileged user namespaces, so `honmoon run` is \
+     advisory here and there is no confinement to test. Under Docker this \
+     usually means the default seccomp profile — retry with \
+     `--security-opt seccomp=unconfined`. On Ubuntu 24.04 it usually means \
+     `kernel.apparmor_restrict_unprivileged_userns`.";
+
+/// Every macOS host ships `/usr/bin/sandbox-exec`, so a skip here is not a host
+/// that lacks the feature — it is honmoon's profile failing to compile, which is
+/// the way the documented `sandbox-exec` deprecation would actually arrive.
+#[cfg(target_os = "macos")]
+const NO_ENFORCEMENT_HERE: &str = "`/usr/bin/sandbox-exec` could not apply honmoon's Seatbelt profile on this \
+     host, so `honmoon run` is advisory here. Every macOS host ships it, so the \
+     likely cause is a change in the SBPL dialect the profile is written in — \
+     run it by hand against `isolate::macos::profile` to see the compiler error.";
+
 const ALLOW_LOOPBACK: &str = "version: 1\negress:\n  default: deny\n  allow:\n    - 127.0.0.1\n";
+
+/// Block until a detached child has written its report, or give up.
+///
+/// The child outlives every process the test can wait on, so there is nothing to
+/// join — the file appearing is the only completion signal there is.
+fn read_report(path: &Path) -> String {
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while Instant::now() < deadline {
+        // Nested rather than a let-chain: those need Rust 1.88 and the
+        // workspace declares `rust-version = "1.85"`.
+        if let Ok(text) = std::fs::read_to_string(path) {
+            if text.contains("exit=") {
+                return text;
+            }
+        }
+        thread::sleep(Duration::from_millis(50));
+    }
+    panic!(
+        "the detached child never reported to {path:?}. It is supposed to write \
+         its outcome whether it got through or not, so an empty report means it \
+         died before dialling and this test proved nothing."
+    );
+}
 
 #[test]
 fn a_child_that_ignores_the_proxy_environment_reaches_nothing() {
@@ -219,6 +270,9 @@ fn a_child_that_ignores_the_proxy_environment_reaches_nothing() {
     );
 }
 
+/// Linux only: macOS builds its profile as a string argument and never touches
+/// the filesystem, so there is no mode for a umask to strip.
+#[cfg(target_os = "linux")]
 #[test]
 fn a_restrictive_umask_does_not_downgrade_enforcement() {
     let scratch = Scratch::with_policy("umask", ALLOW_LOOPBACK);
@@ -282,8 +336,10 @@ fn a_child_that_ignores_the_proxy_environment_cannot_leave_loopback_either() {
         return;
     }
 
-    // A routable address that is not this machine. The sandbox has no interface
-    // but loopback, so there is no route to it at all.
+    // A routable address that is not this machine. On Linux the sandbox has no
+    // interface but loopback, so there is no route to it at all; on macOS the
+    // interfaces are still there and the profile refuses the connect. Different
+    // mechanisms, one required answer.
     let args = ["direct", "1.1.1.1:80"];
     let confined = run_sandboxed(&scratch.policy(), &args);
     assert_eq!(
@@ -336,15 +392,77 @@ fn a_cooperating_child_is_refused_a_denied_host() {
 }
 
 #[test]
+fn a_descendant_that_outlives_its_parent_is_confined_too() {
+    let scratch = Scratch::with_policy("detached", ALLOW_LOOPBACK);
+    if !enforcing_or_skip(&scratch.policy(), "detached") {
+        return;
+    }
+
+    let origin = spawn_origin();
+    let target = origin.address().to_string();
+
+    // The control does double duty here. As everywhere else in this file it
+    // shows the origin is reachable at all — but it also proves the fixture
+    // really detaches, because `reparented=true` is measured rather than
+    // assumed. Without that, a confined `exit=7` could just mean the grandchild
+    // never got far enough to be interesting.
+    let control_report = scratch.scratch_file("control.txt");
+    run_unsandboxed(&[
+        "detached",
+        target.as_str(),
+        &control_report.to_string_lossy(),
+    ]);
+    let control = read_report(&control_report);
+    assert!(
+        control.contains("reparented=true"),
+        "the fixture must actually orphan its dialler, or this test is just \
+         another child-process test wearing a different name. Got: {control}"
+    );
+    assert!(
+        control.contains("exit=0"),
+        "the detached dialler must reach the origin when honmoon is not \
+         involved. Got: {control}"
+    );
+
+    // This is the case that defeated the PPID-matching design #69 originally
+    // specified, and it is worth keeping now that the mechanism no longer works
+    // that way: both a network namespace and a Seatbelt profile are kernel state
+    // a process carries, not a lineage it can step out of. `honmoon run` returns
+    // as soon as its own child exits, so the dialler is still running, already
+    // re-parented, with nothing left of the tree it was started in.
+    let confined_report = scratch.scratch_file("confined.txt");
+    run_sandboxed(
+        &scratch.policy(),
+        &[
+            "detached",
+            target.as_str(),
+            &confined_report.to_string_lossy(),
+        ],
+    );
+    let confined = read_report(&confined_report);
+    assert!(
+        confined.contains("reparented=true"),
+        "the confined dialler was never orphaned, so the interesting case did \
+         not run. Got: {confined}"
+    );
+    assert!(
+        confined.contains(&format!("exit={UNREACHABLE}")),
+        "a descendant that outlived the process honmoon waited on reached the \
+         origin. Confinement that ends with the process tree is not confinement \
+         (TD-003). Got: {confined}"
+    );
+}
+
+#[test]
 fn the_sandboxed_command_keeps_its_own_exit_code() {
     let scratch = Scratch::with_policy("exitcode", ALLOW_LOOPBACK);
     if !enforcing_or_skip(&scratch.policy(), "exitcode") {
         return;
     }
 
-    // Confinement adds two processes between the shell and the command; an exit
-    // code that got swallowed on the way back would break every script wrapping
-    // `honmoon run`.
+    // Confinement puts processes between the caller and the command — two on
+    // Linux, one on macOS — and an exit code swallowed on the way back would
+    // break every script wrapping `honmoon run`.
     let status = Command::new(honmoon())
         .arg("run")
         .arg("--policy")
@@ -362,6 +480,9 @@ fn the_sandboxed_command_keeps_its_own_exit_code() {
     );
 }
 
+/// Linux only, for the same reason: the macOS path has no scratch directory to
+/// leak.
+#[cfg(target_os = "linux")]
 #[test]
 fn the_sandbox_leaves_no_scratch_directory_behind() {
     let scratch = Scratch::with_policy("cleanup", ALLOW_LOOPBACK);

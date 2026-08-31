@@ -78,7 +78,7 @@ Honmoon is a monorepo that separates languages by responsibility.
 
 | Mode | Command | Description |
 |------|---------|-------------|
-| **Process Wrapper** | `honmoon run -- <command>` | Isolate a single process in an empty network namespace (Linux; advisory elsewhere until the macOS Seatbelt profile lands) |
+| **Process Wrapper** | `honmoon run -- <command>` | Isolate a single process so the proxy is its only route out (Linux and macOS; advisory elsewhere) |
 | **Gateway** | `honmoon gateway` | Central proxy that loads policy and accepts client connections |
 | **Join** | `honmoon join` | Route all host traffic to the gateway through a tunnel |
 
@@ -165,30 +165,51 @@ honmoon join --gateway honmoon.internal:8443
 
 ### What `honmoon run` enforces, and what it costs
 
-On **Linux**, the wrapped command is spawned into a new user and network namespace that contains
-nothing but a loopback interface. honmoon's proxy is bridged in over a Unix socket, and the proxy
-variables point the child at it. A child that ignores those variables does not slip past policy —
-it reaches nothing over the network, because its namespace has no route out of it. (Unix sockets on
-the filesystem are the documented exception — see below.)
+On **Linux and macOS**, the wrapped command is left with no network route that avoids the proxy.
+A child that ignores the proxy variables does not slip past policy — it reaches nothing over the
+network. (Unix sockets on the filesystem are the documented exception — see below.)
 
-Two consequences worth knowing before you hit them:
+The two platforms reach that from opposite directions, and the difference shows up in the limits:
+
+| | Linux | macOS |
+|---|-------|-------|
+| Mechanism | a new user + network namespace holding nothing but loopback, with the proxy bridged in over a Unix socket | a Seatbelt profile under `sandbox-exec` denying every socket but the proxy's loopback port |
+| The child's loopback | private to the namespace | shared with the host |
+| Needs | unprivileged user namespaces enabled | nothing — `sandbox-exec` ships with macOS |
+
+Consequences worth knowing before you hit them:
 
 - **A client that speaks no proxy fails closed.** Anything that reads neither `HTTP_PROXY` nor
   `ALL_PROXY` — `psql`, `ssh`, a binary with a hardcoded socket — cannot connect at all under
   `run`. That is the correct default for a firewall, and it is deliberate rather than a bug. Until
   the SOCKS5 transport lands, use `honmoon gateway` for those protocols.
-- **Everywhere else it is advisory, and says so.** On macOS, or on a Linux host whose kernel
-  refuses unprivileged user namespaces, `run` sets the proxy variables and prints a warning on
-  stderr naming the bypass. It never claims enforcement it does not have.
+- **Names are resolved by the proxy, not by the child.** There is no DNS inside the sandbox on
+  either platform. A proxied client does not need it — it hands the proxy a hostname — but a tool
+  that resolves before it proxies will fail.
+- **Elsewhere it is advisory, and says so.** On a platform with no implementation, on a Linux host
+  whose kernel refuses unprivileged user namespaces, or on a macOS host where the Seatbelt profile
+  no longer compiles, `run` sets the proxy variables and prints a warning on stderr naming the
+  bypass. It never claims enforcement it does not have.
 
 The boundary is honest about privilege too: this confines an **unprivileged** child. A child that
-can become root, already holds `CAP_SYS_ADMIN`, or has passwordless `sudo` can leave the namespace —
-use `honmoon join` where that matters. Only the *network* namespace is replaced, so Unix sockets
-that live in the filesystem — `/var/run/docker.sock` and friends — stay reachable, and anything a
-local daemon behind one will do on the child's behalf is still a way out. Keep those sockets away
-from the uid you run under. For the same reason, do not hand honmoon a connected network socket as
-its own stdin, stdout or stderr and expect the child not to reach that peer: the child needs those
-three descriptors, so it inherits them, and a socket keeps its binding inside the new namespace.
+can become root, already holds `CAP_SYS_ADMIN`, or has passwordless `sudo` can leave the sandbox —
+use `honmoon join` where that matters. Neither platform touches the filesystem, so Unix sockets that
+live there — `/var/run/docker.sock` and friends — stay reachable, and anything a local daemon behind
+one will do on the child's behalf is still a way out. Keep those sockets away from the uid you run
+under. For the same reason, do not hand honmoon a connected network socket as its own stdin, stdout
+or stderr and expect the child not to reach that peer: the child needs those three descriptors, so
+it inherits them, and a socket keeps its binding across both mechanisms.
+
+Two macOS-only caveats, recorded here rather than discovered later. A command that **daemonizes**
+leaves descendants behind, and `run` returns when its direct child exits — closing the proxy port
+while those descendants still carry a profile whose one exception names it. The port is then free
+for any local process to bind, and that process is an off-policy relay for them. Linux does not
+have this: an empty namespace stays empty whoever else is on the host, while Seatbelt leaves the
+child on the *host* loopback. Holding the port for the whole process group would close it and stop
+`run` returning when the command does; that is an ADR-0005 amendment, tracked under TD-003. And
+`sandbox-exec` is formally deprecated by Apple. It is what Claude Code ships on today, so it is serviceable, but if Apple
+removes it the fallback is a `NETransparentProxyProvider` system extension — signing, notarization
+and all.
 
 When a request hits a `pause` rule the gateway holds the connection and surfaces it
 on the dashboard's **approval queue**; approving it lets the request through, denying

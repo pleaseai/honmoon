@@ -78,6 +78,46 @@ jobs:
           flags: rust
           fail_ci_if_error: false
 
+  # macOS is not a second opinion on the Linux job — it is the only place the
+  # macOS half of ADR-0005 is compiled at all. `isolate::macos` sits behind
+  # `cfg(target_os = "macos")`, so the ubuntu job above never type-checks a line
+  # of it, and the Seatbelt profile it generates is a string that only means
+  # something once `sandbox-exec` has parsed it. Scoped to `honmoon-cli`: the
+  # rest of the workspace is platform-neutral and the ubuntu job covers it.
+  rust-macos:
+    name: Rust — macOS enforced isolation
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+
+      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
+        with:
+          components: clippy
+
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+
+      - name: Clippy
+        run: cargo clippy --locked -p honmoon-cli --all-targets -- -D warnings
+
+      - name: Test
+        # HONMOON_REQUIRE_ENFORCEMENT turns "this host cannot confine, so skip"
+        # into a failure. It matters more here than on Linux: every macOS host
+        # ships /usr/bin/sandbox-exec, so a skip would not mean "runner lacks the
+        # feature" but "honmoon's profile stopped compiling" — which is exactly
+        # how the documented `sandbox-exec` deprecation would arrive, and it must
+        # not arrive as a green build.
+        env:
+          HONMOON_REQUIRE_ENFORCEMENT: '1'
+        # The example is built explicitly for the same reason as in the ubuntu
+        # job: the isolation tests exec `bypass_probe` out of the target
+        # directory, and `--all-targets` compiles examples as test targets rather
+        # than leaving a runnable binary there.
+        run: |
+          cargo build --locked -p honmoon-cli --example bypass_probe
+          cargo test --locked -p honmoon-cli
+
   js:
     name: JS — lint, build
     runs-on: ubuntu-latest
