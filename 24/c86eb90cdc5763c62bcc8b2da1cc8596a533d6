@@ -1,0 +1,29 @@
+README.md
+  s_cf4a5344af068d::t_a4bcf701324638 203-210
+wiki/deep-dive/egress-gateway.md
+  s_cf4a5344af068d::t_a4bcf701324638 211,214-217
+.please/docs/tracks/tech-debt-tracker.md
+  s_cf4a5344af068d::t_4f3a2ec26ef951 11
+wiki/llms-full.txt
+  s_cf4a5344af068d::t_4f3a2ec26ef951 1759,1762-1765,2146-2149
+wiki/getting-started/overview.md
+  s_cf4a5344af068d::t_15dfca29459824 141-144
+crates/honmoon-cli/src/isolate/macos.rs
+  s_cf4a5344af068d::t_55f45cc457337a 66-86
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "24c86eb90cdc5763c62bcc8b2da1cc8596a533d6",
+  "prompts": {},
+  "sessions": {
+    "s_cf4a5344af068d": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "98df4c9f-2e16-4e1a-b5ed-3b2178347463",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
