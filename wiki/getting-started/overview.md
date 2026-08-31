@@ -138,7 +138,10 @@ proxy's loopback port. Neither replaces the filesystem, so Unix sockets that liv
 will do on the child's behalf is still a way out. On both, an **unprivileged** child that ignores
 the proxy environment variables reaches nothing over the network rather than escaping policy — and so does a descendant it detaches from its own
 process tree, because the confinement is kernel state a process carries rather than a lineage it
-can step out of.
+can step out of. On macOS that outliving descendant has one soft edge: `run` returns when its direct
+child does, closing the proxy port while the descendant still carries a profile whose one exception
+names it, so a local process that binds the freed port can relay for it. An empty namespace stays
+empty instead. Tracked under TD-003.
 
 A child that can reach root (`CAP_SYS_ADMIN`, passwordless `sudo`) can still leave the sandbox.
 `run` falls back to advisory, and says so on stderr, where the kernel or a container policy refuses

@@ -208,10 +208,13 @@ reachable, and anything a local daemon behind one will do on the child's behalf 
 (macOS denies one of them deliberately, the system resolver's, so that DNS is no more available
 there than it is inside an empty namespace.)
 
-Three limits keep **TD-003** open: root / `CAP_SYS_ADMIN` / passwordless `sudo` can leave either
+Four limits keep **TD-003** open: root / `CAP_SYS_ADMIN` / passwordless `sudo` can leave either
 sandbox; `run` fails open to advisory where the namespace is refused (the default Docker seccomp
 profile blocks `unshare(CLONE_NEWUSER)`, so an ordinary container is advisory) or where the Seatbelt
-profile no longer compiles; and every platform other than these two still only sets env vars
+profile no longer compiles; on **macOS** a command that daemonizes outlives `run`, which closes the
+proxy port while those descendants still carry a profile whose one exception names it — free for
+any local process to bind and relay for them, where an empty namespace would have stayed empty;
+and every platform other than these two still only sets env vars
 ([tech-debt-tracker.md:11](https://github.com/pleaseai/honmoon/blob/main/.please/docs/tracks/tech-debt-tracker.md#L11)).
 :::
 

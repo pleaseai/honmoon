@@ -200,8 +200,14 @@ under. For the same reason, do not hand honmoon a connected network socket as it
 or stderr and expect the child not to reach that peer: the child needs those three descriptors, so
 it inherits them, and a socket keeps its binding across both mechanisms.
 
-One macOS-only caveat, recorded here rather than discovered later: `sandbox-exec` is formally
-deprecated by Apple. It is what Claude Code ships on today, so it is serviceable, but if Apple
+Two macOS-only caveats, recorded here rather than discovered later. A command that **daemonizes**
+leaves descendants behind, and `run` returns when its direct child exits — closing the proxy port
+while those descendants still carry a profile whose one exception names it. The port is then free
+for any local process to bind, and that process is an off-policy relay for them. Linux does not
+have this: an empty namespace stays empty whoever else is on the host, while Seatbelt leaves the
+child on the *host* loopback. Holding the port for the whole process group would close it and stop
+`run` returning when the command does; that is an ADR-0005 amendment, tracked under TD-003. And
+`sandbox-exec` is formally deprecated by Apple. It is what Claude Code ships on today, so it is serviceable, but if Apple
 removes it the fallback is a `NETransparentProxyProvider` system extension — signing, notarization
 and all.
 

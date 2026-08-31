@@ -63,6 +63,27 @@
 //!   channel to that one peer. The child needs those three descriptors to be a
 //!   usable command at all. This needs an operator to have wired honmoon's stdio
 //!   to a network peer; it is not something the child can arrange.
+//! - **A descendant that outlives `run` keeps an exception to a port `run` no
+//!   longer owns.** `Command::status` waits for the *direct* child, so a command
+//!   that daemonizes returns immediately and `run` exits, closing both loopback
+//!   listeners — while the surviving descendant still carries the profile, and
+//!   its one TCP exception still names `localhost:<proxy_port>`. That port is
+//!   now free, the descendant can read the number out of its own environment,
+//!   and whatever local process binds it next is an off-policy relay.
+//!
+//!   Linux does not have this, and the asymmetry is structural rather than an
+//!   oversight here: there the child is in an empty namespace, so when the
+//!   bridge dies nothing off-box is reachable from inside it no matter who else
+//!   is on the host. Seatbelt leaves the child on the *host* loopback, so the
+//!   boundary lasts only as long as honmoon owns a host resource.
+//!
+//!   The fix is to hold the listeners for the sandbox's lifetime rather than the
+//!   direct child's — the child in its own process group, sockets held while
+//!   `kill(-pgid, 0)` still succeeds. It is not done here because it changes
+//!   what `run` is: it would stop returning when the command it was given
+//!   returns, so a command that spawns a daemon would block. That is an
+//!   ADR-0005 amendment, not a detail. Tracked under TD-003, which this file
+//!   does not close.
 //! - `sandbox-exec` is formally deprecated by Apple. It is what Claude Code
 //!   ships on today, so it is serviceable, but the deprecation is real. If Apple
 //!   removes it, the `NETransparentProxyProvider` design in the history of #69
