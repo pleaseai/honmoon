@@ -1,0 +1,19 @@
+crates/honmoon-cli/src/isolate/macos.rs
+  s_cf4a5344af068d::t_0d61c1cb8bb374 412-426,432-441,446-469,473,504-506
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "f366d8f99071022796d061557ddb8420cce77ec3",
+  "prompts": {},
+  "sessions": {
+    "s_cf4a5344af068d": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "98df4c9f-2e16-4e1a-b5ed-3b2178347463",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
