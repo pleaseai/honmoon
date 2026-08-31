@@ -666,7 +666,7 @@ flowchart LR
     r6["Single-node scope today"]
   end
   style r1 fill:#161b22,stroke:#f85149,color:#e6edf3
-  style r2 fill:#161b22,stroke:#f85149,color:#e6edf3
+  style r2 fill:#161b22,stroke:#d29922,color:#e6edf3
   style r3 fill:#161b22,stroke:#d29922,color:#e6edf3
   style r4 fill:#161b22,stroke:#d29922,color:#e6edf3
   style r5 fill:#161b22,stroke:#3fb950,color:#e6edf3
@@ -2135,10 +2135,10 @@ a stub ([main.rs:58-60](https://github.com/pleaseai/honmoon/blob/main/crates/hon
 ([ADR-0005](https://github.com/pleaseai/honmoon/blob/main/.please/docs/decisions/0005-empty-namespace-and-bridged-proxy-sockets.md)): on **Linux** an empty
 user + network namespace holding nothing but loopback, with the proxy bridged in over a Unix socket;
 on **macOS** a Seatbelt profile under `sandbox-exec` that denies every network socket but the
-proxy's loopback port. Neither replaces the filesystem, so Unix sockets living there stay reachable
-on both — a documented escape, detailed below. On both, an **unprivileged** child that ignores the
-proxy environment variables
-reaches nothing rather than escaping policy — and so does a descendant it detaches from its own
+proxy's loopback port. Neither replaces the filesystem, so Unix sockets that live there —
+`/var/run/docker.sock` and friends — stay reachable on both, and anything a local daemon behind one
+will do on the child's behalf is still a way out. On both, an **unprivileged** child that ignores
+the proxy environment variables reaches nothing over the network rather than escaping policy — and so does a descendant it detaches from its own
 process tree, because the confinement is kernel state a process carries rather than a lineage it
 can step out of.
 

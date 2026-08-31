@@ -345,15 +345,28 @@ fn run(policy: PathBuf, argv: Vec<String>) -> Result<()> {
         std::thread::spawn(move || {
             let runtime = tokio::runtime::Runtime::new().expect("build tokio runtime");
             runtime.block_on(async move {
-                // Spawned rather than joined: `serve` never returns, and
-                // `tokio::join!` on two diverging futures makes its own
-                // bookkeeping unreachable, which the compiler rightly warns
-                // about. The IPv4 loop is the one the child is pointed at, so
-                // it runs here and the IPv6 co-resident goes to a task.
-                if let Some(v6) = v6 {
-                    tokio::spawn(honmoon_proxy::gateway::serve(state.clone(), v6));
+                // `select!` rather than `tokio::spawn` for the IPv6 half, and
+                // the reason is the whole point of binding it. `serve` ends
+                // only by panicking, and a panic inside a spawned task is
+                // caught by tokio and parked in a `JoinHandle` nobody joins —
+                // so the IPv6 accept loop could die, drop its listener, and
+                // hand `::1:<port>` back to the first process that asked for
+                // it, while `run` carried on serving IPv4 and still reported
+                // `Enforced`. That is the reopened hole, arrived at silently.
+                //
+                // Polled in one task, either loop failing takes the proxy down
+                // with it: the child is then pointed at a dead port and fails
+                // closed, which is the honest outcome. It does not leave a live
+                // child talking to a boundary with half of it missing.
+                match v6 {
+                    Some(v6) => {
+                        tokio::select! {
+                            _ = honmoon_proxy::gateway::serve(state.clone(), v6) => {}
+                            _ = honmoon_proxy::gateway::serve(state, v4) => {}
+                        }
+                    }
+                    None => honmoon_proxy::gateway::serve(state, v4).await,
                 }
-                honmoon_proxy::gateway::serve(state, v4).await
             });
         });
     }
@@ -438,9 +451,22 @@ fn bind_loopback_pair() -> Result<(TcpListener, Option<TcpListener>)> {
             // Occupied on `::1`. Drop this pair and let the kernel pick again;
             // holding the IPv4 half would only make it likelier to recur.
             Err(error) if error.kind() == std::io::ErrorKind::AddrInUse => taken = Some(error),
-            // Anything else means this host has no usable IPv6 loopback, so
-            // nothing else can squat there either. Proceed on IPv4 alone.
-            Err(_) => return Ok((v4, None)),
+            // Only a *proven absent* IPv6 loopback may downgrade to IPv4 alone:
+            // if nothing on this host can bind `::1`, no squatter can either, so
+            // there is no second half of the hole to close. Every other failure
+            // — descriptor pressure, a sandbox refusing the socket — leaves
+            // `::1:<port>` unowned while macOS still opens the profile's
+            // `localhost:<port>` exception, which is precisely the state this
+            // function exists to prevent. Those fail closed.
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::AddrNotAvailable | std::io::ErrorKind::Unsupported
+                ) =>
+            {
+                return Ok((v4, None));
+            }
+            Err(error) => return Err(error.into()),
         }
     }
     Err(anyhow::anyhow!(

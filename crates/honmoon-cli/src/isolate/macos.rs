@@ -134,6 +134,13 @@ pub fn run_confined(proxy: SocketAddr, program: &str, args: &[String]) -> io::Re
         ));
     }
 
+    // Before the spawn, and propagated rather than swallowed: a descriptor that
+    // survives into the child is a channel the profile never sees, so failing to
+    // secure them means this is not the boundary it claims to be. An `Err` here
+    // downgrades the run to advisory with a stated reason, which is the honest
+    // outcome.
+    close_inherited_descriptors_on_exec()?;
+
     let mut command = Command::new(SANDBOX_EXEC);
     // `--` because `program` comes from the user's command line: without it a
     // command whose name begins with a dash would be read as an option to
@@ -168,6 +175,74 @@ pub fn run_confined(proxy: SocketAddr, program: &str, args: &[String]) -> io::Re
     // but `sandbox_available()` compiled this exact profile moments ago and the
     // only thing that has changed since is a `u16` rendered by `format!`.
     command.status()
+}
+
+/// Make every descriptor above stdio close on `exec`.
+///
+/// Seatbelt gates `connect`, not writes on a socket that is *already* connected,
+/// so an inherited descriptor is a route the profile can never see. If whoever
+/// launched `honmoon` left a connected socket open above stderr without
+/// `FD_CLOEXEC` — a supervisor, a shell redirect — the confined command inherits
+/// it and talks to that peer with no policy in the way. The Linux path closes
+/// these in `supervise`; this is the same boundary drawn the same place.
+///
+/// Marked rather than closed, and in the parent rather than in a `pre_exec`
+/// hook, because both alternatives break something. Closing here would take
+/// honmoon's own proxy listeners with it. Closing in the hook would take the
+/// `CLOEXEC` pipe `Command` uses to report a failed `exec`, which would make a
+/// failed spawn look like a successful one — the reason the Linux sweep happens
+/// after its second `exec` rather than between fork and exec. `FD_CLOEXEC` costs
+/// the parent nothing: it only decides what survives the `exec`.
+///
+/// Descriptors opened *after* this runs are not a gap. The sweep exists for
+/// descriptors honmoon inherited, which cannot appear later, and everything Rust
+/// opens is `CLOEXEC` from birth.
+///
+/// stdio is left alone — the child needs a stdin, stdout and stderr to be a
+/// usable command at all, which is the documented exception at the top of this
+/// file.
+fn close_inherited_descriptors_on_exec() -> io::Result<()> {
+    for fd in 3..descriptor_limit()? {
+        // SAFETY: `fcntl` with `F_GETFD`/`F_SETFD` reads and writes one flag on
+        // a descriptor number and touches no memory of ours. A closed
+        // descriptor answers `EBADF`, which is the skip below.
+        unsafe {
+            let flags = libc::fcntl(fd, libc::F_GETFD);
+            if flags < 0 {
+                continue;
+            }
+            if flags & libc::FD_CLOEXEC == 0 {
+                // Variadic, so the argument is passed as exactly the type given
+                // — Rust does not promote it to `int` the way C would.
+                libc::fcntl(fd, libc::F_SETFD, flags | libc::FD_CLOEXEC);
+            }
+        }
+    }
+    Ok(())
+}
+
+/// The soft `RLIMIT_NOFILE`, which bounds the descriptor numbers this process
+/// can be holding.
+///
+/// An unbounded limit is an error rather than a guess: there is no finite sweep
+/// of "everything", and reporting success over a sweep that did not happen is
+/// exactly the overstatement this module exists to avoid.
+fn descriptor_limit() -> io::Result<libc::c_int> {
+    let mut limit = libc::rlimit {
+        rlim_cur: 0,
+        rlim_max: 0,
+    };
+    // SAFETY: `getrlimit` fills the struct it is handed and returns 0 or -1.
+    if unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &mut limit) } != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    if limit.rlim_cur == libc::RLIM_INFINITY {
+        return Err(io::Error::other(
+            "RLIMIT_NOFILE is unlimited, so the descriptors this process may \
+             have inherited cannot be enumerated",
+        ));
+    }
+    Ok(limit.rlim_cur.min(libc::c_int::MAX as libc::rlim_t) as libc::c_int)
 }
 
 /// The Seatbelt profile, as a single argument to `sandbox-exec -p`.
@@ -259,6 +334,32 @@ mod tests {
         let error = run_confined(off_box, "/usr/bin/true", &[])
             .expect_err("a profile cannot open a hole to anything but loopback");
         assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+    }
+
+    #[test]
+    fn a_descriptor_left_open_by_the_launcher_does_not_survive_the_exec() {
+        use std::os::unix::io::AsRawFd;
+
+        // Stands in for a socket a supervisor left open above stderr: a real
+        // descriptor with `FD_CLOEXEC` deliberately cleared.
+        let inherited = std::fs::File::open("/dev/null").expect("open /dev/null");
+        let fd = inherited.as_raw_fd();
+        // SAFETY: clearing and reading one flag on a descriptor this test owns.
+        unsafe {
+            let flags = libc::fcntl(fd, libc::F_GETFD);
+            libc::fcntl(fd, libc::F_SETFD, flags & !libc::FD_CLOEXEC);
+        }
+
+        close_inherited_descriptors_on_exec().expect("sweep the descriptor table");
+
+        // SAFETY: reading one flag on a descriptor this test owns.
+        let flags = unsafe { libc::fcntl(fd, libc::F_GETFD) };
+        assert!(
+            flags & libc::FD_CLOEXEC != 0,
+            "a descriptor honmoon inherited would have crossed the exec into \
+             the sandbox, where an already-connected socket is a route the \
+             Seatbelt profile never gets to see"
+        );
     }
 
     /// The profile is generated, so a dialect change is the realistic way it

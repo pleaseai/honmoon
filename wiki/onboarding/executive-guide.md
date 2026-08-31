@@ -105,7 +105,7 @@ flowchart LR
     r6["Single-node scope today"]
   end
   style r1 fill:#161b22,stroke:#f85149,color:#e6edf3
-  style r2 fill:#161b22,stroke:#f85149,color:#e6edf3
+  style r2 fill:#161b22,stroke:#d29922,color:#e6edf3
   style r3 fill:#161b22,stroke:#d29922,color:#e6edf3
   style r4 fill:#161b22,stroke:#d29922,color:#e6edf3
   style r5 fill:#161b22,stroke:#3fb950,color:#e6edf3
