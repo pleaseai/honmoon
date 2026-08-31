@@ -336,6 +336,14 @@ fn run(policy: PathBuf, argv: Vec<String>) -> Result<()> {
     // the TOCTOU window where another process could steal the port.
     let (v4, v6) = bind_loopback_pair().context("binding egress proxy")?;
     let addr = v4.local_addr()?;
+    // Built here rather than inside the thread, because a failure to build one
+    // is not a failure the thread can report. `expect` there would unwind the
+    // closure, dropping the listeners it captured and handing the proxy port
+    // back to the first process that asked for it — while `run` carried on to
+    // spawn the child under a profile that opens `localhost:<that port>`. A
+    // silent panic on a background thread would have turned a startup error
+    // into an unowned port inside the sandbox's one hole. Here it is a `?`.
+    let runtime = tokio::runtime::Runtime::new().context("building the proxy runtime")?;
     {
         // One `GatewayState` behind both listeners rather than one each: it is
         // `Arc`s throughout, and splitting it would split the audit ring and the
@@ -343,7 +351,6 @@ fn run(policy: PathBuf, argv: Vec<String>) -> Result<()> {
         // which loopback family the client happened to use.
         let state = GatewayState::new(policy.clone());
         std::thread::spawn(move || {
-            let runtime = tokio::runtime::Runtime::new().expect("build tokio runtime");
             runtime.block_on(async move {
                 // `select!` rather than `tokio::spawn` for the IPv6 half, and
                 // the reason is the whole point of binding it. `serve` ends

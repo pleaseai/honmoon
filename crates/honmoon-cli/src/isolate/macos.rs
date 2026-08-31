@@ -80,6 +80,12 @@ use std::process::{Command, ExitStatus, Stdio};
 /// unconfined while every message still said `Enforced`.
 const SANDBOX_EXEC: &str = "/usr/bin/sandbox-exec";
 
+/// Where the kernel lists this process's open descriptors.
+const DEV_FD: &str = "/dev/fd";
+
+/// stdin, stdout and stderr — the three the child keeps.
+const STDIO_DESCRIPTORS: libc::c_int = 3;
+
 /// A port no run will use, for compiling the profile during the probe.
 ///
 /// Only its syntax matters there; nothing binds it.
@@ -202,47 +208,86 @@ pub fn run_confined(proxy: SocketAddr, program: &str, args: &[String]) -> io::Re
 /// usable command at all, which is the documented exception at the top of this
 /// file.
 fn close_inherited_descriptors_on_exec() -> io::Result<()> {
-    for fd in 3..descriptor_limit()? {
+    for fd in open_descriptors()? {
+        if fd < STDIO_DESCRIPTORS {
+            continue;
+        }
         // SAFETY: `fcntl` with `F_GETFD`/`F_SETFD` reads and writes one flag on
-        // a descriptor number and touches no memory of ours. A closed
-        // descriptor answers `EBADF`, which is the skip below.
+        // a descriptor number and touches no memory of ours.
         unsafe {
             let flags = libc::fcntl(fd, libc::F_GETFD);
             if flags < 0 {
+                skip_if_already_gone(fd)?;
                 continue;
             }
             if flags & libc::FD_CLOEXEC == 0 {
                 // Variadic, so the argument is passed as exactly the type given
                 // — Rust does not promote it to `int` the way C would.
-                libc::fcntl(fd, libc::F_SETFD, flags | libc::FD_CLOEXEC);
+                if libc::fcntl(fd, libc::F_SETFD, flags | libc::FD_CLOEXEC) < 0 {
+                    skip_if_already_gone(fd)?;
+                }
             }
         }
     }
     Ok(())
 }
 
-/// The soft `RLIMIT_NOFILE`, which bounds the descriptor numbers this process
-/// can be holding.
+/// Swallow an `EBADF` from the sweep and report anything else.
 ///
-/// An unbounded limit is an error rather than a guess: there is no finite sweep
-/// of "everything", and reporting success over a sweep that did not happen is
-/// exactly the overstatement this module exists to avoid.
-fn descriptor_limit() -> io::Result<libc::c_int> {
-    let mut limit = libc::rlimit {
-        rlim_cur: 0,
-        rlim_max: 0,
-    };
-    // SAFETY: `getrlimit` fills the struct it is handed and returns 0 or -1.
-    if unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &mut limit) } != 0 {
-        return Err(io::Error::last_os_error());
+/// `EBADF` is the one failure that is not a failure: the descriptor is gone,
+/// which is a stronger version of what the sweep was trying to achieve. It is
+/// reachable in normal operation — the directory handle `open_descriptors` used
+/// is itself listed and then closed, and the proxy thread is already accepting
+/// connections while this runs, so a descriptor can close between the listing
+/// and the `fcntl`.
+///
+/// Every other errno means a descriptor that may still cross the `exec`
+/// unmarked, and the caller must not report enforcement over it.
+fn skip_if_already_gone(fd: libc::c_int) -> io::Result<()> {
+    let error = io::Error::last_os_error();
+    if error.raw_os_error() == Some(libc::EBADF) {
+        return Ok(());
     }
-    if limit.rlim_cur == libc::RLIM_INFINITY {
-        return Err(io::Error::other(
-            "RLIMIT_NOFILE is unlimited, so the descriptors this process may \
-             have inherited cannot be enumerated",
-        ));
+    Err(io::Error::new(
+        error.kind(),
+        format!("descriptor {fd} could not be marked close-on-exec: {error}"),
+    ))
+}
+
+/// The descriptors this process is actually holding, read from `/dev/fd`.
+///
+/// Asks the kernel what is open rather than walking `0..RLIMIT_NOFILE`, and the
+/// difference is correctness before it is speed. The soft limit is not an upper
+/// bound on descriptor *numbers*: a launcher that opened a descriptor and then
+/// lowered `RLIMIT_NOFILE` leaves it open above the new limit, where a bounded
+/// sweep never looks and Seatbelt cannot help — the profile only gates
+/// `connect`, and that peer is already connected. Verified rather than reasoned
+/// about: with a descriptor duplicated to 100 and the soft limit then set to 20,
+/// `/dev/fd` still lists 100.
+///
+/// It is also the difference between one `getdirentries` and a million `fcntl`
+/// calls — stock macOS hands `honmoon` a soft limit of 1048576.
+///
+/// An unreadable `/dev/fd` is an error rather than a fallback to the bounded
+/// sweep. This is `devfs`, present on every macOS install; if it cannot be read,
+/// this is not the system this module reasons about, and reporting success over
+/// a sweep that did not happen is exactly the overstatement it exists to avoid.
+/// The caller turns the error into an announced downgrade to advisory.
+fn open_descriptors() -> io::Result<Vec<libc::c_int>> {
+    let mut open = Vec::new();
+    for entry in std::fs::read_dir(DEV_FD)? {
+        let name = entry?.file_name();
+        let fd = name
+            .to_str()
+            .and_then(|name| name.parse::<libc::c_int>().ok())
+            .ok_or_else(|| {
+                io::Error::other(format!(
+                    "{DEV_FD} holds {name:?}, which is not a descriptor number,                      so the descriptors this process may have inherited cannot                      be enumerated"
+                ))
+            })?;
+        open.push(fd);
     }
-    Ok(limit.rlim_cur.min(libc::c_int::MAX as libc::rlim_t) as libc::c_int)
+    Ok(open)
 }
 
 /// The Seatbelt profile, as a single argument to `sandbox-exec -p`.
@@ -359,6 +404,41 @@ mod tests {
             "a descriptor honmoon inherited would have crossed the exec into \
              the sandbox, where an already-connected socket is a route the \
              Seatbelt profile never gets to see"
+        );
+    }
+
+    /// A launcher may open a descriptor and *then* lower `RLIMIT_NOFILE`,
+    /// leaving it open above the new limit. The bounded `3..RLIMIT_NOFILE` walk
+    /// this replaced would not have looked there, and Seatbelt cannot cover for
+    /// it: the profile gates `connect`, and that peer is already connected.
+    #[test]
+    fn a_descriptor_parked_above_a_bounded_sweep_is_still_marked() {
+        use std::os::unix::io::AsRawFd;
+
+        let inherited = std::fs::File::open("/dev/null").expect("open /dev/null");
+        // `F_DUPFD` (not `F_DUPFD_CLOEXEC`) hands back the lowest free
+        // descriptor at or above the floor, with `FD_CLOEXEC` clear — the
+        // fixture and the sparse, high number in one call. Asking for the
+        // lowest *free* one rather than a fixed number keeps it from
+        // clobbering a descriptor another test thread is holding.
+        // SAFETY: duplicating a descriptor this test owns.
+        let sparse = unsafe { libc::fcntl(inherited.as_raw_fd(), libc::F_DUPFD, 500) };
+        assert!(sparse >= 500, "F_DUPFD: {}", io::Error::last_os_error());
+
+        let swept = close_inherited_descriptors_on_exec();
+
+        // SAFETY: reading one flag on a descriptor this test owns, then closing
+        // it. Read before the assertions so a failure does not leak it.
+        let flags = unsafe { libc::fcntl(sparse, libc::F_GETFD) };
+        unsafe { libc::close(sparse) };
+
+        swept.expect("sweep the descriptor table");
+        assert!(
+            flags & libc::FD_CLOEXEC != 0,
+            "descriptor {sparse} crossed the exec unmarked — the sweep is \
+             reading a bound rather than the descriptor table, so a launcher \
+             that lowered RLIMIT_NOFILE after opening a socket would hand the \
+             confined child a live connection to its peer"
         );
     }
 
