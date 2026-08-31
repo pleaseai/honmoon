@@ -282,7 +282,9 @@ fn open_descriptors() -> io::Result<Vec<libc::c_int>> {
             .and_then(|name| name.parse::<libc::c_int>().ok())
             .ok_or_else(|| {
                 io::Error::other(format!(
-                    "{DEV_FD} holds {name:?}, which is not a descriptor number,                      so the descriptors this process may have inherited cannot                      be enumerated"
+                    "{DEV_FD} holds {name:?}, which is not a descriptor number, \
+                     so the descriptors this process may have inherited \
+                     cannot be enumerated"
                 ))
             })?;
         open.push(fd);
