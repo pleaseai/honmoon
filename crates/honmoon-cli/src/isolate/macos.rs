@@ -411,34 +411,72 @@ mod tests {
     /// leaving it open above the new limit. The bounded `3..RLIMIT_NOFILE` walk
     /// this replaced would not have looked there, and Seatbelt cannot cover for
     /// it: the profile gates `connect`, and that peer is already connected.
+    ///
+    /// So the test builds that exact state — descriptor first, lowered limit
+    /// second — rather than just parking a descriptor at a high number, which
+    /// a bounded walk would have reached anyway (stock macOS allows 1048576).
+    /// The limit is lowered only to the descriptor's own number, leaving the
+    /// rest of the suite ~500 descriptors to work with, and restored before any
+    /// assertion can panic past it.
     #[test]
-    fn a_descriptor_parked_above_a_bounded_sweep_is_still_marked() {
+    fn a_descriptor_above_a_lowered_limit_is_still_marked() {
         use std::os::unix::io::AsRawFd;
 
         let inherited = std::fs::File::open("/dev/null").expect("open /dev/null");
         // `F_DUPFD` (not `F_DUPFD_CLOEXEC`) hands back the lowest free
         // descriptor at or above the floor, with `FD_CLOEXEC` clear — the
-        // fixture and the sparse, high number in one call. Asking for the
-        // lowest *free* one rather than a fixed number keeps it from
-        // clobbering a descriptor another test thread is holding.
+        // fixture and a high number in one call. Asking for the lowest *free*
+        // one rather than a fixed number keeps it from clobbering a descriptor
+        // another test thread is holding.
         // SAFETY: duplicating a descriptor this test owns.
         let sparse = unsafe { libc::fcntl(inherited.as_raw_fd(), libc::F_DUPFD, 500) };
         assert!(sparse >= 500, "F_DUPFD: {}", io::Error::last_os_error());
 
+        let mut original = libc::rlimit {
+            rlim_cur: 0,
+            rlim_max: 0,
+        };
+        // SAFETY: `getrlimit` fills the struct it is handed.
+        assert_eq!(
+            unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &mut original) },
+            0,
+            "getrlimit: {}",
+            io::Error::last_os_error()
+        );
+        let lowered = libc::rlimit {
+            rlim_cur: sparse as libc::rlim_t,
+            rlim_max: original.rlim_max,
+        };
+        // SAFETY: `setrlimit` reads the struct it is handed. Lowering the soft
+        // limit does not close descriptors already above it — that is the point.
+        assert_eq!(
+            unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &lowered) },
+            0,
+            "setrlimit: {}",
+            io::Error::last_os_error()
+        );
+
         let swept = close_inherited_descriptors_on_exec();
 
-        // SAFETY: reading one flag on a descriptor this test owns, then closing
-        // it. Read before the assertions so a failure does not leak it.
+        // Read the flag and put the process back the way it was before any
+        // assertion runs: `RLIMIT_NOFILE` is process-wide, so a panic between
+        // here and the restore would take the rest of the suite with it.
+        // SAFETY: reading one flag on a descriptor this test owns, closing it,
+        // and restoring a limit this test lowered.
         let flags = unsafe { libc::fcntl(sparse, libc::F_GETFD) };
-        unsafe { libc::close(sparse) };
+        let restored = unsafe {
+            libc::close(sparse);
+            libc::setrlimit(libc::RLIMIT_NOFILE, &original)
+        };
 
+        assert_eq!(restored, 0, "restoring RLIMIT_NOFILE");
         swept.expect("sweep the descriptor table");
         assert!(
             flags & libc::FD_CLOEXEC != 0,
-            "descriptor {sparse} crossed the exec unmarked — the sweep is \
-             reading a bound rather than the descriptor table, so a launcher \
-             that lowered RLIMIT_NOFILE after opening a socket would hand the \
-             confined child a live connection to its peer"
+            "descriptor {sparse} sits above the soft limit and crossed the exec \
+             unmarked — the sweep is reading a bound rather than the descriptor \
+             table, so a launcher that lowered RLIMIT_NOFILE after opening a \
+             socket would hand the confined child a live connection to its peer"
         );
     }
 
