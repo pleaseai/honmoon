@@ -1,0 +1,30 @@
+.please/docs/review/rejected-findings.jsonl
+  s_902373723c7609::t_44f3aebdf0cb36 11
+apps/dashboard/src/components/PolicyView.tsx
+  s_902373723c7609::t_e75d1bda016f6d 1-2
+  s_902373723c7609::t_2e595557a487e8 20-25,142,152
+apps/dashboard/src/hooks.ts
+  s_902373723c7609::t_2e595557a487e8 67-69
+apps/dashboard/src/index.css
+  s_902373723c7609::t_2e595557a487e8 27
+.claude/agent-memory/review-review-issue-fixer/MEMORY.md
+  s_902373723c7609::t_85622e7cb8e604 1
+.claude/agent-memory/review-review-issue-fixer/project_dashboard_fix_patterns.md
+  s_902373723c7609::t_85622e7cb8e604 1-22
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.0",
+  "base_commit_sha": "89eabe694a7991543b405e69111eb29b331c6fa6",
+  "prompts": {},
+  "sessions": {
+    "s_902373723c7609": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "64c3915b-524b-48d1-a84c-707e6522a694",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "DANNY NA <danny@pusan.ac.kr>"
+    }
+  }
+}
