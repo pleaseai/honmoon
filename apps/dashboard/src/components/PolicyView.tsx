@@ -87,6 +87,7 @@ export function PolicyView() {
               )
             : (
                 <div className="policy-editor max-h-[62vh] min-h-[24rem] overflow-auto">
+                  <label htmlFor="policy-yaml" className="sr-only">Policy YAML editor</label>
                   <Editor
                     value={yaml}
                     onValueChange={setYaml}
@@ -95,7 +96,6 @@ export function PolicyView() {
                     tabSize={2}
                     insertSpaces
                     textareaId="policy-yaml"
-                    aria-label="Policy YAML editor"
                     className="min-h-[24rem]"
                   />
                 </div>
