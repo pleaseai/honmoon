@@ -39,8 +39,9 @@ rust-embed handler needs a rewrite rule). Unknown hashes fall back to Overview:
 | Path | What |
 |------|------|
 | `src/main.tsx` / `src/App.tsx` | Entry point; hash router + shell over the four views. |
-| `src/components/` | `Overview`, `AuditLog`, `PolicyView`, `Approvals`, `DecisionBadge`. |
-| `src/api.ts` / `src/hooks.ts` / `src/format.ts` | Typed management-API client, `usePolling`, formatters. |
+| `src/components/` | `Overview`, `AuditLog`, `PolicyView`, `Approvals`, plus shared pieces: `DecisionBadge` (glyph + mono verdict pill), `ApprovalActions` (Deny / Approve pair), `ui` (`Panel` double bezel, `PageHead`, `ErrorNote`, `PanelState`). |
+| `src/api.ts` / `src/hooks.ts` / `src/format.ts` | Typed management-API client, `usePolling` + `useApprovalActions` (per-id busy set), formatters. |
+| `src/index.css` | G2 "Barrier Membrane" tokens (oklch, dark primary / light secondary), Tailwind `@theme` bridge, and the few component classes (`bezel`/`glass`, `verdict-*`, `action-*`, Prism YAML token colors). |
 | `demo/demo-mode.js` | Demo shim: patches `window.fetch` with in-memory fixtures, runs a scripted timeline, mounts the "demo" badge. Plain browser JS, no bundler. |
 | `demo/build.ts` | Copies `dist/` → `dist-demo/` and injects the shim's `<script>` tag. Run by `build:demo`. |
 | `vite.config.ts` | Vite + Tailwind; in dev, proxies `/api` → `127.0.0.1:8444` (a running `honmoon gateway`). |

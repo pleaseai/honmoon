@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
+import { approve, reject } from './api'
 
 export interface Polled<T> {
   data: T | null
@@ -57,4 +58,36 @@ export function usePolling<T>(fn: () => Promise<T>, intervalMs: number): Polled<
   }, [fn, intervalMs, tick])
 
   return { data, error, loading, refresh }
+}
+
+/**
+ * Approve/reject actions with one busy flag per approval id. Ids are tracked
+ * in a Set so concurrent actions don't clear each other's busy state (a shared
+ * single id let a later action re-enable a card while an earlier one was still
+ * pending). `refresh` re-polls the caller's approval list after each attempt.
+ */
+export function useApprovalActions(refresh: () => void) {
+  const [busyIds, setBusyIds] = useState(() => new Set<number>())
+  const [actionError, setActionError] = useState<string | null>(null)
+
+  const resolve = useCallback(async (id: number, action: 'approve' | 'reject') => {
+    setBusyIds(prev => new Set(prev).add(id))
+    setActionError(null)
+    try {
+      await (action === 'approve' ? approve(id) : reject(id))
+      refresh()
+    }
+    catch (e: unknown) {
+      setActionError(e instanceof Error ? e.message : String(e))
+    }
+    finally {
+      setBusyIds((prev) => {
+        const next = new Set(prev)
+        next.delete(id)
+        return next
+      })
+    }
+  }, [refresh])
+
+  return { busyIds, actionError, resolve }
 }

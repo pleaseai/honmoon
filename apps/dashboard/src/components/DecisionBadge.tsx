@@ -1,19 +1,24 @@
 import type { Decision } from '@honmoon/policy'
 
-const STYLES: Record<Decision, string> = {
-  allowed: 'bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300',
-  approved: 'bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300',
-  denied: 'bg-rose-100 text-rose-800 dark:bg-rose-950 dark:text-rose-300',
-  rejected: 'bg-rose-100 text-rose-800 dark:bg-rose-950 dark:text-rose-300',
-  paused: 'bg-amber-100 text-amber-800 dark:bg-amber-950 dark:text-amber-300',
+/**
+ * Serialized decision values, rendered faithfully: `approved` and `rejected`
+ * are the outcomes of a previously `paused` request and stay distinct from
+ * `allowed` / `denied`. The glyph and label carry the meaning; color supports.
+ */
+const LABELS: Record<Decision, { glyph: string, text: string }> = {
+  allowed: { glyph: '✓', text: 'Allowed' },
+  approved: { glyph: '✓', text: 'Approved' },
+  paused: { glyph: '‖', text: 'Paused' },
+  denied: { glyph: '✕', text: 'Denied' },
+  rejected: { glyph: '✕', text: 'Rejected' },
 }
 
 export function DecisionBadge({ decision }: { decision: Decision }) {
+  const { glyph, text } = LABELS[decision]
   return (
-    <span
-      className={`inline-block rounded px-2 py-0.5 text-xs font-medium ${STYLES[decision]}`}
-    >
-      {decision}
+    <span className={`verdict verdict-${decision}`}>
+      <span aria-hidden="true">{glyph}</span>
+      {text}
     </span>
   )
 }

@@ -1,71 +1,74 @@
 import type { PendingApproval } from '@honmoon/policy'
-import { useState } from 'react'
-import { approve, getApprovals, reject } from '../api'
+import { getApprovals } from '../api'
 import { formatTime } from '../format'
-import { usePolling } from '../hooks'
+import { useApprovalActions, usePolling } from '../hooks'
+import { ApprovalActions } from './ApprovalActions'
+import { ErrorNote, PageHead, Panel, PanelState } from './ui'
 
 export function Approvals() {
-  const { data, error, refresh } = usePolling(getApprovals, 1500)
-  // Track in-flight ids in a Set so concurrent actions don't clear each
-  // other's busy state (a shared single id let a later action re-enable a card
-  // while an earlier one was still pending).
-  const [busyIds, setBusyIds] = useState(() => new Set<number>())
-  const [actionError, setActionError] = useState<string | null>(null)
-
-  async function resolve(id: number, action: 'approve' | 'reject') {
-    setBusyIds(prev => new Set(prev).add(id))
-    setActionError(null)
-    try {
-      await (action === 'approve' ? approve(id) : reject(id))
-      refresh()
-    }
-    catch (e: unknown) {
-      setActionError(e instanceof Error ? e.message : String(e))
-    }
-    finally {
-      setBusyIds((prev) => {
-        const next = new Set(prev)
-        next.delete(id)
-        return next
-      })
-    }
-  }
+  const { data, error, loading, refresh } = usePolling(getApprovals, 1500)
+  const { busyIds, actionError, resolve } = useApprovalActions(refresh)
 
   const pending = data ?? []
-  const message = actionError ?? error
+  const oldest = pending.reduce<PendingApproval | null>(
+    (acc, p) => (acc === null || p.created_at < acc.created_at ? p : acc),
+    null,
+  )
 
   return (
-    <section>
-      <header className="mb-4 flex items-baseline gap-3">
-        <h2 className="text-base font-semibold">Approval queue</h2>
-        <span className="text-sm text-zinc-500">
-          {pending.length}
-          {' '}
-          pending
-        </span>
-      </header>
+    <section className="mx-auto max-w-[1440px] px-10 pt-[30px] pb-11 max-md:px-6">
+      <PageHead
+        eyebrow="Human decision boundary"
+        title="Approval queue"
+        description="Requests held by a pause verdict until a person resolves them."
+        meta={data ? `${pending.length} pending · polling 1.5s` : 'polling 1.5s'}
+      />
 
-      {message && <ErrorNote message={message} />}
+      {actionError && <ErrorNote message={actionError} />}
+      {error && <ErrorNote message={error} />}
 
-      {pending.length === 0
+      <div className="mb-3.5 grid grid-cols-2 gap-3.5">
+        <Panel glassClassName="px-[18px] py-4">
+          <span className="eyebrow tracking-[0.1em]">Waiting now</span>
+          <strong className="mt-1.5 block font-display text-[23px] font-semibold tabular-nums">
+            {data ? pending.length : '—'}
+          </strong>
+        </Panel>
+        <Panel glassClassName="px-[18px] py-4">
+          <span className="eyebrow tracking-[0.1em]">Oldest held since</span>
+          <strong className="mt-1.5 block font-mono text-[23px] font-semibold tabular-nums">
+            {oldest ? formatTime(oldest.created_at) : '—'}
+          </strong>
+        </Panel>
+      </div>
+
+      {data === null
         ? (
-            <p className="text-sm text-zinc-500">
-              No requests are waiting for approval.
-            </p>
+            <Panel className="reveal">
+              {loading
+                ? <PanelState glyph="…">Loading…</PanelState>
+                : <PanelState glyph="✕" tone="error">The approval queue could not be loaded.</PanelState>}
+            </Panel>
           )
-        : (
-            <ul className="space-y-3">
-              {pending.map(p => (
-                <ApprovalCard
-                  key={p.id}
-                  approval={p}
-                  busy={busyIds.has(p.id)}
-                  onApprove={() => resolve(p.id, 'approve')}
-                  onReject={() => resolve(p.id, 'reject')}
-                />
-              ))}
-            </ul>
-          )}
+        : pending.length === 0
+          ? (
+              <Panel className="reveal">
+                <PanelState glyph="✓">No requests are waiting for approval.</PanelState>
+              </Panel>
+            )
+          : (
+              <ul className="grid gap-3.5">
+                {pending.map(p => (
+                  <ApprovalCard
+                    key={p.id}
+                    approval={p}
+                    busy={busyIds.has(p.id)}
+                    onApprove={() => resolve(p.id, 'approve')}
+                    onReject={() => resolve(p.id, 'reject')}
+                  />
+                ))}
+              </ul>
+            )}
     </section>
   )
 }
@@ -82,49 +85,59 @@ function ApprovalCard({
   onReject: () => void
 }) {
   return (
-    <li className="flex items-center justify-between gap-4 rounded-lg border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-900">
-      <div className="min-w-0">
-        <p className="truncate font-medium">{approval.summary}</p>
-        <p className="mt-1 text-xs text-zinc-500">
-          held
-          {' '}
-          {formatTime(approval.created_at)}
-          {approval.rule && (
-            <>
-              {' · rule '}
-              <code className="rounded bg-zinc-100 px-1 dark:bg-zinc-800">
-                {approval.rule}
-              </code>
-            </>
-          )}
-        </p>
-      </div>
-      <div className="flex shrink-0 gap-2">
-        <button
-          type="button"
-          disabled={busy}
-          onClick={onReject}
-          className="rounded border border-rose-300 px-3 py-1.5 text-sm font-medium text-rose-700 hover:bg-rose-50 disabled:opacity-50 dark:border-rose-800 dark:text-rose-300 dark:hover:bg-rose-950"
+    <li className="bezel reveal">
+      <div className="glass grid min-h-28 grid-cols-[44px_minmax(0,1fr)_auto] items-center gap-4 p-[17px] max-md:grid-cols-[44px_minmax(0,1fr)]">
+        <span
+          aria-hidden="true"
+          className="grid size-11 place-items-center rounded-[14px] bg-warn-soft font-mono text-[15px] font-semibold text-warn-ink"
         >
-          Deny
-        </button>
-        <button
-          type="button"
-          disabled={busy}
-          onClick={onApprove}
-          className="rounded bg-emerald-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-emerald-700 disabled:opacity-50"
-        >
-          Approve
-        </button>
+          ‖
+        </span>
+        <div className="min-w-0">
+          <h2 className="truncate text-sm font-semibold" title={approval.summary}>{approval.summary}</h2>
+          <p className="mt-1.5 flex flex-wrap items-center gap-x-1.5 font-mono text-[10.5px] text-muted">
+            <span>
+              held
+              {' '}
+              <time dateTime={approval.created_at}>{formatTime(approval.created_at)}</time>
+            </span>
+            {(approval.endpoint ?? approval.domain) && (
+              <>
+                <span aria-hidden="true">·</span>
+                <span>
+                  endpoint
+                  {' '}
+                  <Code>{approval.endpoint ?? approval.domain}</Code>
+                </span>
+              </>
+            )}
+            {approval.rule && (
+              <>
+                <span aria-hidden="true">·</span>
+                <span>
+                  rule
+                  {' '}
+                  <Code>{approval.rule}</Code>
+                </span>
+              </>
+            )}
+          </p>
+        </div>
+        <ApprovalActions
+          summary={approval.summary}
+          busy={busy}
+          onApprove={onApprove}
+          onReject={onReject}
+        />
       </div>
     </li>
   )
 }
 
-function ErrorNote({ message }: { message: string }) {
+function Code({ children }: { children: string | undefined }) {
   return (
-    <p className="mb-3 rounded border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-700 dark:border-rose-900 dark:bg-rose-950 dark:text-rose-300">
-      {message}
-    </p>
+    <code className="rounded-[5px] bg-[var(--surface-soft)] px-1.5 py-0.5 text-[9.5px] font-medium text-fg">
+      {children}
+    </code>
   )
 }
