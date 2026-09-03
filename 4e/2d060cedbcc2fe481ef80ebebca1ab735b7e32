@@ -1,0 +1,54 @@
+apps/dashboard/src/App.tsx
+  s_902373723c7609::t_215d82f08de5fc 43
+  s_902373723c7609::t_27c266c0a67d52 11,37-39,44-55,57-59,61,64,66-67,78-81,83-102,107-125
+  s_902373723c7609::t_edf0e3af38ea53 72,74
+  s_902373723c7609::t_52d3def3be240f 126-128
+apps/dashboard/src/components/Overview.tsx
+  s_902373723c7609::t_c33fe513681564 265-276
+  s_902373723c7609::t_fbefc7699d2017 108
+  s_902373723c7609::t_2eaaa149b00162 299-301
+  s_902373723c7609::t_9c2d0881a61386 287,290
+  s_902373723c7609::t_004be3d3873cfa 247,249
+  s_902373723c7609::t_4a34b76633b04c 1,4-5,7,9-10,15-16,20,24-31,34-37,40-41,44-107,109-195,197-211,213-214,216-224,226-246,248,250-263,277-286,288-289,291,294-298,302-305
+  s_902373723c7609::t_79560e26cbbbb7 264
+apps/dashboard/src/components/DecisionBadge.tsx
+  s_902373723c7609::t_6047575592795b 3-13,17,19-21
+apps/dashboard/src/hooks.ts
+  s_902373723c7609::t_dbf6171e9246a9 2,62-92
+  s_902373723c7609::t_39ab8d93c1dcd6 93
+apps/dashboard/AGENTS.md
+  s_902373723c7609::t_f6ff8b09fa6ec3 42-44
+apps/dashboard/src/components/ApprovalActions.tsx
+  s_902373723c7609::t_cd1d0574ee041b 1-54
+apps/dashboard/src/index.css
+  s_902373723c7609::t_d30d1e5f302a6a 3-11,14-82,85-116,121-152,162-370,373-375
+  s_902373723c7609::t_2f45ec7f9f84d4 83-84
+  s_902373723c7609::t_6dec1729d9da13 371-372
+  s_902373723c7609::t_85a55c43a91871 153-161
+apps/dashboard/src/components/AuditLog.tsx
+  s_902373723c7609::t_81bcd27af4ebf8 5,12-18,20,22-79,83-91
+  s_902373723c7609::t_3fce4a25f76b39 92-93
+apps/dashboard/src/components/PolicyView.tsx
+  s_902373723c7609::t_eeeec6f8102f04 1,6,17-26,29-31,33,40,44,49,52-58,60,62-80,82-125,129-160,162
+  s_902373723c7609::t_db8bbca5fcb24f 161
+apps/dashboard/src/components/Approvals.tsx
+  s_902373723c7609::t_a72825191549f8 2,4-6,9-10,13-16,19-28,30-43,45,47-51,53-71,88-92,94-131,137,139-141
+apps/dashboard/src/components/ui.tsx
+  s_902373723c7609::t_c09eb3738c08be 1-94
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.0",
+  "base_commit_sha": "4e2d060cedbcc2fe481ef80ebebca1ab735b7e32",
+  "prompts": {},
+  "sessions": {
+    "s_902373723c7609": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "64c3915b-524b-48d1-a84c-707e6522a694",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "DANNY NA <danny@pusan.ac.kr>"
+    }
+  }
+}
