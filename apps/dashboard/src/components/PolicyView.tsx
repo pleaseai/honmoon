@@ -142,9 +142,9 @@ function Posture({ policy }: { policy: Policy | null }) {
   ]
   return (
     <>
-      <h3 className="mt-3 font-display text-lg font-semibold tracking-[-0.015em]">
+      <h2 className="mt-3 font-display text-lg font-semibold tracking-[-0.015em]">
         {fallback === 'deny' ? 'Fail closed by default.' : `Unmatched egress is ${fallback}ed.`}
-      </h3>
+      </h2>
       <p className="mt-2 text-[11px] leading-relaxed text-muted">
         Egress not on the allow list gets the default verdict; protocol rules run
         first-match-wins before a request reaches its destination.
