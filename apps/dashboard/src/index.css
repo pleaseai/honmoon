@@ -24,7 +24,7 @@
   --hair: oklch(95% 0.005 220 / 0.075);
   --fg: oklch(95% 0.005 220);
   --muted: oklch(62% 0.012 240);
-  --dim: oklch(48% 0.012 240);
+  --dim: oklch(60% 0.012 240);
 
   --accent: oklch(81% 0.110 185);
   --accent-ink: oklch(81% 0.110 185);

@@ -64,7 +64,9 @@ export function usePolling<T>(fn: () => Promise<T>, intervalMs: number): Polled<
  * Approve/reject actions with one busy flag per approval id. Ids are tracked
  * in a Set so concurrent actions don't clear each other's busy state (a shared
  * single id let a later action re-enable a card while an earlier one was still
- * pending). `refresh` re-polls the caller's approval list after each attempt.
+ * pending). `refresh` re-polls the caller's approval list after a successful
+ * resolve; a failed attempt only surfaces `actionError` and clears the busy
+ * flag.
  */
 export function useApprovalActions(refresh: () => void) {
   const [busyIds, setBusyIds] = useState(() => new Set<number>())

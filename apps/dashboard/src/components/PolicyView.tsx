@@ -1,4 +1,5 @@
-import type { Policy } from '@honmoon/policy'
+import type { Policy, Verdict } from '@honmoon/policy'
+import { DEFAULT_EGRESS_VERDICT } from '@honmoon/policy'
 import Prism from 'prismjs'
 import { useEffect, useState } from 'react'
 import EditorModule from 'react-simple-code-editor'
@@ -15,6 +16,12 @@ import 'prismjs/components/prism-yaml'
 const Editor = (EditorModule as unknown as { default?: typeof EditorModule }).default ?? EditorModule
 
 const GUTTER = 48
+
+const VERDICT_PAST: Record<Verdict, string> = {
+  allow: 'allowed',
+  deny: 'denied',
+  pause: 'paused',
+}
 
 /** Prism YAML highlighting plus a gutter line number per line. */
 function highlight(code: string): string {
@@ -132,8 +139,7 @@ function Posture({ policy }: { policy: Policy | null }) {
   if (!policy) {
     return <p className="mt-3 text-[11px] leading-relaxed text-muted">Active policy not loaded.</p>
   }
-  // Absent `default` means deny (see `DEFAULT_EGRESS_VERDICT`).
-  const fallback = policy.egress?.default ?? 'deny'
+  const fallback = policy.egress?.default ?? DEFAULT_EGRESS_VERDICT
   const facts = [
     ['Default', fallback],
     ['Allow hosts', String(policy.egress?.allow?.length ?? 0)],
@@ -143,7 +149,7 @@ function Posture({ policy }: { policy: Policy | null }) {
   return (
     <>
       <h2 className="mt-3 font-display text-lg font-semibold tracking-[-0.015em]">
-        {fallback === 'deny' ? 'Fail closed by default.' : `Unmatched egress is ${fallback}ed.`}
+        {fallback === 'deny' ? 'Fail closed by default.' : `Unmatched egress is ${VERDICT_PAST[fallback]}.`}
       </h2>
       <p className="mt-2 text-[11px] leading-relaxed text-muted">
         Egress not on the allow list gets the default verdict; protocol rules run
