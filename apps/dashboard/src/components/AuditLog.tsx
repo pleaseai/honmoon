@@ -9,7 +9,7 @@ export function AuditLog() {
   const events = data ?? []
 
   return (
-    <section className="px-10 pt-[30px] pb-11 max-md:px-6">
+    <section className="px-10 pt-8 pb-11 max-md:px-6">
       <div className="mx-auto max-w-[1440px]">
         <PageHead
           eyebrow="Decision trail"

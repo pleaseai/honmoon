@@ -17,7 +17,12 @@ export function Panel({
   )
 }
 
-/** Page title block sharing the 40px content axis with the first surface. */
+/**
+ * Page title block: eyebrow, display title, one-line description, optional
+ * mono meta. Its bottom margin equals the Overview hero's gap to its first
+ * card (hero `pb-9` plus the grid's `mt-3.5`), so every route lands its
+ * first panel at the same offset below the app header.
+ */
 export function PageHead({
   eyebrow,
   title,
@@ -30,7 +35,7 @@ export function PageHead({
   meta?: ReactNode
 }) {
   return (
-    <header className="mb-6 flex flex-wrap items-end gap-x-6 gap-y-3">
+    <header className="mb-[50px] flex flex-wrap items-end gap-x-6 gap-y-3">
       <div>
         <p className="eyebrow mb-2">{eyebrow}</p>
         <h1 className="font-display text-[30px] leading-[1.15] font-semibold tracking-[-0.025em]">
