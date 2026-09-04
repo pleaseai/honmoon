@@ -54,11 +54,11 @@ export function SectionHead({ title, meta }: { title: string, meta?: ReactNode }
 }
 
 /** A fetch or action failure. Always distinct from an empty, healthy surface. */
-export function ErrorNote({ message }: { message: string }) {
+export function ErrorNote({ message, className = 'mb-4' }: { message: string, className?: string }) {
   return (
     <p
       role="alert"
-      className="mb-4 rounded-[14px] bg-deny-soft px-4 py-3 text-xs text-deny-ink shadow-[inset_0_0_0_1px_var(--deny-line)]"
+      className={`rounded-[14px] bg-deny-soft px-4 py-3 text-xs text-deny-ink shadow-[inset_0_0_0_1px_var(--deny-line)] ${className}`}
     >
       {message}
     </p>

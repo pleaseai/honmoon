@@ -50,12 +50,17 @@ rust-embed handler needs a rewrite rule). Unknown hashes fall back to Overview:
 
 - React 19 + Vite + Tailwind 4. ESM, `strict: true`. Lint via `@pleaseai/eslint-config` with
   `eslint-plugin-react-hooks` / `react-refresh`.
-- Light/dark aware (`color-scheme` / Tailwind `dark:` variants). Keep the shell minimal — data
-  density over decoration. Mirror clawpatrol's dashboard structure where it enables component reuse.
+- Light/dark aware: `color-scheme: light dark` plus the oklch tokens in `index.css`, switched by
+  `@media (prefers-color-scheme: light)` — no Tailwind `dark:` variants. Keep the shell minimal —
+  data density over decoration. Mirror clawpatrol's dashboard structure where it enables component reuse.
 
 ## Testing
 
-No tests yet. Add component/interaction tests alongside any real surface you build.
+`bun run test` (from this directory, or `bun run --filter '@honmoon/dashboard' test` from the
+root) runs `bun test` over `src/**/*.test.tsx`. Tests register happy-dom themselves via
+`@happy-dom/global-registrator` and drive React with `act` — no testing-library. Add
+component/interaction tests alongside any real surface you build; `hooks.test.tsx` is the
+pattern to copy. CI does not run this suite yet (`.github/workflows/ci.yml`).
 
 ## Boundaries
 

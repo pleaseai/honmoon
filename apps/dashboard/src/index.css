@@ -7,7 +7,7 @@
  *
  * `--*-ink` are the text-on-surface variants of the three verdict colors: in
  * dark mode they equal the fill color, in light mode they are darkened so the
- * pills, gateway state and editor tokens stay legible on near-white.
+ * pills, error notes and editor tokens stay legible on near-white.
  */
 :root {
   color-scheme: light dark;

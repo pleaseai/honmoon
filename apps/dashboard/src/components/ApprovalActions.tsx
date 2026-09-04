@@ -9,7 +9,7 @@ export function ApprovalActions({
   onApprove,
   onReject,
 }: {
-  /** Names the request for assistive technology, e.g. "Approve DROP TABLE…". */
+  /** Names the request for assistive technology, e.g. "Approve: DROP TABLE…". */
   summary: string
   busy: boolean
   onApprove: () => void
@@ -22,7 +22,7 @@ export function ApprovalActions({
         className="action action-deny"
         disabled={busy}
         onClick={onReject}
-        aria-label={`Deny: ${summary}`}
+        aria-label={busy ? `Resolving… ${summary}` : `Deny: ${summary}`}
       >
         {busy
           ? 'Resolving…'
@@ -38,7 +38,7 @@ export function ApprovalActions({
         className="action action-approve"
         disabled={busy}
         onClick={onApprove}
-        aria-label={`Approve: ${summary}`}
+        aria-label={busy ? `Resolving… ${summary}` : `Approve: ${summary}`}
       >
         {busy
           ? 'Resolving…'

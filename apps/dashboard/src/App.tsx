@@ -1,5 +1,5 @@
 import { useSyncExternalStore } from 'react'
-import { getApprovals } from './api'
+import { getApprovals, getAudit } from './api'
 import { Approvals } from './components/Approvals'
 import { AuditLog } from './components/AuditLog'
 import { Overview } from './components/Overview'
@@ -14,6 +14,9 @@ const NAV = [
 ] as const
 
 type Slug = (typeof NAV)[number]['slug']
+
+/** Smallest audit read that still proves the endpoint answers. */
+const probeAudit = () => getAudit(1)
 
 /**
  * Hash routing, not the History API: the dashboard is served both by Cloudflare
@@ -34,10 +37,16 @@ function subscribe(onChange: () => void): () => void {
 function App() {
   // `currentSlug` returns a primitive, so the snapshot is stable by value.
   const slug = useSyncExternalStore(subscribe, currentSlug)
-  // A live pending count drives the nav badge across every view; the same
-  // poll tells the capsule whether the management API is answering at all.
-  const { data: approvals, error } = usePolling(getApprovals, 1500)
+  // A live pending count drives the nav badge across every view. Reachability
+  // in the capsule needs both live endpoints to answer: the audit route can
+  // fail on its own, and a badge that only watched approvals would still read
+  // "live" while the Audit page shows an error.
+  const { data: approvals, error: approvalsError } = usePolling(getApprovals, 1500)
+  const { data: audit, error: auditError } = usePolling(probeAudit, 2000)
   const pending = approvals?.length ?? 0
+  const settled = (approvals !== null || approvalsError !== null)
+    && (audit !== null || auditError !== null)
+  const reachable = approvalsError === null && auditError === null
 
   return (
     <div className="min-h-screen bg-bg text-fg">
@@ -78,7 +87,7 @@ function App() {
               ))}
             </nav>
 
-            <GatewayState reachable={error === null} settled={approvals !== null || error !== null} />
+            <GatewayState reachable={reachable} settled={settled} />
 
             <span
               role="img"
@@ -105,8 +114,9 @@ function App() {
 }
 
 /**
- * Live management-API reachability, derived from the shared approvals poll.
- * It says whether the API answers — nothing about what the gateway enforces.
+ * Live management-API reachability, derived from the approvals and audit
+ * polls. It says whether the API answers — nothing about what the gateway
+ * enforces.
  */
 function GatewayState({ reachable, settled }: { reachable: boolean, settled: boolean }) {
   const label = !settled ? 'Connecting' : reachable ? 'Gateway live' : 'Gateway unreachable'

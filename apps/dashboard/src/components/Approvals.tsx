@@ -7,7 +7,7 @@ import { ErrorNote, PageHead, Panel, PanelState } from './ui'
 
 export function Approvals() {
   const { data, error, loading, refresh } = usePolling(getApprovals, 1500)
-  const { busyIds, actionError, resolve } = useApprovalActions(refresh)
+  const { busyIds, actionErrors, resolve } = useApprovalActions(refresh)
 
   const pending = data ?? []
   const oldest = pending.reduce<PendingApproval | null>(
@@ -24,7 +24,6 @@ export function Approvals() {
         meta={data ? `${pending.length} pending · polling 1.5s` : 'polling 1.5s'}
       />
 
-      {actionError && <ErrorNote message={actionError} />}
       {error && <ErrorNote message={error} />}
 
       <div className="mb-3.5 grid grid-cols-2 gap-3.5">
@@ -63,6 +62,7 @@ export function Approvals() {
                     key={p.id}
                     approval={p}
                     busy={busyIds.has(p.id)}
+                    error={actionErrors.get(p.id)}
                     onApprove={() => resolve(p.id, 'approve')}
                     onReject={() => resolve(p.id, 'reject')}
                   />
@@ -76,17 +76,23 @@ export function Approvals() {
 function ApprovalCard({
   approval,
   busy,
+  error,
   onApprove,
   onReject,
 }: {
   approval: PendingApproval
   busy: boolean
+  /** This approval's last failed action, if any; other rows are unaffected. */
+  error: string | undefined
   onApprove: () => void
   onReject: () => void
 }) {
   return (
     <li className="bezel reveal">
       <div className="glass grid min-h-28 grid-cols-[44px_minmax(0,1fr)_auto] items-center gap-4 p-[17px] max-md:grid-cols-[44px_minmax(0,1fr)]">
+        {error && (
+          <ErrorNote message={error} className="col-span-full mb-0" />
+        )}
         <span
           aria-hidden="true"
           className="grid size-11 place-items-center rounded-[14px] bg-warn-soft font-mono text-[15px] font-semibold text-warn-ink"

@@ -13,7 +13,7 @@ function count(events: AuditEvent[], ...decisions: Decision[]): number {
 export function Overview() {
   const { data: audit, error: auditError } = usePolling(getAudit, 2000)
   const { data: approvals, error: approvalsError, refresh } = usePolling(getApprovals, 1500)
-  const { busyIds, actionError, resolve } = useApprovalActions(refresh)
+  const { busyIds, actionErrors, resolve } = useApprovalActions(refresh)
 
   const events = audit ?? []
   const pending = approvals?.length ?? 0
@@ -22,8 +22,18 @@ export function Overview() {
   // empty feed, which reads as "nothing happening" rather than "can't reach it".
   const error = auditError ?? approvalsError
   // Before the first successful audit poll there is nothing to count, so the
-  // tiles show a dash instead of a confident zero.
-  const known = audit !== null
+  // tiles show a dash instead of a confident zero. The hero also waits for the
+  // approvals poll: an unanswered queue is unknown, not empty.
+  const auditKnown = audit !== null
+  const known = auditKnown && approvals !== null
+  // Action failures are keyed by approval id; drop any whose request has since
+  // left the queue so a stale note cannot outlive the row it describes.
+  const actionFailures = approvals
+    ? [...actionErrors].flatMap(([id, message]) => {
+        const target = approvals.find(a => a.id === id)
+        return target ? [{ id, message: `${target.summary} — ${message}` }] : []
+      })
+    : []
 
   const allowed = count(events, 'allowed', 'approved')
   const denied = count(events, 'denied', 'rejected')
@@ -32,9 +42,9 @@ export function Overview() {
 
   const stats = [
     { label: 'Pending approvals', value: approvals ? pending : null, href: '#/approvals', warn: pending > 0 },
-    { label: 'Allowed', value: known ? allowed : null, href: '#/audit' },
-    { label: 'Denied', value: known ? denied : null, href: '#/audit' },
-    { label: 'Events recorded', value: known ? total : null, href: '#/audit' },
+    { label: 'Allowed', value: auditKnown ? allowed : null, href: '#/audit' },
+    { label: 'Denied', value: auditKnown ? denied : null, href: '#/audit' },
+    { label: 'Events recorded', value: auditKnown ? total : null, href: '#/audit' },
   ]
 
   const status = statusCopy({ error, known, pending, total, allowed, denied })
@@ -68,7 +78,7 @@ export function Overview() {
         {error && (
           <ErrorNote message={`Can’t reach the management API — ${error}`} />
         )}
-        {actionError && <ErrorNote message={actionError} />}
+        {actionFailures.map(f => <ErrorNote key={f.id} message={f.message} />)}
 
         {first && (
           <ApprovalStrip
@@ -100,12 +110,12 @@ export function Overview() {
         <div className="reveal mt-3.5 grid grid-cols-[1.65fr_1fr] gap-3.5 max-lg:grid-cols-1">
           <Panel>
             <SectionHead title="Latest decisions" meta="8 most recent" />
-            <LatestDecisions events={events.slice(0, 8)} known={known} error={error} />
+            <LatestDecisions events={events.slice(0, 8)} known={auditKnown} error={auditError} />
           </Panel>
 
           <Panel>
             <SectionHead title="Decision mix" meta="Recorded events" />
-            <DecisionMix allowed={allowed} denied={denied} paused={paused} known={known} />
+            <DecisionMix allowed={allowed} denied={denied} paused={paused} known={auditKnown} />
           </Panel>
         </div>
       </div>
@@ -143,7 +153,7 @@ function statusCopy({
       eyebrow: 'Barrier status',
       title: 'Connecting to the',
       highlight: 'gateway',
-      summary: 'Waiting for the first audit poll.',
+      summary: 'Waiting for the first audit and approvals polls.',
       tone: 'ok',
     }
   }

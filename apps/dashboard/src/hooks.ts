@@ -61,26 +61,32 @@ export function usePolling<T>(fn: () => Promise<T>, intervalMs: number): Polled<
 }
 
 /**
- * Approve/reject actions with one busy flag per approval id. Ids are tracked
- * in a Set so concurrent actions don't clear each other's busy state (a shared
- * single id let a later action re-enable a card while an earlier one was still
- * pending). `refresh` re-polls the caller's approval list after a successful
- * resolve; a failed attempt only surfaces `actionError` and clears the busy
- * flag.
+ * Approve/reject actions with one busy flag and one error slot per approval
+ * id. Both are keyed by id so concurrent actions on different rows never clear
+ * each other's state (a shared single id let a later action re-enable a card
+ * while an earlier one was still pending, and a shared error slot let a later
+ * action hide an earlier failure). `refresh` re-polls the caller's approval
+ * list after a successful resolve; a failed attempt only records that id's
+ * error and clears its busy flag.
  */
 export function useApprovalActions(refresh: () => void) {
   const [busyIds, setBusyIds] = useState(() => new Set<number>())
-  const [actionError, setActionError] = useState<string | null>(null)
+  const [actionErrors, setActionErrors] = useState(() => new Map<number, string>())
 
   const resolve = useCallback(async (id: number, action: 'approve' | 'reject') => {
     setBusyIds(prev => new Set(prev).add(id))
-    setActionError(null)
+    setActionErrors((prev) => {
+      const next = new Map(prev)
+      next.delete(id)
+      return next
+    })
     try {
       await (action === 'approve' ? approve(id) : reject(id))
       refresh()
     }
     catch (e: unknown) {
-      setActionError(e instanceof Error ? e.message : String(e))
+      const message = e instanceof Error ? e.message : String(e)
+      setActionErrors(prev => new Map(prev).set(id, message))
     }
     finally {
       setBusyIds((prev) => {
@@ -91,5 +97,5 @@ export function useApprovalActions(refresh: () => void) {
     }
   }, [refresh])
 
-  return { busyIds, actionError, resolve }
+  return { busyIds, actionErrors, resolve }
 }

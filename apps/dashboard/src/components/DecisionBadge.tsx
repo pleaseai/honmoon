@@ -5,7 +5,12 @@ import type { Decision } from '@honmoon/policy'
  * are the outcomes of a previously `paused` request and stay distinct from
  * `allowed` / `denied`. The glyph and label carry the meaning; color supports.
  */
-const LABELS: Record<Decision, { glyph: string, text: string }> = {
+interface Label {
+  glyph: string
+  text: string
+}
+
+const LABELS: Record<Decision, Label> = {
   allowed: { glyph: '✓', text: 'Allowed' },
   approved: { glyph: '✓', text: 'Approved' },
   paused: { glyph: '‖', text: 'Paused' },
@@ -14,7 +19,10 @@ const LABELS: Record<Decision, { glyph: string, text: string }> = {
 }
 
 export function DecisionBadge({ decision }: { decision: Decision }) {
-  const { glyph, text } = LABELS[decision]
+  // The wire value is trusted by type only. A verdict this bundle predates
+  // (a stale tab across a gateway upgrade) must render, not unmount the app.
+  const label: Label | undefined = LABELS[decision]
+  const { glyph, text } = label ?? { glyph: '?', text: decision }
   return (
     <span className={`verdict verdict-${decision}`}>
       <span aria-hidden="true">{glyph}</span>
