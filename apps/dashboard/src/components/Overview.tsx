@@ -74,49 +74,51 @@ export function Overview() {
         </div>
       </header>
 
-      <div className="mx-auto max-w-[1440px] px-10 pb-11 max-md:px-6">
-        {error && (
-          <ErrorNote message={`Can’t reach the management API — ${error}`} />
-        )}
-        {actionFailures.map(f => <ErrorNote key={f.id} message={f.message} />)}
+      <div className="px-10 pb-11 max-md:px-6">
+        <div className="mx-auto max-w-[1440px]">
+          {error && (
+            <ErrorNote message={`Can’t reach the management API — ${error}`} />
+          )}
+          {actionFailures.map(f => <ErrorNote key={f.id} message={f.message} />)}
 
-        {first && (
-          <ApprovalStrip
-            approval={first}
-            pending={pending}
-            busy={busyIds.has(first.id)}
-            onApprove={() => resolve(first.id, 'approve')}
-            onReject={() => resolve(first.id, 'reject')}
-          />
-        )}
+          {first && (
+            <ApprovalStrip
+              approval={first}
+              pending={pending}
+              busy={busyIds.has(first.id)}
+              onApprove={() => resolve(first.id, 'approve')}
+              onReject={() => resolve(first.id, 'reject')}
+            />
+          )}
 
-        <div className="reveal mt-3.5 grid grid-cols-4 gap-3.5 max-md:grid-cols-2">
-          {stats.map(s => (
-            <a key={s.label} href={s.href} className="bezel">
-              <div className="glass px-[18px] py-[17px]">
-                <span className="eyebrow tracking-[0.12em]">{s.label}</span>
-                <strong
-                  className={`mt-2 block font-display text-[28px] font-semibold tracking-[-0.025em] tabular-nums ${
-                    s.warn ? 'text-warn-ink' : ''
-                  }`}
-                >
-                  {s.value ?? '—'}
-                </strong>
-              </div>
-            </a>
-          ))}
-        </div>
+          <div className="reveal mt-3.5 grid grid-cols-4 gap-3.5 max-md:grid-cols-2">
+            {stats.map(s => (
+              <a key={s.label} href={s.href} className="bezel">
+                <div className="glass px-[18px] py-[17px]">
+                  <span className="eyebrow tracking-[0.12em]">{s.label}</span>
+                  <strong
+                    className={`mt-2 block font-display text-[28px] font-semibold tracking-[-0.025em] tabular-nums ${
+                      s.warn ? 'text-warn-ink' : ''
+                    }`}
+                  >
+                    {s.value ?? '—'}
+                  </strong>
+                </div>
+              </a>
+            ))}
+          </div>
 
-        <div className="reveal mt-3.5 grid grid-cols-[1.65fr_1fr] gap-3.5 max-lg:grid-cols-1">
-          <Panel>
-            <SectionHead title="Latest decisions" meta="8 most recent" />
-            <LatestDecisions events={events.slice(0, 8)} known={auditKnown} error={auditError} />
-          </Panel>
+          <div className="reveal mt-3.5 grid grid-cols-[1.65fr_1fr] gap-3.5 max-lg:grid-cols-1">
+            <Panel>
+              <SectionHead title="Latest decisions" meta="8 most recent" />
+              <LatestDecisions events={events.slice(0, 8)} known={auditKnown} error={auditError} />
+            </Panel>
 
-          <Panel>
-            <SectionHead title="Decision mix" meta="Recorded events" />
-            <DecisionMix allowed={allowed} denied={denied} paused={paused} known={auditKnown} />
-          </Panel>
+            <Panel>
+              <SectionHead title="Decision mix" meta="Recorded events" />
+              <DecisionMix allowed={allowed} denied={denied} paused={paused} known={auditKnown} />
+            </Panel>
+          </div>
         </div>
       </div>
     </section>

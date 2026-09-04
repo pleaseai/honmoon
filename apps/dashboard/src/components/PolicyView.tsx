@@ -56,79 +56,81 @@ export function PolicyView() {
   const dirty = active !== null && yaml !== active
 
   return (
-    <section className="mx-auto max-w-[1440px] px-10 pt-[30px] pb-11 max-md:px-6">
-      <PageHead
-        eyebrow="Active gateway configuration"
-        title="Policy"
-        description="Inspect and edit the YAML locally without changing the running gateway."
-        meta={parsed?.version !== undefined ? `version ${parsed.version}` : undefined}
-      />
+    <section className="px-10 pt-[30px] pb-11 max-md:px-6">
+      <div className="mx-auto max-w-[1440px]">
+        <PageHead
+          eyebrow="Active gateway configuration"
+          title="Policy"
+          description="Inspect and edit the YAML locally without changing the running gateway."
+          meta={parsed?.version !== undefined ? `version ${parsed.version}` : undefined}
+        />
 
-      {error && <ErrorNote message={error} />}
+        {error && <ErrorNote message={error} />}
 
-      <div className="grid grid-cols-[minmax(0,1fr)_310px] gap-3.5 max-lg:grid-cols-1">
-        <Panel className="reveal" glassClassName="overflow-hidden">
-          <header className="flex min-h-[58px] items-center gap-2.5 bg-[var(--surface-soft)] px-[18px]">
-            <span className="font-mono text-[10px] font-semibold">Active policy</span>
-            {dirty && (
-              <span className="font-mono text-[8.5px] font-semibold tracking-[0.08em] text-warn-ink uppercase">
-                Local changes
-              </span>
-            )}
-            {dirty && (
-              <button
-                type="button"
-                onClick={() => setYaml(active)}
-                className="action action-quiet ml-auto"
-              >
-                Reset to active
-              </button>
-            )}
-          </header>
-
-          {active === null
-            ? (
-                settled
-                  ? <PanelState glyph="✕" tone="error">The active policy could not be loaded.</PanelState>
-                  : <PanelState glyph="…">Loading…</PanelState>
-              )
-            : (
-                <div className="policy-editor max-h-[62vh] min-h-[24rem] overflow-auto">
-                  <label htmlFor="policy-yaml" className="sr-only">Policy YAML editor</label>
-                  <Editor
-                    value={yaml}
-                    onValueChange={setYaml}
-                    highlight={highlight}
-                    padding={{ top: 16, right: 18, bottom: 16, left: GUTTER + 10 }}
-                    tabSize={2}
-                    insertSpaces
-                    textareaId="policy-yaml"
-                    className="min-h-[24rem]"
-                  />
-                </div>
+        <div className="grid grid-cols-[minmax(0,1fr)_310px] gap-3.5 max-lg:grid-cols-1">
+          <Panel className="reveal" glassClassName="overflow-hidden">
+            <header className="flex min-h-[58px] items-center gap-2.5 bg-[var(--surface-soft)] px-[18px]">
+              <span className="font-mono text-[10px] font-semibold">Active policy</span>
+              {dirty && (
+                <span className="font-mono text-[8.5px] font-semibold tracking-[0.08em] text-warn-ink uppercase">
+                  Local changes
+                </span>
               )}
+              {dirty && (
+                <button
+                  type="button"
+                  onClick={() => setYaml(active)}
+                  className="action action-quiet ml-auto"
+                >
+                  Reset to active
+                </button>
+              )}
+            </header>
 
-          <footer className="px-[18px] py-[13px] text-[10.5px] leading-relaxed text-muted">
-            Edits are local. Live policy hot-reload lands in Phase 5; today the
-            gateway loads policy from its
-            {' '}
-            <code className="rounded-[5px] bg-[var(--surface-soft)] px-1.5 py-0.5 font-mono text-[9.5px] font-medium text-fg">
-              --config
-            </code>
-            {' '}
-            file.
-          </footer>
-        </Panel>
+            {active === null
+              ? (
+                  settled
+                    ? <PanelState glyph="✕" tone="error">The active policy could not be loaded.</PanelState>
+                    : <PanelState glyph="…">Loading…</PanelState>
+                )
+              : (
+                  <div className="policy-editor max-h-[62vh] min-h-[24rem] overflow-auto">
+                    <label htmlFor="policy-yaml" className="sr-only">Policy YAML editor</label>
+                    <Editor
+                      value={yaml}
+                      onValueChange={setYaml}
+                      highlight={highlight}
+                      padding={{ top: 16, right: 18, bottom: 16, left: GUTTER + 10 }}
+                      tabSize={2}
+                      insertSpaces
+                      textareaId="policy-yaml"
+                      className="min-h-[24rem]"
+                    />
+                  </div>
+                )}
 
-        <Panel className="reveal" glassClassName="p-[19px]">
-          <p className="eyebrow tracking-[0.12em] text-dim">Active posture</p>
-          <Posture policy={parsed} />
-          <div className="mt-[18px] rounded-[13px] bg-warn-soft p-[13px] text-[10px] leading-relaxed text-muted">
-            <b className="text-warn-ink">Local editing only.</b>
-            {' '}
-            This surface does not save, deploy, or hot-reload policy.
-          </div>
-        </Panel>
+            <footer className="px-[18px] py-[13px] text-[10.5px] leading-relaxed text-muted">
+              Edits are local. Live policy hot-reload lands in Phase 5; today the
+              gateway loads policy from its
+              {' '}
+              <code className="rounded-[5px] bg-[var(--surface-soft)] px-1.5 py-0.5 font-mono text-[9.5px] font-medium text-fg">
+                --config
+              </code>
+              {' '}
+              file.
+            </footer>
+          </Panel>
+
+          <Panel className="reveal" glassClassName="p-[19px]">
+            <p className="eyebrow tracking-[0.12em] text-dim">Active posture</p>
+            <Posture policy={parsed} />
+            <div className="mt-[18px] rounded-[13px] bg-warn-soft p-[13px] text-[10px] leading-relaxed text-muted">
+              <b className="text-warn-ink">Local editing only.</b>
+              {' '}
+              This surface does not save, deploy, or hot-reload policy.
+            </div>
+          </Panel>
+        </div>
       </div>
     </section>
   )

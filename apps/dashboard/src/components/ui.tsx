@@ -30,7 +30,7 @@ export function PageHead({
   meta?: ReactNode
 }) {
   return (
-    <header className="mx-auto mb-6 flex max-w-[1440px] flex-wrap items-end gap-x-6 gap-y-3">
+    <header className="mb-6 flex flex-wrap items-end gap-x-6 gap-y-3">
       <div>
         <p className="eyebrow mb-2">{eyebrow}</p>
         <h1 className="font-display text-[30px] leading-[1.15] font-semibold tracking-[-0.025em]">

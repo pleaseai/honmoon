@@ -16,59 +16,61 @@ export function Approvals() {
   )
 
   return (
-    <section className="mx-auto max-w-[1440px] px-10 pt-[30px] pb-11 max-md:px-6">
-      <PageHead
-        eyebrow="Human decision boundary"
-        title="Approval queue"
-        description="Requests held by a pause verdict until a person resolves them."
-        meta={data ? `${pending.length} pending · polling 1.5s` : 'polling 1.5s'}
-      />
+    <section className="px-10 pt-[30px] pb-11 max-md:px-6">
+      <div className="mx-auto max-w-[1440px]">
+        <PageHead
+          eyebrow="Human decision boundary"
+          title="Approval queue"
+          description="Requests held by a pause verdict until a person resolves them."
+          meta={data ? `${pending.length} pending · polling 1.5s` : 'polling 1.5s'}
+        />
 
-      {error && <ErrorNote message={error} />}
+        {error && <ErrorNote message={error} />}
 
-      <div className="mb-3.5 grid grid-cols-2 gap-3.5">
-        <Panel glassClassName="px-[18px] py-4">
-          <span className="eyebrow tracking-[0.1em]">Waiting now</span>
-          <strong className="mt-1.5 block font-display text-[23px] font-semibold tabular-nums">
-            {data ? pending.length : '—'}
-          </strong>
-        </Panel>
-        <Panel glassClassName="px-[18px] py-4">
-          <span className="eyebrow tracking-[0.1em]">Oldest held since</span>
-          <strong className="mt-1.5 block font-mono text-[23px] font-semibold tabular-nums">
-            {oldest ? formatTime(oldest.created_at) : '—'}
-          </strong>
-        </Panel>
-      </div>
+        <div className="mb-3.5 grid grid-cols-2 gap-3.5">
+          <Panel glassClassName="px-[18px] py-4">
+            <span className="eyebrow tracking-[0.1em]">Waiting now</span>
+            <strong className="mt-1.5 block font-display text-[23px] font-semibold tabular-nums">
+              {data ? pending.length : '—'}
+            </strong>
+          </Panel>
+          <Panel glassClassName="px-[18px] py-4">
+            <span className="eyebrow tracking-[0.1em]">Oldest held since</span>
+            <strong className="mt-1.5 block font-mono text-[23px] font-semibold tabular-nums">
+              {oldest ? formatTime(oldest.created_at) : '—'}
+            </strong>
+          </Panel>
+        </div>
 
-      {data === null
-        ? (
-            <Panel className="reveal">
-              {loading
-                ? <PanelState glyph="…">Loading…</PanelState>
-                : <PanelState glyph="✕" tone="error">The approval queue could not be loaded.</PanelState>}
-            </Panel>
-          )
-        : pending.length === 0
+        {data === null
           ? (
               <Panel className="reveal">
-                <PanelState glyph="✓">No requests are waiting for approval.</PanelState>
+                {loading
+                  ? <PanelState glyph="…">Loading…</PanelState>
+                  : <PanelState glyph="✕" tone="error">The approval queue could not be loaded.</PanelState>}
               </Panel>
             )
-          : (
-              <ul className="grid gap-3.5">
-                {pending.map(p => (
-                  <ApprovalCard
-                    key={p.id}
-                    approval={p}
-                    busy={busyIds.has(p.id)}
-                    error={actionErrors.get(p.id)}
-                    onApprove={() => resolve(p.id, 'approve')}
-                    onReject={() => resolve(p.id, 'reject')}
-                  />
-                ))}
-              </ul>
-            )}
+          : pending.length === 0
+            ? (
+                <Panel className="reveal">
+                  <PanelState glyph="✓">No requests are waiting for approval.</PanelState>
+                </Panel>
+              )
+            : (
+                <ul className="grid gap-3.5">
+                  {pending.map(p => (
+                    <ApprovalCard
+                      key={p.id}
+                      approval={p}
+                      busy={busyIds.has(p.id)}
+                      error={actionErrors.get(p.id)}
+                      onApprove={() => resolve(p.id, 'approve')}
+                      onReject={() => resolve(p.id, 'reject')}
+                    />
+                  ))}
+                </ul>
+              )}
+      </div>
     </section>
   )
 }
