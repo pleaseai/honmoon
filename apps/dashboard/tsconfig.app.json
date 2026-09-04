@@ -9,7 +9,7 @@
 
     /* Bundler mode */
     "moduleResolution": "bundler",
-    "types": ["vite/client"],
+    "types": ["vite/client", "@types/bun"],
     "allowImportingTsExtensions": true,
 
     "noFallthroughCasesInSwitch": true,

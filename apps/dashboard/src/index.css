@@ -1,9 +1,380 @@
 @import "tailwindcss";
 
+/*
+ * G2 "Barrier Membrane" tokens. Dark is the primary expression; light is a
+ * first-class secondary theme that drops shadow depth instead of copying the
+ * dark glass elevation. Every derived color is oklch — no raw hex.
+ *
+ * `--*-ink` are the text-on-surface variants of the three verdict colors: in
+ * dark mode they equal the fill color, in light mode they are darkened so the
+ * pills, error notes and editor tokens stay legible on near-white.
+ */
 :root {
   color-scheme: light dark;
+
+  --type-display: -apple-system, BlinkMacSystemFont, "SF Pro Display", "Segoe UI", sans-serif;
+  --type-body: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", sans-serif;
+  --type-mono: "Geist Mono", "SFMono-Regular", ui-monospace, Consolas, monospace;
+
+  --bg: oklch(12% 0.008 250);
+  --surface: oklch(16% 0.010 250);
+  --surface-glass: oklch(18% 0.012 245 / 0.82);
+  --surface-soft: oklch(20% 0.012 245 / 0.58);
+  --border: oklch(26% 0.012 245);
+  --hair: oklch(95% 0.005 220 / 0.075);
+  --fg: oklch(95% 0.005 220);
+  --muted: oklch(62% 0.012 240);
+  --dim: oklch(60% 0.012 240);
+
+  --accent: oklch(81% 0.110 185);
+  --accent-ink: oklch(81% 0.110 185);
+  --accent-soft: oklch(81% 0.110 185 / 0.13);
+  --accent-line: oklch(81% 0.110 185 / 0.22);
+  --accent-glow: oklch(81% 0.110 185 / 0.18);
+  --on-accent: oklch(16% 0.018 210);
+
+  --warn: oklch(78% 0.120 75);
+  --warn-ink: oklch(78% 0.120 75);
+  --warn-soft: oklch(78% 0.120 75 / 0.13);
+  --on-warn: oklch(18% 0.020 70);
+
+  --deny: oklch(72% 0.115 25);
+  --deny-ink: oklch(72% 0.115 25);
+  --deny-soft: oklch(72% 0.115 25 / 0.13);
+  --deny-line: oklch(72% 0.115 25 / 0.38);
+
+  --mask: oklch(76% 0.100 300);
+
+  --shell: oklch(95% 0.005 220 / 0.035);
+  --shadow: 0 18px 44px oklch(5% 0.010 250 / 0.28);
+  --editor-bg: oklch(14% 0.012 250);
+  --editor-gutter: oklch(12% 0.010 250);
+
+  --bezel-pad: 5px;
+  --bezel-radius: 22px;
+  --glass-radius: 17px;
+  --ease: cubic-bezier(0.32, 0.72, 0, 1);
+}
+
+@media (prefers-color-scheme: light) {
+  :root {
+    --bg: oklch(97% 0.008 220);
+    --surface: oklch(99% 0.003 220);
+    --surface-glass: oklch(100% 0 0 / 0.9);
+    --surface-soft: oklch(94% 0.013 210 / 0.66);
+    --border: oklch(87% 0.018 215);
+    --hair: oklch(25% 0.010 250 / 0.09);
+    --fg: oklch(19% 0.012 245);
+    --muted: oklch(44% 0.018 240);
+    --dim: oklch(54% 0.016 240);
+
+    --accent-ink: oklch(46% 0.100 185);
+    --accent-soft: oklch(70% 0.105 185 / 0.14);
+    --accent-line: oklch(60% 0.105 185 / 0.35);
+    --accent-glow: oklch(70% 0.105 185 / 0.14);
+
+    --warn-ink: oklch(52% 0.130 70);
+    --warn-soft: oklch(72% 0.120 75 / 0.16);
+
+    --deny-ink: oklch(50% 0.160 25);
+    --deny-soft: oklch(65% 0.115 25 / 0.10);
+    --deny-line: oklch(55% 0.150 25 / 0.45);
+
+    --mask: oklch(48% 0.120 300);
+
+    --shell: oklch(30% 0.020 220 / 0.035);
+    --shadow: 0 3px 10px oklch(35% 0.040 220 / 0.05);
+    --editor-bg: oklch(98.5% 0.004 220);
+    --editor-gutter: oklch(95.5% 0.008 220);
+
+    --bezel-pad: 3px;
+    --bezel-radius: 20px;
+  }
+}
+
+/* Expose the tokens to Tailwind utilities (`bg-bg`, `text-muted`, `font-mono`…). */
+@theme inline {
+  --color-bg: var(--bg);
+  --color-surface: var(--surface);
+  --color-surface-soft: var(--surface-soft);
+  --color-fg: var(--fg);
+  --color-muted: var(--muted);
+  --color-dim: var(--dim);
+  --color-hair: var(--hair);
+  --color-border: var(--border);
+  --color-accent: var(--accent);
+  --color-accent-ink: var(--accent-ink);
+  --color-accent-soft: var(--accent-soft);
+  --color-warn: var(--warn);
+  --color-warn-ink: var(--warn-ink);
+  --color-warn-soft: var(--warn-soft);
+  --color-deny: var(--deny);
+  --color-deny-ink: var(--deny-ink);
+  --color-deny-soft: var(--deny-soft);
+  --font-sans: var(--type-body);
+  --font-display: var(--type-display);
+  --font-mono: var(--type-mono);
 }
 
 body {
   margin: 0;
+  background: var(--bg);
+  color: var(--fg);
+  font-family: var(--type-body);
+  font-size: 14px;
+  -webkit-font-smoothing: antialiased;
+}
+
+/*
+ * One focus treatment for everything focusable, in both themes. `--accent-ink`
+ * equals `--accent` in dark mode and is the darkened variant in light mode,
+ * where the raw accent would sit at ~1.6:1 against the near-white surfaces.
+ */
+:focus-visible {
+  outline: 2px solid var(--accent-ink);
+  outline-offset: 3px;
+}
+
+@layer components {
+  /* Double bezel: a translucent outer shell with a concentric glass core. */
+  .bezel {
+    display: block;
+    padding: var(--bezel-pad);
+    border-radius: var(--bezel-radius);
+    background: var(--shell);
+    box-shadow: inset 0 0 0 1px var(--hair), var(--shadow);
+    color: inherit;
+    text-decoration: none;
+  }
+
+  .glass {
+    height: 100%;
+    border-radius: var(--glass-radius);
+    background: var(--surface-glass);
+    box-shadow: inset 0 1px 0 var(--hair);
+  }
+
+  /* A bezel that is also a link lifts on hover; text contrast is untouched. */
+  a.bezel {
+    transition: transform 0.5s var(--ease);
+  }
+
+  a.bezel:hover {
+    transform: translateY(-2px);
+  }
+
+  @media (prefers-color-scheme: light) {
+    .glass {
+      box-shadow: inset 0 0 0 1px var(--hair);
+    }
+  }
+
+  .eyebrow {
+    color: var(--muted);
+    font: 600 9px var(--type-mono);
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+  }
+
+  .meta-mono {
+    color: var(--dim);
+    font: 500 10px var(--type-mono);
+    letter-spacing: 0.07em;
+    text-transform: uppercase;
+  }
+
+  /* Verdict pill: glyph + mono uppercase label carry the meaning, color supports. */
+  .verdict {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 5px;
+    min-width: 92px;
+    padding: 5px 9px;
+    border-radius: 999px;
+    font: 600 9px/1 var(--type-mono);
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    white-space: nowrap;
+  }
+
+  .verdict-allowed,
+  .verdict-approved {
+    color: var(--accent-ink);
+    background: var(--accent-soft);
+  }
+
+  .verdict-paused {
+    color: var(--warn-ink);
+    background: var(--warn-soft);
+  }
+
+  .verdict-denied,
+  .verdict-rejected {
+    color: var(--deny-ink);
+    background: var(--deny-soft);
+  }
+
+  /* Pill actions. Exactly one `.action-approve` per action group. */
+  .action {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    min-height: 44px;
+    padding: 0 18px;
+    border: 1px solid transparent;
+    border-radius: 999px;
+    font: 600 10.5px var(--type-mono);
+    letter-spacing: 0.02em;
+    white-space: nowrap;
+    cursor: pointer;
+    transition:
+      transform 0.5s var(--ease),
+      background-color 0.5s var(--ease),
+      box-shadow 0.5s var(--ease),
+      border-color 0.5s var(--ease);
+  }
+
+  .action:hover:not(:disabled) {
+    transform: translateY(-1px);
+  }
+
+  .action:active:not(:disabled) {
+    transform: scale(0.98);
+  }
+
+  .action:disabled {
+    cursor: wait;
+    opacity: 0.55;
+  }
+
+  .action-approve {
+    background: var(--accent);
+    color: var(--on-accent);
+    box-shadow: 0 0 20px var(--accent-glow);
+  }
+
+  .action-approve:hover:not(:disabled) {
+    background: oklch(85% 0.110 185);
+    box-shadow: 0 0 26px var(--accent-glow);
+  }
+
+  .action-deny {
+    border-color: var(--deny-line);
+    background: var(--deny-soft);
+    color: var(--deny-ink);
+  }
+
+  .action-deny:hover:not(:disabled) {
+    background: oklch(72% 0.115 25 / 0.2);
+  }
+
+  .action-quiet {
+    padding: 0 12px;
+    color: var(--muted);
+    font: 550 11px var(--type-body);
+    text-decoration: underline;
+    text-underline-offset: 3px;
+  }
+
+  .action-quiet:hover:not(:disabled) {
+    color: var(--fg);
+  }
+
+  .count-badge {
+    display: inline-grid;
+    place-items: center;
+    min-width: 17px;
+    height: 17px;
+    margin-left: 7px;
+    padding: 0 5px;
+    border-radius: 99px;
+    background: var(--warn);
+    color: var(--on-warn);
+    font: 600 8.5px var(--type-mono);
+  }
+
+  /* Editor: Prism YAML tokens on the G2 palette (replaces prism-tomorrow). */
+  .policy-editor {
+    background: var(--editor-bg);
+    color: var(--fg);
+    font-family: var(--type-mono);
+    font-size: 12.5px;
+    line-height: 1.7;
+    tab-size: 2;
+  }
+
+  .policy-editor textarea {
+    caret-color: var(--accent);
+    outline: none;
+  }
+
+  .policy-editor textarea::selection {
+    background: var(--accent-line);
+  }
+
+  .policy-editor .line-no {
+    position: absolute;
+    left: 0;
+    width: 48px;
+    padding-right: 14px;
+    color: var(--dim);
+    text-align: right;
+    user-select: none;
+  }
+
+  .policy-editor .token.key,
+  .policy-editor .token.atrule {
+    color: var(--accent-ink);
+  }
+
+  .policy-editor .token.string {
+    color: var(--warn-ink);
+  }
+
+  .policy-editor .token.comment {
+    color: var(--dim);
+    font-style: italic;
+  }
+
+  .policy-editor .token.number,
+  .policy-editor .token.boolean,
+  .policy-editor .token.null,
+  .policy-editor .token.important,
+  .policy-editor .token.directive {
+    color: var(--mask);
+  }
+
+  .policy-editor .token.punctuation {
+    color: var(--muted);
+  }
+
+  /* Entry motion: transform + opacity only, disabled under reduced motion. */
+  .reveal {
+    animation: reveal 0.85s var(--ease) both;
+  }
+
+  @keyframes reveal {
+    from {
+      opacity: 0;
+      transform: translateY(14px);
+    }
+
+    to {
+      opacity: 1;
+      transform: translateY(0);
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .reveal {
+      animation: none;
+    }
+
+    .action,
+    a.bezel {
+      transition: none;
+    }
+  }
 }
