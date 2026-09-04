@@ -1,3 +1,4 @@
+import type { Polled } from './hooks'
 import { GlobalRegistrator } from '@happy-dom/global-registrator'
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
 
@@ -8,7 +9,7 @@ GlobalRegistrator.register()
 
 const { act } = await import('react')
 const { createRoot } = await import('react-dom/client')
-const { useApprovalActions } = await import('./hooks')
+const { useApprovalActions, usePolling } = await import('./hooks')
 
 type Actions = ReturnType<typeof useApprovalActions>
 
@@ -122,5 +123,61 @@ describe('useApprovalActions', () => {
     })
     expect(harness.current.actionErrors.has(1)).toBe(false)
     expect(harness.current.busyIds.has(1)).toBe(true)
+  })
+})
+
+/** Hosts `usePolling` on a 10ms interval and reports each render's value. */
+function PollProbe({ fn, onRender }: { fn: () => Promise<number>, onRender: (polled: Polled<number>) => void }) {
+  onRender(usePolling(fn, 10))
+  return null
+}
+
+describe('usePolling', () => {
+  test('commits a slow response when nothing newer has landed, but never over a newer one', async () => {
+    const runs: Array<(value: number) => void> = []
+    const fn = () => new Promise<number>((resolve) => {
+      runs.push(resolve)
+    })
+    let latest: Polled<number> | null = null
+    const record = (polled: Polled<number>) => {
+      latest = polled
+    }
+    const current = (): Polled<number> => {
+      if (latest === null) {
+        throw new Error('hook did not render')
+      }
+      return latest
+    }
+    const container = document.createElement('div')
+    const root = createRoot(container)
+    act(() => root.render(<PollProbe fn={fn} onRender={record} />))
+
+    // Let several interval ticks start while the first request is still open.
+    await act(async () => {
+      await new Promise(resolve => setTimeout(resolve, 45))
+    })
+    expect(runs.length).toBeGreaterThanOrEqual(3)
+    expect(current().loading).toBe(true)
+
+    // The oldest run is still the newest *committed* one, so it must land.
+    await act(async () => {
+      runs[0]!(1)
+    })
+    expect(current().data).toBe(1)
+    expect(current().loading).toBe(false)
+
+    // A newer run commits over it…
+    await act(async () => {
+      runs[2]!(3)
+    })
+    expect(current().data).toBe(3)
+
+    // …and an older run that settles late is dropped.
+    await act(async () => {
+      runs[1]!(2)
+    })
+    expect(current().data).toBe(3)
+
+    act(() => root.unmount())
   })
 })

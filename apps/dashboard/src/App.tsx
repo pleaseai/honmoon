@@ -50,8 +50,14 @@ function App() {
 
   return (
     <div className="min-h-screen bg-bg text-fg">
-      <header className="relative z-10 h-[72px] bg-[color-mix(in_oklch,var(--bg)_88%,transparent)] px-10 shadow-[inset_0_-1px_0_var(--hair)] max-md:px-6">
-        <div className="mx-auto flex h-full max-w-[1440px] items-center">
+      {/*
+        Below `md` the nav capsule cannot fit beside the wordmark, so the
+        header grows and the capsule wraps onto its own full-width row; it
+        also scrolls horizontally as a last resort so no route is ever pushed
+        off-screen.
+      */}
+      <header className="relative z-10 h-[72px] bg-[color-mix(in_oklch,var(--bg)_88%,transparent)] px-10 shadow-[inset_0_-1px_0_var(--hair)] max-md:h-auto max-md:px-6 max-md:py-2">
+        <div className="mx-auto flex h-full max-w-[1440px] items-center max-md:flex-wrap max-md:gap-y-1">
           <a
             href="#/"
             className="flex min-h-11 items-center gap-2.5 rounded-md font-mono text-base font-semibold tracking-[-0.02em] text-fg no-underline"
@@ -63,8 +69,8 @@ function App() {
             honmoon
           </a>
 
-          <div className="ml-auto flex items-center rounded-full bg-[var(--surface-glass)] p-1 shadow-[inset_0_1px_0_var(--hair),inset_0_0_0_1px_var(--hair),var(--shadow)]">
-            <nav aria-label="Dashboard pages" className="flex gap-0.5">
+          <div className="ml-auto flex items-center rounded-full bg-[var(--surface-glass)] p-1 shadow-[inset_0_1px_0_var(--hair),inset_0_0_0_1px_var(--hair),var(--shadow)] max-md:ml-0 max-md:w-full max-md:overflow-x-auto">
+            <nav aria-label="Dashboard pages" className="flex gap-0.5 max-md:flex-1 max-md:justify-between">
               {NAV.map(item => (
                 <a
                   key={item.slug}
@@ -92,7 +98,7 @@ function App() {
             <span
               role="img"
               aria-label="Account"
-              className="mr-0.5 grid size-9 place-items-center rounded-full bg-[var(--surface-soft)] text-muted shadow-[inset_0_0_0_1px_var(--hair)]"
+              className="mr-0.5 grid size-9 shrink-0 place-items-center rounded-full bg-[var(--surface-soft)] text-muted shadow-[inset_0_0_0_1px_var(--hair)] max-md:hidden"
             >
               <svg width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden="true">
                 <circle cx="8" cy="5.5" r="3" stroke="currentColor" strokeWidth="1.4" />

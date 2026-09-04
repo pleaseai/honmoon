@@ -13,8 +13,12 @@ export interface Polled<T> {
  * `refresh`. Pass a stable `fn` reference (e.g. a module-level API function) so
  * the polling interval isn't torn down and recreated on every render.
  *
- * State is only updated while the effect is mounted, so a slow in-flight request
- * that resolves after unmount (or after `fn`/interval changes) is ignored.
+ * Overlapping polls commit in order: a response from an older run never
+ * overwrites one from a newer run, but it is still applied when nothing newer
+ * has landed. An API that is consistently slower than the interval therefore
+ * shows stale-but-real data instead of an endless loading state. State is only
+ * updated while the effect is mounted, so a request that resolves after
+ * unmount (or after `fn`/interval changes) is ignored.
  */
 export function usePolling<T>(fn: () => Promise<T>, intervalMs: number): Polled<T> {
   const [data, setData] = useState<T | null>(null)
@@ -26,28 +30,33 @@ export function usePolling<T>(fn: () => Promise<T>, intervalMs: number): Polled<
 
   useEffect(() => {
     let alive = true
-    // Guard against overlapping polls: a slow earlier request must not
-    // overwrite newer state with stale data, so only the latest run commits.
+    // Guard against overlapping polls: a run may commit only if no newer run
+    // has committed yet. Comparing against the last *committed* run (not the
+    // last *started* one) is what keeps a slow API from discarding every
+    // response.
     let latestRun = 0
+    let lastCommitted = 0
     const run = () => {
       const runId = ++latestRun
-      fn()
-        .then((d) => {
-          if (alive && runId === latestRun) {
+      const commit = (apply: () => void) => {
+        if (!alive || runId <= lastCommitted) {
+          return
+        }
+        lastCommitted = runId
+        apply()
+        setLoading(false)
+      }
+      fn().then(
+        (d) => {
+          commit(() => {
             setData(d)
             setError(null)
-          }
-        })
-        .catch((e: unknown) => {
-          if (alive && runId === latestRun) {
-            setError(e instanceof Error ? e.message : String(e))
-          }
-        })
-        .finally(() => {
-          if (alive && runId === latestRun) {
-            setLoading(false)
-          }
-        })
+          })
+        },
+        (e: unknown) => {
+          commit(() => setError(e instanceof Error ? e.message : String(e)))
+        },
+      )
     }
     run()
     const id = setInterval(run, intervalMs)

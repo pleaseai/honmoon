@@ -154,8 +154,9 @@ function Posture({ policy }: { policy: Policy | null }) {
         {fallback === 'deny' ? 'Fail closed by default.' : `Unmatched egress is ${VERDICT_PAST[fallback]}.`}
       </h2>
       <p className="mt-2 text-[11px] leading-relaxed text-muted">
-        Egress not on the allow list gets the default verdict; protocol rules run
-        first-match-wins before a request reaches its destination.
+        Egress on neither list gets the default verdict (the deny list is checked
+        before the allow list); protocol rules run first-match-wins before a
+        request reaches its destination.
       </p>
       <dl className="mt-5 rounded-[14px] bg-[var(--surface-soft)] px-[13px] py-1">
         {facts.map(([label, value]) => (
