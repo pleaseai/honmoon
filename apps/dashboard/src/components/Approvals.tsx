@@ -131,11 +131,16 @@ function ApprovalCard({
             )}
           </p>
         </div>
+        {/*
+          Below `md` the card is two columns, so auto-placement would drop the
+          buttons into the 44px icon track; give them their own full row.
+        */}
         <ApprovalActions
           summary={approval.summary}
           busy={busy}
           onApprove={onApprove}
           onReject={onReject}
+          className="max-md:col-span-full max-md:justify-self-end"
         />
       </div>
     </li>

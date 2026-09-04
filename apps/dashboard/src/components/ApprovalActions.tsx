@@ -8,15 +8,18 @@ export function ApprovalActions({
   busy,
   onApprove,
   onReject,
+  className = '',
 }: {
   /** Names the request for assistive technology, e.g. "Approve: DROP TABLE…". */
   summary: string
   busy: boolean
   onApprove: () => void
   onReject: () => void
+  /** Placement classes for the host layout (e.g. grid spans); never styling. */
+  className?: string
 }) {
   return (
-    <div className="flex shrink-0 gap-2" aria-busy={busy || undefined}>
+    <div className={`flex shrink-0 gap-2 ${className}`} aria-busy={busy || undefined}>
       <button
         type="button"
         className="action action-deny"

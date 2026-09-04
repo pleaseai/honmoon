@@ -125,9 +125,13 @@ body {
   -webkit-font-smoothing: antialiased;
 }
 
-/* One focus treatment for everything focusable, in both themes. */
+/*
+ * One focus treatment for everything focusable, in both themes. `--accent-ink`
+ * equals `--accent` in dark mode and is the darkened variant in light mode,
+ * where the raw accent would sit at ~1.6:1 against the near-white surfaces.
+ */
 :focus-visible {
-  outline: 2px solid var(--accent);
+  outline: 2px solid var(--accent-ink);
   outline-offset: 3px;
 }
 
