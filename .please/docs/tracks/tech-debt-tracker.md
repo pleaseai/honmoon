@@ -16,4 +16,4 @@
 
 | ID | Source Track | Description | Resolved In | Date |
 |----|------------|-------------|-------------|------|
-| TD-005 | phase-1-http-egress-mvp | CI actions were pinned to mutable tags (`@v4`/`@stable`); every `uses:` in `.github/workflows/` is now pinned to a full commit SHA with a `# vX.Y.Z` comment, and Dependabot (`.github/dependabot.yml`, `github-actions` ecosystem) keeps the pins current | #24, #65, #73, #62 | 2026-09-07 |
+| TD-005 | phase-1-http-egress-mvp | CI actions were pinned to mutable tags (`@v4`/`@stable`); every `uses:` in `.github/workflows/` is now pinned to a full commit SHA with a version or upstream-ref annotation, and Dependabot (`.github/dependabot.yml`, `github-actions` ecosystem) keeps the pins current | #24, #65, #73, #62 | 2026-09-07 |
