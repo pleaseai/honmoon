@@ -23,9 +23,10 @@ export default pleaseai({
   ],
 }, {
   // Bun/Node entrypoints: `process` is a legitimate global; CLI/server log to stdout.
-  // `apps/dashboard/demo/build.ts` is one of these — a build script run by `bun`,
-  // not app code (it lives outside `src/` so the app bundle can never reach it).
-  files: ['packages/**/*.ts', 'datasets/**/*.ts', 'apps/dashboard/demo/*.ts'],
+  // `apps/dashboard/demo/build.ts` and `scripts/*.ts` are these — build/release
+  // scripts run by `bun`, not app code (they live outside any `src/`, so no app
+  // bundle can reach them).
+  files: ['packages/**/*.ts', 'datasets/**/*.ts', 'apps/dashboard/demo/*.ts', 'scripts/*.ts'],
   rules: {
     'node/prefer-global/process': 'off',
     'no-console': 'off',
