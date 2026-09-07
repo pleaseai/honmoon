@@ -171,12 +171,12 @@ unredacted and a `warn` is logged: bodies over the 2 MiB inspection cap, non-UTF
 bodies whose declared `Content-Encoding` cannot be decoded, and partial uploads carrying
 `Content-Range`. Compressed responses are not detokenized (the proxy asks upstreams for `identity`).
 
-**Body-signed requests are the exception that fails closed.** When a request's authentication
-covers its payload — AWS SigV4 (including presigned URLs), RFC 9421 message signatures over a
-`content-digest`, draft-cavage signatures over a `digest` — honmoon holds no signing credentials
-and cannot re-sign the rewritten body, so the upstream would reject it with an opaque signature
-error. By default such a request is refused locally with `403`, an
-`X-Honmoon-Reason: signed-body-redaction` header, and an explanation:
+**Body-signed requests are the exception that fails closed when redaction would change the
+body.** When a request's authentication covers its payload — AWS SigV4 (including presigned
+URLs), RFC 9421 message signatures over a `content-digest`, draft-cavage signatures over a
+`digest` — honmoon holds no signing credentials and cannot re-sign the rewritten body, so the
+upstream would reject it with an opaque signature error. By default such a request is refused
+locally with `403`, an `X-Honmoon-Reason: signed-body-redaction` header, and an explanation:
 
 ```bash
 # Default: refuse a body-signed request whose body would be redacted

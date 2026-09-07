@@ -68,11 +68,12 @@ pub fn body_signature_scheme(headers: &HeaderMap, uri: &Uri) -> Option<SignedBod
 /// of payload signing with `UNSIGNED-PAYLOAD` / `STREAMING-UNSIGNED-PAYLOAD…`.
 fn aws_sigv4_signs_body(headers: &HeaderMap, uri: &Uri) -> bool {
     let payload_hash = header_str(headers, &X_AMZ_CONTENT_SHA256);
-    if let Some(hash) = payload_hash
-        && (hash.eq_ignore_ascii_case("UNSIGNED-PAYLOAD")
-            || starts_with_ignore_ascii_case(hash, "STREAMING-UNSIGNED-PAYLOAD"))
-    {
-        return false;
+    if let Some(hash) = payload_hash {
+        if hash.eq_ignore_ascii_case("UNSIGNED-PAYLOAD")
+            || starts_with_ignore_ascii_case(hash, "STREAMING-UNSIGNED-PAYLOAD")
+        {
+            return false;
+        }
     }
 
     let signed_authorization = header_str(headers, &header::AUTHORIZATION).is_some_and(|value| {
@@ -95,29 +96,170 @@ fn aws_sigv4_signs_body(headers: &HeaderMap, uri: &Uri) -> bool {
     signed_authorization || presigned || hex_payload_hash
 }
 
-/// RFC 9421: the signature covers the body only when its component list names
-/// `"content-digest"`.
+/// RFC 9421: the signature covers the body only when a `Signature-Input`
+/// component list names `"content-digest"` *and* a `Signature` header is also
+/// present. RFC 9421 requires both fields — a request carrying only
+/// `Signature-Input` is not signed at all. `Signature-Input` is a dictionary
+/// field that may legally repeat across multiple field values, so every value
+/// is scanned rather than only the first.
 fn message_signature_covers_content_digest(headers: &HeaderMap) -> bool {
-    header_str(headers, &SIGNATURE_INPUT)
-        .is_some_and(|value| value.to_ascii_lowercase().contains("\"content-digest\""))
+    if !header_present(headers, &SIGNATURE) {
+        return false;
+    }
+    header_values(headers, &SIGNATURE_INPUT).any(signature_input_lists_content_digest)
 }
 
-/// draft-cavage: the signature covers the body only when its `headers="…"` list
-/// names a body digest header.
+/// Whether the parenthesised component list of a `Signature-Input` member —
+/// not the member's other `;param=value` metadata — names the quoted
+/// component `"content-digest"`.
+///
+/// A single-pass, quote-aware scan: paren depth is tracked only outside a
+/// quoted string, since a `(` or `)` inside a quoted parameter value (e.g. a
+/// `tag` crafted to contain `("content-digest")`) is not a real group
+/// delimiter. Backslash escapes inside quoted strings are honored so an
+/// escaped quote doesn't end the string early. Only a quoted string that
+/// closes while depth >= 1 — i.e. genuinely inside the `(...)` component
+/// list — is compared against `content-digest`.
+fn signature_input_lists_content_digest(value: &str) -> bool {
+    let mut depth: u32 = 0;
+    let mut in_quote = false;
+    let mut escaped = false;
+    let mut current = String::new();
+    for ch in value.chars() {
+        if in_quote {
+            if escaped {
+                current.push(ch);
+                escaped = false;
+            } else if ch == '\\' {
+                escaped = true;
+            } else if ch == '"' {
+                in_quote = false;
+                if depth >= 1 && current.eq_ignore_ascii_case("content-digest") {
+                    return true;
+                }
+                current.clear();
+            } else {
+                current.push(ch);
+            }
+        } else {
+            match ch {
+                '"' => in_quote = true,
+                '(' => depth += 1,
+                ')' => depth = depth.saturating_sub(1),
+                _ => {}
+            }
+        }
+    }
+    false
+}
+
+/// draft-cavage: the signature covers the body only when its `headers="…"`
+/// list names a body digest header. The signature may be carried as a
+/// standalone `Signature` header or as `Authorization: Signature …` (either
+/// field may in principle repeat), and the `headers` parameter's grammar
+/// permits whitespace around `=`.
 fn cavage_signature_covers_digest(headers: &HeaderMap) -> bool {
-    let Some(value) = header_str(headers, &SIGNATURE) else {
-        return false;
-    };
-    let lowered = value.to_ascii_lowercase();
-    let Some(rest) = lowered.split_once("headers=\"").map(|(_, rest)| rest) else {
-        return false;
-    };
-    let Some((covered, _)) = rest.split_once('"') else {
-        return false;
-    };
-    covered
-        .split_whitespace()
-        .any(|component| component == "digest" || component == "content-digest")
+    let candidates = header_values(headers, &SIGNATURE)
+        .chain(header_values(headers, &header::AUTHORIZATION).filter_map(strip_signature_scheme));
+    candidates.flat_map(cavage_headers_params).any(|covered| {
+        covered
+            .split_whitespace()
+            .any(|component| component == "digest" || component == "content-digest")
+    })
+}
+
+/// Strip a leading `Signature` scheme token (case-insensitive, followed by
+/// whitespace) from an `Authorization` field value, e.g.
+/// `Signature keyId="…",headers="…"` → `keyId="…",headers="…"`.
+fn strip_signature_scheme(value: &str) -> Option<&str> {
+    if !starts_with_ignore_ascii_case(value, "Signature") {
+        return None;
+    }
+    let rest = &value["Signature".len()..];
+    if !rest.starts_with(|c: char| c.is_whitespace()) {
+        return None;
+    }
+    Some(rest.trim_start())
+}
+
+/// Every `headers="…"` auth-param value in a cavage (or Authorization-carried
+/// cavage) signature value, tolerating optional whitespace around `=`.
+///
+/// Not a full auth-param parser: it only needs this one parameter's quoted
+/// list. Two things it must get right, though. The name is anchored to the
+/// start of a comma-separated segment, so it cannot match inside an unrelated
+/// parameter — a `keyId` of `"webhook-headers-key"`, or a base64 `signature`
+/// that happens to spell it. And *every* match is yielded rather than the
+/// first, so a decoy segment crafted inside another parameter's quoted value
+/// cannot shadow the real parameter. Missing either one reports a signed body
+/// as unsigned, which is the redaction-then-rejection this module exists to
+/// prevent. The covered list is space-separated, so splitting on `,` never
+/// splits the value itself.
+fn cavage_headers_params(value: &str) -> impl Iterator<Item = String> + '_ {
+    split_top_level_params(value).filter_map(|segment| {
+        let lowered = segment.trim().to_ascii_lowercase();
+        let rest = lowered.strip_prefix("headers")?.trim_start();
+        let rest = rest.strip_prefix('=')?.trim_start();
+        let rest = rest.strip_prefix('"')?;
+        rest.split_once('"').map(|(covered, _)| covered.to_owned())
+    })
+}
+
+/// Split `value` into its top-level, comma-separated auth-params, only
+/// splitting on a `,` that sits outside a double-quoted parameter value.
+///
+/// A naive `str::split(',')` lets a decoy segment hide inside another
+/// parameter's quoted value — e.g. a `keyId` crafted as
+/// `"x,headers=\"host\""` — and get mistaken for a genuine top-level
+/// `headers` parameter. This single-pass scan tracks quote state (with
+/// backslash-escape handling, so an escaped quote doesn't end the string
+/// early) and only treats a comma as a boundary while outside a quoted
+/// string.
+fn split_top_level_params(value: &str) -> impl Iterator<Item = &str> {
+    let mut segments = Vec::new();
+    let mut start = 0;
+    let mut in_quote = false;
+    let mut escaped = false;
+    for (idx, ch) in value.char_indices() {
+        if in_quote {
+            if escaped {
+                escaped = false;
+            } else if ch == '\\' {
+                escaped = true;
+            } else if ch == '"' {
+                in_quote = false;
+            }
+        } else {
+            match ch {
+                '"' => in_quote = true,
+                ',' => {
+                    segments.push(&value[start..idx]);
+                    start = idx + ch.len_utf8();
+                }
+                _ => {}
+            }
+        }
+    }
+    segments.push(&value[start..]);
+    segments.into_iter()
+}
+
+/// Whether `name` is present with a non-empty value in any field value.
+fn header_present(headers: &HeaderMap, name: &header::HeaderName) -> bool {
+    header_values(headers, name).any(|value| !value.is_empty())
+}
+
+/// The trimmed UTF-8 value of every field value named `name`, skipping any
+/// that are not valid UTF-8.
+fn header_values<'a>(
+    headers: &'a HeaderMap,
+    name: &header::HeaderName,
+) -> impl Iterator<Item = &'a str> + use<'a> {
+    headers
+        .get_all(name)
+        .iter()
+        .filter_map(|value| value.to_str().ok())
+        .map(str::trim)
 }
 
 /// The trimmed UTF-8 value of `name`, if it is present and not binary.
@@ -201,20 +343,115 @@ mod tests {
     fn message_signature_needs_a_content_digest_component() {
         assert_eq!(
             scheme(
-                &[(
-                    "signature-input",
-                    r#"sig1=("@method" "@authority" "content-digest");created=1618884473"#
-                )],
+                &[
+                    (
+                        "signature-input",
+                        r#"sig1=("@method" "@authority" "content-digest");created=1618884473"#
+                    ),
+                    ("signature", "sig1=:abc:")
+                ],
                 "https://api.example.com/v1"
             ),
             Some(SignedBodyScheme::HttpMessageSignature)
         );
         assert_eq!(
             scheme(
+                &[
+                    (
+                        "signature-input",
+                        r#"sig1=("@method" "@authority");created=1618884473"#
+                    ),
+                    ("signature", "sig1=:abc:")
+                ],
+                "https://api.example.com/v1"
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn message_signature_input_alone_without_a_signature_header_is_not_detected() {
+        assert_eq!(
+            scheme(
                 &[(
                     "signature-input",
-                    r#"sig1=("@method" "@authority");created=1618884473"#
+                    r#"sig1=("@method" "@authority" "content-digest");created=1618884473"#
                 )],
+                "https://api.example.com/v1"
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn message_signature_input_repeated_field_value_is_scanned() {
+        let mut map = HeaderMap::new();
+        map.append(
+            SIGNATURE_INPUT,
+            header::HeaderValue::from_static(r#"sig1=("@method" "@authority");created=1618884473"#),
+        );
+        map.append(
+            SIGNATURE_INPUT,
+            header::HeaderValue::from_static(
+                r#"sig2=("@method" "@authority" "content-digest");created=1618884474"#,
+            ),
+        );
+        map.insert(SIGNATURE, header::HeaderValue::from_static("sig1=:abc:"));
+        assert_eq!(
+            body_signature_scheme(&map, &"https://api.example.com/v1".parse::<Uri>().unwrap()),
+            Some(SignedBodyScheme::HttpMessageSignature)
+        );
+    }
+
+    /// A `Signature-Input` parameter (not the covered-component list) that
+    /// merely mentions `content-digest` must not be mistaken for coverage —
+    /// only a component named inside the `(...)` list counts.
+    #[test]
+    fn message_signature_param_value_naming_content_digest_does_not_count() {
+        assert_eq!(
+            scheme(
+                &[
+                    (
+                        "signature-input",
+                        r#"sig1=("@method");tag="content-digest""#
+                    ),
+                    ("signature", "sig1=:abc:")
+                ],
+                "https://api.example.com/v1"
+            ),
+            None
+        );
+    }
+
+    /// Guard against over-tightening: a genuine covered component is still
+    /// detected once it sits inside the component list.
+    #[test]
+    fn message_signature_covered_component_is_still_detected() {
+        assert_eq!(
+            scheme(
+                &[
+                    ("signature-input", r#"sig1=("@method" "content-digest")"#),
+                    ("signature", "sig1=:abc:")
+                ],
+                "https://api.example.com/v1"
+            ),
+            Some(SignedBodyScheme::HttpMessageSignature)
+        );
+    }
+
+    /// A parenthesised decoy hiding inside a quoted parameter value must not
+    /// be mistaken for the covered-component list either.
+    #[test]
+    fn message_signature_parenthesized_decoy_in_param_value_does_not_count() {
+        assert_eq!(
+            scheme(
+                &[
+                    (
+                        "signature-input",
+                        r#"sig1=("@method");tag="(\"content-digest\")""#
+                    ),
+                    ("signature", "sig1=:abc:")
+                ],
                 "https://api.example.com/v1"
             ),
             None
@@ -242,6 +479,81 @@ mod tests {
                 "https://api.example.com/v1"
             ),
             None
+        );
+    }
+
+    #[test]
+    fn cavage_signature_carried_in_authorization_is_detected() {
+        assert_eq!(
+            scheme(
+                &[(
+                    "authorization",
+                    r#"Signature keyId="k",algorithm="hs2019",headers="(request-target) digest",signature="abc""#
+                )],
+                "https://api.example.com/v1"
+            ),
+            Some(SignedBodyScheme::CavageSignature)
+        );
+    }
+
+    /// A `keyId` that merely contains the substring `headers` must not shadow
+    /// the real parameter — missing it would redact a signed body.
+    #[test]
+    fn cavage_headers_param_is_found_past_a_keyid_containing_its_name() {
+        assert_eq!(
+            scheme(
+                &[(
+                    "signature",
+                    r#"keyId="webhook-headers-key",headers="(request-target) digest",signature="abc""#
+                )],
+                "https://api.example.com/v1"
+            ),
+            Some(SignedBodyScheme::CavageSignature)
+        );
+    }
+
+    /// A decoy `headers="…"` crafted inside another parameter's quoted value
+    /// must not shadow the genuine parameter either.
+    #[test]
+    fn cavage_decoy_headers_param_does_not_shadow_the_real_one() {
+        assert_eq!(
+            scheme(
+                &[(
+                    "signature",
+                    r#"keyId="x,headers="host"",headers="(request-target) digest",signature="abc""#
+                )],
+                "https://api.example.com/v1"
+            ),
+            Some(SignedBodyScheme::CavageSignature)
+        );
+    }
+
+    /// A comma inside a quoted parameter value must not be mistaken for a
+    /// top-level auth-param boundary — here `keyId`'s quoted value contains
+    /// `,headers = "digest"`, but there is no genuine top-level `headers`
+    /// parameter.
+    #[test]
+    fn cavage_comma_inside_quoted_value_is_not_a_param_boundary() {
+        assert_eq!(
+            scheme(
+                &[("signature", r#"keyId="x,headers = "digest"""#)],
+                "https://api.example.com/v1"
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn cavage_headers_param_tolerates_whitespace_around_equals() {
+        assert_eq!(
+            scheme(
+                &[(
+                    "signature",
+                    r#"keyId="k",algorithm="hs2019",headers = "(request-target) digest",signature="abc""#
+                )],
+                "https://api.example.com/v1"
+            ),
+            Some(SignedBodyScheme::CavageSignature)
         );
     }
 

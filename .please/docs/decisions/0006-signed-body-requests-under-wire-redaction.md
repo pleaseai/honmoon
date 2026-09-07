@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted.
+Accepted
 
 ## Context
 
@@ -43,13 +43,20 @@ long-lived secrets.
 `honmoon-proxy::signed_body::body_signature_scheme`:
 
 - **AWS SigV4** — an `Authorization` starting with `AWS4-HMAC-SHA256` or `AWS4-ECDSA-P256-SHA256`
-  (SigV4A), a presigned `X-Amz-Algorithm=AWS4-…` query parameter, or a bare hex
-  `x-amz-content-sha256` payload hash. **Exception:** `x-amz-content-sha256: UNSIGNED-PAYLOAD` or
+  (SigV4A), a presigned `X-Amz-Algorithm=AWS4-…` query parameter, or — as a deliberately
+  conservative fallback — a bare hex `x-amz-content-sha256` payload hash. That header is an
+  integrity check, not itself a signature, but a hash of the exact body bytes is inseparable from
+  whatever signed those bytes, so treating it as body-binding errs toward fail-closed rather than
+  risking a silent signature mismatch. **Exception:** `x-amz-content-sha256: UNSIGNED-PAYLOAD` or
   `STREAMING-UNSIGNED-PAYLOAD…` declares the body explicitly out of the signature, so those stay
   redactable.
-- **RFC 9421 message signatures** — `Signature-Input` naming a `"content-digest"` component.
-  Without that component the signature does not cover the body.
-- **draft-cavage** — `Signature` whose `headers="…"` list contains `digest` or `content-digest`.
+- **RFC 9421 message signatures** — a `Signature` header alongside `Signature-Input` (RFC 9421
+  requires both; `Signature-Input` may repeat across field values, all of which are scanned)
+  naming a `"content-digest"` component. Without that component the signature does not cover the
+  body.
+- **draft-cavage** — a `Signature` header, or an `Authorization: Signature …` value, whose
+  `headers="…"` parameter (tolerating whitespace around `=`) contains `digest` or
+  `content-digest`.
 
 Everything else — bearer tokens, Basic auth, API keys, bare digest headers — is not body-signed
 and keeps being redacted.
