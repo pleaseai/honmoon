@@ -1,0 +1,19 @@
+mise.lock
+  s_41e73183489d8e::t_6fb7e0e7a2f37b 1-13
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "e26a8bd1bbceb24b0095ca2b707abd514414ff71",
+  "prompts": {},
+  "sessions": {
+    "s_41e73183489d8e": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a5ebb651-4916-416e-b3b1-1683dd0ae675",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
