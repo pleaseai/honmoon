@@ -12,6 +12,8 @@
 //! validator the rewrite path already strips — treating any of those as
 //! body-signed would strand ordinary API traffic unredacted.
 
+use std::collections::HashSet;
+
 use hudsucker::hyper::{HeaderMap, Uri, header};
 
 const X_AMZ_CONTENT_SHA256: header::HeaderName =
@@ -120,17 +122,28 @@ fn aws_sigv4_authenticates(headers: &HeaderMap, uri: &Uri) -> bool {
     signed_authorization || presigned
 }
 
-/// RFC 9421: the signature covers the body only when a `Signature-Input`
-/// component list names `"content-digest"` *and* a `Signature` header is also
-/// present. RFC 9421 requires both fields — a request carrying only
-/// `Signature-Input` is not signed at all. `Signature-Input` is a dictionary
-/// field that may legally repeat across multiple field values, so every value
-/// is scanned rather than only the first.
+/// RFC 9421: the signature covers the body only when some `Signature-Input`
+/// member's component list names `"content-digest"` *and* `Signature` also
+/// carries an entry under that exact member's label.
+///
+/// `Signature-Input` and `Signature` are both dictionaries keyed by the same
+/// labels (e.g. `sig1`); a member of `Signature-Input` is only actually
+/// signed when `Signature` carries an entry under that same label — naming
+/// `content-digest` in one member's component list says nothing about a
+/// *different* member that happens to be the one actually signed. Both
+/// fields may legally repeat across multiple field values, so every value of
+/// both is scanned, and labels are matched across all of them rather than
+/// only within a single field value.
 fn message_signature_covers_content_digest(headers: &HeaderMap) -> bool {
-    if !header_present(headers, &SIGNATURE) {
+    let signed_labels: HashSet<String> = header_values(headers, &SIGNATURE)
+        .flat_map(signature_member_labels)
+        .collect();
+    if signed_labels.is_empty() {
         return false;
     }
-    header_values(headers, &SIGNATURE_INPUT).any(signature_input_lists_content_digest)
+    header_values(headers, &SIGNATURE_INPUT)
+        .flat_map(signature_input_content_digest_labels)
+        .any(|label| signed_labels.contains(&label))
 }
 
 /// RFC 9421: whether the request carries a `Signature-Input` + `Signature`
@@ -139,8 +152,47 @@ fn message_signature_covers_content_digest(headers: &HeaderMap) -> bool {
 /// whole point of the scheme — so this is broader than
 /// [`message_signature_covers_content_digest`], which only cares about the
 /// body.
+///
+/// This is deliberately kept broad, unlike the strict per-label matching
+/// above: this predicate only gates whether callers may mutate request
+/// headers (over-inclusion is fail-safe — it just means a header is left
+/// alone), while over-inclusion in the content-digest predicate would let an
+/// unsigned body slip through redaction as if it were signed. Do not tighten
+/// this one to require a matching label merely for symmetry with the other.
 fn message_signature_present(headers: &HeaderMap) -> bool {
     header_present(headers, &SIGNATURE) && header_present(headers, &SIGNATURE_INPUT)
+}
+
+/// The dictionary-member labels (e.g. `sig1`) inside a `Signature-Input`
+/// field value whose parenthesised component list names `"content-digest"`.
+///
+/// A member is `label=value`, members separated by a top-level comma (see
+/// [`split_top_level_params`]). The label is the token before the member's
+/// first `=`, trimmed of whitespace. Labels are normalized to lowercase for
+/// the comparison in [`message_signature_covers_content_digest`] — dictionary
+/// keys are case-sensitive tokens per Structured Fields, but signature labels
+/// are lowercase in practice, and both sides of that comparison are
+/// normalized identically, so this cannot turn a mismatch into a false match.
+fn signature_input_content_digest_labels(value: &str) -> impl Iterator<Item = String> + '_ {
+    split_top_level_params(value).filter_map(|member| {
+        let (label, rest) = member.split_once('=')?;
+        let label = label.trim();
+        if label.is_empty() || !signature_input_lists_content_digest(rest) {
+            return None;
+        }
+        Some(label.to_ascii_lowercase())
+    })
+}
+
+/// The dictionary-member labels present in a `Signature` field value, e.g.
+/// `sig1` and `sig2` in `sig1=:abc:, sig2=:def:`. Normalized to lowercase to
+/// match [`signature_input_content_digest_labels`].
+fn signature_member_labels(value: &str) -> impl Iterator<Item = String> + '_ {
+    split_top_level_params(value).filter_map(|member| {
+        let (label, _) = member.split_once('=')?;
+        let label = label.trim();
+        (!label.is_empty()).then(|| label.to_ascii_lowercase())
+    })
 }
 
 /// Whether the parenthesised component list of a `Signature-Input` member —
@@ -250,21 +302,26 @@ fn cavage_headers_params(value: &str) -> impl Iterator<Item = String> + '_ {
     })
 }
 
-/// Split `value` into its top-level, comma-separated auth-params, only
-/// splitting on a `,` that sits outside a double-quoted parameter value.
+/// Split `value` into its top-level, comma-separated members, only splitting
+/// on a `,` that sits outside a double-quoted value and outside a
+/// parenthesised group.
 ///
 /// A naive `str::split(',')` lets a decoy segment hide inside another
-/// parameter's quoted value — e.g. a `keyId` crafted as
-/// `"x,headers=\"host\""` — and get mistaken for a genuine top-level
-/// `headers` parameter. This single-pass scan tracks quote state (with
-/// backslash-escape handling, so an escaped quote doesn't end the string
-/// early) and only treats a comma as a boundary while outside a quoted
-/// string.
+/// member's quoted value — e.g. a `keyId` crafted as `"x,headers=\"host\""`,
+/// or an RFC 9421 component list's own `;name="a,b"` parameter — and get
+/// mistaken for a genuine top-level boundary. This single-pass scan tracks
+/// quote state (with backslash-escape handling, so an escaped quote doesn't
+/// end the string early) and paren depth, and only treats a comma as a
+/// boundary while outside both. Paren tracking is only relevant to RFC 9421
+/// `Signature-Input` values, whose component list is itself
+/// parenthesised; cavage callers pass values that contain no parens, so
+/// depth simply stays 0 there and behavior is unchanged.
 fn split_top_level_params(value: &str) -> impl Iterator<Item = &str> {
     let mut segments = Vec::new();
     let mut start = 0;
     let mut in_quote = false;
     let mut escaped = false;
+    let mut depth: u32 = 0;
     for (idx, ch) in value.char_indices() {
         if in_quote {
             if escaped {
@@ -277,7 +334,9 @@ fn split_top_level_params(value: &str) -> impl Iterator<Item = &str> {
         } else {
             match ch {
                 '"' => in_quote = true,
-                ',' => {
+                '(' => depth += 1,
+                ')' => depth = depth.saturating_sub(1),
+                ',' if depth == 0 => {
                     segments.push(&value[start..idx]);
                     start = idx + ch.len_utf8();
                 }
@@ -482,7 +541,14 @@ mod tests {
                 r#"sig2=("@method" "@authority" "content-digest");created=1618884474"#,
             ),
         );
-        map.insert(SIGNATURE, header::HeaderValue::from_static("sig1=:abc:"));
+        // `sig2` — the member whose component list names `content-digest` — has to
+        // carry a `Signature` entry of its own, or the component says nothing about
+        // what was actually signed. Only the *second* `Signature-Input` field value
+        // names it, so a scan that stopped at the first value would find nothing.
+        map.insert(
+            SIGNATURE,
+            header::HeaderValue::from_static("sig1=:abc:, sig2=:def:"),
+        );
         assert_eq!(
             body_signature_scheme(&map, &"https://api.example.com/v1".parse::<Uri>().unwrap()),
             Some(SignedBodyScheme::HttpMessageSignature)
@@ -541,6 +607,81 @@ mod tests {
                 "https://api.example.com/v1"
             ),
             None
+        );
+    }
+
+    /// The defect this label-matching fix closes: `sig2` names
+    /// `content-digest`, but only `sig1` is actually signed. Without matching
+    /// labels, this would be misclassified as body-signed even though the
+    /// member that covers the digest was never signed.
+    #[test]
+    fn message_signature_content_digest_label_not_signed_is_not_detected() {
+        assert_eq!(
+            scheme(
+                &[
+                    (
+                        "signature-input",
+                        r#"sig1=("@method"), sig2=("@method" "content-digest")"#
+                    ),
+                    ("signature", "sig1=:abc:")
+                ],
+                "https://api.example.com/v1"
+            ),
+            None
+        );
+    }
+
+    /// Same component lists, but this time the label that names
+    /// `content-digest` (`sig2`) is the one actually signed — detected.
+    #[test]
+    fn message_signature_content_digest_label_signed_is_detected() {
+        assert_eq!(
+            scheme(
+                &[
+                    (
+                        "signature-input",
+                        r#"sig1=("@method"), sig2=("@method" "content-digest")"#
+                    ),
+                    ("signature", "sig2=:abc:")
+                ],
+                "https://api.example.com/v1"
+            ),
+            Some(SignedBodyScheme::HttpMessageSignature)
+        );
+    }
+
+    /// The digest-covering label just needs to appear somewhere in
+    /// `Signature`'s member list, not be the only one signed.
+    #[test]
+    fn message_signature_content_digest_label_signed_among_others_is_detected() {
+        assert_eq!(
+            scheme(
+                &[
+                    (
+                        "signature-input",
+                        r#"sig1=("@method"), sig2=("@method" "content-digest")"#
+                    ),
+                    ("signature", "sig1=:abc:, sig2=:def:")
+                ],
+                "https://api.example.com/v1"
+            ),
+            Some(SignedBodyScheme::HttpMessageSignature)
+        );
+    }
+
+    /// Regression guard for the ordinary single-member case: the covering
+    /// label is the only label and it is signed.
+    #[test]
+    fn message_signature_single_member_label_match_is_detected() {
+        assert_eq!(
+            scheme(
+                &[
+                    ("signature-input", r#"sig1=("@method" "content-digest")"#),
+                    ("signature", "sig1=:abc:")
+                ],
+                "https://api.example.com/v1"
+            ),
+            Some(SignedBodyScheme::HttpMessageSignature)
         );
     }
 
