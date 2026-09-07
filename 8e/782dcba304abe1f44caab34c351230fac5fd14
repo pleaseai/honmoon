@@ -1,0 +1,27 @@
+apps/dashboard/src/hooks.ts
+  s_902373723c7609::t_caae1c071e44a0 16-21,33-36,38,41-51,54-59
+apps/dashboard/src/components/PolicyView.tsx
+  s_902373723c7609::t_caae1c071e44a0 157-159
+apps/dashboard/src/hooks.test.tsx
+  s_902373723c7609::t_fa6fb17860573c 12,128-181
+  s_902373723c7609::t_f3d03ea85e8d2c 182-183
+  s_902373723c7609::t_f3ac2bfd67281c 1
+apps/dashboard/src/App.tsx
+  s_902373723c7609::t_0d1f1d638d69cf 53-60,72-73,101
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.0",
+  "base_commit_sha": "8e782dcba304abe1f44caab34c351230fac5fd14",
+  "prompts": {},
+  "sessions": {
+    "s_902373723c7609": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "64c3915b-524b-48d1-a84c-707e6522a694",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "DANNY NA <danny@pusan.ac.kr>"
+    }
+  }
+}

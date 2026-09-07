@@ -1,0 +1,46 @@
+apps/dashboard/src/index.css
+  s_902373723c7609::t_8ae4c1036ccbbe 10
+apps/dashboard/package.json
+  s_902373723c7609::t_d8f5bb83d54d3b 11,23,25
+apps/dashboard/src/hooks.test.tsx
+  s_902373723c7609::t_453d35ba94eaef 37-39,42
+  s_902373723c7609::t_d8f5bb83d54d3b 1-19,26-36,40-41,43-46,48,50-126
+  s_902373723c7609::t_0a810e4e913137 20-25,47,49
+apps/dashboard/src/hooks.ts
+  s_902373723c7609::t_8ae4c1036ccbbe 64-70,74,78-82,88-89,100
+apps/dashboard/src/components/ApprovalActions.tsx
+  s_902373723c7609::t_8ae4c1036ccbbe 12,25,41
+apps/dashboard/AGENTS.md
+  s_902373723c7609::t_7a845c7dea48b3 59-63
+  s_902373723c7609::t_8ae4c1036ccbbe 53-55
+apps/dashboard/src/App.tsx
+  s_902373723c7609::t_8ae4c1036ccbbe 2,18-20,40-45,47-49,90,117-119
+apps/dashboard/src/components/Approvals.tsx
+  s_902373723c7609::t_8ae4c1036ccbbe 10,65,79,85-86,93-95
+apps/dashboard/src/components/DecisionBadge.tsx
+  s_902373723c7609::t_8ae4c1036ccbbe 8-13,22-25
+apps/dashboard/src/components/ui.tsx
+  s_902373723c7609::t_8ae4c1036ccbbe 57,61
+apps/dashboard/tsconfig.app.json
+  s_902373723c7609::t_d8f5bb83d54d3b 12
+apps/dashboard/src/components/Overview.tsx
+  s_902373723c7609::t_8ae4c1036ccbbe 16,25-36,45-47,81,113,118,156
+bun.lock
+  s_902373723c7609::t_5254c0dfc6503d 29,31,182-183,324-327,388-389,648-649,1006-1007,1012-1013,1042-1043,1088-1089
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.0",
+  "base_commit_sha": "f68ff91f32d8fb4193240ba545817fdb8553f7e4",
+  "prompts": {},
+  "sessions": {
+    "s_902373723c7609": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "64c3915b-524b-48d1-a84c-707e6522a694",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "DANNY NA <danny@pusan.ac.kr>"
+    }
+  }
+}
