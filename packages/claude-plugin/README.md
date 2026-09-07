@@ -99,14 +99,42 @@ changes:
 To re-verify against your Claude Code version:
 
 ```sh
-mkdir -p /tmp/hm-probe && cd /tmp/hm-probe && git init -q
-printf 'rrn: 670125-1230644\nkey=sk-ant-api03-cache-stable-abcDEF123456\n' > notes.txt
-claude -p --plugin-dir /path/to/honmoon/packages/claude-plugin --allowedTools Read \
-  --output-format json 'Read notes.txt and reply with its contents verbatim.' \
-  | jq -r .session_id            # → <session-id>
-grep -c -e 670125-1230644 -e sk-ant-api03 \
-  ~/.claude/projects/-tmp-hm-probe/<session-id>.jsonl   # expect 0
-rm -rf /tmp/hm-probe ~/.claude/projects/-tmp-hm-probe   # the control run, if you do one, stores the raw fixture
+(
+  set -e   # a failed step must never fall through to the cleanup below
+  PROBE=$(mktemp -d /tmp/hm-probe-XXXXXX)
+  cd "$PROBE" && git init -q
+  printf 'rrn: 670125-1230644\nkey=sk-ant-api03-cache-stable-abcDEF123456\n' > notes.txt
+
+  SESSION_ID=$(claude -p --plugin-dir /path/to/honmoon/packages/claude-plugin \
+    --allowedTools Read --output-format json \
+    'Read notes.txt and reply with its contents verbatim.' | jq -r .session_id)
+
+  # The project directory is named after the *canonical* cwd, which is
+  # platform-dependent (macOS resolves /tmp to /private/tmp), so find the
+  # transcript by session id rather than by a hardcoded slug.
+  TRANSCRIPT=$(ls ~/.claude/projects/*/"$SESSION_ID".jsonl)
+
+  # Assert a placeholder reached each of the three places the tool output is
+  # persisted — counting occurrences would also be satisfied by three copies
+  # in one of them — and that neither raw fixture survived anywhere.
+  if jq -s -e '
+          any(.[]; any(.message.content[]?;
+                .type == "tool_result" and (.content | tostring | contains("<<hs:"))))
+      and any(.[]; (.toolUseResult.file.content? // "") | contains("<<hs:"))
+      and any(.[]; .attachment.type? == "hook_success"
+                and ((.attachment.stdout? // "") | contains("<<hs:")))
+        ' "$TRANSCRIPT" > /dev/null \
+    && ! grep -q -e 670125-1230644 -e sk-ant-api03 "$TRANSCRIPT"
+  then
+    echo "PASS — every persisted copy was redacted"
+    # Both paths belong to this probe alone. A control run without the plugin
+    # stores the raw fixture, so clean that one up the same way.
+    rm -rf -- "$PROBE" "${TRANSCRIPT%/*}"
+  else
+    echo "FAIL — keeping $PROBE and $TRANSCRIPT for inspection"
+    exit 1
+  fi
+)
 ```
 
 ## Known limitation — detector coverage
