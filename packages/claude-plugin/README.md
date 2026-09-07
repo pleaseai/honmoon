@@ -112,7 +112,12 @@ To re-verify against your Claude Code version:
   # The project directory is named after the *canonical* cwd, which is
   # platform-dependent (macOS resolves /tmp to /private/tmp), so find the
   # transcript by session id rather than by a hardcoded slug.
-  TRANSCRIPT=$(ls ~/.claude/projects/*/"$SESSION_ID".jsonl)
+  set -- ~/.claude/projects/*/"$SESSION_ID".jsonl
+  TRANSCRIPT=$1
+  if [ ! -f "$TRANSCRIPT" ]; then
+    echo "FAIL — no transcript found for session $SESSION_ID"
+    exit 1
+  fi
 
   # Assert a placeholder reached each of the three places the tool output is
   # persisted — counting occurrences would also be satisfied by three copies
