@@ -181,8 +181,8 @@ enters the transcript — the plugin doubles as lightweight onboarding (no local
 needed).
 
 - [x] Claude Code plugin with redaction hooks (#19, `packages/claude-plugin/`): `PostToolUse`
-  on `Read` replaces the tool result via `updatedToolOutput` (redacted in the model context;
-  transcript rewrite is version-dependent — see caveat); `UserPromptSubmit` blocks prompts
+  on `Read` replaces the tool result via `updatedToolOutput` (redacted in the model context
+  and in the persisted transcript — verified on 2.1.263, see exit criteria); `UserPromptSubmit` blocks prompts
   carrying secrets (hooks cannot rewrite a prompt — block + actionable reason); `PreToolUse`
   denies reads of known-sensitive paths (`.env*`, key files)
 - [x] New secret detector + redaction engine in `honmoon-core` (#19): `secret_detect`
@@ -205,10 +205,12 @@ needed).
 
 **Exit criteria**: reading a file with a valid-checksum RRN or an API key lands redacted in the
 model context via `PostToolUse` `updatedToolOutput`; a prompt carrying a secret is blocked with
-actionable feedback; same multi-turn body redacted twice is byte-identical (#20). Transcript
-caveat: `updatedToolOutput` is documented to replace what the model sees, but the docs do not
-guarantee the persisted `.jsonl` is rewritten — for known credential files the guaranteed
-transcript-hygiene path is the `PreToolUse` deny (never read ⇒ never transcribed).
+actionable feedback; same multi-turn body redacted twice is byte-identical (#20). Transcript: ✅
+verified on Claude Code 2.1.263 (#49) — the session `.jsonl` persists the `updatedToolOutput`
+value (`tool_result`, `toolUseResult`, and the hook-output log all carry the placeholder; zero raw
+occurrences), while a no-plugin control run persisted both raw values. Version-dependent, so the
+plugin README carries a re-verification recipe; for known credential files the `PreToolUse` deny
+remains the guaranteed path (never read ⇒ never transcribed).
 
 ---
 
