@@ -12,11 +12,13 @@ use std::time::{Duration, Instant};
 
 use honmoon_core::{MappingStore, Policy};
 use honmoon_proxy::approval::{ApprovalDecision, ApprovalRegistry};
-use honmoon_proxy::gateway::{GatewayState, PiiMode, RedactionState};
+use honmoon_proxy::gateway::{GatewayState, PiiMode, RedactionState, SignedBodyMode};
 
 const SECRET: &str = "sk-ant-api03-cache-stable-abcDEF123456";
 const RRN: &str = "670125-1230644";
 const SALT: &[u8] = b"proxy-wire-redaction-test-salt";
+const SIGV4: &str = "AWS4-HMAC-SHA256 Credential=AKIA/20260907/us-east-1/s3/aws4_request, \
+     SignedHeaders=host;x-amz-date, Signature=abc";
 
 const MAX_BODY: usize = 2 * 1024 * 1024;
 
@@ -153,10 +155,17 @@ fn start_upstream(mode: ResponseMode) -> (u16, Receiver<CapturedRequest>) {
 }
 
 fn start_proxy(redaction: bool) -> (u16, Option<Arc<MappingStore>>) {
+    start_proxy_with_signed_body(redaction, SignedBodyMode::default())
+}
+
+fn start_proxy_with_signed_body(
+    redaction: bool,
+    signed_body: SignedBodyMode,
+) -> (u16, Option<Arc<MappingStore>>) {
     let policy = Policy::from_yaml("egress:\n  default: allow\n").unwrap();
     let mut state = GatewayState::new(policy);
     let mappings = if redaction {
-        state.redaction = Some(RedactionState::new(SALT.to_vec()));
+        state.redaction = Some(RedactionState::new(SALT.to_vec()).with_signed_body(signed_body));
         Some(Arc::clone(&state.redaction.as_ref().unwrap().mappings))
     } else {
         None
@@ -795,4 +804,98 @@ fn redaction_is_off_by_default() {
     let request = captured.recv_timeout(Duration::from_secs(5)).unwrap();
     assert_eq!(request.body, body.as_bytes());
     assert_eq!(header_value(&request.headers, "accept-encoding"), None);
+}
+
+// A SigV4 `Authorization` covers the payload hash, so a rewritten body would be
+// rejected upstream with an opaque signature error. The default `block` mode
+// refuses the request locally instead — the secret never leaves the host.
+#[test]
+fn signed_body_request_with_secret_is_blocked_by_default() {
+    let (upstream, captured) = start_upstream(ResponseMode::Static(b"ok".to_vec()));
+    let (proxy, mappings) = start_proxy(true);
+    let body = format!("key={SECRET}");
+
+    let response = proxy_request(
+        proxy,
+        upstream,
+        body.as_bytes(),
+        &[("Authorization", SIGV4)],
+    );
+    let headers = response_headers(&response);
+    assert!(response.starts_with(b"HTTP/1.1 403"));
+    assert_eq!(
+        header_value(&headers, "x-honmoon-reason"),
+        Some("signed-body-redaction")
+    );
+    assert!(String::from_utf8_lossy(&response).contains("--signed-body forward"));
+    assert!(captured.recv_timeout(Duration::from_millis(250)).is_err());
+    assert_eq!(mappings.unwrap().len(), 0);
+}
+
+#[test]
+fn signed_body_request_with_secret_is_forwarded_unredacted_in_forward_mode() {
+    let (upstream, captured) = start_upstream(ResponseMode::Static(b"ok".to_vec()));
+    let (proxy, mappings) = start_proxy_with_signed_body(true, SignedBodyMode::Forward);
+    let body = format!("key={SECRET}");
+
+    let response = proxy_request(
+        proxy,
+        upstream,
+        body.as_bytes(),
+        &[("Authorization", SIGV4)],
+    );
+    assert!(response.starts_with(b"HTTP/1.1 200"));
+    let forwarded = captured.recv_timeout(Duration::from_secs(5)).unwrap();
+    assert_eq!(forwarded.body, body.as_bytes());
+    assert_eq!(
+        header_value(&forwarded.headers, "authorization"),
+        Some(SIGV4)
+    );
+    assert_eq!(
+        header_value(&forwarded.headers, "content-length"),
+        Some(body.len().to_string().as_str())
+    );
+    assert_eq!(mappings.unwrap().len(), 0);
+}
+
+#[test]
+fn signed_body_request_without_secret_is_forwarded_untouched() {
+    let (upstream, captured) = start_upstream(ResponseMode::Static(b"ok".to_vec()));
+    let (proxy, mappings) = start_proxy(true);
+    let body = b"key=nothing-to-redact";
+
+    let response = proxy_request(proxy, upstream, body, &[("Authorization", SIGV4)]);
+    assert!(response.starts_with(b"HTTP/1.1 200"));
+    let forwarded = captured.recv_timeout(Duration::from_secs(5)).unwrap();
+    assert_eq!(forwarded.body, body);
+    assert_eq!(
+        header_value(&forwarded.headers, "authorization"),
+        Some(SIGV4)
+    );
+    assert_eq!(mappings.unwrap().len(), 0);
+}
+
+// `UNSIGNED-PAYLOAD` says the signature does not cover the body, so redaction
+// stays on for the common S3 upload path.
+#[test]
+fn unsigned_payload_sigv4_request_is_still_redacted() {
+    let (upstream, captured) = start_upstream(ResponseMode::Static(b"ok".to_vec()));
+    let (proxy, mappings) = start_proxy(true);
+    let body = format!("key={SECRET}");
+
+    let response = proxy_request(
+        proxy,
+        upstream,
+        body.as_bytes(),
+        &[
+            ("Authorization", SIGV4),
+            ("x-amz-content-sha256", "UNSIGNED-PAYLOAD"),
+        ],
+    );
+    assert!(response.starts_with(b"HTTP/1.1 200"));
+    let forwarded = captured.recv_timeout(Duration::from_secs(5)).unwrap();
+    let text = String::from_utf8(forwarded.body).unwrap();
+    assert!(!text.contains(SECRET));
+    assert!(text.contains("<<hs:"));
+    assert_eq!(mappings.unwrap().len(), 1);
 }
