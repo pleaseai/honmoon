@@ -60,6 +60,21 @@ pub enum PiiMode {
     Block,
 }
 
+/// What to do with a request whose authentication signature covers the body
+/// when wire redaction would rewrite that body. Honmoon holds none of the
+/// client's signing credentials, so it cannot re-sign the rewritten payload.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum SignedBodyMode {
+    /// Reject the request locally with `403` — the secret is never sent, and
+    /// the failure is explained instead of surfacing as an opaque upstream
+    /// signature error. The default.
+    #[default]
+    Block,
+    /// Forward the original bytes unredacted (fail open), for operators who
+    /// trust the signed upstream.
+    Forward,
+}
+
 /// Wire-level secret redaction: present only when the operator opted in with
 /// `--redact-secrets`.
 #[derive(Clone)]
@@ -70,6 +85,8 @@ pub struct RedactionState {
     /// Live placeholder→secret store shared with the management hook endpoint —
     /// one gateway process, one mapping.
     pub mappings: Arc<MappingStore>,
+    /// How body-signed requests are handled when redaction would rewrite them.
+    pub signed_body: SignedBodyMode,
 }
 
 impl RedactionState {
@@ -81,7 +98,14 @@ impl RedactionState {
         Self {
             salt: Arc::new(salt),
             mappings: Arc::new(MappingStore::new()),
+            signed_body: SignedBodyMode::default(),
         }
+    }
+
+    /// Override the body-signed request policy (default [`SignedBodyMode::Block`]).
+    pub fn with_signed_body(mut self, mode: SignedBodyMode) -> Self {
+        self.signed_body = mode;
+        self
     }
 }
 

@@ -53,16 +53,18 @@ use crate::body::{
     Buffered, MAX_INSPECT_BODY, StrictDecode, buffer_up_to, decode_strict, detokenizing_body,
     prefixed_body, utf8_prefix,
 };
-use crate::gateway::{GatewayState, InterceptPolicy, PiiMode, canonical_host};
+use crate::gateway::{GatewayState, InterceptPolicy, PiiMode, SignedBodyMode, canonical_host};
+use crate::signed_body::{
+    BODY_DIGEST_HEADERS, SignedBodyScheme, authentication_signs_headers, body_signature_scheme,
+};
 
 /// Backstop cap on tracked tunnels. Entries are overwritten per client socket
 /// but never individually removed (hudsucker exposes no close event), so this
 /// bounds memory under long-running / hostile traffic.
 const MAX_TRACKED_TUNNELS: usize = 65_536;
-const CONTENT_MD5: header::HeaderName = header::HeaderName::from_static("content-md5");
-const DIGEST: header::HeaderName = header::HeaderName::from_static("digest");
-const CONTENT_DIGEST: header::HeaderName = header::HeaderName::from_static("content-digest");
-const REPR_DIGEST: header::HeaderName = header::HeaderName::from_static("repr-digest");
+/// Names why honmoon itself produced a response, so a client (or an agent
+/// reading the error) can tell it apart from an upstream failure.
+const HONMOON_REASON: header::HeaderName = header::HeaderName::from_static("x-honmoon-reason");
 
 /// CONNECT-authorized tunnels, keyed by the client socket address.
 ///
@@ -135,6 +137,9 @@ struct RedactionInput<'a> {
     pii_spans: &'a [PiiSpan],
     is_json: bool,
     host: &'a str,
+    /// Facts the caller already decided on, reused for the audit record when a
+    /// body-signed request is blocked here.
+    summary: &'a FactsSummary,
 }
 
 /// Outcome of the host-level policy gate.
@@ -300,11 +305,15 @@ impl HonmoonHandler {
     }
 
     /// Finalize a policy-approved request for the upstream leg.
+    ///
+    /// Usually a request, but wire redaction can end the request here: a
+    /// body-signed request whose payload would be rewritten is answered with a
+    /// local `403` under [`SignedBodyMode::Block`].
     fn forwarded_request(
         &self,
         mut request: Request<Body>,
         input: RedactionInput<'_>,
-    ) -> Request<Body> {
+    ) -> RequestOrResponse {
         let RedactionInput {
             scanned,
             decoded,
@@ -313,17 +322,38 @@ impl HonmoonHandler {
             pii_spans,
             is_json,
             host,
+            summary,
         } = input;
         let Some(redaction) = &self.state.redaction else {
-            return request;
+            return request.into();
         };
 
         // Ask upstreams for text we can safely detokenize on the response path.
         // A server may ignore this, in which case handle_response fails open.
-        request.headers_mut().insert(
-            header::ACCEPT_ENCODING,
-            header::HeaderValue::from_static("identity"),
-        );
+        //
+        // Two disjoint exemptions, and the rewrite is skipped when *either*
+        // holds. `authentication_signs_headers` covers requests whose headers
+        // are demonstrably signed: some SigV4 signers list `accept-encoding` in
+        // `SignedHeaders` even when the payload itself is unsigned
+        // (`UNSIGNED-PAYLOAD`), and RFC 9421 / draft-cavage signatures cover
+        // whichever headers their component or `headers=` list names.
+        // `signature_scheme` covers the converse case — a bare hex
+        // `x-amz-content-sha256` binds the body without any recognized
+        // signature, so we cannot tell whether the scheme that produced it also
+        // signs headers, and that request is forwarded verbatim under
+        // `--signed-body forward`. Neither predicate implies the other.
+        //
+        // Over-inclusion here is fail-safe: a compressed response is simply not
+        // detokenized, as everywhere else.
+        let signature_scheme = body_signature_scheme(request.headers(), request.uri());
+        if signature_scheme.is_none()
+            && !authentication_signs_headers(request.headers(), request.uri())
+        {
+            request.headers_mut().insert(
+                header::ACCEPT_ENCODING,
+                header::HeaderValue::from_static("identity"),
+            );
+        }
 
         // A partial upload's Content-Range describes the original body bytes;
         // rewriting the body would desynchronize the declared range from the
@@ -333,7 +363,7 @@ impl HonmoonHandler {
                 domain = %host,
                 "wire redaction bypassed for Content-Range (partial upload) request"
             );
-            return request;
+            return request.into();
         }
 
         let Some(_raw) = scanned else {
@@ -342,14 +372,14 @@ impl HonmoonHandler {
                 limit = MAX_INSPECT_BODY,
                 "wire redaction bypassed for over-cap request body"
             );
-            return request;
+            return request.into();
         };
         if content_encoding_present && content_encoding.is_none() {
             tracing::warn!(
                 domain = %host,
                 "wire redaction bypassed because Content-Encoding was not valid text"
             );
-            return request;
+            return request.into();
         }
         let Some(decoded) = decoded else {
             tracing::warn!(
@@ -357,7 +387,7 @@ impl HonmoonHandler {
                 encoding = ?content_encoding,
                 "wire redaction bypassed because request encoding was not fully decodable"
             );
-            return request;
+            return request.into();
         };
         // Rewriting a UTF-8 prefix would discard the remaining request bytes.
         // Only a fully decoded, fully valid text body is eligible for rewriting.
@@ -366,7 +396,7 @@ impl HonmoonHandler {
                 domain = %host,
                 "wire redaction bypassed because request body is not valid UTF-8"
             );
-            return request;
+            return request.into();
         };
         let outcome = if is_json {
             let (eligible_spans, skipped_json_spans) = quoted_json_spans(text, pii_spans);
@@ -387,7 +417,40 @@ impl HonmoonHandler {
             redact_with_spans(text, &redaction.salt, DEFAULT_MIN_PII_SEVERITY, pii_spans)
         };
         if !outcome.redacted {
-            return request;
+            return request.into();
+        }
+
+        // Honmoon holds none of the client's signing credentials, so it cannot
+        // re-sign a body it rewrote: forwarding the original signature over new
+        // bytes only earns an opaque upstream rejection. The decision belongs
+        // here, after the outcome is known — a signed request with nothing to
+        // redact is forwarded untouched.
+        if let Some(scheme) = signature_scheme {
+            return match redaction.signed_body {
+                SignedBodyMode::Forward => {
+                    tracing::warn!(
+                        domain = %host,
+                        scheme = scheme.label(),
+                        "wire redaction bypassed for body-signed request (fail open)"
+                    );
+                    request.into()
+                }
+                SignedBodyMode::Block => {
+                    tracing::warn!(
+                        domain = %host,
+                        scheme = scheme.label(),
+                        "body-signed request blocked: wire redaction would invalidate its signature"
+                    );
+                    self.state.audit.record(AuditDraft {
+                        decision: Decision::Denied,
+                        verdict: Verdict::Deny,
+                        rule: Some("wire-redaction/signed-body".to_owned()),
+                        facts: summary.clone(),
+                        approval_id: None,
+                    });
+                    signed_body_response(scheme)
+                }
+            };
         }
 
         let labels = outcome.labels();
@@ -411,12 +474,10 @@ impl HonmoonHandler {
         // compressed representation.
         request.headers_mut().remove(header::CONTENT_ENCODING);
         request.headers_mut().remove(header::TRANSFER_ENCODING);
-        for name in [CONTENT_MD5, DIGEST, CONTENT_DIGEST, REPR_DIGEST] {
+        for name in BODY_DIGEST_HEADERS {
             request.headers_mut().remove(name);
         }
-        // Honmoon cannot re-sign authenticated body bytes; signed-body requests
-        // are incompatible with wire redaction.
-        request
+        request.into()
     }
 
     /// Scan a request body for PII. Detect mode audits findings and forwards;
@@ -549,24 +610,23 @@ impl HonmoonHandler {
                     decision: Decision::Allowed,
                     verdict: outcome.verdict,
                     rule: outcome.rule,
-                    facts: summary,
+                    facts: summary.clone(),
                     approval_id: None,
                 });
             }
-            return self
-                .forwarded_request(
-                    forwarded,
-                    RedactionInput {
-                        scanned: scanned.as_deref(),
-                        decoded,
-                        content_encoding_present,
-                        content_encoding: content_encoding.as_deref(),
-                        pii_spans: &pii_spans,
-                        is_json,
-                        host: &host,
-                    },
-                )
-                .into();
+            return self.forwarded_request(
+                forwarded,
+                RedactionInput {
+                    scanned: scanned.as_deref(),
+                    decoded,
+                    content_encoding_present,
+                    content_encoding: content_encoding.as_deref(),
+                    pii_spans: &pii_spans,
+                    is_json,
+                    host: &host,
+                    summary: &summary,
+                },
+            );
         }
 
         match outcome.verdict {
@@ -581,7 +641,7 @@ impl HonmoonHandler {
                         decision: Decision::Allowed,
                         verdict: Verdict::Allow,
                         rule: outcome.rule,
-                        facts: summary,
+                        facts: summary.clone(),
                         approval_id: None,
                     });
                 }
@@ -595,9 +655,9 @@ impl HonmoonHandler {
                         pii_spans: &pii_spans,
                         is_json,
                         host: &host,
+                        summary: &summary,
                     },
                 )
-                .into()
             }
             Verdict::Deny => {
                 tracing::info!(domain = %host, rule = ?outcome.rule, "request denied by content policy");
@@ -619,23 +679,22 @@ impl HonmoonHandler {
                     outcome.rule.as_deref(),
                 );
                 match self
-                    .hold(&host, summary, outcome.rule, approval_summary)
+                    .hold(&host, summary.clone(), outcome.rule, approval_summary)
                     .await
                 {
-                    Gate::Proceed => self
-                        .forwarded_request(
-                            forwarded,
-                            RedactionInput {
-                                scanned: scanned.as_deref(),
-                                decoded,
-                                content_encoding_present,
-                                content_encoding: content_encoding.as_deref(),
-                                pii_spans: &pii_spans,
-                                is_json,
-                                host: &host,
-                            },
-                        )
-                        .into(),
+                    Gate::Proceed => self.forwarded_request(
+                        forwarded,
+                        RedactionInput {
+                            scanned: scanned.as_deref(),
+                            decoded,
+                            content_encoding_present,
+                            content_encoding: content_encoding.as_deref(),
+                            pii_spans: &pii_spans,
+                            is_json,
+                            host: &host,
+                            summary: &summary,
+                        },
+                    ),
                     Gate::Block(response) => *response,
                 }
             }
@@ -727,7 +786,7 @@ impl HttpHandler for HonmoonHandler {
         // deliver; leaving it would let a cache or range revalidation serve or
         // stitch stale content, so drop it with the other body validators.
         res.headers_mut().remove(header::ETAG);
-        for name in [CONTENT_MD5, DIGEST, CONTENT_DIGEST, REPR_DIGEST] {
+        for name in BODY_DIGEST_HEADERS {
             res.headers_mut().remove(name);
         }
         res
@@ -935,6 +994,30 @@ fn redact_json_with_spans(
         max_pii_severity,
         mapping,
     }
+}
+
+/// A `403` explaining that redaction cannot rewrite a body-signed request, so
+/// the operator sees an actionable local failure instead of an opaque upstream
+/// signature rejection.
+fn signed_body_response(scheme: SignedBodyScheme) -> RequestOrResponse {
+    let reason = format!(
+        "honmoon: request body is covered by {} and contains data that wire redaction would \
+         rewrite; the upstream would reject the re-signed body. Remove the sensitive value, or \
+         run the gateway with --signed-body forward to send it unredacted.\n",
+        scheme.description()
+    );
+    let length = reason.len();
+    Response::builder()
+        .status(StatusCode::FORBIDDEN)
+        .header(header::CONTENT_TYPE, "text/plain; charset=utf-8")
+        .header(header::CONTENT_LENGTH, length.to_string())
+        .header(HONMOON_REASON, "signed-body-redaction")
+        .header(header::CONNECTION, "close")
+        .body(Body::from(Full::new(hudsucker::hyper::body::Bytes::from(
+            reason,
+        ))))
+        .expect("static response is valid")
+        .into()
 }
 
 /// A `Content-Length: 0` response with the given status.

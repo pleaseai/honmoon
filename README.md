@@ -163,6 +163,37 @@ honmoon gateway --config policies/agent.yaml --tls-intercept --pii-mode block
 honmoon join --gateway honmoon.internal:8443
 ```
 
+### Wire redaction fail modes
+
+`--redact-secrets` (with `--tls-intercept`) rewrites intercepted request bodies before the
+upstream leg. Where it cannot rewrite safely it **fails open** — the original bytes are forwarded
+unredacted and a `warn` is logged: bodies over the 2 MiB inspection cap, non-UTF-8/binary bodies,
+bodies whose declared `Content-Encoding` cannot be decoded, and partial uploads carrying
+`Content-Range`. Compressed responses are not detokenized (the proxy asks upstreams for `identity`
+— except when the request's authentication signs headers or binds the body, since `Accept-Encoding`
+may itself be signed; those responses may arrive compressed and are then left as they are).
+
+**Body-signed requests are the exception that fails closed when redaction would change the
+body.** When a request's authentication covers its payload — AWS SigV4 (including presigned
+URLs), RFC 9421 message signatures or draft-cavage signatures over a body digest — honmoon
+holds no signing credentials and cannot re-sign the rewritten body, so the
+upstream would reject it with an opaque signature error. By default such a request is refused
+locally with `403`, an `X-Honmoon-Reason: signed-body-redaction` header, and an explanation:
+
+```bash
+# Default: refuse a body-signed request whose body would be redacted
+honmoon gateway --config policies/agent.yaml --tls-intercept --redact-secrets
+
+# Opt out: forward the original bytes unredacted (fail open) instead
+honmoon gateway --config policies/agent.yaml --tls-intercept --redact-secrets \
+  --signed-body forward
+```
+
+Bearer tokens, Basic auth, and API keys authenticate the caller rather than the bytes, so requests
+carrying them are redacted normally — as are SigV4 uploads that declare
+`x-amz-content-sha256: UNSIGNED-PAYLOAD`. A signed request with nothing to redact is always
+forwarded untouched. See [ADR-0006](.please/docs/decisions/0006-signed-body-requests-under-wire-redaction.md).
+
 ### What `honmoon run` enforces, and what it costs
 
 On **Linux and macOS**, the wrapped command is left with no network route that avoids the proxy.

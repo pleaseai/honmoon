@@ -13,7 +13,7 @@ use honmoon_core::{AuditLog, Policy};
 use honmoon_mgmt::AppState;
 use honmoon_proxy::ca::CaMaterial;
 use honmoon_proxy::gateway::{
-    DEFAULT_PAUSE_TIMEOUT, GatewayState, InterceptPolicy, PiiMode, RedactionState,
+    DEFAULT_PAUSE_TIMEOUT, GatewayState, InterceptPolicy, PiiMode, RedactionState, SignedBodyMode,
 };
 
 #[derive(Parser)]
@@ -82,6 +82,23 @@ enum Command {
         /// responses are not detokenized (the proxy requests identity encoding).
         #[arg(long, requires = "tls_intercept")]
         redact_secrets: bool,
+        /// What to do with a request whose authentication signature covers its
+        /// body (AWS SigV4, RFC 9421 message signatures over a content-digest,
+        /// draft-cavage over a digest) when redaction would rewrite that body.
+        /// Honmoon holds no signing credentials, so it cannot re-sign the
+        /// rewritten payload: block rejects the request locally with 403, so the
+        /// secret is never sent and the failure is explained instead of
+        /// surfacing as an opaque upstream signature error; forward sends the
+        /// original bytes unredacted (fail open) for operators who trust the
+        /// signed upstream. Signed requests with nothing to redact are never
+        /// affected.
+        #[arg(
+            long,
+            value_enum,
+            default_value_t = SignedBodyArg::Block,
+            requires = "redact_secrets"
+        )]
+        signed_body: SignedBodyArg,
         /// How detected PII policy verdicts are handled: detect audits the
         /// would-be verdict; block enforces allow/deny/pause inline.
         #[arg(long, value_enum, default_value_t = PiiModeArg::Detect)]
@@ -156,6 +173,7 @@ fn main() -> Result<()> {
             hook_salt_context,
             tls_intercept,
             redact_secrets,
+            signed_body,
             pii_mode,
             ca_cert,
             ca_key,
@@ -168,6 +186,7 @@ fn main() -> Result<()> {
             hook_salt_context,
             tls_intercept,
             redact_secrets,
+            signed_body,
             pii_mode,
             ca_cert,
             ca_key,
@@ -203,6 +222,21 @@ impl From<PiiModeArg> for PiiMode {
     }
 }
 
+#[derive(Clone, Copy, Debug, ValueEnum)]
+enum SignedBodyArg {
+    Block,
+    Forward,
+}
+
+impl From<SignedBodyArg> for SignedBodyMode {
+    fn from(mode: SignedBodyArg) -> Self {
+        match mode {
+            SignedBodyArg::Block => Self::Block,
+            SignedBodyArg::Forward => Self::Forward,
+        }
+    }
+}
+
 /// Parsed `honmoon gateway` arguments.
 struct GatewayArgs {
     config: PathBuf,
@@ -213,6 +247,7 @@ struct GatewayArgs {
     hook_salt_context: String,
     tls_intercept: bool,
     redact_secrets: bool,
+    signed_body: SignedBodyArg,
     pii_mode: PiiModeArg,
     ca_cert: Option<PathBuf>,
     ca_key: Option<PathBuf>,
@@ -239,6 +274,7 @@ fn gateway(args: GatewayArgs) -> Result<()> {
         hook_salt_context,
         tls_intercept,
         redact_secrets,
+        signed_body,
         pii_mode,
         ca_cert,
         ca_key,
@@ -283,7 +319,8 @@ fn gateway(args: GatewayArgs) -> Result<()> {
     };
 
     let salt = hook::derive_salt_context(&hook_salt_context);
-    let redaction = redact_secrets.then(|| RedactionState::new(salt.clone()));
+    let redaction = redact_secrets
+        .then(|| RedactionState::new(salt.clone()).with_signed_body(signed_body.into()));
     let state = GatewayState {
         policy: Arc::new(policy),
         audit,
