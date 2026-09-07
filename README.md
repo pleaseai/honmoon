@@ -169,7 +169,9 @@ honmoon join --gateway honmoon.internal:8443
 upstream leg. Where it cannot rewrite safely it **fails open** — the original bytes are forwarded
 unredacted and a `warn` is logged: bodies over the 2 MiB inspection cap, non-UTF-8/binary bodies,
 bodies whose declared `Content-Encoding` cannot be decoded, and partial uploads carrying
-`Content-Range`. Compressed responses are not detokenized (the proxy asks upstreams for `identity`).
+`Content-Range`. Compressed responses are not detokenized (the proxy asks upstreams for `identity`
+— except when the request's authentication signs headers, since `Accept-Encoding` may itself be
+signed; those responses may arrive compressed and are then left as they are).
 
 **Body-signed requests are the exception that fails closed when redaction would change the
 body.** When a request's authentication covers its payload — AWS SigV4 (including presigned
