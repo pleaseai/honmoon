@@ -17,5 +17,9 @@ bun.lockb
 .vscode/
 *.log
 
+# Claude Code local project instructions — .worktreeinclude only copies
+# files that are git-ignored, so this rule is what makes that entry work.
+CLAUDE.local.md
+
 # please plugin runtime state
 .please/state/

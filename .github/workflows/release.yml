@@ -43,14 +43,15 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
 
-      # The tag is the source of truth on a tag push; on workflow_dispatch there is no tag,
-      # so the manifests are only checked against each other. Either way every manifest has
-      # to agree, and the failure message names the file that disagrees.
+      # The tag is the source of truth on a tag push. A workflow_dispatch run can be
+      # launched against a `v*` tag ref too, so IS_TAG checks the event rather than the
+      # ref alone — otherwise a manual dry run would be graded against that tag. Either
+      # way every manifest has to agree, and the failure message names the one that does not.
       - name: Check Cargo.toml and every package.json agree
         id: check
         env:
           REF_NAME: ${{ github.ref_name }}
-          IS_TAG: ${{ startsWith(github.ref, 'refs/tags/v') }}
+          IS_TAG: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') }}
         run: |
           set -euo pipefail
 
@@ -166,7 +167,9 @@ jobs:
   release:
     name: Publish GitHub Release
     needs: [verify-version, build]
-    if: startsWith(github.ref, 'refs/tags/v')
+    # Tag pushes only. A `workflow_dispatch` run selected against a `v*` tag has
+    # a matching `github.ref`, and the manual run is documented as a dry run.
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     permissions:
       contents: write

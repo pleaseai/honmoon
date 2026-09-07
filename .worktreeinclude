@@ -11,5 +11,5 @@
 # Claude Code local settings (permissions, env)
 .claude/settings.local.json
 
-# Claude Code local project instructions (gitignored globally)
+# Claude Code local project instructions
 CLAUDE.local.md

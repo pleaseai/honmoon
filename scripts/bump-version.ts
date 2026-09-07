@@ -17,9 +17,21 @@ import { readdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import process from 'node:process'
 
-/** semver core plus optional pre-release / build metadata (semver.org BNF). */
-const SEMVER
-  = /^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)(?:-[0-9a-z-]+(?:\.[0-9a-z-]+)*)?(?:\+[0-9a-z-]+(?:\.[0-9a-z-]+)*)?$/i
+/**
+ * semver core plus optional pre-release / build metadata (semver.org BNF).
+ *
+ * A *numeric* pre-release identifier may not carry a leading zero (`1.0.0-01`
+ * is not a semver version, and `cargo` rejects it outright), while build
+ * metadata may — so the two halves are spelled differently, as the BNF has it.
+ * Getting this wrong would rewrite every manifest and only then fail in cargo.
+ */
+const PRE_RELEASE_ID = String.raw`(?:0|[1-9]\d*|\d*[a-z-][0-9a-z-]*)`
+const SEMVER = new RegExp(
+  String.raw`^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)`
+  + String.raw`(?:-${PRE_RELEASE_ID}(?:\.${PRE_RELEASE_ID})*)?`
+  + String.raw`(?:\+[0-9a-z-]+(?:\.[0-9a-z-]+)*)?$`,
+  'i',
+)
 
 /** Workspace roots scanned for member `package.json` files, in bump order. */
 const WORKSPACE_DIRS = ['packages', 'apps']
@@ -34,22 +46,30 @@ export function isValidSemver(version: string): boolean {
  * Cargo manifests carry a `version` key in several tables (`[package]`,
  * `[workspace.dependencies]` entries, …), so the rewrite is scoped by tracking
  * the enclosing table header rather than replacing the first match.
+ *
+ * Throws when the table has no version line: silently returning the manifest
+ * unchanged would let the other manifests bump past `Cargo.toml`.
  */
 export function bumpCargoToml(text: string, version: string): string {
   let table = ''
   let done = false
-  return text
+  const bumped = text
     .split('\n')
     .map((line) => {
       const header = /^\s*\[([^\]]+)\]/.exec(line)
       if (header) {
-        table = header[1]
+        // `[ workspace.package ]` is valid TOML — trim so the optional inner
+        // whitespace does not make the name miss its comparison below.
+        table = header[1].trim()
         return line
       }
       if (done || table !== 'workspace.package') {
         return line
       }
-      const match = /^(\s*version\s*=\s*")[^"]*(")/.exec(line)
+      // The trailing capture keeps whatever follows the closing quote: an
+      // inline `# comment`, or the `\r` of a CRLF manifest. `\r` is a line
+      // terminator, so `.` cannot match it and it needs its own alternative.
+      const match = /^(\s*version\s*=\s*")[^"]*(".*\r?)$/.exec(line)
       if (!match) {
         return line
       }
@@ -57,20 +77,31 @@ export function bumpCargoToml(text: string, version: string): string {
       return `${match[1]}${version}${match[2]}`
     })
     .join('\n')
+  if (!done) {
+    throw new Error('no [workspace.package] version field')
+  }
+  return bumped
 }
 
 /**
  * Rewrite the top-level `"version"` field of a `package.json`.
  *
- * Anchored to exactly two leading spaces — the repo's JSON indentation — so a
- * nested `"version"` (inside a dependency or an override block) is never hit.
+ * Anchored to the indentation of the manifest's *first* key rather than a
+ * hard-coded two spaces, so a tab- or four-space-formatted manifest is bumped
+ * too — while a nested `"version"` (inside a dependency or an override block,
+ * which is indented deeper) is still never hit. A manifest with no such anchor
+ * (minified, or not an object) throws rather than risk the wrong key. Blank
+ * lines between the brace and that first key are skipped.
  */
 export function bumpPackageJson(text: string, version: string): string {
-  const line = /^ {2}"version"\s*:\s*"[^"]*"/m
-  if (!line.test(text)) {
+  const indent = /^\s*\{[^\n]*\n(?:[ \t]*\r?\n)*([ \t]*)"/.exec(text)?.[1]
+  const line = indent === undefined
+    ? undefined
+    : new RegExp(`^${indent}"version"\\s*:\\s*"[^"]*"`, 'm')
+  if (!line?.test(text)) {
     throw new Error('no top-level "version" field')
   }
-  return text.replace(line, `  "version": ${JSON.stringify(version)}`)
+  return text.replace(line, `${indent}"version": ${JSON.stringify(version)}`)
 }
 
 /** Every manifest the bump touches, relative to `root`, in bump order. */
@@ -86,7 +117,9 @@ export function manifestPaths(root: string): string[] {
     catch {
       continue // the workspace root does not exist in this tree
     }
-    paths.push(...entries.sort())
+    // Explicit, locale-pinned comparator: the default sort is UTF-16 code-unit
+    // order, and an unpinned `localeCompare` would vary with the runner's locale.
+    paths.push(...entries.sort((a, b) => a.localeCompare(b, 'en')))
   }
   return paths
 }
@@ -95,14 +128,17 @@ export function manifestPaths(root: string): string[] {
  * Apply `version` to every manifest under `root`, returning the paths changed.
  *
  * `root` is a parameter rather than the repo root so the rewrite is testable
- * against a fixture directory.
+ * against a fixture directory. The rewrite is all-or-nothing: nothing is
+ * written until every manifest has been rewritten successfully.
  */
 export function bumpVersion(root: string, version: string): string[] {
   if (!isValidSemver(version)) {
     throw new Error(`not a valid semver version: ${version}`)
   }
 
-  const changed: string[] = []
+  // Every manifest is rewritten and validated in memory before the first write,
+  // so a manifest that throws cannot leave the repo half-bumped.
+  const pending: { absolute: string, relative: string, bumped: string }[] = []
   for (const relative of manifestPaths(root)) {
     const absolute = join(root, relative)
     let text: string
@@ -116,11 +152,14 @@ export function bumpVersion(root: string, version: string): string[] {
       ? bumpCargoToml(text, version)
       : bumpPackageJson(text, version)
     if (bumped !== text) {
-      writeFileSync(absolute, bumped)
-      changed.push(relative)
+      pending.push({ absolute, relative, bumped })
     }
   }
-  return changed
+
+  for (const { absolute, bumped } of pending) {
+    writeFileSync(absolute, bumped)
+  }
+  return pending.map(entry => entry.relative)
 }
 
 function fail(message: string): never {
