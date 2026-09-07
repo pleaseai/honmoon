@@ -13,6 +13,7 @@ use std::time::{Duration, Instant};
 use honmoon_core::{MappingStore, Policy};
 use honmoon_proxy::approval::{ApprovalDecision, ApprovalRegistry};
 use honmoon_proxy::gateway::{GatewayState, PiiMode, RedactionState, SignedBodyMode};
+use honmoon_proxy::signed_body::BODY_DIGEST_HEADERS;
 
 const SECRET: &str = "sk-ant-api03-cache-stable-abcDEF123456";
 const RRN: &str = "670125-1230644";
@@ -334,7 +335,10 @@ fn rewritten_request_strips_stale_body_integrity_headers() {
         ],
     );
     let request = captured.recv_timeout(Duration::from_secs(5)).unwrap();
-    for name in ["content-md5", "digest", "content-digest", "repr-digest"] {
+    // Read from the constant the strip loop itself iterates, so a validator
+    // added there is asserted here without editing this test.
+    for name in BODY_DIGEST_HEADERS {
+        let name = name.as_str();
         assert_eq!(header_value(&request.headers, name), None, "{name}");
     }
     assert_eq!(
@@ -468,15 +472,11 @@ fn detokenized_response_strips_stale_body_validators() {
 
     let response = proxy_request(proxy, upstream, b"clean", &[]);
     let headers = response_headers(&response);
-    for name in [
-        "content-length",
-        "content-md5",
-        "digest",
-        "content-digest",
-        "repr-digest",
-        "content-range",
-        "etag",
-    ] {
+    for name in ["content-length", "content-range", "etag"] {
+        assert_eq!(header_value(&headers, name), None, "{name}");
+    }
+    for name in BODY_DIGEST_HEADERS {
+        let name = name.as_str();
         assert_eq!(header_value(&headers, name), None, "{name}");
     }
     assert_eq!(response_body(&response), SECRET.as_bytes());

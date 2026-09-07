@@ -772,13 +772,18 @@ mod tests {
         );
     }
 
-    /// Every validator `forwarded_request` strips binds the body, so a
-    /// signature covering any of them is body-signed. Missing one means
-    /// redaction strips the header the signature covers and the upstream
-    /// rejects the request opaquely — the exact failure this module prevents.
+    /// Every validator the rewrite path strips binds the body, so a signature
+    /// covering any of them is body-signed. Missing one means redaction strips
+    /// the header the signature covers and the upstream rejects the request
+    /// opaquely — the exact failure this module prevents.
+    ///
+    /// Iterates [`BODY_DIGEST_HEADERS`] rather than restating it: a header
+    /// added to the constant gains coverage here automatically, which is the
+    /// point of there being one constant.
     #[test]
     fn cavage_signature_over_any_body_digest_header_is_detected() {
-        for name in ["digest", "content-digest", "content-md5", "repr-digest"] {
+        for header_name in BODY_DIGEST_HEADERS {
+            let name = header_name.as_str();
             let header = format!(
                 r#"keyId="k",algorithm="hs2019",headers="(request-target) date {name}",signature="abc""#
             );
@@ -793,10 +798,12 @@ mod tests {
         }
     }
 
-    /// The same set applies to RFC 9421 covered components.
+    /// The same set applies to RFC 9421 covered components, and is likewise
+    /// read from the constant.
     #[test]
     fn message_signature_over_any_body_digest_component_is_detected() {
-        for name in ["digest", "content-digest", "content-md5", "repr-digest"] {
+        for header_name in BODY_DIGEST_HEADERS {
+            let name = header_name.as_str();
             let input = format!(r#"sig1=("@method" "{name}")"#);
             assert_eq!(
                 scheme(
