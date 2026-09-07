@@ -175,8 +175,8 @@ may itself be signed; those responses may arrive compressed and are then left as
 
 **Body-signed requests are the exception that fails closed when redaction would change the
 body.** When a request's authentication covers its payload — AWS SigV4 (including presigned
-URLs), RFC 9421 message signatures over a `content-digest`, draft-cavage signatures over a
-`digest` — honmoon holds no signing credentials and cannot re-sign the rewritten body, so the
+URLs), RFC 9421 message signatures or draft-cavage signatures over a body digest — honmoon
+holds no signing credentials and cannot re-sign the rewritten body, so the
 upstream would reject it with an opaque signature error. By default such a request is refused
 locally with `403`, an `X-Honmoon-Reason: signed-body-redaction` header, and an explanation:
 

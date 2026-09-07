@@ -26,9 +26,9 @@ const SIGNATURE: header::HeaderName = header::HeaderName::from_static("signature
 pub enum SignedBodyScheme {
     /// AWS Signature Version 4 (or SigV4A), header-signed or presigned.
     AwsSigV4,
-    /// RFC 9421 HTTP Message Signatures covering a `content-digest` component.
+    /// RFC 9421 HTTP Message Signatures covering a body-digest component.
     HttpMessageSignature,
-    /// Legacy draft-cavage `Signature` covering a `digest` header.
+    /// Legacy draft-cavage `Signature` covering a body-digest header.
     CavageSignature,
 }
 
@@ -46,8 +46,8 @@ impl SignedBodyScheme {
     pub fn description(self) -> &'static str {
         match self {
             Self::AwsSigV4 => "an AWS SigV4 signature",
-            Self::HttpMessageSignature => "an RFC 9421 message signature over its content-digest",
-            Self::CavageSignature => "a draft-cavage signature over its digest",
+            Self::HttpMessageSignature => "an RFC 9421 message signature over a body digest",
+            Self::CavageSignature => "a draft-cavage signature over a body digest",
         }
     }
 }
@@ -57,7 +57,7 @@ pub fn body_signature_scheme(headers: &HeaderMap, uri: &Uri) -> Option<SignedBod
     if aws_sigv4_signs_body(headers, uri) {
         return Some(SignedBodyScheme::AwsSigV4);
     }
-    if message_signature_covers_content_digest(headers) {
+    if message_signature_covers_body_digest(headers) {
         return Some(SignedBodyScheme::HttpMessageSignature);
     }
     if cavage_signature_covers_digest(headers) {
@@ -123,18 +123,18 @@ fn aws_sigv4_authenticates(headers: &HeaderMap, uri: &Uri) -> bool {
 }
 
 /// RFC 9421: the signature covers the body only when some `Signature-Input`
-/// member's component list names `"content-digest"` *and* `Signature` also
-/// carries an entry under that exact member's label.
+/// member's component list names one of [`BODY_DIGEST_HEADERS`] *and*
+/// `Signature` also carries an entry under that exact member's label.
 ///
 /// `Signature-Input` and `Signature` are both dictionaries keyed by the same
 /// labels (e.g. `sig1`); a member of `Signature-Input` is only actually
 /// signed when `Signature` carries an entry under that same label — naming
-/// `content-digest` in one member's component list says nothing about a
+/// a body digest in one member's component list says nothing about a
 /// *different* member that happens to be the one actually signed. Both
 /// fields may legally repeat across multiple field values, so every value of
 /// both is scanned, and labels are matched across all of them rather than
 /// only within a single field value.
-fn message_signature_covers_content_digest(headers: &HeaderMap) -> bool {
+fn message_signature_covers_body_digest(headers: &HeaderMap) -> bool {
     let signed_labels: HashSet<String> = header_values(headers, &SIGNATURE)
         .flat_map(signature_member_labels)
         .collect();
@@ -142,7 +142,7 @@ fn message_signature_covers_content_digest(headers: &HeaderMap) -> bool {
         return false;
     }
     header_values(headers, &SIGNATURE_INPUT)
-        .flat_map(signature_input_content_digest_labels)
+        .flat_map(signature_input_body_digest_labels)
         .any(|label| signed_labels.contains(&label))
 }
 
@@ -150,13 +150,13 @@ fn message_signature_covers_content_digest(headers: &HeaderMap) -> bool {
 /// pair at all, regardless of which components the list names. Any such pair
 /// signs the headers named in its component list — covering headers is the
 /// whole point of the scheme — so this is broader than
-/// [`message_signature_covers_content_digest`], which only cares about the
+/// [`message_signature_covers_body_digest`], which only cares about the
 /// body.
 ///
 /// This is deliberately kept broad, unlike the strict per-label matching
 /// above: this predicate only gates whether callers may mutate request
 /// headers (over-inclusion is fail-safe — it just means a header is left
-/// alone), while over-inclusion in the content-digest predicate would let an
+/// alone), while over-inclusion in the body-digest predicate would let an
 /// unsigned body slip through redaction as if it were signed. Do not tighten
 /// this one to require a matching label merely for symmetry with the other.
 fn message_signature_present(headers: &HeaderMap) -> bool {
@@ -164,20 +164,20 @@ fn message_signature_present(headers: &HeaderMap) -> bool {
 }
 
 /// The dictionary-member labels (e.g. `sig1`) inside a `Signature-Input`
-/// field value whose parenthesised component list names `"content-digest"`.
+/// field value whose parenthesised component list names a body digest.
 ///
 /// A member is `label=value`, members separated by a top-level comma (see
 /// [`split_top_level_params`]). The label is the token before the member's
 /// first `=`, trimmed of whitespace. Labels are normalized to lowercase for
-/// the comparison in [`message_signature_covers_content_digest`] — dictionary
+/// the comparison in [`message_signature_covers_body_digest`] — dictionary
 /// keys are case-sensitive tokens per Structured Fields, but signature labels
 /// are lowercase in practice, and both sides of that comparison are
 /// normalized identically, so this cannot turn a mismatch into a false match.
-fn signature_input_content_digest_labels(value: &str) -> impl Iterator<Item = String> + '_ {
+fn signature_input_body_digest_labels(value: &str) -> impl Iterator<Item = String> + '_ {
     split_top_level_params(value).filter_map(|member| {
         let (label, rest) = member.split_once('=')?;
         let label = label.trim();
-        if label.is_empty() || !signature_input_lists_content_digest(rest) {
+        if label.is_empty() || !signature_input_lists_body_digest(rest) {
             return None;
         }
         Some(label.to_ascii_lowercase())
@@ -186,7 +186,7 @@ fn signature_input_content_digest_labels(value: &str) -> impl Iterator<Item = St
 
 /// The dictionary-member labels present in a `Signature` field value, e.g.
 /// `sig1` and `sig2` in `sig1=:abc:, sig2=:def:`. Normalized to lowercase to
-/// match [`signature_input_content_digest_labels`].
+/// match [`signature_input_body_digest_labels`].
 fn signature_member_labels(value: &str) -> impl Iterator<Item = String> + '_ {
     split_top_level_params(value).filter_map(|member| {
         let (label, _) = member.split_once('=')?;
@@ -195,9 +195,28 @@ fn signature_member_labels(value: &str) -> impl Iterator<Item = String> + '_ {
     })
 }
 
+/// Header names whose value is a digest of the body.
+///
+/// A signature covering any of them binds the body just as directly as one
+/// covering the payload itself: the digest cannot survive a rewrite, and
+/// `forwarded_request` strips all four as stale validators, so the signature
+/// is broken outright rather than merely mismatched.
+///
+/// **Keep this in sync with the validators `forwarded_request` strips.** A
+/// name stripped there but missing here is a signed request this module fails
+/// to detect — which is precisely the opaque upstream rejection the module
+/// exists to prevent.
+const BODY_DIGEST_HEADERS: [&str; 4] = ["digest", "content-digest", "content-md5", "repr-digest"];
+
+fn is_body_digest_header(name: &str) -> bool {
+    BODY_DIGEST_HEADERS
+        .iter()
+        .any(|candidate| name.eq_ignore_ascii_case(candidate))
+}
+
 /// Whether the parenthesised component list of a `Signature-Input` member —
-/// not the member's other `;param=value` metadata — names the quoted
-/// component `"content-digest"`.
+/// not the member's other `;param=value` metadata — names a quoted component
+/// that is one of [`BODY_DIGEST_HEADERS`].
 ///
 /// A single-pass, quote-aware scan: paren depth is tracked only outside a
 /// quoted string, since a `(` or `)` inside a quoted parameter value (e.g. a
@@ -215,7 +234,7 @@ fn signature_member_labels(value: &str) -> impl Iterator<Item = String> + '_ {
 /// RFC 8941 puts no whitespace around a parameter's `=`, but whitespace is
 /// tolerated here anyway: treating one more quoted string as a parameter
 /// value can only make this predicate stricter, which is the safe direction.
-fn signature_input_lists_content_digest(value: &str) -> bool {
+fn signature_input_lists_body_digest(value: &str) -> bool {
     let mut depth: u32 = 0;
     let mut in_quote = false;
     let mut escaped = false;
@@ -231,7 +250,7 @@ fn signature_input_lists_content_digest(value: &str) -> bool {
                 escaped = true;
             } else if ch == '"' {
                 in_quote = false;
-                if depth >= 1 && !is_param_value && current.eq_ignore_ascii_case("content-digest") {
+                if depth >= 1 && !is_param_value && is_body_digest_header(&current) {
                     return true;
                 }
                 current.clear();
@@ -270,11 +289,9 @@ fn signature_input_lists_content_digest(value: &str) -> bool {
 fn cavage_signature_covers_digest(headers: &HeaderMap) -> bool {
     let candidates = header_values(headers, &SIGNATURE)
         .chain(header_values(headers, &header::AUTHORIZATION).filter_map(strip_signature_scheme));
-    candidates.flat_map(cavage_headers_params).any(|covered| {
-        covered
-            .split_whitespace()
-            .any(|component| component == "digest" || component == "content-digest")
-    })
+    candidates
+        .flat_map(cavage_headers_params)
+        .any(|covered| covered.split_whitespace().any(is_body_digest_header))
 }
 
 /// draft-cavage: whether the request carries a `headers="…"` auth-param at
@@ -745,6 +762,46 @@ mod tests {
             ),
             Some(SignedBodyScheme::HttpMessageSignature)
         );
+    }
+
+    /// Every validator `forwarded_request` strips binds the body, so a
+    /// signature covering any of them is body-signed. Missing one means
+    /// redaction strips the header the signature covers and the upstream
+    /// rejects the request opaquely — the exact failure this module prevents.
+    #[test]
+    fn cavage_signature_over_any_body_digest_header_is_detected() {
+        for name in ["digest", "content-digest", "content-md5", "repr-digest"] {
+            let header = format!(
+                r#"keyId="k",algorithm="hs2019",headers="(request-target) date {name}",signature="abc""#
+            );
+            assert_eq!(
+                scheme(
+                    &[("signature", header.as_str())],
+                    "https://api.example.com/v1"
+                ),
+                Some(SignedBodyScheme::CavageSignature),
+                "cavage signature over {name} should be body-signed"
+            );
+        }
+    }
+
+    /// The same set applies to RFC 9421 covered components.
+    #[test]
+    fn message_signature_over_any_body_digest_component_is_detected() {
+        for name in ["digest", "content-digest", "content-md5", "repr-digest"] {
+            let input = format!(r#"sig1=("@method" "{name}")"#);
+            assert_eq!(
+                scheme(
+                    &[
+                        ("signature-input", input.as_str()),
+                        ("signature", "sig1=:abc:")
+                    ],
+                    "https://api.example.com/v1"
+                ),
+                Some(SignedBodyScheme::HttpMessageSignature),
+                "message signature over {name} should be body-signed"
+            );
+        }
     }
 
     #[test]

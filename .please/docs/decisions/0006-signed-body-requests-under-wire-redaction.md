@@ -51,12 +51,19 @@ long-lived secrets.
   `STREAMING-UNSIGNED-PAYLOAD…` declares the body explicitly out of the signature, so those stay
   redactable.
 - **RFC 9421 message signatures** — a `Signature` header alongside `Signature-Input` (RFC 9421
-  requires both; `Signature-Input` may repeat across field values, all of which are scanned)
-  naming a `"content-digest"` component. Without that component the signature does not cover the
-  body.
+  requires both; either may repeat across field values, all of which are scanned) whose component
+  list names a body-digest header, under a label `Signature` actually carries. Labels are matched
+  because both fields are dictionaries keyed the same way: a member naming a digest says nothing
+  about a *different* member that is the one actually signed. A component's own `;param="…"` value
+  is not a covered component, so `"@query-param";name="content-digest"` does not count.
 - **draft-cavage** — a `Signature` header, or an `Authorization: Signature …` value, whose
-  `headers="…"` parameter (tolerating whitespace around `=`) contains `digest` or
-  `content-digest`.
+  `headers="…"` parameter (tolerating whitespace around `=`) names a body-digest header.
+
+The body-digest set is the same for both schemes and is **the set of validators the rewrite path
+strips** — `digest`, `content-digest`, `content-md5`, `repr-digest` (`BODY_DIGEST_HEADERS`).
+Signing any of them binds the body: the digest cannot survive a rewrite, and stripping it as a
+stale validator breaks the signature outright. The two lists have to move together — a header
+stripped but not detected is exactly the opaque upstream rejection this ADR exists to prevent.
 
 Everything else — bearer tokens, Basic auth, API keys, bare digest headers — is not body-signed
 and keeps being redacted.
