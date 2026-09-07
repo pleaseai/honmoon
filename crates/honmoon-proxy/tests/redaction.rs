@@ -832,6 +832,10 @@ fn signed_body_request_with_secret_is_blocked_by_default() {
     assert_eq!(mappings.unwrap().len(), 0);
 }
 
+// Forward mode must reproduce the bytes the client signed, `Accept-Encoding`
+// included — several SigV4 signers list it in `SignedHeaders`, so overwriting it
+// with the usual `identity` negotiation would trade one signature failure for
+// another.
 #[test]
 fn signed_body_request_with_secret_is_forwarded_unredacted_in_forward_mode() {
     let (upstream, captured) = start_upstream(ResponseMode::Static(b"ok".to_vec()));
@@ -842,7 +846,7 @@ fn signed_body_request_with_secret_is_forwarded_unredacted_in_forward_mode() {
         proxy,
         upstream,
         body.as_bytes(),
-        &[("Authorization", SIGV4)],
+        &[("Authorization", SIGV4), ("Accept-Encoding", "gzip, br")],
     );
     assert!(response.starts_with(b"HTTP/1.1 200"));
     let forwarded = captured.recv_timeout(Duration::from_secs(5)).unwrap();
@@ -855,6 +859,20 @@ fn signed_body_request_with_secret_is_forwarded_unredacted_in_forward_mode() {
         header_value(&forwarded.headers, "content-length"),
         Some(body.len().to_string().as_str())
     );
+    assert_eq!(
+        header_value(&forwarded.headers, "accept-encoding"),
+        Some("gzip, br")
+    );
+
+    // A client that sent no Accept-Encoding must not gain one either.
+    proxy_request(
+        proxy,
+        upstream,
+        body.as_bytes(),
+        &[("Authorization", SIGV4)],
+    );
+    let bare = captured.recv_timeout(Duration::from_secs(5)).unwrap();
+    assert_eq!(header_value(&bare.headers, "accept-encoding"), None);
     assert_eq!(mappings.unwrap().len(), 0);
 }
 

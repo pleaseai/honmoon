@@ -88,6 +88,10 @@ enough to unblock the two known shapes (signed uploads vs. bearer-token API traf
   redaction applied — the exception is what keeps the default from being disruptive.
 - `forward` is a genuine fail-open hole and is logged at `warn` on every use, alongside the other
   redaction bypasses.
+- `forward` returns the request byte-for-byte, `Accept-Encoding` included — the usual `identity`
+  negotiation is undone because some SigV4 signers list that header in `SignedHeaders` — so the
+  response may come back compressed and is then not detokenized, which is the existing behavior
+  for any compressed response.
 - Detection is header-shaped and therefore approximate: a scheme we do not recognize whose
   signature covers the body still breaks under redaction (as it does today), and a request that
   merely *looks* signed is blocked. New schemes are one match arm in `signed_body.rs`.

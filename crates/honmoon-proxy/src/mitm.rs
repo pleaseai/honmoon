@@ -332,6 +332,9 @@ impl HonmoonHandler {
 
         // Ask upstreams for text we can safely detokenize on the response path.
         // A server may ignore this, in which case handle_response fails open.
+        // Kept so the body-signed forward path can put the client's value back:
+        // some SigV4 signers list `accept-encoding` in `SignedHeaders`.
+        let client_accept_encoding = request.headers().get(header::ACCEPT_ENCODING).cloned();
         request.headers_mut().insert(
             header::ACCEPT_ENCODING,
             header::HeaderValue::from_static("identity"),
@@ -415,6 +418,19 @@ impl HonmoonHandler {
                         scheme = scheme.label(),
                         "wire redaction bypassed for body-signed request (fail open)"
                     );
+                    // Forward mode promises the request the client signed, and
+                    // `accept-encoding` may itself be a signed header — so undo
+                    // the `identity` negotiation rather than trade one signature
+                    // failure for another. A compressed response is then simply
+                    // not detokenized, as everywhere else.
+                    match client_accept_encoding {
+                        Some(value) => {
+                            request.headers_mut().insert(header::ACCEPT_ENCODING, value);
+                        }
+                        None => {
+                            request.headers_mut().remove(header::ACCEPT_ENCODING);
+                        }
+                    }
                     request.into()
                 }
                 SignedBodyMode::Block => {
