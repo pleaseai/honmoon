@@ -1,0 +1,15 @@
+# Keeps the full-SHA pins in .github/workflows/ current (TD-005).
+# Dependabot rewrites `uses: owner/action@<sha> # vX.Y.Z` with the new SHA and
+# refreshes the version comment, so the pins stay immutable and readable.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      github-actions:
+        patterns:
+          - "*"
+    commit-message:
+      prefix: "ci"
