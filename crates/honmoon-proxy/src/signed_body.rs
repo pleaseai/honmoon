@@ -203,13 +203,24 @@ fn signature_member_labels(value: &str) -> impl Iterator<Item = String> + '_ {
 /// quoted string, since a `(` or `)` inside a quoted parameter value (e.g. a
 /// `tag` crafted to contain `("content-digest")`) is not a real group
 /// delimiter. Backslash escapes inside quoted strings are honored so an
-/// escaped quote doesn't end the string early. Only a quoted string that
-/// closes while depth >= 1 — i.e. genuinely inside the `(...)` component
-/// list — is compared against `content-digest`.
+/// escaped quote doesn't end the string early.
+///
+/// A quoted string counts only when it closes while depth >= 1 *and* it is a
+/// component identifier rather than a component's own parameter value. Inside
+/// the list an item is `"name";param=value`, so
+/// `("@method" "@query-param";name="content-digest")` signs a query parameter
+/// that happens to be called `content-digest` — not the `Content-Digest`
+/// field, and not the body. Counting it would classify a redactable request
+/// as body-signed, which leaks the secret under `--signed-body forward`.
+/// RFC 8941 puts no whitespace around a parameter's `=`, but whitespace is
+/// tolerated here anyway: treating one more quoted string as a parameter
+/// value can only make this predicate stricter, which is the safe direction.
 fn signature_input_lists_content_digest(value: &str) -> bool {
     let mut depth: u32 = 0;
     let mut in_quote = false;
     let mut escaped = false;
+    let mut after_equals = false;
+    let mut is_param_value = false;
     let mut current = String::new();
     for ch in value.chars() {
         if in_quote {
@@ -220,7 +231,7 @@ fn signature_input_lists_content_digest(value: &str) -> bool {
                 escaped = true;
             } else if ch == '"' {
                 in_quote = false;
-                if depth >= 1 && current.eq_ignore_ascii_case("content-digest") {
+                if depth >= 1 && !is_param_value && current.eq_ignore_ascii_case("content-digest") {
                     return true;
                 }
                 current.clear();
@@ -229,10 +240,22 @@ fn signature_input_lists_content_digest(value: &str) -> bool {
             }
         } else {
             match ch {
-                '"' => in_quote = true,
-                '(' => depth += 1,
-                ')' => depth = depth.saturating_sub(1),
-                _ => {}
+                '"' => {
+                    in_quote = true;
+                    is_param_value = after_equals;
+                    after_equals = false;
+                }
+                '(' => {
+                    depth += 1;
+                    after_equals = false;
+                }
+                ')' => {
+                    depth = depth.saturating_sub(1);
+                    after_equals = false;
+                }
+                '=' => after_equals = true,
+                _ if ch.is_ascii_whitespace() => {}
+                _ => after_equals = false,
             }
         }
     }
@@ -586,6 +609,45 @@ mod tests {
                     ("signature", "sig1=:abc:")
                 ],
                 "https://api.example.com/v1"
+            ),
+            Some(SignedBodyScheme::HttpMessageSignature)
+        );
+    }
+
+    /// A component's own parameter value is not a covered component:
+    /// `"@query-param";name="content-digest"` signs a query parameter that
+    /// happens to be called `content-digest`, not the body.
+    #[test]
+    fn message_signature_component_param_value_is_not_a_covered_component() {
+        assert_eq!(
+            scheme(
+                &[
+                    (
+                        "signature-input",
+                        r#"sig1=("@method" "@query-param";name="content-digest")"#
+                    ),
+                    ("signature", "sig1=:abc:")
+                ],
+                "https://api.example.com/v1?content-digest=x"
+            ),
+            None
+        );
+    }
+
+    /// Guard against over-tightening the rule above: a real `"content-digest"`
+    /// component alongside such a parameter is still detected.
+    #[test]
+    fn message_signature_component_after_a_param_value_is_still_detected() {
+        assert_eq!(
+            scheme(
+                &[
+                    (
+                        "signature-input",
+                        r#"sig1=("@query-param";name="content-digest" "content-digest")"#
+                    ),
+                    ("signature", "sig1=:abc:")
+                ],
+                "https://api.example.com/v1?content-digest=x"
             ),
             Some(SignedBodyScheme::HttpMessageSignature)
         );

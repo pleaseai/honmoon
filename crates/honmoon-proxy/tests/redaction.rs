@@ -919,7 +919,10 @@ fn bare_payload_hash_request_keeps_client_accept_encoding() {
         &[
             (
                 "x-amz-content-sha256",
-                "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+                // The real SHA-256 of `body` below. Detection accepts any
+                // 64-hex value, but a self-consistent fixture stays correct if
+                // the proxy ever starts validating the payload hash.
+                "7c9d036588e3c9241b4ebd62863710f7860de47535024e01323d8c25bd117bd7",
             ),
             ("Accept-Encoding", "gzip"),
         ],
