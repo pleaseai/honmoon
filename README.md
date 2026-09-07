@@ -217,6 +217,47 @@ it returns `403`. Every verdict is recorded in the audit log.
 
 ---
 
+## Installation
+
+Prebuilt `honmoon` binaries are published for every release on the
+[Releases page](https://github.com/pleaseai/honmoon/releases). Supported targets:
+
+| Target | Platform |
+| --- | --- |
+| `x86_64-unknown-linux-gnu` | Linux, x86-64 |
+| `aarch64-unknown-linux-gnu` | Linux, arm64 |
+| `aarch64-apple-darwin` | macOS, Apple silicon |
+
+Each archive contains the `honmoon` binary plus `LICENSE` and `README.md`.
+
+**Linux (x86-64)**
+
+```bash
+VERSION=0.1.0
+curl -fsSL "https://github.com/pleaseai/honmoon/releases/download/v${VERSION}/honmoon-${VERSION}-x86_64-unknown-linux-gnu.tar.gz" \
+  | tar -xz honmoon
+sudo install -m 755 honmoon /usr/local/bin/honmoon
+```
+
+**macOS (Apple silicon)**
+
+```bash
+VERSION=0.1.0
+curl -fsSL "https://github.com/pleaseai/honmoon/releases/download/v${VERSION}/honmoon-${VERSION}-aarch64-apple-darwin.tar.gz" \
+  | tar -xz honmoon
+sudo install -m 755 honmoon /usr/local/bin/honmoon
+```
+
+Every release also ships a `SHA256SUMS` covering all three archives. To verify a download
+before unpacking it, fetch the archive and `SHA256SUMS` into the same directory, then run
+`sha256sum --ignore-missing -c SHA256SUMS` on Linux, or
+`shasum -a 256 --ignore-missing -c SHA256SUMS` on macOS.
+
+**Build from source** — see [Development](#development) below. Cutting a release is
+documented in [`docs/releasing.md`](./docs/releasing.md).
+
+---
+
 ## Development
 
 > ⚠️ Early design stage. The following describes the target workflow.
