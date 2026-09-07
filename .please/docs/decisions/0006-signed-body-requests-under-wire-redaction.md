@@ -60,10 +60,12 @@ long-lived secrets.
   `headers="…"` parameter (tolerating whitespace around `=`) names a body-digest header.
 
 The body-digest set is the same for both schemes and is **the set of validators the rewrite path
-strips** — `digest`, `content-digest`, `content-md5`, `repr-digest` (`BODY_DIGEST_HEADERS`).
-Signing any of them binds the body: the digest cannot survive a rewrite, and stripping it as a
-stale validator breaks the signature outright. The two lists have to move together — a header
-stripped but not detected is exactly the opaque upstream rejection this ADR exists to prevent.
+strips** — `digest`, `content-digest`, `content-md5`, `repr-digest`. Signing any of them binds the
+body: the digest cannot survive a rewrite, and stripping it as a stale validator breaks the
+signature outright. Detection and stripping therefore read one constant,
+`signed_body::BODY_DIGEST_HEADERS`, rather than two lists kept aligned by convention — a header
+stripped but not detected is exactly the opaque upstream rejection this ADR exists to prevent, and
+that divergence should not be reachable by editing one file.
 
 Everything else — bearer tokens, Basic auth, API keys, bare digest headers — is not body-signed
 and keeps being redacted.

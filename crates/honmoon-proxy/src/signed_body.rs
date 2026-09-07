@@ -198,20 +198,28 @@ fn signature_member_labels(value: &str) -> impl Iterator<Item = String> + '_ {
 /// Header names whose value is a digest of the body.
 ///
 /// A signature covering any of them binds the body just as directly as one
-/// covering the payload itself: the digest cannot survive a rewrite, and
-/// `forwarded_request` strips all four as stale validators, so the signature
-/// is broken outright rather than merely mismatched.
+/// covering the payload itself: the digest cannot survive a rewrite, and the
+/// rewrite path strips all four as stale validators, so the signature is
+/// broken outright rather than merely mismatched.
 ///
-/// **Keep this in sync with the validators `forwarded_request` strips.** A
-/// name stripped there but missing here is a signed request this module fails
-/// to detect — which is precisely the opaque upstream rejection the module
-/// exists to prevent.
-const BODY_DIGEST_HEADERS: [&str; 4] = ["digest", "content-digest", "content-md5", "repr-digest"];
+/// This is the single definition of that set: [`mitm`](crate::mitm) strips
+/// exactly these headers when it rewrites a body, and this module treats a
+/// signature over any of them as body-binding. The two readings have to agree
+/// — a header stripped but not detected is precisely the opaque upstream
+/// rejection this module exists to prevent — so they share one constant
+/// rather than two lists and a comment asking future edits to keep them
+/// aligned.
+pub const BODY_DIGEST_HEADERS: [header::HeaderName; 4] = [
+    header::HeaderName::from_static("digest"),
+    header::HeaderName::from_static("content-digest"),
+    header::HeaderName::from_static("content-md5"),
+    header::HeaderName::from_static("repr-digest"),
+];
 
 fn is_body_digest_header(name: &str) -> bool {
     BODY_DIGEST_HEADERS
         .iter()
-        .any(|candidate| name.eq_ignore_ascii_case(candidate))
+        .any(|candidate| name.eq_ignore_ascii_case(candidate.as_str()))
 }
 
 /// Whether the parenthesised component list of a `Signature-Input` member —

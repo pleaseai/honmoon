@@ -54,16 +54,14 @@ use crate::body::{
     prefixed_body, utf8_prefix,
 };
 use crate::gateway::{GatewayState, InterceptPolicy, PiiMode, SignedBodyMode, canonical_host};
-use crate::signed_body::{SignedBodyScheme, authentication_signs_headers, body_signature_scheme};
+use crate::signed_body::{
+    BODY_DIGEST_HEADERS, SignedBodyScheme, authentication_signs_headers, body_signature_scheme,
+};
 
 /// Backstop cap on tracked tunnels. Entries are overwritten per client socket
 /// but never individually removed (hudsucker exposes no close event), so this
 /// bounds memory under long-running / hostile traffic.
 const MAX_TRACKED_TUNNELS: usize = 65_536;
-const CONTENT_MD5: header::HeaderName = header::HeaderName::from_static("content-md5");
-const DIGEST: header::HeaderName = header::HeaderName::from_static("digest");
-const CONTENT_DIGEST: header::HeaderName = header::HeaderName::from_static("content-digest");
-const REPR_DIGEST: header::HeaderName = header::HeaderName::from_static("repr-digest");
 /// Names why honmoon itself produced a response, so a client (or an agent
 /// reading the error) can tell it apart from an upstream failure.
 const HONMOON_REASON: header::HeaderName = header::HeaderName::from_static("x-honmoon-reason");
@@ -476,7 +474,7 @@ impl HonmoonHandler {
         // compressed representation.
         request.headers_mut().remove(header::CONTENT_ENCODING);
         request.headers_mut().remove(header::TRANSFER_ENCODING);
-        for name in [CONTENT_MD5, DIGEST, CONTENT_DIGEST, REPR_DIGEST] {
+        for name in BODY_DIGEST_HEADERS {
             request.headers_mut().remove(name);
         }
         request.into()
@@ -788,7 +786,7 @@ impl HttpHandler for HonmoonHandler {
         // deliver; leaving it would let a cache or range revalidation serve or
         // stitch stale content, so drop it with the other body validators.
         res.headers_mut().remove(header::ETAG);
-        for name in [CONTENT_MD5, DIGEST, CONTENT_DIGEST, REPR_DIGEST] {
+        for name in BODY_DIGEST_HEADERS {
             res.headers_mut().remove(name);
         }
         res
