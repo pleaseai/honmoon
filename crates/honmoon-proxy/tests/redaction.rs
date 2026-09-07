@@ -942,3 +942,36 @@ fn unsigned_payload_sigv4_request_is_still_redacted() {
     assert!(text.contains("<<hs:"));
     assert_eq!(mappings.unwrap().len(), 1);
 }
+
+// `UNSIGNED-PAYLOAD` only says the payload is unsigned — the `Authorization`
+// may still cover headers such as `Accept-Encoding` in `SignedHeaders`.
+// Redaction must stay on (the body is not signed), but the identity
+// negotiation that would otherwise overwrite a signed `Accept-Encoding` must
+// not fire for this request either.
+#[test]
+fn unsigned_payload_sigv4_request_keeps_client_accept_encoding_while_redacted() {
+    let (upstream, captured) = start_upstream(ResponseMode::Static(b"ok".to_vec()));
+    let (proxy, mappings) = start_proxy(true);
+    let body = format!("key={SECRET}");
+
+    let response = proxy_request(
+        proxy,
+        upstream,
+        body.as_bytes(),
+        &[
+            ("Authorization", SIGV4),
+            ("x-amz-content-sha256", "UNSIGNED-PAYLOAD"),
+            ("Accept-Encoding", "gzip"),
+        ],
+    );
+    assert!(response.starts_with(b"HTTP/1.1 200"));
+    let forwarded = captured.recv_timeout(Duration::from_secs(5)).unwrap();
+    assert_eq!(
+        header_value(&forwarded.headers, "accept-encoding"),
+        Some("gzip")
+    );
+    let text = String::from_utf8(forwarded.body).unwrap();
+    assert!(!text.contains(SECRET));
+    assert!(text.contains("<<hs:"));
+    assert_eq!(mappings.unwrap().len(), 1);
+}

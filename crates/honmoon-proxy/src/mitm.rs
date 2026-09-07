@@ -54,7 +54,7 @@ use crate::body::{
     prefixed_body, utf8_prefix,
 };
 use crate::gateway::{GatewayState, InterceptPolicy, PiiMode, SignedBodyMode, canonical_host};
-use crate::signed_body::{SignedBodyScheme, body_signature_scheme};
+use crate::signed_body::{SignedBodyScheme, authentication_signs_headers, body_signature_scheme};
 
 /// Backstop cap on tracked tunnels. Entries are overwritten per client socket
 /// but never individually removed (hudsucker exposes no close event), so this
@@ -333,14 +333,17 @@ impl HonmoonHandler {
         // Ask upstreams for text we can safely detokenize on the response path.
         // A server may ignore this, in which case handle_response fails open.
         //
-        // Body-signed requests are exempt: some SigV4 signers list
-        // `accept-encoding` in `SignedHeaders`, and every outcome for such a
-        // request either forwards it as the client signed it or answers it
-        // locally with a 403 — so overwriting the header could only trade one
-        // signature failure for another. A compressed response is then simply
-        // not detokenized, as everywhere else.
+        // Requests whose authentication signs headers are exempt: some
+        // SigV4 signers list `accept-encoding` in `SignedHeaders` even when
+        // the payload itself is unsigned (`UNSIGNED-PAYLOAD`), and RFC 9421 /
+        // draft-cavage signatures cover whichever headers their component or
+        // `headers=` list names. Overwriting `Accept-Encoding` on any of
+        // those breaks the signature regardless of whether the *body* is
+        // signed — that's a separate question, decided below by
+        // `signature_scheme`. A compressed response is then simply not
+        // detokenized, as everywhere else.
         let signature_scheme = body_signature_scheme(request.headers(), request.uri());
-        if signature_scheme.is_none() {
+        if !authentication_signs_headers(request.headers(), request.uri()) {
             request.headers_mut().insert(
                 header::ACCEPT_ENCODING,
                 header::HeaderValue::from_static("identity"),

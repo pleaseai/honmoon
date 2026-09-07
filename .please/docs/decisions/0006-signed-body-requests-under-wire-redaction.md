@@ -91,8 +91,12 @@ enough to unblock the two known shapes (signed uploads vs. bearer-token API traf
   uploads to go through must remove the sensitive value or opt in with `--signed-body forward`.
   This is a behavior change for anyone running `--redact-secrets` against signed upstreams, but
   the previous behavior was an upstream rejection anyway, only less legible.
-- S3 uploads using `UNSIGNED-PAYLOAD` (the common browser/SDK streaming path) keep working, with
-  redaction applied — the exception is what keeps the default from being disruptive.
+- S3 uploads using `UNSIGNED-PAYLOAD` (the common browser/SDK streaming path) stay redactable —
+  the exception is what keeps the default from being disruptive. Their `Accept-Encoding` is
+  preserved, because SigV4 signs headers even when it does not sign the payload. But redaction
+  still rewrites `Content-Length` and drops `Content-Encoding`, so an upload whose `SignedHeaders`
+  names either of those has its signature broken anyway. "Redactable" here means the body is not
+  signature-bound, not that every such upload survives redaction. Tracked in #83.
 - `forward` is a genuine fail-open hole and is logged at `warn` on every use, alongside the other
   redaction bypasses.
 - Every body-signed request keeps the client's `Accept-Encoding` — the usual `identity`

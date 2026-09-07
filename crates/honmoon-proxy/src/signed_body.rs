@@ -64,6 +64,25 @@ pub fn body_signature_scheme(headers: &HeaderMap, uri: &Uri) -> Option<SignedBod
     None
 }
 
+/// Whether the request carries request-signing authentication whose
+/// signature covers headers, regardless of whether it also binds the
+/// payload.
+///
+/// This is a strictly different question from [`body_signature_scheme`]. A
+/// SigV4 request that opts out of payload signing with `UNSIGNED-PAYLOAD` /
+/// `STREAMING-UNSIGNED-PAYLOAD…` correctly gets `None` there — its body is
+/// not signed, so redacting it is safe — but the request is still
+/// SigV4-authenticated, and its `SignedHeaders` list may cover headers
+/// (`accept-encoding` among them) that Honmoon would otherwise rewrite in
+/// place. Mutating those breaks the signature even though the payload was
+/// never bound by it, so callers that mutate headers (not the body) must
+/// check this predicate instead.
+pub fn authentication_signs_headers(headers: &HeaderMap, uri: &Uri) -> bool {
+    aws_sigv4_authenticates(headers, uri)
+        || message_signature_present(headers)
+        || cavage_headers_param_present(headers)
+}
+
 /// SigV4 binds the body through the payload hash, unless the request opted out
 /// of payload signing with `UNSIGNED-PAYLOAD` / `STREAMING-UNSIGNED-PAYLOAD…`.
 fn aws_sigv4_signs_body(headers: &HeaderMap, uri: &Uri) -> bool {
@@ -75,7 +94,17 @@ fn aws_sigv4_signs_body(headers: &HeaderMap, uri: &Uri) -> bool {
             return false;
         }
     }
+    // A hex payload hash binds the body on its own — the signature that covers
+    // it may live in a scheme we do not otherwise recognize.
+    let hex_payload_hash = payload_hash
+        .is_some_and(|hash| !hash.is_empty() && hash.bytes().all(|b| b.is_ascii_hexdigit()));
 
+    aws_sigv4_authenticates(headers, uri) || hex_payload_hash
+}
+
+/// Whether the request carries SigV4 authentication at all — header-signed
+/// or presigned — irrespective of whether the payload itself is signed.
+fn aws_sigv4_authenticates(headers: &HeaderMap, uri: &Uri) -> bool {
     let signed_authorization = header_str(headers, &header::AUTHORIZATION).is_some_and(|value| {
         starts_with_ignore_ascii_case(value, "AWS4-HMAC-SHA256")
             || starts_with_ignore_ascii_case(value, "AWS4-ECDSA-P256-SHA256")
@@ -88,12 +117,7 @@ fn aws_sigv4_signs_body(headers: &HeaderMap, uri: &Uri) -> bool {
                 && starts_with_ignore_ascii_case(value, "AWS4-")
         })
     });
-    // A hex payload hash binds the body on its own — the signature that covers
-    // it may live in a scheme we do not otherwise recognize.
-    let hex_payload_hash = payload_hash
-        .is_some_and(|hash| !hash.is_empty() && hash.bytes().all(|b| b.is_ascii_hexdigit()));
-
-    signed_authorization || presigned || hex_payload_hash
+    signed_authorization || presigned
 }
 
 /// RFC 9421: the signature covers the body only when a `Signature-Input`
@@ -107,6 +131,16 @@ fn message_signature_covers_content_digest(headers: &HeaderMap) -> bool {
         return false;
     }
     header_values(headers, &SIGNATURE_INPUT).any(signature_input_lists_content_digest)
+}
+
+/// RFC 9421: whether the request carries a `Signature-Input` + `Signature`
+/// pair at all, regardless of which components the list names. Any such pair
+/// signs the headers named in its component list — covering headers is the
+/// whole point of the scheme — so this is broader than
+/// [`message_signature_covers_content_digest`], which only cares about the
+/// body.
+fn message_signature_present(headers: &HeaderMap) -> bool {
+    header_present(headers, &SIGNATURE) && header_present(headers, &SIGNATURE_INPUT)
 }
 
 /// Whether the parenthesised component list of a `Signature-Input` member —
@@ -166,6 +200,17 @@ fn cavage_signature_covers_digest(headers: &HeaderMap) -> bool {
             .split_whitespace()
             .any(|component| component == "digest" || component == "content-digest")
     })
+}
+
+/// draft-cavage: whether the request carries a `headers="…"` auth-param at
+/// all — via a standalone `Signature` header or `Authorization: Signature …`
+/// — regardless of which headers its covered list names. Any such parameter
+/// signs the headers it lists, which is broader than
+/// [`cavage_signature_covers_digest`]'s narrower body-digest question.
+fn cavage_headers_param_present(headers: &HeaderMap) -> bool {
+    let candidates = header_values(headers, &SIGNATURE)
+        .chain(header_values(headers, &header::AUTHORIZATION).filter_map(strip_signature_scheme));
+    candidates.flat_map(cavage_headers_params).next().is_some()
 }
 
 /// Strip a leading `Signature` scheme token (case-insensitive, followed by
@@ -289,6 +334,47 @@ mod tests {
             );
         }
         body_signature_scheme(&map, &uri.parse::<Uri>().expect("uri"))
+    }
+
+    fn signs_headers(headers: &[(&str, &str)], uri: &str) -> bool {
+        let mut map = HeaderMap::new();
+        for (name, value) in headers {
+            map.insert(
+                header::HeaderName::from_bytes(name.as_bytes()).expect("header name"),
+                header::HeaderValue::from_str(value).expect("header value"),
+            );
+        }
+        authentication_signs_headers(&map, &uri.parse::<Uri>().expect("uri"))
+    }
+
+    /// The case this predicate exists for: a SigV4 request that opts out of
+    /// payload signing is not body-signed (redacting the body is safe), but
+    /// its `Authorization` still signs headers — so overwriting a header like
+    /// `Accept-Encoding` would still break the signature.
+    #[test]
+    fn sigv4_unsigned_payload_still_signs_headers() {
+        let headers = [
+            (
+                "authorization",
+                "AWS4-HMAC-SHA256 Credential=AKIA/20260907/us-east-1/s3/aws4_request, \
+                 SignedHeaders=host;x-amz-date;accept-encoding, Signature=abc",
+            ),
+            ("x-amz-content-sha256", "UNSIGNED-PAYLOAD"),
+        ];
+        let uri = "https://s3.amazonaws.com/b/k";
+        assert_eq!(scheme(&headers, uri), None, "body should not be signed");
+        assert!(
+            signs_headers(&headers, uri),
+            "headers should still be signed"
+        );
+    }
+
+    #[test]
+    fn bearer_token_does_not_sign_headers() {
+        assert!(!signs_headers(
+            &[("authorization", "Bearer sk-live-token")],
+            "https://api.example.com/v1"
+        ));
     }
 
     #[test]
