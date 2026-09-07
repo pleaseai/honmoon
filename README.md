@@ -233,6 +233,7 @@ Each archive contains the `honmoon` binary plus `LICENSE` and `README.md`.
 **Linux (x86-64)**
 
 ```bash
+# Latest version: https://github.com/pleaseai/honmoon/releases/latest
 VERSION=0.1.0
 curl -fsSL "https://github.com/pleaseai/honmoon/releases/download/v${VERSION}/honmoon-${VERSION}-x86_64-unknown-linux-gnu.tar.gz" \
   | tar -xz honmoon
@@ -242,6 +243,7 @@ sudo install -m 755 honmoon /usr/local/bin/honmoon
 **macOS (Apple silicon)**
 
 ```bash
+# Latest version: https://github.com/pleaseai/honmoon/releases/latest
 VERSION=0.1.0
 curl -fsSL "https://github.com/pleaseai/honmoon/releases/download/v${VERSION}/honmoon-${VERSION}-aarch64-apple-darwin.tar.gz" \
   | tar -xz honmoon
