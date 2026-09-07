@@ -1,0 +1,214 @@
+name: Release
+
+# Builds the `honmoon` binary for every supported target and publishes a GitHub Release.
+#   - push of a `v*` tag → build, then create the Release with the tarballs + SHA256SUMS
+#   - manual run         → dry run: build and upload the artifacts, but create no Release
+#
+# The dashboard MUST be built before `cargo build`. `crates/honmoon-mgmt/build.rs` drops a
+# placeholder `index.html` when `apps/dashboard/dist` is missing so a bare `cargo build`
+# still links, which means a wrong build order ships a binary serving "Dashboard not built"
+# instead of failing. The build job therefore runs `bun run --filter @honmoon/dashboard build`
+# first and greps the placeholder marker out of `dist/index.html` before touching cargo.
+#
+# Binaries are built on native runners only — no cross-compilation toolchain. The workspace
+# pulls in `aws-lc-sys` (via rustls), which needs cmake + a C compiler; the hosted runners
+# already ship those for their own architecture.
+#
+# npm packages (@honmoon/cli, @honmoon/policy, @honmoon/api) and the Rust crates are not
+# published for v0.1.0 — see docs/releasing.md.
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  # Never cancel a tag build: a half-published Release is worse than a slow one.
+  cancel-in-progress: false
+
+jobs:
+  verify-version:
+    name: Verify version consistency
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.check.outputs.version }}
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+
+      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
+
+      # The tag is the source of truth on a tag push. A workflow_dispatch run can be
+      # launched against a `v*` tag ref too, so IS_TAG checks the event rather than the
+      # ref alone — otherwise a manual dry run would be graded against that tag. Either
+      # way every manifest has to agree, and the failure message names the one that does not.
+      - name: Check Cargo.toml and every package.json agree
+        id: check
+        env:
+          REF_NAME: ${{ github.ref_name }}
+          IS_TAG: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') }}
+        run: |
+          set -euo pipefail
+
+          cargo_version=$(cargo metadata --no-deps --format-version 1 \
+            | jq -er '.packages[] | select(.name == "honmoon-cli") | .version')
+          echo "Cargo.toml [workspace.package].version = $cargo_version"
+
+          failed=0
+          for manifest in package.json packages/*/package.json apps/*/package.json; do
+            manifest_version=$(jq -er '.version' "$manifest")
+            if [ "$manifest_version" != "$cargo_version" ]; then
+              echo "::error file=$manifest::version is $manifest_version but Cargo.toml says $cargo_version"
+              failed=1
+            fi
+          done
+
+          if [ "$IS_TAG" = 'true' ]; then
+            tag_version="${REF_NAME#v}"
+            if [ "$tag_version" != "$cargo_version" ]; then
+              echo "::error::tag $REF_NAME does not match Cargo.toml version $cargo_version"
+              echo "::error::run 'bun scripts/bump-version.ts $tag_version' and retag"
+              failed=1
+            fi
+          else
+            echo "workflow_dispatch: skipping the tag comparison (dry run)"
+          fi
+
+          [ "$failed" -eq 0 ] || exit 1
+          echo "all manifests agree on $cargo_version"
+          echo "version=$cargo_version" >> "$GITHUB_OUTPUT"
+
+  build:
+    name: Build ${{ matrix.target }}
+    needs: verify-version
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            runner: ubuntu-latest
+          - target: aarch64-unknown-linux-gnu
+            runner: ubuntu-24.04-arm
+          - target: aarch64-apple-darwin
+            runner: macos-latest
+    env:
+      VERSION: ${{ needs.verify-version.outputs.version }}
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+
+      - uses: jdx/mise-action@e6a8b3978addb5a52f2b4cd9d91eafa7f0ab959d # v4.2.0
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile --ignore-scripts
+
+      # Must precede the cargo build — rust-embed bakes `dist/` in at compile time.
+      - name: Build dashboard
+        run: bun run --filter @honmoon/dashboard build
+
+      # Guards the build order: build.rs's placeholder is what a cargo-first run would embed.
+      - name: Assert the dashboard is not the build.rs placeholder
+        run: |
+          set -euo pipefail
+          if grep -q 'Dashboard not built' apps/dashboard/dist/index.html; then
+            echo "::error::apps/dashboard/dist/index.html is the build.rs placeholder — the dashboard build did not produce a real bundle"
+            exit 1
+          fi
+          echo "dashboard bundle looks real"
+
+      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        with:
+          key: ${{ matrix.target }}
+
+      - name: Build honmoon
+        run: cargo build --release --locked -p honmoon-cli --target ${{ matrix.target }}
+
+      # Native runners only, so the binary just built is runnable here.
+      - name: Smoke test
+        run: ./target/${{ matrix.target }}/release/honmoon --version
+
+      # `shasum -a 256` rather than sha256sum/openssl: it is present on both the ubuntu and
+      # the macOS runners, and emits the coreutils format that both `sha256sum -c` and
+      # `shasum -a 256 -c` accept on the user's side.
+      - name: Package
+        id: package
+        run: |
+          set -euo pipefail
+          archive="honmoon-${VERSION}-${{ matrix.target }}.tar.gz"
+
+          staging="$(mktemp -d)"
+          cp "target/${{ matrix.target }}/release/honmoon" "$staging/"
+          cp LICENSE README.md "$staging/"
+          tar -czf "$archive" -C "$staging" honmoon LICENSE README.md
+
+          shasum -a 256 "$archive" > "$archive.sha256"
+          cat "$archive.sha256"
+          echo "archive=$archive" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: honmoon-${{ matrix.target }}
+          path: |
+            ${{ steps.package.outputs.archive }}
+            ${{ steps.package.outputs.archive }}.sha256
+          if-no-files-found: error
+
+  release:
+    name: Publish GitHub Release
+    needs: [verify-version, build]
+    # Tag pushes only. A `workflow_dispatch` run selected against a `v*` tag has
+    # a matching `github.ref`, and the manual run is documented as a dry run.
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Combine checksums
+        run: |
+          set -euo pipefail
+          cd artifacts
+          cat ./*.tar.gz.sha256 | sort -k2 > SHA256SUMS
+          rm -f ./*.tar.gz.sha256
+          cat SHA256SUMS
+          # Re-verify locally so a corrupted upload cannot become a published asset.
+          shasum -a 256 -c SHA256SUMS
+
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          # A tag carrying a pre-release identifier (v0.1.0-rc.1) never becomes "latest".
+          prerelease=()
+          case "$TAG" in
+            *-*) prerelease=(--prerelease) ;;
+          esac
+
+          gh release create "$TAG" \
+            --verify-tag \
+            --generate-notes \
+            --title "honmoon $TAG" \
+            "${prerelease[@]}" \
+            artifacts/*.tar.gz \
+            artifacts/SHA256SUMS
