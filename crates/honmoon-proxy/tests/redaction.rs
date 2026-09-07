@@ -876,6 +876,31 @@ fn signed_body_request_with_secret_is_forwarded_unredacted_in_forward_mode() {
     assert_eq!(mappings.unwrap().len(), 0);
 }
 
+// The `identity` negotiation must not leak onto the common 'signed request,
+// nothing to redact' path either: the client's `Accept-Encoding` may be one of
+// the headers it signed.
+#[test]
+fn signed_body_request_without_secret_keeps_client_accept_encoding() {
+    let (upstream, captured) = start_upstream(ResponseMode::Static(b"ok".to_vec()));
+    let (proxy, mappings) = start_proxy(true);
+    let body = b"key=nothing-to-redact";
+
+    let response = proxy_request(
+        proxy,
+        upstream,
+        body,
+        &[("Authorization", SIGV4), ("Accept-Encoding", "gzip")],
+    );
+    assert!(response.starts_with(b"HTTP/1.1 200"));
+    let forwarded = captured.recv_timeout(Duration::from_secs(5)).unwrap();
+    assert_eq!(forwarded.body, body);
+    assert_eq!(
+        header_value(&forwarded.headers, "accept-encoding"),
+        Some("gzip")
+    );
+    assert_eq!(mappings.unwrap().len(), 0);
+}
+
 #[test]
 fn signed_body_request_without_secret_is_forwarded_untouched() {
     let (upstream, captured) = start_upstream(ResponseMode::Static(b"ok".to_vec()));
