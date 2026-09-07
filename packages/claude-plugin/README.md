@@ -72,16 +72,75 @@ printf '{"hook_event_name":"PreToolUse","tool_name":"Read","tool_input":{"file_p
 printf '{"hook_event_name":"UserPromptSubmit","prompt":"deploy with sk-ant-api03-cache-stable-abcDEF123456"}' | honmoon hook
 ```
 
-## Known limitation — the transcript
+## Transcript hygiene — verified
 
 `PostToolUse` `updatedToolOutput` is documented to replace what the **model**
-sees. The docs do **not** explicitly guarantee that the persisted transcript
-`.jsonl` is rewritten with the redacted value. For files that are *known*
-credential stores, the guaranteed transcript-hygiene path is therefore the
-`PreToolUse` deny (the file is never read, so nothing is transcribed). For a
-secret that merely appears inside an otherwise-normal file, `PostToolUse` at
-minimum keeps the raw secret out of the model context; whether it also scrubs
-the transcript depends on the Claude Code version — verify against yours.
+sees; the docs do not spell out that the persisted transcript
+(`~/.claude/projects/<project>/<session-id>.jsonl`) stores the redacted value.
+That was verified empirically against **Claude Code 2.1.263** (2026-09-07,
+issue #49): a headless session with this plugin loaded read a file carrying a
+valid-checksum RRN and an Anthropic-shaped API key, and the session `.jsonl`
+contained **zero** occurrences of either raw value. The placeholders appear in
+every place the tool output is persisted — the `tool_result` block the model
+sees, the `toolUseResult.file.content` field Claude Code keeps for `/resume`,
+and the `hook_success` record that logs the hook's own stdout. A control run of
+the same prompt without the plugin persisted both raw values, so the fixture
+would have been transcribed without the hook.
+
+Two things remain version-dependent, so re-run the check below when Claude Code
+changes:
+
+- Only the tool **output** is rewritten. The hook's stdin (the raw
+  `tool_response`) is not persisted today, but that is an implementation detail
+  of Claude Code, not a documented guarantee.
+- For files that are *known* credential stores, the `PreToolUse` deny stays the
+  guaranteed path: the file is never read, so there is nothing to rewrite.
+
+To re-verify against your Claude Code version:
+
+```sh
+(
+  set -e   # a failed step must never fall through to the cleanup below
+  PROBE=$(mktemp -d /tmp/hm-probe-XXXXXX)
+  cd "$PROBE" && git init -q
+  printf 'rrn: 670125-1230644\nkey=sk-ant-api03-cache-stable-abcDEF123456\n' > notes.txt
+
+  SESSION_ID=$(claude -p --plugin-dir /path/to/honmoon/packages/claude-plugin \
+    --allowedTools Read --output-format json \
+    'Read notes.txt and reply with its contents verbatim.' | jq -r .session_id)
+
+  # The project directory is named after the *canonical* cwd, which is
+  # platform-dependent (macOS resolves /tmp to /private/tmp), so find the
+  # transcript by session id rather than by a hardcoded slug.
+  set -- ~/.claude/projects/*/"$SESSION_ID".jsonl
+  TRANSCRIPT=$1
+  if [ ! -f "$TRANSCRIPT" ]; then
+    echo "FAIL — no transcript found for session $SESSION_ID"
+    exit 1
+  fi
+
+  # Assert a placeholder reached each of the three places the tool output is
+  # persisted — counting occurrences would also be satisfied by three copies
+  # in one of them — and that neither raw fixture survived anywhere.
+  if jq -s -e '
+          any(.[]; any(.message.content[]?;
+                .type == "tool_result" and (.content | tostring | contains("<<hs:"))))
+      and any(.[]; (.toolUseResult.file.content? // "") | contains("<<hs:"))
+      and any(.[]; .attachment.type? == "hook_success"
+                and ((.attachment.stdout? // "") | contains("<<hs:")))
+        ' "$TRANSCRIPT" > /dev/null \
+    && ! grep -q -e 670125-1230644 -e sk-ant-api03 "$TRANSCRIPT"
+  then
+    echo "PASS — every persisted copy was redacted"
+    # Both paths belong to this probe alone. A control run without the plugin
+    # stores the raw fixture, so clean that one up the same way.
+    rm -rf -- "$PROBE" "${TRANSCRIPT%/*}"
+  else
+    echo "FAIL — keeping $PROBE and $TRANSCRIPT for inspection"
+    exit 1
+  fi
+)
+```
 
 ## Known limitation — detector coverage
 
