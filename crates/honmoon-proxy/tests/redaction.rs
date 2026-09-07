@@ -901,6 +901,39 @@ fn signed_body_request_without_secret_keeps_client_accept_encoding() {
     assert_eq!(mappings.unwrap().len(), 0);
 }
 
+// A bare hex `x-amz-content-sha256` binds the body without any signature we
+// recognize, so we cannot tell whether the scheme that produced it also signs
+// headers. It is body-signed but not header-signed, which is exactly the pair
+// the `Accept-Encoding` guard has to cover with an `is_none()` check as well as
+// an `authentication_signs_headers` one.
+#[test]
+fn bare_payload_hash_request_keeps_client_accept_encoding() {
+    let (upstream, captured) = start_upstream(ResponseMode::Static(b"ok".to_vec()));
+    let (proxy, mappings) = start_proxy(true);
+    let body = b"key=nothing-to-redact";
+
+    let response = proxy_request(
+        proxy,
+        upstream,
+        body,
+        &[
+            (
+                "x-amz-content-sha256",
+                "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            ),
+            ("Accept-Encoding", "gzip"),
+        ],
+    );
+    assert!(response.starts_with(b"HTTP/1.1 200"));
+    let forwarded = captured.recv_timeout(Duration::from_secs(5)).unwrap();
+    assert_eq!(forwarded.body, body);
+    assert_eq!(
+        header_value(&forwarded.headers, "accept-encoding"),
+        Some("gzip")
+    );
+    assert_eq!(mappings.unwrap().len(), 0);
+}
+
 #[test]
 fn signed_body_request_without_secret_is_forwarded_untouched() {
     let (upstream, captured) = start_upstream(ResponseMode::Static(b"ok".to_vec()));

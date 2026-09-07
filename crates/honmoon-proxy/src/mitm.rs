@@ -333,17 +333,24 @@ impl HonmoonHandler {
         // Ask upstreams for text we can safely detokenize on the response path.
         // A server may ignore this, in which case handle_response fails open.
         //
-        // Requests whose authentication signs headers are exempt: some
-        // SigV4 signers list `accept-encoding` in `SignedHeaders` even when
-        // the payload itself is unsigned (`UNSIGNED-PAYLOAD`), and RFC 9421 /
-        // draft-cavage signatures cover whichever headers their component or
-        // `headers=` list names. Overwriting `Accept-Encoding` on any of
-        // those breaks the signature regardless of whether the *body* is
-        // signed — that's a separate question, decided below by
-        // `signature_scheme`. A compressed response is then simply not
+        // Two disjoint exemptions, and the rewrite is skipped when *either*
+        // holds. `authentication_signs_headers` covers requests whose headers
+        // are demonstrably signed: some SigV4 signers list `accept-encoding` in
+        // `SignedHeaders` even when the payload itself is unsigned
+        // (`UNSIGNED-PAYLOAD`), and RFC 9421 / draft-cavage signatures cover
+        // whichever headers their component or `headers=` list names.
+        // `signature_scheme` covers the converse case — a bare hex
+        // `x-amz-content-sha256` binds the body without any recognized
+        // signature, so we cannot tell whether the scheme that produced it also
+        // signs headers, and that request is forwarded verbatim under
+        // `--signed-body forward`. Neither predicate implies the other.
+        //
+        // Over-inclusion here is fail-safe: a compressed response is simply not
         // detokenized, as everywhere else.
         let signature_scheme = body_signature_scheme(request.headers(), request.uri());
-        if !authentication_signs_headers(request.headers(), request.uri()) {
+        if signature_scheme.is_none()
+            && !authentication_signs_headers(request.headers(), request.uri())
+        {
             request.headers_mut().insert(
                 header::ACCEPT_ENCODING,
                 header::HeaderValue::from_static("identity"),
