@@ -1,0 +1,19 @@
+.worktreeinclude
+  s_bf64512014947b::t_a165a6b17a1c36 13-15
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "b773767f9af90655235674cd5a7f400783ad89fb",
+  "prompts": {},
+  "sessions": {
+    "s_bf64512014947b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "2d943020-bbb2-4b59-b17c-8e41fdc587ed",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
