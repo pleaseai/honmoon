@@ -22,9 +22,21 @@ export interface Rule {
   verdict: Verdict
 }
 
+/** The wire protocol spoken at an endpoint. Defaults to `tcp`. */
+export type EndpointProtocol = 'postgres' | 'kubernetes' | 'tcp'
+
+/** A named network target a `Rule.endpoint` can refer to. */
+export interface Endpoint {
+  host: string
+  port: number
+  protocol?: EndpointProtocol
+}
+
 export interface Policy {
   version?: number
   egress?: Egress
+  /** Named network targets, keyed by name. */
+  endpoints?: Record<string, Endpoint>
   rules?: Rule[]
 }
 
