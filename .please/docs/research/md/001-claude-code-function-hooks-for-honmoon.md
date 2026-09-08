@@ -101,7 +101,7 @@ Other documented limits: the redaction is one-way (no reverse substitution; the 
 - **Position.** Register as an org-appended plugin so it is the last hook above core. Combined with the withholding hook (prepended), Honmoon would occupy both ends of the chain.
 - **Context note.** Every rewrite attaches `context` so the model is not reasoning about content it never saw.
 - **Coexistence.** The doc states a hooks-module and existing `hooks.json` entries run side by side. Keep the command hooks as the fallback for Claude Code versions without the flag.
-- **Budget.** Detector calls must stay well inside the 10 s per-hook budget; the proxy's per-request latency numbers apply.
+- **Budget.** Detector calls must stay well inside the 10 s per-hook budget; the proxy's per-request latency numbers apply. Time spent inside `next(e)` does not count: measured on 2.1.263, a hook wrapping a 12.7 s Bash call still had its rewrite applied, and the debug log reports `settled in 12704.3ms (next() included)` without a skip. Only the hook's own work before and after `next` is budgeted.
 - **Stability.** The API is pre-release; `classic.*`, `next.to`, typed errors, and result merging across hooks are all still open on the thread. Expect churn.
 
 ## Proposed next step
