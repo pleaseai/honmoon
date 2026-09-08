@@ -1,0 +1,38 @@
+policies/agent.yaml
+  s_9db9412633686d::t_3b03337d5f092a 10-14
+Cargo.toml
+  s_9db9412633686d::t_3b03337d5f092a 43-44
+crates/honmoon-core/Cargo.toml
+  s_9db9412633686d::t_3b03337d5f092a 14
+.claude/agent-memory/review-review-ocr-reviewer/MEMORY.md
+  s_9db9412633686d::t_f5f779c7e32038 2
+crates/honmoon-proxy/src/mitm.rs
+  s_9db9412633686d::t_3b03337d5f092a 83-91,110-111,113-119,124,792-797,799-804,1179-1186,1191-1193,1260-1293
+wiki/getting-started/policy-authoring.md
+  s_9db9412633686d::t_3b03337d5f092a 27,45-46,126,170,186-189,194
+wiki/llms-full.txt
+  s_9db9412633686d::t_3b03337d5f092a 2564,2582-2583,2663,2707,2723-2726,2731
+.claude/agent-memory/review-review-ocr-reviewer/ocr-scoping-honmoon.md
+  s_9db9412633686d::t_8bdc775bf7dd11 3,8-21,24-32,34
+crates/honmoon-core/src/protocols.rs
+  s_9db9412633686d::t_3b03337d5f092a 10-13,691-707,1237-1254
+  s_9db9412633686d::t_3abc8dbf60cab0 1255-1256
+Cargo.lock
+  s_9db9412633686d::t_f19196d42bbd5e 1032
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "a1d32f2d2166dfedf481c523bc50b54c2f618bad",
+  "prompts": {},
+  "sessions": {
+    "s_9db9412633686d": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "48cf2c87-6132-47ec-b772-0666fa6084c0",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
