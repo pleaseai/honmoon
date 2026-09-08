@@ -1,0 +1,28 @@
+wiki/getting-started/quick-start.md
+  s_16201d1084e23d::t_3ce02100f03673 18,33-35,70
+  s_16201d1084e23d::t_0f8f4a32103ae2 25,28-31
+  s_16201d1084e23d::t_b42d3687da5005 87
+  s_16201d1084e23d::t_b221b7b6dc1440 82-83
+  s_16201d1084e23d::t_f576b678449490 24,26-27,32
+  s_16201d1084e23d::t_ac6424051e8cbb 79
+wiki/llms-full.txt
+  s_16201d1084e23d::t_15ef4d6e961e48 2361,2376-2378,2413,2422
+  s_16201d1084e23d::t_8cf597f2231ac3 2367,2369-2370,2375,2425-2426,2430
+  s_16201d1084e23d::t_8f9aea3de201e1 2368,2371-2374
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "4c07a65bae11dbbb32f1c6f4fb58b11e6be85bae",
+  "prompts": {},
+  "sessions": {
+    "s_16201d1084e23d": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "485cab2a-19e0-45a0-af23-bd7911a4fb27",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
