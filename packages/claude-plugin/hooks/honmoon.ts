@@ -69,7 +69,7 @@ export function configure(options: PluginOptions = {}): Config {
 
 /** An empty body is the engine's documented no-op; anything else must be JSON. */
 /** The keys `honmoon hook` and the mgmt endpoint emit (Claude Code hook JSON). */
-const VERDICT_KEYS = new Set(['hookSpecificOutput', 'decision', 'reason', 'continue', 'stopReason', 'suppressOutput', 'systemMessage'])
+const VERDICT_KEYS = new Set(['hookSpecificOutput', 'decision', 'reason'])
 
 function parseVerdict(body: string): Answer {
   const text = body.trim()
@@ -229,7 +229,16 @@ function misrouted(verdict: Json, sent: string, foreign: readonly string[]): str
     return `engine answered ${name}, not ${sent}`
   }
   const key = foreign.find(k => k in verdict || k in output)
-  return key === undefined ? undefined : `engine answered with "${key}", not a ${sent} verdict`
+  if (key !== undefined) {
+    return `engine answered with "${key}", not a ${sent} verdict`
+  }
+  // The engine answers `{}` for a no-op and otherwise says what it decided;
+  // a verdict that is neither is not the engine talking.
+  const said = Object.keys(verdict).length === 0
+    || ('decision' in verdict)
+    || ('updatedToolOutput' in output)
+    || ('permissionDecision' in output)
+  return said ? undefined : `engine answered a ${sent} verdict that decides nothing`
 }
 
 const NOT_PRE = ['decision', 'reason', 'updatedToolOutput'] as const
@@ -446,7 +455,7 @@ async function redactResult(engine: Engine, e: ToolEvent, r: ToolResult, session
     return r
   }
   // A record comes back a record; anything else is not the engine talking.
-  if (!updated || typeof updated !== 'object' || Array.isArray(updated) || !sameKeys(updated, r.result)) {
+  if (!sameShape(updated, r.result)) {
     return config.failClosed ? { deny: unavailable('engine returned an unexpected shape') } : r
   }
   return {
@@ -456,18 +465,29 @@ async function redactResult(engine: Engine, e: ToolEvent, r: ToolResult, session
 }
 
 /**
- * Whether the replacement has exactly the keys of the record that was sent.
- * The engine rewrites values in place, so the keys never change; a record
- * with other keys would fail core's output-schema check, which skips the hook
- * and lets the unredacted result stand.
+ * Whether the replacement is the record that was sent with only its string
+ * leaves rewritten. That is exactly what the engine does, so any other
+ * difference (a key added or dropped, a nested object hollowed out, a number
+ * or flag changed) is not a redaction; forwarding it would fail core's
+ * output-schema check, which skips the hook and lets the unredacted result
+ * stand.
  */
-function sameKeys(replacement: object, original: unknown): boolean {
-  if (!original || typeof original !== 'object') {
-    return false
+function sameShape(replacement: unknown, original: unknown): boolean {
+  if (Array.isArray(original)) {
+    return Array.isArray(replacement)
+      && replacement.length === original.length
+      && original.every((item, i) => sameShape(replacement[i], item))
   }
-  const sent = new Set(Object.keys(original))
-  const got = Object.keys(replacement)
-  return sent.size === got.length && got.every(key => sent.has(key))
+  if (original && typeof original === 'object') {
+    if (!replacement || typeof replacement !== 'object' || Array.isArray(replacement)) {
+      return false
+    }
+    const sent = Object.keys(original)
+    const got = Object.keys(replacement)
+    return sent.length === got.length
+      && sent.every(key => key in replacement && sameShape((replacement as Json)[key], (original as Json)[key]))
+  }
+  return typeof original === 'string' ? typeof replacement === 'string' : replacement === original
 }
 
 /** An engine bound to this hook's `$`, with a fresh budget. */

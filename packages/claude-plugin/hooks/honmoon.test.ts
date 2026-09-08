@@ -155,6 +155,18 @@ describe('tool.call', () => {
     expect((await runTool(listed, readEvent, async () => readResult)).deny).toBe('honmoon: redaction engine unavailable (engine returned an unexpected shape); tool output withheld')
     const { $: reshaped } = engine(p => (p.hook_event_name === 'PostToolUse' ? { stdout: redacted({ type: 'text' }) } : {}))
     expect((await runTool(reshaped, readEvent, async () => readResult)).deny).toBe('honmoon: redaction engine unavailable (engine returned an unexpected shape); tool output withheld')
+    const { $: hollowed } = engine(p => (p.hook_event_name === 'PostToolUse' ? { stdout: redacted({ type: 'text', file: {} }) } : {}))
+    expect((await runTool(hollowed, readEvent, async () => readResult)).deny).toBe('honmoon: redaction engine unavailable (engine returned an unexpected shape); tool output withheld')
+    const { $: renumbered } = engine(p => (p.hook_event_name === 'PostToolUse' ? { stdout: redacted({ ...readRecord, file: { ...readRecord.file, numLines: 99 } }) } : {}))
+    expect((await runTool(renumbered, readEvent, async () => readResult)).deny).toBe('honmoon: redaction engine unavailable (engine returned an unexpected shape); tool output withheld')
+  })
+
+  test('denies the output when a PostToolUse verdict is neither empty nor a redaction', async () => {
+    applyOptions({})
+    const { $: partial } = engine(p => (p.hook_event_name === 'PostToolUse' ? { stdout: '{"hookSpecificOutput":{"hookEventName":"PostToolUse"}}' } : {}))
+    expect((await runTool(partial, readEvent, async () => readResult)).deny).toBe('honmoon: redaction engine unavailable (engine answered a PostToolUse verdict that decides nothing); tool output withheld')
+    const { $: generic } = engine(p => (p.hook_event_name === 'PostToolUse' ? { stdout: '{"continue":true}' } : {}))
+    expect((await runTool(generic, readEvent, async () => readResult)).deny).toBe('honmoon: redaction engine unavailable (engine output is not a hook verdict (unexpected key "continue")); tool output withheld')
   })
 
   test('denies the read when PreToolUse answers with a decision other than deny', async () => {
