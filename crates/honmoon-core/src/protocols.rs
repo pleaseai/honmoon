@@ -11,12 +11,13 @@ use std::borrow::Cow;
 
 use percent_encoding::percent_decode_str;
 
+use std::cmp::Ordering;
 use std::ops::ControlFlow;
 
 use crate::{K8sFacts, SqlFacts};
 use sqlparser::ast::{
-    CascadeOption, Expr, FromTable, ObjectName, OnConflictAction, OnInsert, Query, SetExpr,
-    Statement, TableFactor, TableObject, UtilityOption, Value, visit_relations,
+    CascadeOption, Expr, FromTable, ObjectName, ObjectType, OnConflictAction, OnInsert, Query,
+    SetExpr, Statement, TableFactor, TableObject, UtilityOption, Value, Visit, visit_relations,
 };
 use sqlparser::dialect::PostgreSqlDialect;
 use sqlparser::parser::Parser;
@@ -109,13 +110,32 @@ fn verb_rank(verb: &str) -> usize {
 /// caller can pass the statement's own verb first and its sub-queries after.
 fn more_dangerous(a: Option<SqlFacts>, b: Option<SqlFacts>) -> Option<SqlFacts> {
     match (a, b) {
-        (Some(a), Some(b)) => Some(if verb_rank(&b.verb) < verb_rank(&a.verb) {
-            b
-        } else {
-            a
+        (Some(a), Some(b)) => Some(match verb_rank(&b.verb).cmp(&verb_rank(&a.verb)) {
+            Ordering::Less => b,
+            Ordering::Greater => a,
+            // Two writes of the same rank on different relations: neither name
+            // is the answer. `WITH a AS (DELETE FROM t1 RETURNING *), b AS
+            // (DELETE FROM t2 RETURNING *) SELECT 1` runs both CTEs even though
+            // nothing references them — measured on PostgreSQL 17.11, t1 and t2
+            // each went 3 rows to 0 — so naming `t1` would let an allow rule
+            // scoped to it authorize emptying `t2`. Identical names are kept:
+            // two unqualified mentions in one statement resolve under the same
+            // search path, so that is not a catalog assumption.
+            Ordering::Equal if writes(&a.verb) && a.table != b.table => SqlFacts {
+                verb: a.verb,
+                table: String::new(),
+            },
+            Ordering::Equal => a,
         }),
         (a, b) => a.or(b),
     }
+}
+
+/// Whether a verb writes — anything ranked above `SELECT` in
+/// [`VERB_PRECEDENCE`]. A verb the table does not list ranks below it and is
+/// not a write.
+fn writes(verb: &str) -> bool {
+    verb_rank(verb) < verb_rank("SELECT")
 }
 
 fn facts(verb: &str, table: String) -> Option<SqlFacts> {
@@ -158,27 +178,73 @@ fn sole_relation<T>(targets: &[T], name_of: impl Fn(&T) -> String) -> String {
     }
 }
 
-/// The one relation a read reads, or empty when it reads several.
-///
-/// A table-scoped allow rule must not authorize a relation the statement does
-/// not name, and a query reaches relations in more places than its first `FROM`
-/// item: a join, a comma list, either side of a `UNION`, a subquery in the
-/// projection (`SELECT (SELECT max(x) FROM secrets) FROM approved`) or in a
-/// `WHERE` (`… WHERE id IN (SELECT id FROM secrets)`). Every one of those reads
-/// two relations while naming only the first. `visit_relations` walks all of
-/// them, so this counts the whole read set rather than one syntactic position.
-///
-/// Occurrences are counted, not distinct names: deciding that two `ObjectName`s
-/// denote the same relation needs the catalog — the schema search path, and
-/// aliases — which is exactly the kind of assumption this parser is here to stop
-/// making. Two mentions means no table.
-fn sole_read_relation(body: &SetExpr) -> String {
+/// Every relation named anywhere inside `node`, normalized, in source order.
+fn relations_in<V: Visit>(node: &V) -> Vec<String> {
     let mut relations = Vec::new();
-    let _: ControlFlow<()> = visit_relations(body, |name| {
+    let _: ControlFlow<()> = visit_relations(node, |name| {
         relations.push(relation_name(name));
         ControlFlow::Continue(())
     });
-    sole_relation(&relations, String::clone)
+    relations
+}
+
+/// The relations a query actually reads.
+///
+/// A table-scoped allow rule must not authorize a relation the statement does
+/// not name, and a query reaches relations in far more places than its first
+/// `FROM` item: a join, a comma list, either side of a `UNION`, a subquery in
+/// the projection (`SELECT (SELECT max(x) FROM secrets) FROM approved`), in a
+/// `WHERE` (`… WHERE id IN (SELECT id FROM secrets)`), in an `ORDER BY`, or in a
+/// CTE body. `visit_relations` walks all of them.
+///
+/// A **CTE alias is not a relation**: it is a name the statement invents, so
+/// `WITH approved AS (SELECT * FROM secrets) SELECT * FROM approved` reads
+/// `secrets`, and reporting `approved` would let an allow rule scoped to it
+/// authorize reading `secrets`. An alias is dropped only where it is in scope —
+/// the outer query, and CTEs declared after it, plus its own body when the
+/// `WITH` is `RECURSIVE`. Inside its own non-recursive body the same word is the
+/// real table (`WITH t AS (SELECT * FROM t) …` reads the table `t`), and
+/// treating it as the alias there would hide a relation.
+///
+/// Occurrences are counted, not distinct names: deciding that two `ObjectName`s
+/// denote the same relation needs the catalog — the schema search path — which
+/// is exactly the assumption this parser exists to stop making. Two mentions
+/// means no table.
+fn read_set(query: &Query) -> Vec<String> {
+    let recursive = query.with.as_ref().is_some_and(|with| with.recursive);
+    let ctes: Vec<_> = query
+        .with
+        .iter()
+        .flat_map(|with| &with.cte_tables)
+        .collect();
+
+    // Everything the query mentions, then the CTE bodies removed from it, so
+    // what is left is every mention outside them — the outer body, `ORDER BY`,
+    // `LIMIT`, and each alias where it is referenced.
+    let mut outside = relations_in(query);
+    let mut inside = Vec::new();
+    let mut declared: Vec<String> = Vec::new();
+    for cte in &ctes {
+        let body = relations_in(cte.query.as_ref());
+        for relation in &body {
+            if let Some(at) = outside.iter().position(|other| other == relation) {
+                outside.remove(at);
+            }
+        }
+        // A CTE body sees the aliases declared before it, and its own only when
+        // the `WITH` is `RECURSIVE`.
+        let own = cte.alias.name.value.to_ascii_lowercase();
+        let mut in_scope = declared.clone();
+        if recursive {
+            in_scope.push(own.clone());
+        }
+        inside.extend(body.into_iter().filter(|r| !in_scope.contains(r)));
+        declared.push(own);
+    }
+    outside.retain(|relation| !declared.contains(relation));
+
+    inside.append(&mut outside);
+    inside
 }
 
 /// Whether an `EXPLAIN` runs the statement it wraps.
@@ -295,11 +361,20 @@ fn classify_statement(statement: &Statement) -> Option<SqlFacts> {
             )
         }
         Statement::Update(update) => facts("UPDATE", table_factor_name(&update.table.relation)),
-        // `CASCADE` reaches objects the statement never names, so neither of
-        // these can honestly report one relation — see [`sole_relation`], whose
-        // rule this extends from "names several" to "affects several".
-        Statement::Drop { cascade: true, .. } => facts("DROP", String::new()),
-        Statement::Drop { names, .. } => facts("DROP", sole_relation(names, relation_name)),
+        // A `DROP` fills `sql.table` only when it drops a *table*. A rule author
+        // who wrote `sql.table == 'scratch'` meant the table, and `DROP SCHEMA
+        // scratch CASCADE` takes everything in a schema that happens to share
+        // the name — as do `DROP DATABASE`, `DROP INDEX` and the views.
+        // `CASCADE` reaches objects the statement never names, so it reports
+        // nothing either; both extend [`sole_relation`]'s rule from "names
+        // several" to "affects several".
+        Statement::Drop {
+            object_type: ObjectType::Table,
+            cascade: false,
+            names,
+            ..
+        } => facts("DROP", sole_relation(names, relation_name)),
+        Statement::Drop { .. } => facts("DROP", String::new()),
         Statement::Truncate(truncate) => facts(
             "TRUNCATE",
             if truncate.cascade == Some(CascadeOption::Cascade) {
@@ -325,30 +400,31 @@ fn classify_query(query: &Query) -> Option<SqlFacts> {
         .fold(None, |worst, cte| {
             more_dangerous(worst, classify_query(&cte.query))
         });
-    more_dangerous(classify_set_expr(&query.body), ctes)
+    let merged = more_dangerous(classify_set_expr(&query.body), ctes)?;
+    Some(match merged.verb.as_str() {
+        // A read names the one relation the whole statement reads — see
+        // [`read_set`]. A data-modifying CTE keeps the verb and write target it
+        // won on; only a `SELECT` result is resolved this way.
+        "SELECT" => SqlFacts {
+            verb: merged.verb,
+            table: sole_relation(&read_set(query), String::clone),
+        },
+        _ => merged,
+    })
 }
 
 fn classify_set_expr(body: &SetExpr) -> Option<SqlFacts> {
     match body {
-        SetExpr::Select(_) => facts("SELECT", sole_read_relation(body)),
+        // The table is filled in by [`classify_query`], which can see the whole
+        // query — its CTE bodies, and the aliases that are not relations.
+        SetExpr::Select(_) => facts("SELECT", String::new()),
         SetExpr::Query(query) => classify_query(query),
         SetExpr::Insert(statement)
         | SetExpr::Update(statement)
         | SetExpr::Delete(statement)
         | SetExpr::Merge(statement) => classify_statement(statement),
         SetExpr::SetOperation { left, right, .. } => {
-            // Both sides execute, so the verb is the more dangerous of the two.
-            // A read spans them, though — `SELECT * FROM a UNION SELECT * FROM
-            // b` reads both — so its table is taken over the whole operation
-            // rather than from the side that won.
-            let merged = more_dangerous(classify_set_expr(left), classify_set_expr(right))?;
-            Some(match merged.verb.as_str() {
-                "SELECT" => SqlFacts {
-                    verb: merged.verb,
-                    table: sole_read_relation(body),
-                },
-                _ => merged,
-            })
+            more_dangerous(classify_set_expr(left), classify_set_expr(right))
         }
         // `VALUES …` and `TABLE t`: no verb in `VERB_PRECEDENCE`, so they keep
         // the classification they had before the parser landed.
@@ -393,32 +469,48 @@ fn parse_sql_heuristic(query: &str) -> SqlFacts {
     // PostgreSQL separates them.
     let tokens = lexical_tokens(query);
 
+    // Skip leading object-type and option keywords; the first word that is not
+    // one of these is the relation name.
+    const MODIFIERS: &[&str] = &[
+        "table",
+        "view",
+        "materialized",
+        "index",
+        "sequence",
+        "schema",
+        "database",
+        "if",
+        "exists",
+        "concurrently",
+        "only",
+    ];
+    let relation_after = |skip: usize| {
+        tokens
+            .iter()
+            .skip(skip)
+            .find(|t| !MODIFIERS.iter().any(|m| t.eq_ignore_ascii_case(m)))
+            .copied()
+            .unwrap_or_default()
+    };
+
     // Table extraction depends on the verb's syntax.
     let table = match verb.as_str() {
-        // DROP TABLE [IF EXISTS] x / TRUNCATE [TABLE] [ONLY] x / DROP MATERIALIZED VIEW x
-        "DROP" | "TRUNCATE" => {
-            // Skip leading object-type and option keywords; the first token that
-            // is not one of these is the relation name.
-            const MODIFIERS: &[&str] = &[
-                "table",
-                "view",
-                "materialized",
-                "index",
-                "sequence",
-                "schema",
-                "database",
-                "if",
-                "exists",
-                "concurrently",
-                "only",
-            ];
-            tokens
-                .iter()
-                .skip(1)
-                .find(|t| !MODIFIERS.iter().any(|m| t.eq_ignore_ascii_case(m)))
-                .copied()
-                .unwrap_or_default()
+        // DROP TABLE [IF EXISTS] x — and only a table. The parsed path names a
+        // relation for nothing else, and this path must agree with it or
+        // `DROP INDEX CONCURRENTLY x`, which sqlparser rejects, becomes a route
+        // around that guard.
+        "DROP" => {
+            if tokens
+                .get(1)
+                .is_some_and(|word| word.eq_ignore_ascii_case("table"))
+            {
+                relation_after(2)
+            } else {
+                ""
+            }
         }
+        // TRUNCATE [TABLE] [ONLY] x
+        "TRUNCATE" => relation_after(1),
         // INSERT INTO x / DELETE FROM x / SELECT ... FROM x
         "INSERT" | "DELETE" | "SELECT" => {
             // Find the token after the first FROM/INTO keyword.
@@ -479,7 +571,8 @@ fn leading_keyword(query: &str) -> Option<&str> {
 ///
 /// Its lexer treats a comment as whitespace, so `DROP/**/TABLE/**/users` is
 /// three words rather than one and a comment can never be absorbed into a
-/// relation name. Only the *separators* are lexical here: a word is otherwise
+/// relation name. A quoted run is opaque in the other direction: `"idx/*x"` is
+/// one identifier, and the `/*` inside it does not open a comment. Only the *separators* are lexical here: a word is otherwise
 /// kept whole, so a schema qualifier (`public.users`), a quoted identifier
 /// (`"Sessions"`) and a trailing `;` all still reach [`clean_identifier`] as one
 /// piece — splitting those into identifier runs would drop the qualifier and
@@ -500,7 +593,13 @@ fn lexical_tokens(query: &str) -> Vec<&str> {
         let start = i;
         while i < bytes.len() && !bytes[i].is_ascii_whitespace() && comment_end(bytes, i).is_none()
         {
-            i += 1;
+            // A quoted run is opaque: `"idx/*x"` is one identifier and the `/*`
+            // inside it opens nothing, so step over the whole run rather than
+            // letting the comment test truncate the name.
+            match quoted_run_end(bytes, i) {
+                Some((end, _)) => i = end,
+                None => i += 1,
+            }
         }
         if let Some(token) = query.get(start..i) {
             tokens.push(token);
@@ -555,34 +654,13 @@ fn scan_for_statement_separator(query: &str) -> bool {
             continue;
         }
         match bytes[i] {
-            // A string literal or a quoted identifier, where the quote is
-            // doubled to escape itself.
-            quote @ (b'\'' | b'"') => {
-                // `E'…'` additionally honours backslash escapes, so its `\'` does
-                // not close the string. A plain `'…'` is standard-conforming
-                // (the default since 9.1): a backslash there is a literal
-                // character, and reading it as an escape would make the scanner
-                // skip the real closing quote — a miss in the unsafe direction.
-                let backslash_escapes = quote == b'\'' && opens_escape_string(bytes, i);
-                i += 1;
-                loop {
-                    match bytes.get(i) {
-                        // Unterminated: honmoon cannot tell where the statement
-                        // ends, so it is not inspectable.
-                        None => return true,
-                        Some(b'\\') if backslash_escapes => i += 2,
-                        Some(&c) if c == quote => {
-                            if bytes.get(i + 1) == Some(&quote) {
-                                i += 2;
-                            } else {
-                                i += 1;
-                                break;
-                            }
-                        }
-                        Some(_) => i += 1,
-                    }
-                }
-            }
+            // A string literal or a quoted identifier.
+            b'\'' | b'"' => match quoted_run_end(bytes, i) {
+                // Unterminated: honmoon cannot tell where the statement ends,
+                // so it is not inspectable.
+                Some((_, false)) | None => return true,
+                Some((end, true)) => i = end,
+            },
             // A `$` only opens a dollar quote at a token boundary: PostgreSQL
             // allows `$` inside an identifier after its first character, so the
             // `$tag$` in `foo$tag$` is part of the name, not an opener. Reading
@@ -619,6 +697,41 @@ fn scan_for_statement_separator(query: &str) -> bool {
         }
     }
     false
+}
+
+/// If a quoted run opens at `start` — a `'…'` string or a `"…"` identifier,
+/// each escaping its own quote by doubling it — the index just past its closing
+/// quote, and whether it closed. `None` when no quote opens there.
+///
+/// Nothing inside is SQL. A `;`, a `/*` and a `--` in there are all ordinary
+/// characters, which is why both the separator scanner and the word splitter
+/// step over the whole run instead of looking into it.
+fn quoted_run_end(bytes: &[u8], start: usize) -> Option<(usize, bool)> {
+    let quote = match bytes.get(start)? {
+        c @ (b'\'' | b'"') => *c,
+        _ => return None,
+    };
+    // `E'…'` additionally honours backslash escapes, so its `\'` does not close
+    // the string. A plain `'…'` is standard-conforming (the default since 9.1):
+    // a backslash there is a literal character, and reading it as an escape
+    // would make the scanner skip the real closing quote — a miss in the unsafe
+    // direction.
+    let backslash_escapes = quote == b'\'' && opens_escape_string(bytes, start);
+    let mut i = start + 1;
+    loop {
+        match bytes.get(i) {
+            None => return Some((bytes.len(), false)),
+            Some(b'\\') if backslash_escapes => i += 2,
+            Some(&c) if c == quote => {
+                if bytes.get(i + 1) == Some(&quote) {
+                    i += 2;
+                } else {
+                    return Some((i + 1, true));
+                }
+            }
+            Some(_) => i += 1,
+        }
+    }
 }
 
 /// Skip leading whitespace and comments, so the caller sees the first real token.
@@ -888,9 +1001,12 @@ mod tests {
     #[test]
     fn drop_if_exists_extracts_real_table() {
         assert_eq!(parse_sql("DROP TABLE IF EXISTS users").table, "users");
-        assert_eq!(parse_sql("DROP MATERIALIZED VIEW mv").table, "mv");
         assert_eq!(parse_sql("TRUNCATE ONLY accounts").table, "accounts");
-        assert_eq!(parse_sql("DROP INDEX CONCURRENTLY idx_a").table, "idx_a");
+        // `sql.table` is a table. Dropping a view or an index of some name is
+        // not dropping the table of that name, so neither fills it — see
+        // `a_drop_of_a_non_table_object_names_no_table`.
+        assert_eq!(parse_sql("DROP MATERIALIZED VIEW mv").table, "");
+        assert_eq!(parse_sql("DROP INDEX CONCURRENTLY idx_a").table, "");
     }
 
     #[test]
@@ -1192,10 +1308,95 @@ mod tests {
 
     #[test]
     fn a_read_only_cte_is_not_upgraded() {
-        // Nothing here modifies data, so the query stays a SELECT over `x`.
+        // Nothing here modifies data, so the query stays a SELECT. It names no
+        // table: `x` is a CTE alias the statement invented, not a relation, and
+        // this query reads no relation at all.
         let facts = parse_sql("WITH x AS (SELECT 1) SELECT * FROM x");
         assert_eq!(facts.verb, "SELECT");
-        assert_eq!(facts.table, "x");
+        assert_eq!(facts.table, "");
+    }
+
+    #[test]
+    fn a_cte_alias_is_not_the_relation_a_read_names() {
+        // `approved` here is a name the statement invents; the relation read is
+        // `secrets`. Reporting the alias would let an allow rule scoped to
+        // `approved` authorize reading `secrets`.
+        let shadowed = parse_sql("WITH approved AS (SELECT * FROM secrets) SELECT * FROM approved");
+        assert_eq!(shadowed.verb, "SELECT");
+        assert_eq!(shadowed.table, "secrets");
+
+        // Two real relations, one of them behind the alias: neither is named.
+        let two =
+            parse_sql("WITH x AS (SELECT * FROM secrets) SELECT * FROM approved JOIN x ON true");
+        assert_eq!(two.verb, "SELECT");
+        assert_eq!(two.table, "");
+
+        // A plain read is unaffected.
+        assert_eq!(
+            parse_sql("SELECT * FROM orders WHERE id = $1").table,
+            "orders"
+        );
+    }
+
+    #[test]
+    fn tied_write_verbs_on_different_relations_name_no_table() {
+        // Measured on PostgreSQL 17.11: both CTEs executed even though nothing
+        // references them — t1 and t2 each went 3 rows to 0 — so naming `t1`
+        // would let an allow rule scoped to it authorize emptying `t2`.
+        let two = parse_sql(
+            "WITH a AS (DELETE FROM t1 RETURNING *), b AS (DELETE FROM t2 RETURNING *) SELECT 1",
+        );
+        assert_eq!(two.verb, "DELETE");
+        assert_eq!(two.table, "");
+
+        // The same relation on both sides is one relation, and is still named.
+        let same = parse_sql(
+            "WITH a AS (DELETE FROM t1 RETURNING *), b AS (DELETE FROM t1 RETURNING *) SELECT 1",
+        );
+        assert_eq!(same.verb, "DELETE");
+        assert_eq!(same.table, "t1");
+
+        // Different ranks are not a tie: the DELETE wins and keeps its table.
+        let ranked = parse_sql(
+            "WITH a AS (DELETE FROM t1 RETURNING *), b AS (UPDATE t2 SET x = 1 RETURNING *) SELECT 1",
+        );
+        assert_eq!(ranked.verb, "DELETE");
+        assert_eq!(ranked.table, "t1");
+    }
+
+    #[test]
+    fn a_drop_of_a_non_table_object_names_no_table() {
+        // `DROP SCHEMA scratch CASCADE` took everything in the schema
+        // (`NOTICE: drop cascades to table scratch."inner"`). An allow rule
+        // `sql.verb == 'DROP' && sql.table == 'scratch'`, written for a table,
+        // must not authorize dropping a schema, database or index of that name.
+        for query in [
+            "DROP SCHEMA scratch",
+            "DROP INDEX scratch",
+            "DROP VIEW scratch",
+            "DROP MATERIALIZED VIEW scratch",
+            "DROP DATABASE scratch",
+        ] {
+            let facts = parse_sql(query);
+            assert_eq!(facts.verb, "DROP", "{query}");
+            assert_eq!(facts.table, "", "{query}");
+        }
+
+        // Dropping the table itself still names it.
+        assert_eq!(parse_sql("DROP TABLE scratch").table, "scratch");
+    }
+
+    #[test]
+    fn a_quoted_identifier_hides_nothing_from_the_word_splitter() {
+        // A quoted identifier may hold anything but `"`, so the `/*` and `--`
+        // inside these open no comment and must not truncate the word.
+        for quoted in ["\"a/*b\"", "\"a--b\"", "\'x/*y\'", "\'x--y\'"] {
+            assert_eq!(lexical_tokens(quoted), vec![quoted], "{quoted}");
+        }
+        assert_eq!(
+            lexical_tokens("DROP INDEX CONCURRENTLY \"idx/*x\""),
+            vec!["DROP", "INDEX", "CONCURRENTLY", "\"idx/*x\""]
+        );
     }
 
     #[test]
@@ -1210,13 +1411,19 @@ mod tests {
         );
         let facts = parse_sql("DROP INDEX CONCURRENTLY idx_a");
         assert_eq!(facts.verb, "DROP");
-        assert_eq!(facts.table, "idx_a");
+        // An index is not a table, so the fallback names nothing here either.
+        // It has to agree with the parsed path: if `CONCURRENTLY` — the one
+        // word that sends this statement down the fallback — could still put an
+        // index name in `sql.table`, it would be a route around that guard.
+        assert_eq!(facts.table, "");
 
         // A comment separates words there too, so it cannot be absorbed into
         // the relation name — the same lexical rule the verb uses.
         let commented = parse_sql("DROP/**/INDEX/**/CONCURRENTLY/**/idx_a");
         assert_eq!(commented.verb, "DROP");
-        assert_eq!(commented.table, "idx_a");
+        assert_eq!(commented.table, "");
+        // The fallback still names a table when the statement drops one.
+        assert_eq!(parse_sql("DROP TABLE CONCURRENTLY users").table, "users");
 
         assert!(
             Parser::parse_sql(&PostgreSqlDialect {}, "SELECT 1; /* unterminated").is_err(),
