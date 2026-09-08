@@ -10,6 +10,12 @@ egress:
   deny:
     - '*.internal.corp'
 
+# Named targets a rule's `endpoint` refers to, matched on the exact
+# (host, port) a client dials.
+endpoints:
+  k8s-prod: { host: k8s.internal, port: 6443, protocol: kubernetes }
+  postgres-prod: { host: db.internal, port: 5432, protocol: postgres }
+
 rules:
   - name: k8s-no-secret-delete
     endpoint: k8s-prod
