@@ -217,6 +217,26 @@ function updatedOutput(verdict: Json): unknown {
 }
 
 /**
+ * Why a verdict is not an answer to the event that was sent: it names another
+ * event, or carries keys (`foreign`) that event's verdict never has. A
+ * misrouted or unhealthy endpoint answering with the wrong verdict must not
+ * read as "nothing to redact".
+ */
+function misrouted(verdict: Json, sent: string, foreign: readonly string[]): string | undefined {
+  const output = hookSpecific(verdict)
+  const name = output.hookEventName
+  if (typeof name === 'string' && name !== sent) {
+    return `engine answered ${name}, not ${sent}`
+  }
+  const key = foreign.find(k => k in verdict || k in output)
+  return key === undefined ? undefined : `engine answered with "${key}", not a ${sent} verdict`
+}
+
+const NOT_PRE = ['decision', 'reason', 'updatedToolOutput'] as const
+const NOT_POST = ['decision', 'reason', 'permissionDecision', 'permissionDecisionReason'] as const
+const NOT_PROMPT = ['permissionDecision', 'permissionDecisionReason'] as const
+
+/**
  * Count the placeholders the model is about to read. Counting the *result*
  * rather than a before/after delta keeps the number true when something else
  * redacted first (the command hooks run inside `next()` and mint the same
@@ -328,6 +348,10 @@ async function denyBeforeRead(engine: Engine, e: ToolEvent, facts: SessionFacts)
   if (!pre.ok) {
     return config.failClosed ? { deny: unavailable(pre.cause) } : undefined
   }
+  const wrong = misrouted(pre.verdict, 'PreToolUse', NOT_PRE)
+  if (wrong !== undefined) {
+    return config.failClosed ? { deny: unavailable(wrong) } : undefined
+  }
   const reason = denyReason(pre.verdict)
   return reason ? { deny: reason } : undefined
 }
@@ -378,6 +402,10 @@ async function redactError(engine: Engine, r: ToolResult, session_id: string): P
   if (!post.ok) {
     return config.failClosed ? { deny: unavailable(post.cause) } : r
   }
+  const wrong = misrouted(post.verdict, 'PostToolUse', NOT_POST)
+  if (wrong !== undefined) {
+    return config.failClosed ? { deny: unavailable(wrong) } : r
+  }
   const updated = updatedOutput(post.verdict) as Partial<Record<'text' | 'result', unknown>> | undefined
   if (updated === undefined) {
     return r
@@ -401,6 +429,10 @@ async function redactResult(engine: Engine, e: ToolEvent, r: ToolResult, session
   if (!post.ok) {
     return config.failClosed ? { deny: unavailable(post.cause) } : r
   }
+  const wrong = misrouted(post.verdict, 'PostToolUse', NOT_POST)
+  if (wrong !== undefined) {
+    return config.failClosed ? { deny: unavailable(wrong) } : r
+  }
   const updated = updatedOutput(post.verdict)
   // Nothing redacted: hand back exactly what `next` resolved to, so core reuses
   // the messages it already built (`ref`/`text`).
@@ -408,7 +440,7 @@ async function redactResult(engine: Engine, e: ToolEvent, r: ToolResult, session
     return r
   }
   // A record comes back a record; anything else is not the engine talking.
-  if (!updated || typeof updated !== 'object') {
+  if (!updated || typeof updated !== 'object' || Array.isArray(updated)) {
     return config.failClosed ? { deny: unavailable('engine returned an unexpected shape') } : r
   }
   return {
@@ -500,6 +532,12 @@ export const promptHook: Hook<'prompt.submit'> = async ($, e, next) => {
         return next(e)
       }
       return { drop: `honmoon: redaction engine unavailable (${answer.cause}); prompt not sent` }
+    }
+    const wrong = misrouted(answer.verdict, 'PostToolUse', NOT_PROMPT)
+    if (wrong !== undefined) {
+      return config.failClosed
+        ? { drop: `honmoon: redaction engine unavailable (${wrong}); prompt not sent` }
+        : next(e)
     }
     // A block decision wins over any rewritten text: a verdict that carried both
     // must never be turned into a forwarded prompt.

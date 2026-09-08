@@ -151,6 +151,22 @@ describe('tool.call', () => {
     expect((await runTool(nulled, readEvent, async () => readResult)).deny).toBe('honmoon: redaction engine unavailable (engine output is not a hook verdict (updatedToolOutput is null)); tool output withheld')
     const { $: stringed } = engine(p => (p.hook_event_name === 'PostToolUse' ? { stdout: redacted('not a record') } : {}))
     expect((await runTool(stringed, readEvent, async () => readResult)).deny).toBe('honmoon: redaction engine unavailable (engine returned an unexpected shape); tool output withheld')
+    const { $: listed } = engine(p => (p.hook_event_name === 'PostToolUse' ? { stdout: redacted([]) } : {}))
+    expect((await runTool(listed, readEvent, async () => readResult)).deny).toBe('honmoon: redaction engine unavailable (engine returned an unexpected shape); tool output withheld')
+  })
+
+  test('denies the output when the verdict answers a different event than the one sent', async () => {
+    applyOptions({})
+    const { $: blocked } = engine(p => (p.hook_event_name === 'PostToolUse' ? { stdout: '{"decision":"block","reason":"prompt blocked"}' } : {}))
+    expect((await runTool(blocked, readEvent, async () => readResult)).deny).toBe('honmoon: redaction engine unavailable (engine answered with "decision", not a PostToolUse verdict); tool output withheld')
+    const { $: renamed } = engine(p => (p.hook_event_name === 'PreToolUse' ? { stdout: '{"hookSpecificOutput":{"hookEventName":"PostToolUse"}}' } : {}))
+    let ran = false
+    const r = await runTool(renamed, readEvent, async () => {
+      ran = true
+      return readResult
+    })
+    expect(r.deny).toBe('honmoon: redaction engine unavailable (engine answered PostToolUse, not PreToolUse); tool output withheld')
+    expect(ran).toBe(false)
   })
 
   test('denies the output when a 200 JSON body is not a hook verdict', async () => {
@@ -196,7 +212,7 @@ describe('tool.call', () => {
     applyOptions({})
     const image = { type: 'image', file: { base64: 'AAAA', type: 'image/png' } }
     const given = { ref: 3, text: 'x', result: image }
-    const { $, calls } = engine(() => ({ stdout: redacted({ scrubbed: true }) }))
+    const { $, calls } = engine(p => (p.hook_event_name === 'PostToolUse' ? { stdout: redacted({ scrubbed: true }) } : {}))
     expect(await runTool($, { tool: 'Read', file_path: '/repo/a.png' }, async () => given)).toBe(given)
     expect(calls.every(c => c.payload.hook_event_name === 'PreToolUse')).toBe(true)
   })

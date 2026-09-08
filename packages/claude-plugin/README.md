@@ -215,6 +215,15 @@ given, verbatim. Verified on 2.1.263 — the module's engine call returns an emp
 verdict and the transcript carries one set of placeholders. Drop the `hooks` key
 from `hooks/hooks.json` to run the module alone.
 
+That holds for the `process` transport. With `transport: "http"` the two layers
+key their placeholders differently: `honmoon hook` derives its salt from the
+payload's `session_id`, while the management API uses the gateway's
+`--hook-salt-context`, so one secret can surface as two different `<<hs:…>>`
+tokens in a session (a `Bash` result redacted by the command hook, a `WebFetch`
+result redacted by the module). Until the gateway derives its salt from the
+session as well, run the http transport with the command hooks dropped, or keep
+`transport: "process"`.
+
 ### Typings
 
 `hooks/honmoon.ts` is typed against `.claude/types/claude-code.d.ts`, generated
