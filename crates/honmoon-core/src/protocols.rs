@@ -151,12 +151,19 @@ pub fn carries_multiple_statements(query: &str) -> bool {
             // A string literal or a quoted identifier, where the quote is
             // doubled to escape itself.
             quote @ (b'\'' | b'"') => {
+                // `E'…'` additionally honours backslash escapes, so its `\'` does
+                // not close the string. A plain `'…'` is standard-conforming
+                // (the default since 9.1): a backslash there is a literal
+                // character, and reading it as an escape would make the scanner
+                // skip the real closing quote — a miss in the unsafe direction.
+                let backslash_escapes = quote == b'\'' && opens_escape_string(bytes, i);
                 i += 1;
                 loop {
                     match bytes.get(i) {
                         // Unterminated: honmoon cannot tell where the statement
                         // ends, so it is not inspectable.
                         None => return true,
+                        Some(b'\\') if backslash_escapes => i += 2,
                         Some(&c) if c == quote => {
                             if bytes.get(i + 1) == Some(&quote) {
                                 i += 2;
@@ -232,10 +239,21 @@ fn strip_leading_comments(query: &str) -> &str {
 /// comment runs to the end of its line; `/* */` blocks **nest**, as PostgreSQL's do.
 fn comment_end(bytes: &[u8], start: usize) -> Option<(usize, bool)> {
     match (bytes.get(start)?, bytes.get(start + 1)) {
-        (b'-', Some(b'-')) => Some(match bytes[start..].iter().position(|b| *b == b'\n') {
-            Some(end) => (start + end + 1, true),
-            None => (bytes.len(), true),
-        }),
+        // PostgreSQL's lexer ends a `--` comment at CR *or* LF (`scan.l`:
+        // `"--"{non_newline}*` over `non_newline [^\n\r]`), so a lone CR ends it
+        // too — searching only for LF would swallow `-- x<CR>; DROP TABLE users`
+        // whole and miss the separator the server acts on. The terminator itself
+        // is left in place; it is whitespace to every caller, and stopping at the
+        // CR is also what makes CRLF come out right.
+        (b'-', Some(b'-')) => Some(
+            match bytes[start..]
+                .iter()
+                .position(|b| *b == b'\n' || *b == b'\r')
+            {
+                Some(end) => (start + end, true),
+                None => (bytes.len(), true),
+            },
+        ),
         (b'/', Some(b'*')) => {
             let mut depth = 1usize;
             let mut i = start + 2;
@@ -257,6 +275,19 @@ fn comment_end(bytes: &[u8], start: usize) -> Option<(usize, bool)> {
         }
         _ => None,
     }
+}
+
+/// Whether the quote at `start` opens an `E'…'` escape string.
+///
+/// Only that form treats a backslash as an escape. `U&'…'` reserves the
+/// backslash for Unicode code points and still writes an embedded quote as `''`,
+/// and `B'…'`/`X'…'` hold only bit and hex digits — so the doubled-quote rule
+/// already covers all three.
+fn opens_escape_string(bytes: &[u8], start: usize) -> bool {
+    let Some(prev) = start.checked_sub(1) else {
+        return false;
+    };
+    matches!(bytes.get(prev), Some(b'E' | b'e')) && !starts_identifier_continuation(bytes, prev)
 }
 
 /// Whether the byte before `start` is an identifier character, i.e. whatever is
@@ -549,6 +580,45 @@ mod tests {
             carries_multiple_statements("SELECT 1; /* unterminated"),
             "a comment that never closes could be hiding a statement"
         );
+    }
+
+    #[test]
+    fn a_line_comment_ends_at_cr_as_well_as_lf() {
+        // PostgreSQL ends the comment at the CR and runs the DROP, so a scanner
+        // that only knows LF would call this one statement and forward it.
+        assert!(carries_multiple_statements(
+            "SELECT 1 -- x\r; DROP TABLE users"
+        ));
+        assert!(carries_multiple_statements(
+            "SELECT 1 -- x\r\n; DROP TABLE users"
+        ));
+        // The ordinary shapes are unchanged: LF-terminated, and running to EOF.
+        assert!(!carries_multiple_statements(
+            "SELECT 1 -- x\nFROM orders WHERE a = 1"
+        ));
+        assert!(!carries_multiple_statements(
+            "SELECT 1 -- x; not a statement"
+        ));
+        assert_eq!(parse_sql("-- audit\rDROP TABLE users").verb, "DROP");
+    }
+
+    #[test]
+    fn backslash_escapes_are_honoured_only_in_an_e_string() {
+        // `\'` does not close an `E'…'`, so this is one statement.
+        assert!(!carries_multiple_statements(r"SELECT E'a\'b' FROM orders"));
+        assert!(!carries_multiple_statements(
+            r"SELECT e'a\'; b' FROM orders"
+        ));
+        // A real batch behind an E-string is still caught.
+        assert!(carries_multiple_statements(
+            r"SELECT E'a\'b'; DROP TABLE users"
+        ));
+        // A plain string is standard-conforming: the backslash is a literal, so
+        // the quote after it really does close the string.
+        assert!(carries_multiple_statements(
+            r"SELECT 'a\'; DROP TABLE users"
+        ));
+        assert!(!carries_multiple_statements(r"SELECT 'a\' FROM orders"));
     }
 
     #[test]
