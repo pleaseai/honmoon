@@ -1,0 +1,23 @@
+.claude/agent-memory/review-review-ocr-reviewer/MEMORY.md
+  s_9db9412633686d::t_d2bc081300ab5e 1-2
+.claude/agent-memory/review-review-ocr-reviewer/ocr-scoping-honmoon.md
+  s_9db9412633686d::t_982823549594dc 1-24
+.claude/agent-memory/review-review-ocr-reviewer/honmoon-postgres-sql-classification.md
+  s_9db9412633686d::t_853050742c3f1d 1-33
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "8a29875e3c9ab1cd49048e374613e69abd087bda",
+  "prompts": {},
+  "sessions": {
+    "s_9db9412633686d": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "48cf2c87-6132-47ec-b772-0666fa6084c0",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
