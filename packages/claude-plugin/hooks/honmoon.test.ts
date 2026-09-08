@@ -183,10 +183,11 @@ describe('tool.call', () => {
     expect(calls.length).toBeGreaterThan(0)
   })
 
-  test('a rejected session id is not cached, so the salt is not lost for the session', async () => {
+  test('a rejected session id denies the call and is retried, never replaced by an empty salt', async () => {
     applyOptions({})
     const calls: { payload: Payload }[] = []
     let attempts = 0
+    let ran = 0
     const $ = {
       process: {
         run: async (_argv: readonly string[], init: { stdin: string }) => {
@@ -207,11 +208,39 @@ describe('tool.call', () => {
         cwd: async () => '/repo',
       },
     } as unknown as ToolArgs[0]
-    await runTool($, readEvent, async () => readResult)
-    await runTool($, readEvent, async () => readResult)
+    const next = async () => {
+      ran += 1
+      return readResult
+    }
+    const first = await runTool($, readEvent, next)
+    expect(first).toEqual({ deny: 'honmoon: redaction engine unavailable (session lookup failed: not ready); tool output withheld' })
+    expect(ran).toBe(0)
+    expect(calls).toHaveLength(0)
+    await runTool($, readEvent, next)
     const ids = calls.map(c => (c.payload as { session_id?: string }).session_id)
-    expect(ids[0]).toBe('')
-    expect(ids.at(-1)).toBe('session-1')
+    expect(ids).toEqual(['session-1', 'session-1'])
+  })
+
+  test('the budget covers the session lookup, so a hung lookup fails closed instead of running past the host', async () => {
+    applyOptions({})
+    const { $, calls } = engine(() => ({}))
+    const $hung = {
+      ...$,
+      clock: { sleep: async () => {} },
+      session: { id: () => new Promise<string>(() => {}), cwd: async () => '/repo' },
+    }
+    const r = await runTool($hung, readEvent, async () => readResult)
+    expect(r).toEqual({ deny: 'honmoon: redaction engine unavailable (session lookup failed: hook budget exhausted); tool output withheld' })
+    expect(calls).toHaveLength(0)
+  })
+
+  test('transport http without a hookUrl is a configuration error, not a fallback to the binary', async () => {
+    applyOptions({ transport: 'http' })
+    const { $, calls, fetches } = engine(() => ({}))
+    const r = await runTool($, readEvent, async () => readResult)
+    expect(r).toEqual({ deny: 'honmoon: redaction engine unavailable (transport "http" needs a hookUrl); tool output withheld' })
+    expect(calls).toHaveLength(0)
+    expect(fetches).toHaveLength(0)
   })
 })
 

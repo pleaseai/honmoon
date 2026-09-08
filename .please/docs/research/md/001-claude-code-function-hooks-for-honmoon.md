@@ -61,7 +61,7 @@ Measured behaviors that matter for a security plugin:
 - A hook that **throws**, **exceeds its 10 000 ms budget**, or returns neither `{ result }` nor `{ deny }` is **skipped and the tool runs anyway**, logged only to `--debug-file` as `hook failed: <plugin>: ... (tool.call; skipped; what is below it ran in its place)`. Fail-open by default.
 - `{ deny: "reason" }` returned without calling `next` blocks the tool on 2.1.261+ and the model receives the reason as the tool's error result. `{ deny: "" }` was a silent no-op on 2.1.260 and is fixed in 2.1.261.
 - Calling `next` twice, or returning a deny after `await next(e)`, does not undo the effect.
-- One plain hook per event per plugin is enforced in the prototype (a second `on("tool.call")` throws), so a chain of N hooks means N plugin directories.
+- One `on("tool.call")` per event per plugin: on 2.1.263 a second registration from the same plugin silently replaces the first (earlier prototype builds reportedly threw), so a before-check and an after-redaction have to share a single hook rather than one hook per placement. A chain of N independent hooks still means N plugin directories.
 - `claude plugin validate` checks that `$` is used syntactically, not that the noun exists at runtime (`$.fs.read` passes validation and throws at dispatch).
 - The model sees what it **asked** to write, not the rewritten value, for prompt-cache reasons. A rewriting hook should attach a `context` note describing the change; the maintainer is considering making it required in some cases.
 - `$.prompt.submit` refuses text beginning with `/` (host check), so a plugin cannot trigger `/compact`.
