@@ -154,9 +154,12 @@ enum Command {
     #[cfg(target_os = "linux")]
     #[command(name = isolate::linux::SUPERVISE_SUBCOMMAND, hide = true)]
     SuperviseSandbox {
-        /// Host-side Unix socket that bridges to the egress proxy.
+        /// Host-side Unix socket that bridges to the CONNECT proxy.
         #[arg(long, value_name = "PATH")]
         bridge_socket: PathBuf,
+        /// Host-side Unix socket that bridges to the SOCKS5 listener.
+        #[arg(long, value_name = "PATH")]
+        socks_bridge_socket: PathBuf,
         /// Command to execute (after `--`).
         #[arg(last = true)]
         argv: Vec<String>,
@@ -207,9 +210,10 @@ fn main() -> Result<()> {
         #[cfg(target_os = "linux")]
         Command::SuperviseSandbox {
             bridge_socket,
+            socks_bridge_socket,
             argv,
         } => {
-            let status = isolate::linux::supervise(&bridge_socket, &argv)
+            let status = isolate::linux::supervise(&bridge_socket, &socks_bridge_socket, &argv)
                 .context("supervising the sandboxed command")?;
             std::process::exit(status.code().unwrap_or(1));
         }

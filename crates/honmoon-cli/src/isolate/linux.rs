@@ -3,18 +3,20 @@
 //!
 //! The shape, and why each piece is here:
 //!
-//! 1. The parent binds the proxy on host loopback and opens a Unix socket in a
-//!    private directory. A pump behind that socket dials the proxy.
+//! 1. The parent binds both proxies on host loopback — the CONNECT proxy and
+//!    the SOCKS5 listener — and opens one Unix socket per proxy in a private
+//!    directory. A pump behind each socket dials the proxy it belongs to.
 //! 2. The child is forked with a `pre_exec` hook that unshares a new user and
 //!    network namespace, writes a 1:1 uid/gid map, and brings `lo` up. The new
 //!    network namespace has no interface but loopback and no route anywhere, so
 //!    nothing in it can reach the host's network.
-//! 3. The child execs `honmoon` again, into [`supervise`], which listens on
-//!    loopback inside the namespace and pumps to the Unix socket. Unix sockets
-//!    are addressed by filesystem path rather than by network namespace, which
-//!    is the one channel that still crosses the boundary.
+//! 3. The child execs `honmoon` again, into [`supervise`], which listens on two
+//!    loopback ports inside the namespace and pumps each to its Unix socket.
+//!    Unix sockets are addressed by filesystem path rather than by network
+//!    namespace, which is the one channel that still crosses the boundary.
 //! 4. `supervise` runs the user's command with the proxy variables pointed at
-//!    its own loopback port.
+//!    its own loopback ports: the HTTP spellings at the CONNECT pump, and
+//!    `all_proxy`/`ALL_PROXY` at the SOCKS5 one.
 //!
 //! A child that ignores those variables does not escape — it reaches nothing,
 //! because there is nothing in its namespace to reach. That is the whole
@@ -123,11 +125,13 @@ pub fn namespaces_available() -> bool {
     }
 }
 
-/// The host end of the bridge: a private directory holding one Unix socket that
-/// pumps to the proxy, removed when this value is dropped.
+/// The host end of the bridge: a private directory holding one Unix socket per
+/// proxy, each pumping to the proxy it belongs to, removed when this value is
+/// dropped.
 struct HostBridge {
     dir: PathBuf,
     socket: PathBuf,
+    socks_socket: PathBuf,
 }
 
 #[derive(Clone)]
@@ -153,23 +157,41 @@ impl Upstream for SocketUpstream {
 }
 
 impl HostBridge {
-    /// Open the socket and start pumping to `proxy`.
-    fn open(proxy: SocketAddr) -> io::Result<Self> {
+    /// Open both sockets and start pumping to the proxies behind them.
+    ///
+    /// Two sockets rather than one multiplexed channel: the pump copies bytes
+    /// and knows nothing about what it carries, so which proxy a connection
+    /// belongs to has to be decided by *which socket it arrived on*. It is also
+    /// what keeps the two protocols apart end to end — a SOCKS5 greeting
+    /// delivered to the CONNECT proxy is a parse error, not a routing mistake
+    /// something downstream could recover from.
+    fn open(proxy: SocketAddr, socks: SocketAddr) -> io::Result<Self> {
         let dir = private_scratch_dir()?;
         let socket = dir.join(SOCKET_FILE);
+        let socks_socket = dir.join(SOCKS_SOCKET_FILE);
 
         // Own the directory before anything else can fail, so an error below
         // takes the scratch directory with it rather than leaving one behind
         // that the *next* run would then trip over.
-        let opened = Self { dir, socket };
+        let opened = Self {
+            dir,
+            socket,
+            socks_socket,
+        };
         let listener = UnixListener::bind(&opened.socket)?;
         thread::spawn(move || bridge::serve(listener, ProxyUpstream(proxy)));
+        let socks_listener = UnixListener::bind(&opened.socks_socket)?;
+        thread::spawn(move || bridge::serve(socks_listener, ProxyUpstream(socks)));
 
         Ok(opened)
     }
 
     fn socket(&self) -> &Path {
         &self.socket
+    }
+
+    fn socks_socket(&self) -> &Path {
+        &self.socks_socket
     }
 }
 
@@ -196,8 +218,24 @@ const SCRATCH_NAME_BYTES: usize = 12;
 /// at bind time.
 const SUN_PATH_LIMIT: usize = 108;
 
-/// The socket file created inside the scratch directory.
+/// The CONNECT proxy's socket file, created inside the scratch directory.
 const SOCKET_FILE: &str = "proxy.sock";
+
+/// The SOCKS5 listener's socket file, beside it.
+const SOCKS_SOCKET_FILE: &str = "socks.sock";
+
+/// The longer of the two names, which is what the [`SUN_PATH_LIMIT`] budget has
+/// to be computed against.
+///
+/// Written out rather than reasoned about from the two literals happening to be
+/// the same length today: renaming one of them to something longer would
+/// otherwise push that socket past the AF_UNIX limit while the check kept
+/// passing on the other.
+const LONGEST_SOCKET_FILE: usize = if SOCKET_FILE.len() > SOCKS_SOCKET_FILE.len() {
+    SOCKET_FILE.len()
+} else {
+    SOCKS_SOCKET_FILE.len()
+};
 
 /// Fill `buffer` from the kernel's random pool.
 ///
@@ -270,7 +308,7 @@ fn private_scratch_dir() -> io::Result<PathBuf> {
     use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
 
     // "/honmoon-" + the hex name + "/" + the socket file + the trailing NUL.
-    let suffix = 1 + "honmoon-".len() + SCRATCH_NAME_BYTES * 2 + 1 + SOCKET_FILE.len() + 1;
+    let suffix = 1 + "honmoon-".len() + SCRATCH_NAME_BYTES * 2 + 1 + LONGEST_SOCKET_FILE + 1;
     let preferred = std::env::temp_dir();
     let temp = if preferred.as_os_str().len() + suffix <= SUN_PATH_LIMIT {
         preferred
@@ -346,8 +384,7 @@ pub fn run_confined(
     // frame — and a guard returned into a caller that ends in
     // `std::process::exit` would never be dropped at all, leaking the scratch
     // directory on every run.
-    let _ = socks;
-    let host_bridge = HostBridge::open(proxy)?;
+    let host_bridge = HostBridge::open(proxy, socks)?;
 
     // Built before the fork: `pre_exec` runs between `fork` and `exec` in a
     // process that still has the proxy's threads in its memory image, where
@@ -364,6 +401,8 @@ pub fn run_confined(
         .arg(SUPERVISE_SUBCOMMAND)
         .arg("--bridge-socket")
         .arg(host_bridge.socket())
+        .arg("--socks-bridge-socket")
+        .arg(host_bridge.socks_socket())
         .arg("--")
         .arg(program)
         .args(args);
@@ -591,12 +630,16 @@ fn close_up_to_the_descriptor_limit() -> io::Result<()> {
     Ok(())
 }
 
-/// The in-namespace half: listen on loopback, pump to the host's Unix socket,
-/// and run the user's command against that port.
+/// The in-namespace half: listen on two loopback ports, pump each to the
+/// matching Unix socket on the host, and run the user's command against them.
 ///
 /// Reached only through [`SUPERVISE_SUBCOMMAND`], as the exec target of
 /// [`run_confined`].
-pub fn supervise(bridge_socket: &Path, argv: &[String]) -> io::Result<ExitStatus> {
+pub fn supervise(
+    bridge_socket: &Path,
+    socks_bridge_socket: &Path,
+    argv: &[String],
+) -> io::Result<ExitStatus> {
     let (program, args) = argv.split_first().ok_or_else(|| {
         io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -615,19 +658,33 @@ pub fn supervise(bridge_socket: &Path, argv: &[String]) -> io::Result<ExitStatus
     // command anyway would be claiming a confinement that was never applied.
     close_inherited_descriptors()?;
 
-    // Port 0: the supervisor picks the child's proxy port itself and puts it in
-    // the environment, so nothing has to agree on a fixed number, and two
-    // sandboxes on one host cannot collide.
+    // Port 0 for both: the supervisor picks the child's proxy ports itself and
+    // puts them in the environment, so nothing has to agree on a fixed number,
+    // and two sandboxes on one host cannot collide.
     let listener = TcpListener::bind("127.0.0.1:0")?;
     let port = listener.local_addr()?.port();
+    let socks_listener = TcpListener::bind("127.0.0.1:0")?;
+    let socks_port = socks_listener.local_addr()?.port();
 
+    // Both binds happen before either pump starts, so a failure on the second
+    // is still a setup error rather than a half-built boundary: the child would
+    // otherwise come up with a working `http_proxy` and an `ALL_PROXY` pointing
+    // at nothing, and a client reading only the latter would look confined when
+    // it was merely broken.
     let socket = bridge_socket.to_path_buf();
     thread::spawn(move || bridge::serve(listener, SocketUpstream(socket)));
+    let socks_socket = socks_bridge_socket.to_path_buf();
+    thread::spawn(move || bridge::serve(socks_listener, SocketUpstream(socks_socket)));
 
     let proxy_url = format!("http://127.0.0.1:{port}");
+    // `socks5h`, matching the unconfined path: DNS stays on honmoon's side of
+    // the bridge, which is both the only side that *has* a resolver — this
+    // namespace is empty — and what puts the hostname into the handshake where
+    // it selects an endpoint.
+    let socks_url = format!("socks5h://127.0.0.1:{socks_port}");
     let mut command = Command::new(program);
     command.args(args);
-    for (key, value) in super::proxy_env(&proxy_url, &proxy_url) {
+    for (key, value) in super::proxy_env(&proxy_url, &socks_url) {
         command.env(key, value);
     }
     // An inherited `no_proxy` is meaningless in here and actively harmful: the
@@ -729,8 +786,12 @@ mod tests {
 
     #[test]
     fn supervise_rejects_an_empty_command() {
-        let error = supervise(Path::new("/nonexistent.sock"), &[])
-            .expect_err("an empty argv has nothing to supervise");
+        let error = supervise(
+            Path::new("/nonexistent.sock"),
+            Path::new("/nonexistent-socks.sock"),
+            &[],
+        )
+        .expect_err("an empty argv has nothing to supervise");
         assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
     }
 }
