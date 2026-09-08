@@ -236,6 +236,24 @@ describe('prompt.submit', () => {
     expect(r).toEqual({ drop: 'honmoon: prompt carries a secret' })
   })
 
+  test('a block decision wins over rewritten text in the same verdict', async () => {
+    applyOptions({})
+    const { $ } = engine(() => ({
+      stdout: JSON.stringify({
+        decision: 'block',
+        reason: 'honmoon: prompt carries a secret',
+        hookSpecificOutput: { hookEventName: 'PostToolUse', updatedToolOutput: 'my key is <<hs:abc123>>' },
+      }),
+    }))
+    let forwarded = false
+    const r = await runPrompt($, { text: 'sk-live-1', wait: false, origin: 'user' }, async () => {
+      forwarded = true
+      return { text: 'sk-live-1' }
+    })
+    expect(r).toEqual({ drop: 'honmoon: prompt carries a secret' })
+    expect(forwarded).toBe(false)
+  })
+
   test('drops the prompt when the engine cannot be reached', async () => {
     applyOptions({})
     const { $ } = engine(() => ({ throws: 'spawn honmoon ENOENT' }))

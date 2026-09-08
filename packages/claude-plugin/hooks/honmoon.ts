@@ -324,12 +324,14 @@ export const promptHook: Hook<'prompt.submit'> = async ($, e, next) => {
     }
     return { drop: `honmoon: redaction engine unavailable (${answer.cause}); prompt not sent` }
   }
+  // A block decision wins over any rewritten text: a verdict that carried both
+  // must never be turned into a forwarded prompt.
+  if (answer.verdict.decision === 'block') {
+    const reason = answer.verdict.reason
+    return { drop: typeof reason === 'string' && reason ? reason : 'honmoon: prompt blocked' }
+  }
   const updated = updatedOutput(answer.verdict)
   if (typeof updated !== 'string') {
-    if (answer.verdict.decision === 'block') {
-      const reason = answer.verdict.reason
-      return { drop: typeof reason === 'string' && reason ? reason : 'honmoon: prompt blocked' }
-    }
     return next(e)
   }
   const r = await next({ ...e, text: updated })
