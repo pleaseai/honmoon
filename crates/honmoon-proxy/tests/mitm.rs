@@ -261,6 +261,8 @@ fn block_mode_denies_rrn_over_intercepted_tls() {
     }));
 }
 
+/// Pins the downgrade half of the detect-mode rule: this deny *is* caused by a
+/// PII finding, so detect mode audits the would-be verdict and forwards.
 #[test]
 fn detect_mode_audits_but_does_not_deny_rrn() {
     let (response, audit, _) = intercepted_request(
@@ -447,5 +449,115 @@ fn block_mode_enforces_http_rules_on_uninspected_body() {
     let events = audit.recent(50);
     assert!(events.iter().any(|event| {
         event.decision == Decision::Denied && event.rule.as_deref() == Some("block-submit-path")
+    }));
+}
+
+/// A policy that names the loopback upstream `k8s-prod` and denies secret
+/// deletion there. `host`/`port` are what the client actually dials, which is
+/// what `Policy::endpoint_for` matches on.
+fn k8s_policy(host: &str, port: u16) -> String {
+    format!(
+        "\
+egress:
+  default: allow
+endpoints:
+  k8s-prod: {{ host: {host}, port: {port}, protocol: kubernetes }}
+rules:
+  - name: k8s-no-secret-delete
+    endpoint: k8s-prod
+    condition: \"k8s.resource == 'secrets' && k8s.verb == 'delete'\"
+    verdict: deny
+"
+    )
+}
+
+fn k8s_request(method: &str, path: &str) -> Vec<u8> {
+    format!("{method} {path} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n").into_bytes()
+}
+
+#[test]
+fn kubernetes_endpoint_denies_secret_deletion_over_intercepted_tls() {
+    let upstream = start_hanging_upstream();
+    let (response, audit, _) = intercepted_request(
+        &k8s_policy("localhost", upstream),
+        PiiMode::Block,
+        upstream,
+        k8s_request("DELETE", "/api/v1/namespaces/prod/secrets/db"),
+    );
+
+    assert!(
+        response.starts_with("HTTP/1.1 403"),
+        "expected an inline 403 before the upstream leg: {response:?}"
+    );
+    let events = audit.recent(50);
+    assert!(events.iter().any(|event| {
+        event.decision == Decision::Denied
+            && event.rule.as_deref() == Some("k8s-no-secret-delete")
+            && event.facts.endpoint.as_deref() == Some("k8s-prod")
+            && event
+                .facts
+                .k8s
+                .as_ref()
+                .is_some_and(|k8s| k8s.verb == "delete" && k8s.resource == "secrets")
+    }));
+}
+
+#[test]
+fn kubernetes_endpoint_allows_a_read_that_the_rule_does_not_match() {
+    let upstream = start_dropping_upstream();
+    let (response, _, _) = intercepted_request(
+        &k8s_policy("localhost", upstream),
+        PiiMode::Block,
+        upstream,
+        k8s_request("GET", "/api/v1/namespaces/prod/pods"),
+    );
+
+    assert!(
+        response.starts_with("HTTP/1.1 502"),
+        "a listing request must reach the upstream leg: {response:?}"
+    );
+}
+
+/// The rule fires on the *endpoint*, not on the request shape: dialing a host
+/// the `endpoints` map does not declare leaves `Facts.endpoint` unset, so no
+/// k8s facts are parsed and the rule cannot match.
+#[test]
+fn secret_deletion_to_an_undeclared_host_is_allowed() {
+    let upstream = start_dropping_upstream();
+    let (response, _, _) = intercepted_request(
+        &k8s_policy("k8s.internal", upstream),
+        PiiMode::Block,
+        upstream,
+        k8s_request("DELETE", "/api/v1/namespaces/prod/secrets/db"),
+    );
+
+    assert!(
+        response.starts_with("HTTP/1.1 502"),
+        "an undeclared host must not match the k8s rule: {response:?}"
+    );
+}
+
+/// The other half of the rule: a verdict that does not depend on PII findings —
+/// here an `endpoints`-bound Kubernetes rule — is enforced in detect mode too,
+/// which is the default the gateway runs in.
+#[test]
+fn detect_mode_enforces_a_kubernetes_endpoint_rule() {
+    let upstream = start_hanging_upstream();
+    let (response, audit, _) = intercepted_request(
+        &k8s_policy("localhost", upstream),
+        PiiMode::Detect,
+        upstream,
+        k8s_request("DELETE", "/api/v1/namespaces/prod/secrets/db"),
+    );
+
+    assert!(
+        response.starts_with("HTTP/1.1 403"),
+        "a non-PII verdict must be enforced in detect mode: {response:?}"
+    );
+    let events = audit.recent(50);
+    assert!(events.iter().any(|event| {
+        event.decision == Decision::Denied
+            && event.rule.as_deref() == Some("k8s-no-secret-delete")
+            && event.facts.endpoint.as_deref() == Some("k8s-prod")
     }));
 }

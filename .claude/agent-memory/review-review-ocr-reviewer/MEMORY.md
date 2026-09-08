@@ -1,0 +1,1 @@
+- [ocr scoping in honmoon](ocr_scoping_honmoon.md) — no configured default ocr flags in this repo; Cargo.lock/mise.lock always excluded (unsupported_ext)

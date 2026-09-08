@@ -11,6 +11,7 @@ description = "Honmoon policy engine, CEL evaluation, and protocol facts model"
 aho-corasick.workspace = true
 cel-interpreter = "0.10"
 hmac.workspace = true
+percent-encoding.workspace = true
 regex.workspace = true
 serde.workspace = true
 serde_json.workspace = true

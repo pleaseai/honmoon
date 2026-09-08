@@ -5,11 +5,12 @@ description: Write Honmoon policies — egress allow/deny lists and CEL protocol
 
 # Policy Authoring
 
-A Honmoon policy is a single YAML document with two sections: an `egress` block (domain
-allow/deny lists — the common case) and a list of `rules` (protocol-aware CEL conditions — the
-fine-grained case). The same field structure is described by the Rust model
-([lib.rs:25-70](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/lib.rs#L25-L70)),
-the TypeScript types ([index.ts:7-31](https://github.com/pleaseai/honmoon/blob/main/packages/policy/src/index.ts#L7-L31)),
+A Honmoon policy is a single YAML document with three sections: an `egress` block (domain
+allow/deny lists — the common case), an optional `endpoints` map (named network targets), and a
+list of `rules` (protocol-aware CEL conditions — the fine-grained case). The same field structure
+is described by the Rust model
+([lib.rs:44-117](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/lib.rs#L44-L117)),
+the TypeScript types ([index.ts:7-45](https://github.com/pleaseai/honmoon/blob/main/packages/policy/src/index.ts#L7-L45)),
 and the JSON Schema ([policy.schema.json](https://github.com/pleaseai/honmoon/blob/main/packages/policy/schema/policy.schema.json)) —
 though their *validation* differs: the JSON Schema is the strict one (`additionalProperties: false`,
 `version ≥ 1`), while the Rust loader tolerates and defaults missing fields and the TS types are
@@ -20,10 +21,11 @@ compile-time only. Keeping the three aligned is tracked as TD-001.
 | Field | Type | Default | Meaning | Source |
 |-------|------|---------|---------|--------|
 | `version` | integer ≥ 1 | `0` | Policy schema version | [policy.schema.json:8](https://github.com/pleaseai/honmoon/blob/main/packages/policy/schema/policy.schema.json#L8) |
-| `egress.default` | verdict | `deny` | Verdict when no allow/deny entry matches | [lib.rs:39-41](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/lib.rs#L39-L41) |
-| `egress.allow` | string[] | `[]` | Domain patterns to allow | [lib.rs:42-43](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/lib.rs#L42-L43) |
-| `egress.deny` | string[] | `[]` | Domain patterns to deny (wins over allow) | [lib.rs:44-45](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/lib.rs#L44-L45) |
-| `rules[]` | rule[] | `[]` | Ordered protocol-aware rules | [lib.rs:62-70](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/lib.rs#L62-L70) |
+| `egress.default` | verdict | `deny` | Verdict when no allow/deny entry matches | [lib.rs:86-88](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/lib.rs#L86-L88) |
+| `egress.allow` | string[] | `[]` | Domain patterns to allow | [lib.rs:89-90](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/lib.rs#L89-L90) |
+| `egress.deny` | string[] | `[]` | Domain patterns to deny (wins over allow) | [lib.rs:91-92](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/lib.rs#L91-L92) |
+| `endpoints` | map&lt;name, endpoint&gt; | `{}` | Named network targets a rule can bind to | [lib.rs:51-55](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/lib.rs#L51-L55) |
+| `rules[]` | rule[] | `[]` | Ordered protocol-aware rules | [lib.rs:109-117](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/lib.rs#L109-L117) |
 
 A **verdict** is one of `allow`, `deny`, `pause` ([policy.schema.json:24-27](https://github.com/pleaseai/honmoon/blob/main/packages/policy/schema/policy.schema.json#L24-L27)).
 
@@ -40,8 +42,14 @@ egress:
     - github.com
     - '*.githubusercontent.com'
     - api.anthropic.com
+    - k8s.internal # endpoint hosts need an allow entry of their own
+    - db.internal
   deny:
     - '*.internal.corp'
+
+endpoints:
+  k8s-prod: {host: k8s.internal, port: 6443, protocol: kubernetes}
+  postgres-prod: {host: db.internal, port: 5432, protocol: postgres}
 
 rules:
   - name: k8s-no-secret-delete
@@ -94,6 +102,53 @@ flowchart TD
 ```
 <!-- Sources: crates/honmoon-core/src/engine.rs:30-64 -->
 
+## Named endpoints
+
+`endpoints` maps a name to the network target a client dials. A rule's `endpoint` field refers to
+one of these names, so a rule like `k8s.resource == 'secrets'` applies to *that cluster* rather
+than to every host that happens to serve a similar path.
+
+```yaml
+endpoints:
+  k8s-prod: {host: k8s.internal, port: 6443, protocol: kubernetes}
+  postgres-prod: {host: db.internal, port: 5432, protocol: postgres}
+  cache: {host: redis.internal, port: 6379} # protocol defaults to tcp
+```
+
+| Field | Type | Default | Meaning |
+|-------|------|---------|---------|
+| `host` | string | required | Hostname the client dials |
+| `port` | integer 1–65535 | required | Port the client dials |
+| `protocol` | `postgres` / `kubernetes` / `tcp` | `tcp` | Which protocol facts to parse |
+
+**Matching is exact**: the host must be equal (case-insensitive, with a trailing FQDN dot
+trimmed) *and* the port must be equal. There is no IP resolution and no wildcard host in v0.1.0
+([lib.rs:210-227](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/lib.rs#L210-L227)).
+The port comes from what the client dialed — the CONNECT authority for an HTTPS tunnel, defaulting
+to 443 (or 80 for a cleartext forward-proxy request) when the authority carries no explicit port.
+
+What each `protocol` does today:
+
+| Value | Effect |
+|-------|--------|
+| `kubernetes` | Intercepted HTTPS requests to this endpoint get `k8s` facts (`verb`, `resource`, `namespace`) parsed from the method and path |
+| `postgres` | Name only for now; the PostgreSQL data path is reserved for the SOCKS5 listener |
+| `tcp` | Name only — the endpoint can be referenced by a rule, but no protocol facts are parsed |
+
+A rule referencing an endpoint that `endpoints` does not declare is a **load-time warning, not an
+error**: `Facts.endpoint` may be set by other means, and refusing the whole policy over one
+dangling name would fail open for every other rule
+([lib.rs:235-245](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/lib.rs#L235-L245)).
+
+That tolerance covers *undefined references only*. An unusable `endpoints` entry is a **load-time
+error** — the policy is rejected outright
+([lib.rs:183-208](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/lib.rs#L183-L208)):
+
+| Mistake | Why it fails the load |
+|---------|-----------------------|
+| `port: 0` | Not a dialable port; the JSON Schema requires 1–65535 |
+| Two names on the same `(host, port)` | Lookup would silently pick one and shadow the other, so only one of the author's rules would ever fire (hosts compared case-insensitively with a trailing dot trimmed) |
+
 ## Protocol rules with CEL
 
 Each rule binds a [CEL](https://github.com/google/cel-spec) condition to a named `endpoint`.
@@ -103,21 +158,21 @@ If no rule matches, the egress block decides.
 
 | Rule field | Meaning | Example | Source |
 |-----------|---------|---------|--------|
-| `name` | Human label | `sql-no-prod-drop` | [lib.rs:65](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/lib.rs#L65) |
-| `endpoint` | Named target; `*` matches any | `postgres-prod` | [lib.rs:66](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/lib.rs#L66), [engine.rs:48-50](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/engine.rs#L48-L50) |
-| `condition` | CEL over protocol facts | `sql.verb == 'DROP'` | [lib.rs:67-68](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/lib.rs#L67-L68) |
-| `verdict` | `allow` / `deny` / `pause` | `pause` | [lib.rs:69](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/lib.rs#L69) |
+| `name` | Human label | `sql-no-prod-drop` | [lib.rs:112](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/lib.rs#L112) |
+| `endpoint` | Named target; `*` matches any | `postgres-prod` | [lib.rs:113](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/lib.rs#L113), [engine.rs:48-50](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/engine.rs#L48-L50) |
+| `condition` | CEL over protocol facts | `sql.verb == 'DROP'` | [lib.rs:114-115](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/lib.rs#L114-L115) |
+| `verdict` | `allow` / `deny` / `pause` | `pause` | [lib.rs:116](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/lib.rs#L116) |
 
 ### Facts available to conditions
 
 Conditions reference protocol facts as CEL variables of the same name. Each is only populated
-when the corresponding parser has run ([lib.rs:77-119](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/lib.rs#L77-L119)):
+when the corresponding parser has run ([lib.rs:119-138](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/lib.rs#L119-L138)):
 
 | Variable | Fields | Populated by | Status |
 |----------|--------|--------------|--------|
 | `http` | `method`, `host`, `path`, `body_size` | CONNECT proxy sets `host` only today | `host` <span class="status-done">live</span> · rest <span class="status-planned">needs TLS termination</span> |
 | `sql` | `verb`, `table` | `parse_postgres_query` / `parse_sql` | <span class="status-done">parsed & tested</span> · <span class="status-planned">not yet on a live socket (TD-006)</span> |
-| `k8s` | `verb`, `resource`, `namespace` | `parse_k8s_request` | <span class="status-done">parsed & tested</span> · <span class="status-planned">not yet on a live socket (TD-006)</span> |
+| `k8s` | `verb`, `resource`, `namespace` | `parse_k8s_request` | <span class="status-done">live on intercepted HTTPS to a `kubernetes` endpoint</span> |
 
 ### Example conditions
 

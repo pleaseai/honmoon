@@ -7,8 +7,19 @@ egress:
     - github.com
     - '*.githubusercontent.com'
     - api.anthropic.com
+    # Hosts the `endpoints` below name. Without an allow entry the egress
+    # default (deny) blocks the connection at the CONNECT gate, before any
+    # endpoint rule can be reached.
+    - k8s.internal
+    - db.internal
   deny:
     - '*.internal.corp'
+
+# Named targets a rule's `endpoint` refers to, matched on the exact
+# (host, port) a client dials.
+endpoints:
+  k8s-prod: {host: k8s.internal, port: 6443, protocol: kubernetes}
+  postgres-prod: {host: db.internal, port: 5432, protocol: postgres}
 
 rules:
   - name: k8s-no-secret-delete
