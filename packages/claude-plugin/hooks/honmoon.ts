@@ -228,8 +228,9 @@ function updatedOutput(verdict: Json): unknown {
  */
 function misrouted(verdict: Json, sent: string, foreign: readonly string[]): string | undefined {
   const output = hookSpecific(verdict)
-  const name = output.hookEventName
-  if (typeof name === 'string' && name !== sent) {
+  // The engine always names the event it answered inside `hookSpecificOutput`.
+  if (verdict.hookSpecificOutput !== undefined && output.hookEventName !== sent) {
+    const name = typeof output.hookEventName === 'string' ? output.hookEventName : 'an unnamed event'
     return `engine answered ${name}, not ${sent}`
   }
   const key = foreign.find(k => k in verdict || k in output)

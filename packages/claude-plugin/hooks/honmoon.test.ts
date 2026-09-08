@@ -194,6 +194,9 @@ describe('tool.call', () => {
     })
     expect(r.deny).toBe('honmoon: redaction engine unavailable (engine answered PostToolUse, not PreToolUse); tool output withheld')
     expect(ran).toBe(false)
+    const unnamed = JSON.stringify({ hookSpecificOutput: { updatedToolOutput: readRecord } })
+    const { $: anonymous } = engine(p => (p.hook_event_name === 'PostToolUse' ? { stdout: unnamed } : {}))
+    expect((await runTool(anonymous, readEvent, async () => readResult)).deny).toBe('honmoon: redaction engine unavailable (engine answered an unnamed event, not PostToolUse); tool output withheld')
   })
 
   test('an empty body is a no-op from the binary but not from the http endpoint', async () => {
