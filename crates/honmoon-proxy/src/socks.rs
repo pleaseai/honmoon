@@ -15,7 +15,11 @@
 //! 1. The destination resolves to an endpoint declared `protocol: postgres` —
 //!    the connection is handed to [`crate::runtime::postgres`], which parses
 //!    every query frame and applies policy again, per statement.
-//! 2. Anything else (no endpoint, or `tcp`/`kubernetes`) — a generic TCP tunnel.
+//! 2. It resolves to one declared `protocol: kubernetes` — **refused**. Those
+//!    facts come from decrypting HTTPS, which only the CONNECT proxy does, so a
+//!    tunnel here would carry API calls no `k8s.*` rule could ever see. This is
+//!    the mirror of [`crate::mitm`] refusing a `postgres` endpoint over CONNECT.
+//! 3. Anything else (no endpoint, or `tcp`) — a generic TCP tunnel.
 //!
 //! Only no-auth (`0x00`) and `CONNECT` are supported; the listener is meant to
 //! be bound to loopback for a local agent, so there is no client to
@@ -166,17 +170,32 @@ async fn handle_connection(state: GatewayState, mut client: TcpStream) -> std::i
         .map(|(name, endpoint)| (name.to_owned(), endpoint.protocol));
     let name = endpoint.as_ref().map(|(name, _)| name.clone());
 
+    // Before the gate, so no `Allowed` entry and no approval hold is created for
+    // a connection that is going to be refused anyway.
+    if let Some((name, EndpointProtocol::Kubernetes)) = &endpoint {
+        refuse_uninspectable_socks(&state, &target, name);
+        return reply(&mut client, REPLY_NOT_ALLOWED, None).await;
+    }
+
     // Gate the connection before dispatching, so a protocol runtime never
     // becomes a way around the egress default.
     if !connection_gate(&state, &target, name).await {
         return reply(&mut client, REPLY_NOT_ALLOWED, None).await;
     }
 
+    // Every protocol is named: a variant added later fails to compile here
+    // rather than falling into a tunnel honmoon cannot inspect.
     match endpoint {
         Some((name, EndpointProtocol::Postgres)) => {
             run_postgres_endpoint(&state, client, target, name).await
         }
-        _ => tunnel(client, target).await,
+        // Refused above. Answered the same way rather than tunnelled if it is
+        // ever reached, so the fail-closed answer does not depend on one
+        // `if let` staying where it is.
+        Some((_, EndpointProtocol::Kubernetes)) => {
+            reply(&mut client, REPLY_NOT_ALLOWED, None).await
+        }
+        Some((_, EndpointProtocol::Tcp)) | None => tunnel(client, target).await,
     }
 }
 
@@ -372,6 +391,68 @@ async fn connection_gate(state: &GatewayState, target: &Target, endpoint: Option
             )
         }
     }
+}
+
+/// Refuse a SOCKS5 connection to an endpoint whose facts only exist behind TLS
+/// termination, without ever opening a tunnel honmoon could not inspect.
+///
+/// A `kubernetes` endpoint is inspected by decrypting HTTPS and reading the
+/// request line — [`crate::mitm`]'s job. SOCKS5 terminates nothing, so a tunnel
+/// here would carry `DELETE /api/v1/namespaces/prod/secrets/x` straight past a
+/// `k8s.resource == 'secrets'` deny rule, which would never see a fact. This is
+/// the mirror of [`crate::mitm`] refusing a `postgres` endpoint over CONNECT,
+/// and it keeps the same audit semantics:
+///
+/// - `deny` is answered exactly as anywhere else — the connection was refused
+///   on its own merits and the transport is beside the point.
+/// - `allow` becomes the transport refusal. No `Allowed` entry is recorded for
+///   a connection that never happens.
+/// - `pause` is refused too, and is **not** held: a human cannot approve a
+///   transport into inspecting requests it never sees, so the queue would only
+///   offer an approval that cannot mean what it says. The rule that paused it is
+///   still what the audit entry names.
+///
+/// The audit entry keeps `decision` and `verdict` apart: the disposition is a
+/// denial (honmoon refused the connection) while the verdict stays whatever the
+/// policy actually said, so the entry never claims a rule denied something it
+/// allowed.
+fn refuse_uninspectable_socks(state: &GatewayState, target: &Target, endpoint: &str) {
+    let facts = Facts {
+        domain: Some(target.host.clone()),
+        endpoint: Some(endpoint.to_owned()),
+        ..Default::default()
+    };
+    let outcome = decide_explained(&state.policy, &facts);
+    let summary = FactsSummary::from(&facts);
+
+    if outcome.verdict == Verdict::Deny {
+        tracing::info!(domain = %target.host, rule = ?outcome.rule, "SOCKS5 egress denied");
+        state.audit.record(AuditDraft {
+            decision: Decision::Denied,
+            verdict: Verdict::Deny,
+            rule: outcome.rule,
+            facts: summary,
+            approval_id: None,
+        });
+        return;
+    }
+
+    tracing::info!(
+        domain = %target.host,
+        %endpoint,
+        rule = ?outcome.rule,
+        verdict = ?outcome.verdict,
+        "SOCKS5 connection to a TLS-inspected endpoint refused"
+    );
+    state.audit.record(AuditDraft {
+        decision: Decision::Denied,
+        verdict: outcome.verdict,
+        // Whatever matched, named — an operator reading the entry needs to see
+        // the rule that was in play, not a bare synthetic denial.
+        rule: outcome.rule,
+        facts: summary,
+        approval_id: None,
+    });
 }
 
 /// Hand an already-gated connection to the PostgreSQL runtime, which decides

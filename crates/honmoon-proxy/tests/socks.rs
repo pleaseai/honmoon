@@ -187,6 +187,19 @@ rules:
     )
 }
 
+/// The same destination declared a `kubernetes` endpoint — a protocol whose
+/// facts only exist behind TLS termination, which SOCKS5 never does.
+fn kubernetes_policy_yaml(upstream: u16) -> String {
+    format!(
+        r#"
+endpoints:
+  k8s-prod: {{ host: localhost, port: {upstream}, protocol: kubernetes }}
+egress:
+  default: allow
+"#
+    )
+}
+
 /// A default-deny policy for the same endpoint. `allow_endpoint` appends an
 /// explicit connection-level `allow` rule **after** the DROP deny, so the
 /// statement rule still wins on a `DROP` (first match wins).
@@ -632,6 +645,27 @@ fn non_endpoint_host_is_tunnelled_raw_when_allowed() {
     let mut echoed = [0u8; 4];
     s.read_exact(&mut echoed).unwrap();
     assert_eq!(&echoed, b"ping", "bytes cross the tunnel untouched");
+}
+
+#[test]
+fn a_kubernetes_endpoint_is_refused_on_socks_rather_than_tunnelled() {
+    let echo = start_echo_upstream();
+    let (proxy, _) = start_socks_proxy(&kubernetes_policy_yaml(echo));
+
+    let (mut s, code) = socks_connect(proxy, "localhost", echo);
+    // Egress allows the host, but `k8s.*` facts come from decrypting HTTPS and
+    // SOCKS5 terminates nothing — a tunnel here would carry API calls no rule
+    // could ever see, so the transport refuses it.
+    assert_eq!(code, 0x02);
+
+    // And there is no tunnel behind the refusal: the echo upstream never sees
+    // the bytes, so nothing comes back.
+    let _ = s.write_all(b"ping");
+    let mut echoed = [0u8; 4];
+    assert!(
+        matches!(s.read(&mut echoed), Ok(0) | Err(_)),
+        "the connection is closed, not tunnelled to the upstream"
+    );
 }
 
 #[test]
