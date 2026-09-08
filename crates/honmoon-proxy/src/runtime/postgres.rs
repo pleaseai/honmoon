@@ -234,7 +234,9 @@ where
 
         let Some(sql) = statement_facts(tag[0], &len_bytes, &payload) else {
             // A `Q`/`P` frame we cannot parse is refused rather than forwarded
-            // blind — the same fail-closed posture as the frame cap.
+            // blind — the same fail-closed posture as the frame cap, and it is
+            // audited the same way, so every refusal leaves a trail.
+            record(state, facts, None, Decision::Denied, Verdict::Deny);
             refuse(client_write, "honmoon: unparseable query frame").await?;
             continue;
         };
