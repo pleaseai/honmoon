@@ -103,5 +103,11 @@ that fails to parse: it is refused rather than forwarded blind.
   changes nothing. Under `egress.default: deny` the endpoint needs an explicit connection-level
   `allow` rule (`condition: "true"`), and because the first matching rule wins that rule must be
   ordered **after** the statement denies — an `allow` placed first would answer every query.
+- **`honmoon run` reaches this runtime through `ALL_PROXY`, not `http_proxy`.** The wrapper binds
+  the SOCKS5 listener beside its CONNECT proxy and hands the child
+  `ALL_PROXY=socks5h://127.0.0.1:<port>`; the `h` keeps DNS on honmoon's side, which is what puts
+  the hostname into the handshake where the `endpoints` lookup above happens. A client that reads
+  neither proxy variable — `psql` among them — reaches nothing under `run` at all, which is
+  ADR-0005's fail-closed default rather than a gap in this one.
 - Inspection costs one buffered copy per statement, bounded at 1 MiB. Bulk paths (`COPY`) stay
   zero-copy, which is where the bytes actually are.

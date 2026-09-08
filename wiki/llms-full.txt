@@ -2392,8 +2392,8 @@ sequenceDiagram
   participant CH as curl (child)
   participant GH as api.github.com
   U->>CLI: run --policy agent.yaml -- curl …
-  CLI->>PX: bind 127.0.0.1:0, serve(policy)
-  CLI->>CH: spawn with https_proxy=http://127.0.0.1:PORT
+  CLI->>PX: bind 127.0.0.1:0 twice (CONNECT + SOCKS5), serve(policy)
+  CLI->>CH: spawn with https_proxy=http://127.0.0.1:PORT, ALL_PROXY=socks5h://127.0.0.1:SOCKS
   CH->>PX: CONNECT api.github.com:443
   PX->>PX: decide(policy, {domain: api.github.com})
   PX-->>CH: 200 Connection Established
@@ -2406,21 +2406,37 @@ sequenceDiagram
 
 ::: warning Enforcing on Linux and macOS, advisory everywhere else
 On **Linux** the child is spawned into an empty user + network namespace holding nothing but
-loopback, with honmoon's proxy bridged in over a Unix socket
+loopback, with **both** of honmoon's proxies bridged in over one Unix socket each
 ([ADR-0005](https://github.com/pleaseai/honmoon/blob/main/.please/docs/decisions/0005-empty-namespace-and-bridged-proxy-sockets.md)). The proxy
-variables `http_proxy` / `https_proxy` / `all_proxy` (and uppercase variants) are set by the
-in-namespace supervisor and point the child at the loopback port *inside* its own namespace rather
-than at the host's proxy
-([linux.rs:615-626](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-cli/src/isolate/linux.rs#L615-L626)).
+variables are set by the in-namespace supervisor and point the child at loopback ports *inside* its
+own namespace rather than at the host's proxies: `http_proxy` / `https_proxy` (and uppercase) at
+the CONNECT proxy, `all_proxy` / `ALL_PROXY` at the SOCKS5 listener as `socks5h://127.0.0.1:PORT`
+([linux.rs](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-cli/src/isolate/linux.rs)).
+The `h` keeps DNS on honmoon's side, which is what puts the hostname into the SOCKS5 handshake
+where it selects an `endpoints:` entry — so a `protocol: postgres` endpoint is inspected statement
+by statement under `run` just as it is under `gateway`.
 On **macOS** there is no namespace and nothing to bridge: the child keeps the host's loopback, where
-the proxy is already listening, and a Seatbelt profile under `sandbox-exec` denies every other
-socket
+both proxies are already listening, and a Seatbelt profile under `sandbox-exec` denies every socket
+but those two ports — one `remote ip` rule each, never a wildcard
 ([macos.rs](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-cli/src/isolate/macos.rs)).
 On both, an **unprivileged** child that ignores the variables reaches nothing over the network
-rather than bypassing policy. The flip side: a client that speaks no proxy at all (`psql`, `ssh`)
-cannot connect under `run` — use `honmoon gateway` for those. Nor is there DNS inside the sandbox on
+rather than bypassing policy. Nor is there DNS inside the sandbox on
 either platform; a proxied client does not need it, but a tool that resolves before it proxies will
 fail.
+:::
+
+::: warning A client honouring neither variable reaches nothing, by design
+A tool that reads neither `HTTP_PROXY` nor `ALL_PROXY` cannot connect at all under `run`. That is
+ADR-0005's deliberate fail-closed default, not a bug to work around: the child is not asked to
+cooperate, it is left with no other route.
+
+`psql` is the example worth naming, because it looks like a counterexample and is not — it speaks
+no SOCKS5 natively and no HTTP at all, so it honours neither variable. Reaching a `postgres`
+endpoint means putting something SOCKS-aware between `psql` and the tunnel: a wrapper that
+intercepts the connect (`proxychains-ng` and similar), or a local forwarder that terminates a plain
+TCP port and dials out over SOCKS5. honmoon does not ship, bundle or support either; which one fits
+is yours to decide. Pass `sslmode=prefer`/`disable` as well, since inline inspection needs
+plaintext between the client and honmoon.
 
 The boundary is narrower than "sandbox". A child that can become root, already holds
 `CAP_SYS_ADMIN`, or has passwordless `sudo` can leave it, and neither platform touches the

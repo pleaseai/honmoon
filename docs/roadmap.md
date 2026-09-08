@@ -73,16 +73,23 @@ The moat: wire-level protocol parsing beyond HTTP — in `honmoon-core::protocol
 - [x] Live inline relay feeding the parsers from real traffic: the SOCKS5 listener
   (`honmoon-proxy::socks`, `--socks-addr`) dispatches on the handshake's `host:port`, and
   `honmoon-proxy::runtime::postgres` decides every `Q`/`P` frame inline ([ADR-0007](../.please/docs/decisions/0007-inline-postgresql-runtime-semantics.md))
-- [ ] (carried) Bridge the SOCKS5 listener into `honmoon run`'s sandbox, and TLS termination for a
-  `kubernetes` endpoint reached over SOCKS5; see TD-006
+- [x] The SOCKS5 listener bridged into `honmoon run`'s sandbox: `run` binds it on an ephemeral
+  loopback port beside the CONNECT proxy, exports it to the child as
+  `ALL_PROXY=socks5h://127.0.0.1:<port>`, and carries it across the boundary on both platforms — a
+  second Unix socket into the Linux namespace, a second `remote ip` rule in the macOS Seatbelt
+  profile ([ADR-0005](../.please/docs/decisions/0005-empty-namespace-and-bridged-proxy-sockets.md))
+- [ ] (carried) TLS termination for a `kubernetes` endpoint reached over SOCKS5 — the PostgreSQL
+  half of the live relay is done, the K8s half still reads its facts from the HTTPS MITM path
 
 **Exit criteria**: ✅ a `DROP`/`TRUNCATE` against `postgres-prod` and a `delete secrets` against
 `k8s-prod` are caught by policy — proven end-to-end (raw packet/request → parser → `decide()`) by
 `engine.rs::protocol_facts_drive_policy_end_to_end` and against the shipped `policies/agent.yaml` by
 `shipped_example_policy_fires`, and now on a live socket by
 `crates/honmoon-proxy/tests/socks.rs` (a `DROP TABLE` over SOCKS5 is refused with SQLSTATE 42501 and
-never reaches the database).
-Note: PostgreSQL is live; `honmoon run` bridging and a K8s runtime over SOCKS5 remain (TD-006).
+never reaches the database) and, inside the `run` sandbox, by
+`crates/honmoon-cli/tests/enforced_isolation.rs::a_socks_speaking_child_reaches_a_postgres_endpoint_and_a_drop_is_refused`.
+Note: PostgreSQL is live under both `gateway` and `run`; a K8s runtime over SOCKS5 still needs TLS
+termination on that path.
 
 ---
 
@@ -106,8 +113,8 @@ live CONNECT, the held request appears on the management API's approval queue, a
 (over HTTP) lets the tunnel through (`200`) while rejecting blocks it (`403`), and every step
 (`paused` → `approved`/`rejected`) is recorded in the audit log.
 Note: SQL `pause` now fires on the live PostgreSQL runtime (a held statement waits, then forwards
-on approval — `socks.rs::pause_rule_holds_until_approved_then_forwards`); K8s `pause` still needs
-TLS termination on a SOCKS5-reached endpoint (TD-006).
+on approval — `socks.rs::pause_rule_holds_until_approved_then_forwards`), under `honmoon run` as
+well as `honmoon gateway`; K8s `pause` still needs TLS termination on a SOCKS5-reached endpoint.
 
 ---
 
@@ -120,7 +127,7 @@ management and compliance reporting are Paid (Phase 7).
 > **Prerequisite — TLS termination / body access** (✅ done, [ADR-0003](../.please/docs/decisions/0003-adopt-hudsucker-for-tls-termination.md)). Over a
 > raw CONNECT tunnel only `http.host` is visible; PII detection needs the decrypted body. The data
 > plane now terminates TLS (hudsucker MITM, opt-in local CA) and scans decrypted bodies
-> (detect-only), which also unblocks body-level SQL/K8s facts (TD-006).
+> (detect-only), which also unblocks body-level SQL/K8s facts.
 
 - [x] TLS termination in the data plane (**hudsucker**, not Pingora — [ADR-0003](../.please/docs/decisions/0003-adopt-hudsucker-for-tls-termination.md)) so request bodies reach the engine. Detect-only: decrypted bodies are scanned and findings audited (`--tls-intercept`, opt-in local CA). Proven by `crates/honmoon-proxy/tests/mitm.rs`.
 - [x] Tier-1 deterministic PII detector in `honmoon-core::pii` (Rust regex + checksum/Luhn):

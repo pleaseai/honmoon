@@ -154,7 +154,10 @@ rules:
 ## Usage (target interface)
 
 ```bash
-# Run a single command in isolation — only allowed domains are reachable
+# Run a single command in isolation — only allowed domains are reachable.
+# `run` binds two ephemeral loopback listeners and points the child at both:
+#   http_proxy / https_proxy (and uppercase) → the CONNECT proxy
+#   all_proxy  / ALL_PROXY                   → socks5h://127.0.0.1:<port>
 honmoon run --policy policies/agent.yaml -- curl https://api.github.com
 
 # Run the gateway: egress proxy on :8443, SOCKS5 on :1080, dashboard on :8444
@@ -178,7 +181,9 @@ connection to a host declared `protocol: postgres` is **inspected inline**: ever
 query) and `P` (Parse) frame is parsed into `sql.verb` / `sql.table` and gets its own verdict, so
 a `DROP TABLE` is refused with SQLSTATE `42501` naming the rule and never reaches the database,
 while the session stays open. Any other destination is a raw tunnel gated on `domain` exactly like
-a CONNECT. PostgreSQL inspection therefore requires the client to dial **through SOCKS5**
+a CONNECT. `honmoon run` binds the same SOCKS5 listener on an ephemeral port and exports it to the
+child as `ALL_PROXY`, so inline PostgreSQL inspection works under both modes. PostgreSQL
+inspection requires the client to dial **through SOCKS5**
 (`ALL_PROXY=socks5h://127.0.0.1:1080`) — `psql` does not speak SOCKS5 natively, so wrap it in a
 SOCKS-aware launcher such as `proxychains4`, and use `sslmode=prefer`/`disable`, since inline
 inspection needs plaintext between the client and honmoon. See
@@ -230,17 +235,33 @@ The two platforms reach that from opposite directions, and the difference shows 
 
 | | Linux | macOS |
 |---|-------|-------|
-| Mechanism | a new user + network namespace holding nothing but loopback, with the proxy bridged in over a Unix socket | a Seatbelt profile under `sandbox-exec` denying every socket but the proxy's loopback port |
+| Mechanism | a new user + network namespace holding nothing but loopback, with both proxies bridged in over one Unix socket each | a Seatbelt profile under `sandbox-exec` denying every socket but honmoon's two loopback ports |
 | The child's loopback | private to the namespace | shared with the host |
 | Needs | unprivileged user namespaces enabled | nothing — `sandbox-exec` ships with macOS |
 
 Consequences worth knowing before you hit them:
 
-- **A client that speaks no proxy fails closed.** Anything that reads neither `HTTP_PROXY` nor
-  `ALL_PROXY` — `psql`, `ssh`, a binary with a hardcoded socket — cannot connect at all under
-  `run`. That is the correct default for a firewall, and it is deliberate rather than a bug.
-  `run` does not yet bridge the SOCKS5 listener into the sandbox, so use `honmoon gateway` — whose
-  SOCKS5 listener carries those protocols — for `psql` and friends.
+- **Two proxies, and the child is pointed at both.** `run` binds a CONNECT proxy and a SOCKS5
+  listener on separate ephemeral loopback ports. `http_proxy` / `https_proxy` (and their uppercase
+  spellings) name the first; `all_proxy` / `ALL_PROXY` name the second, as
+  `socks5h://127.0.0.1:<port>`. The `h` keeps DNS on honmoon's side, which is what puts the
+  hostname into the SOCKS5 handshake where it selects an `endpoints:` entry — so a
+  `protocol: postgres` endpoint is inspected statement by statement under `run` exactly as it is
+  under `gateway`.
+- **A client that honours neither variable reaches nothing, by design.** Anything that reads
+  neither `HTTP_PROXY` nor `ALL_PROXY` — a binary with its own dialler, a tool with a hardcoded
+  socket — cannot connect at all under `run`. That is the deliberate fail-closed default of
+  [ADR-0005](.please/docs/decisions/0005-empty-namespace-and-bridged-proxy-sockets.md), not a bug
+  to work around: the child is not asked to cooperate, it is left with no other route.
+
+  `psql` is the example worth naming, because it looks like a counterexample and is not. It
+  honours neither variable — it speaks no SOCKS5 natively and no HTTP at all — so under `run` it
+  connects to nothing. Reaching a `postgres` endpoint means putting something SOCKS-aware between
+  `psql` and the tunnel: a wrapper that intercepts the connect (`proxychains-ng` and similar), or
+  a local forwarder that terminates a plain TCP port and dials out over SOCKS5. honmoon does not
+  ship, bundle or support either; which one fits is yours to decide. Also pass
+  `sslmode=prefer`/`disable`, since inline inspection needs plaintext between the client and
+  honmoon.
 - **Names are resolved by the proxy, not by the child.** There is no DNS inside the sandbox on
   either platform. A proxied client does not need it — it hands the proxy a hostname — but a tool
   that resolves before it proxies will fail.
@@ -259,9 +280,10 @@ or stderr and expect the child not to reach that peer: the child needs those thr
 it inherits them, and a socket keeps its binding across both mechanisms.
 
 Two macOS-only caveats, recorded here rather than discovered later. A command that **daemonizes**
-leaves descendants behind, and `run` returns when its direct child exits — closing the proxy port
-while those descendants still carry a profile whose one exception names it. The port is then free
-for any local process to bind, and that process is an off-policy relay for them. Linux does not
+leaves descendants behind, and `run` returns when its direct child exits — closing both proxy ports
+while those descendants still carry a profile whose exceptions name them. Those ports are then free
+for any local process to bind, and that process is an off-policy relay for them (the window covers
+the SOCKS5 port as well as the CONNECT one). Linux does not
 have this: an empty namespace stays empty whoever else is on the host, while Seatbelt leaves the
 child on the *host* loopback. Holding the port for the whole process group would close it and stop
 `run` returning when the command does; that is an ADR-0005 amendment, tracked under TD-003. And
