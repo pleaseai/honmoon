@@ -30,7 +30,7 @@ function engine(reply: (payload: Payload) => Reply, http?: (url: string, init: u
       },
     },
     clock: { sleep: () => new Promise<void>(() => {}) },
-    session: { id: async () => 'session-1' },
+    session: { id: async () => 'session-1', cwd: async () => '/repo' },
   }
   return { $: $ as unknown as EngineInterface, calls, fetches }
 }
@@ -139,6 +139,79 @@ describe('tool.call', () => {
     const { $ } = engine(() => ({ throws: 'spawn honmoon ENOENT' }))
     const r = await runTool($, readEvent, async () => readResult)
     expect(r).toBe(readResult)
+  })
+
+  test('sends the session cwd, which the engine anchors a relative file_path against', async () => {
+    applyOptions({})
+    const { $, calls } = engine(() => ({}))
+    await runTool($, { tool: 'Read', file_path: 'src/main.rs' }, async () => readResult)
+    const pre = calls.find(c => c.payload.hook_event_name === 'PreToolUse')
+    expect((pre?.payload as { cwd?: string }).cwd).toBe('/repo')
+  })
+
+  test('redacts a notebook record — its cells are plain JSON, not opaque bytes', async () => {
+    applyOptions({})
+    const notebook = { type: 'notebook', file: { filePath: '/repo/a.ipynb', cells: [{ source: 'KEY = "sk-live-1"' }] } }
+    const scrubbed = { ...notebook, file: { ...notebook.file, cells: [{ source: 'KEY = "<<hs:abc123>>"' }] } }
+    const { $ } = engine(p => (p.hook_event_name === 'PostToolUse' ? { stdout: redacted(scrubbed) } : {}))
+    const r = await runTool($, { tool: 'Read', file_path: '/repo/a.ipynb' }, async () => ({ ref: 2, text: 'x', result: notebook }))
+    expect(r.result).toEqual(scrubbed)
+  })
+
+  test('leaves an image record alone — the detectors cannot read base64 bytes', async () => {
+    applyOptions({})
+    const image = { type: 'image', file: { base64: 'AAAA', type: 'image/png' } }
+    const given = { ref: 3, text: 'x', result: image }
+    const { $, calls } = engine(() => ({ stdout: redacted({ scrubbed: true }) }))
+    expect(await runTool($, { tool: 'Read', file_path: '/repo/a.png' }, async () => given)).toBe(given)
+    expect(calls.every(c => c.payload.hook_event_name === 'PreToolUse')).toBe(true)
+  })
+
+  test('hookUrl alone selects the http transport (no transport option set)', async () => {
+    applyOptions({ hookUrl: 'http://127.0.0.1:7777/api/hooks/claude-code' })
+    const { $, fetches, calls } = engine(() => ({}))
+    await runTool($, readEvent, async () => readResult)
+    expect(fetches.length).toBeGreaterThan(0)
+    expect(calls).toEqual([])
+  })
+
+  test('an explicit transport of process ignores hookUrl', async () => {
+    applyOptions({ transport: 'process', hookUrl: 'http://127.0.0.1:7777/api/hooks/claude-code' })
+    const { $, fetches, calls } = engine(() => ({}))
+    await runTool($, readEvent, async () => readResult)
+    expect(fetches).toEqual([])
+    expect(calls.length).toBeGreaterThan(0)
+  })
+
+  test('a rejected session id is not cached, so the salt is not lost for the session', async () => {
+    applyOptions({})
+    const calls: { payload: Payload }[] = []
+    let attempts = 0
+    const $ = {
+      process: {
+        run: async (_argv: readonly string[], init: { stdin: string }) => {
+          calls.push({ payload: JSON.parse(init.stdin) as Payload })
+          return { exitCode: 0, stdout: '', stderr: '' }
+        },
+      },
+      http: { fetch: async () => ({ ok: true, status: 200, headers: {}, text: '' }) },
+      clock: { sleep: () => new Promise<void>(() => {}) },
+      session: {
+        id: async () => {
+          attempts += 1
+          if (attempts === 1) {
+            throw new Error('not ready')
+          }
+          return 'session-1'
+        },
+        cwd: async () => '/repo',
+      },
+    } as unknown as ToolArgs[0]
+    await runTool($, readEvent, async () => readResult)
+    await runTool($, readEvent, async () => readResult)
+    const ids = calls.map(c => (c.payload as { session_id?: string }).session_id)
+    expect(ids[0]).toBe('')
+    expect(ids.at(-1)).toBe('session-1')
   })
 })
 

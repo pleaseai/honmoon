@@ -59,6 +59,12 @@ from there instead). See
 [Claude Code plugins](https://code.claude.com/docs/en/plugins). Once installed,
 `/hooks` should list the three honmoon hooks.
 
+The manifest (`.claude-plugin/plugin.json`) deliberately has **no** `hooks`
+key: Claude Code loads `hooks/hooks.json` automatically, and on 2.1.263 a
+manifest entry pointing at that same file is reported as a duplicate and logged
+as a hook-load failure (`manifest.hooks should only reference additional hook
+files`). Do not add it back.
+
 ## Verify
 
 ```sh
@@ -161,14 +167,15 @@ plugin works unchanged on older Claude Code versions.
 
 | | Command hooks | Function-hooks module |
 |---|---|---|
-| Prompts | **Blocked** — a command hook cannot rewrite a prompt | **Rewritten**: the redacted prompt is submitted, with a context note telling the model values were replaced. It is dropped only when the engine blocks it with no redacted text, or the engine is unreachable |
+| Prompts | **Blocked** — a command hook cannot rewrite a prompt | **Rewritten**: the redacted prompt is submitted, with a context note telling the model values were replaced. It is dropped only when the engine is unreachable |
+| Prompt PII floor | Severity **3** (high) — `handle_user_prompt_submit` | Severity **2** — the prompt is scanned as tool output, so medium-severity PII (email, phone) is rewritten too |
 | Tool output | `Read`, `Bash`, `Grep` | `Read`, `Bash`, `Grep` **and `WebFetch`** |
 | Engine unreachable | **Fails open** (the tool call proceeds unredacted) | **Fails closed**: the tool result is denied (`honmoon: redaction engine unavailable (…); tool output withheld`) and the prompt is dropped. Set `failMode: "open"` for the old behavior |
 | Transport | `honmoon hook` subprocess | `honmoon hook` subprocess, or HTTP to the management API |
 
-Only the `Read` result variant that carries text is rewritten — an image, PDF or
-notebook record is passed through untouched — and a denied or errored tool
-result is always passed through as core produced it.
+Only the `Read` result variants the detectors can read are rewritten: `text` and
+`notebook` (its cells are plain JSON). An image or PDF record is base64 bytes and
+is passed through untouched, as is a denied or errored tool result.
 
 ### Options
 
@@ -178,8 +185,8 @@ settings — project settings are not read):
 
 | Option | Default | Meaning |
 |---|---|---|
-| `transport` | `process` | `process` runs `honmoon hook`; `http` POSTs the same JSON to `hookUrl` |
-| `honmoonBin` | `honmoon` | The binary the `process` transport runs (command name or absolute path) |
+| `transport` | `process` when `hookUrl` is unset | `process` runs `honmoon hook`; `http` POSTs the same JSON to `hookUrl` |
+| `honmoonBin` | `honmoon` | The binary the `process` transport runs (command name or absolute path). Note this is a plugin option, not the command hooks' `HONMOON_BIN` env var — set both if honmoon is off `PATH` |
 | `hookUrl` | — | Management-API endpoint, e.g. `http://127.0.0.1:7777/api/hooks/claude-code`. Setting it selects the `http` transport unless `transport` says otherwise |
 | `hookToken` | — | Optional bearer token for `hookUrl` |
 | `failMode` | `closed` | `closed` denies tool output / drops the prompt when the engine is unreachable; `open` passes through |

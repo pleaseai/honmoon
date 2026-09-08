@@ -12,6 +12,7 @@
     "types": [],
     "strict": true,
     "noEmit": true,
+    "verbatimModuleSyntax": true,
     "skipLibCheck": true
   },
   "include": [

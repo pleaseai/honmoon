@@ -22,8 +22,7 @@
     "transport": {
       "title": "Engine transport",
       "type": "string",
-      "description": "How the hooks module reaches the redaction engine: \"process\" (default, runs `honmoon hook`) or \"http\" (POSTs to hookUrl).",
-      "default": "process"
+      "description": "How the hooks module reaches the redaction engine: \"process\" (runs `honmoon hook`) or \"http\" (POSTs to hookUrl). Left unset it is \"http\" when hookUrl is set and \"process\" otherwise — declaring a default here would fill the field in for every user and make hookUrl alone unable to select the http transport."
     },
     "honmoonBin": {
       "title": "honmoon binary",

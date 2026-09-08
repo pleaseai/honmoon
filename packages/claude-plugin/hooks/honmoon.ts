@@ -30,16 +30,19 @@ type Runner = (
   init: { stdin: string, timeoutMs: number },
 ) => Promise<{ exitCode: number, stdout: string }>
 type Fetcher = (url: string, init: HttpInit) => Promise<HttpResponse>
+type Sleeper = (ms: number, options?: { signal?: AbortSignal }) => Promise<void>
 type Ask = (payload: Json) => Promise<Answer>
 
 export function configure(options: PluginOptions): Config {
   const url = typeof options.hookUrl === 'string' ? options.hookUrl.trim() : ''
-  const transport = String(options.transport ?? (url ? 'http' : 'process'))
+  // Unset (the manifest declares no default for it, deliberately): `hookUrl`
+  // alone selects the http transport, as the README documents.
+  const transport = String(options.transport ?? (url ? 'http' : 'process')).trim().toLowerCase()
   return {
     bin: String(options.honmoonBin ?? 'honmoon'),
     url: transport === 'http' ? url : '',
     token: String(options.hookToken ?? ''),
-    failClosed: String(options.failMode ?? 'closed') !== 'open',
+    failClosed: String(options.failMode ?? 'closed').trim().toLowerCase() !== 'open',
   }
 }
 
@@ -71,7 +74,7 @@ export function engineAsk(
   config: Config,
   run: Runner,
   fetch: Fetcher,
-  sleep: (ms: number) => Promise<void>,
+  sleep: Sleeper,
 ): Ask {
   const call = async (payload: Json): Promise<Answer> => {
     const body = JSON.stringify(payload)
@@ -92,16 +95,28 @@ export function engineAsk(
     }
     return parseVerdict(result.stdout)
   }
-  const deadline = async (): Promise<Answer> => {
-    await sleep(ENGINE_TIMEOUT_MS)
-    return { ok: false, cause: 'engine timed out' }
-  }
   return async (payload) => {
+    // The deadline timer is the hook's own; abort it once the race settles so a
+    // fast answer does not leave an 8 s timer (and this closure) pending per
+    // tool call — `$.clock.sleep` takes the signal for exactly this.
+    const abort = new AbortController()
+    const answer = call(payload)
+    // The race only reads whichever promise settles first; mark the other one
+    // handled so a late rejection is not an unhandled rejection.
+    answer.catch(() => {})
+    const deadline = sleep(ENGINE_TIMEOUT_MS, { signal: abort.signal }).then(
+      (): Answer => ({ ok: false, cause: 'engine timed out' }),
+      // Aborted because `call` already answered: never settle the race.
+      () => new Promise<Answer>(() => {}),
+    )
     try {
-      return await Promise.race([call(payload), deadline()])
+      return await Promise.race([answer, deadline])
     }
     catch (error) {
       return { ok: false, cause: error instanceof Error ? error.message : String(error) }
+    }
+    finally {
+      abort.abort()
     }
   }
 }
@@ -130,10 +145,15 @@ function updatedOutput(verdict: Json): unknown {
   return hookSpecific(verdict).updatedToolOutput
 }
 
-function redactionNote(before: unknown, after: unknown): string {
-  const count = (text: unknown) => (JSON.stringify(text ?? null).match(PLACEHOLDER) ?? []).length
-  const added = Math.max(1, count(after) - count(before))
-  return `honmoon: ${added} value(s) redacted with stable placeholders; treat <<hs:…>> tokens as opaque`
+/**
+ * Count the placeholders the model is about to read. Counting the *result*
+ * rather than a before/after delta keeps the number true when something else
+ * redacted first (the command hooks run inside `next()` and mint the same
+ * token shape), where a delta would be 0 and have to be faked.
+ */
+function redactionNote(after: unknown): string {
+  const count = (JSON.stringify(after ?? null).match(PLACEHOLDER) ?? []).length
+  return `honmoon: ${count} value(s) redacted with stable placeholders; treat <<hs:…>> tokens as opaque`
 }
 
 function unavailable(cause: string): string {
@@ -158,10 +178,46 @@ function engineToolName(tool: string): string {
 let config: Config = configure({})
 /** The session id keys the engine's placeholder salt (stable across turns). */
 let sessionId: Promise<string> | undefined
+/** The session cwd, which the engine anchors relative `file_path`s against. */
+let sessionCwd: Promise<string> | undefined
 
 export function applyOptions(options: PluginOptions): void {
   config = configure(options)
   sessionId = undefined
+  sessionCwd = undefined
+}
+
+/**
+ * Memoize a session lookup, but never memoize a *rejection*: a cached rejected
+ * promise would make the rest of the session run with an empty session id, and
+ * the empty id is a shared salt — placeholders would stop being unforgeable and
+ * would collide across sessions.
+ */
+async function once(
+  cached: Promise<string> | undefined,
+  load: () => Promise<string>,
+  store: (p: Promise<string> | undefined) => void,
+): Promise<string> {
+  if (!cached) {
+    cached = load()
+    store(cached)
+  }
+  try {
+    return await cached
+  }
+  catch {
+    store(undefined)
+    return ''
+  }
+}
+
+/** Both session facts the engine payloads carry, resolved once per session. */
+async function sessionFacts($: Parameters<typeof promptHook>[0]): Promise<{ session_id: string, cwd: string }> {
+  const [session_id, cwd] = await Promise.all([
+    once(sessionId, () => $.session.id(), p => (sessionId = p)),
+    once(sessionCwd, () => $.session.cwd(), p => (sessionCwd = p)),
+  ])
+  return { session_id, cwd }
 }
 
 export const toolHook: MatchedHook<'tool.call', typeof TOOL_MATCHER> = async ($, e, next) => {
@@ -169,18 +225,19 @@ export const toolHook: MatchedHook<'tool.call', typeof TOOL_MATCHER> = async ($,
     config,
     (argv, init) => $.process.run(argv, init),
     (url, init) => $.http.fetch(url, init),
-    ms => $.clock.sleep(ms),
+    (ms, options) => $.clock.sleep(ms, options),
   )
-  if (!sessionId) {
-    sessionId = $.session.id()
-  }
-  const session_id = await sessionId.catch(() => '')
+  const { session_id, cwd } = await sessionFacts($)
 
   if (e.tool === 'Read') {
     const pre = await ask({
       hook_event_name: 'PreToolUse',
       tool_name: 'Read',
       tool_input: { file_path: e.file_path },
+      // The http transport resolves a relative `file_path` against this and
+      // denies the read as "unresolved" without it (honmoon-mgmt
+      // `resolve_agent_path`); the command hooks get it from the host payload.
+      cwd,
       session_id,
     })
     if (!pre.ok) {
@@ -202,10 +259,14 @@ export const toolHook: MatchedHook<'tool.call', typeof TOOL_MATCHER> = async ($,
   if (r.deny !== undefined || r.isError) {
     return r
   }
-  // Only the variants that carry text: a Read image/pdf/notebook record holds
-  // bytes the detectors cannot read, and rewriting it would corrupt it.
-  if (e.tool === 'Read' && (r.result as { type?: string }).type !== 'text') {
-    return r
+  // Only the variants the detectors can read. An image or pdf record holds
+  // base64 bytes, and rewriting it would corrupt it; a notebook record is plain
+  // JSON cells, so it is scanned like any other text.
+  if (e.tool === 'Read') {
+    const type = (r.result as { type?: string } | undefined)?.type
+    if (type !== 'text' && type !== 'notebook') {
+      return r
+    }
   }
 
   const post = await ask({
@@ -226,30 +287,36 @@ export const toolHook: MatchedHook<'tool.call', typeof TOOL_MATCHER> = async ($,
   }
   return {
     result: updated as typeof r.result,
-    context: [...(r.context ?? []), redactionNote(r.result, updated)],
+    context: [...(r.context ?? []), redactionNote(updated)],
   }
 }
 
 /**
  * Redact and forward rather than block: the prompt is dropped only when the
- * engine blocks it with no redacted text to send, or the transport failed.
+ * transport failed (or, defensively, if a future engine answers this payload
+ * with a `decision:"block"` verdict — today's `handle_post_tool_use` only ever
+ * answers with `hookSpecificOutput`).
+ *
+ * Note the threshold this path uses: presenting the prompt as tool output runs
+ * it through `redact_json_value` at `DEFAULT_MIN_PII_SEVERITY` (2), not the
+ * `PII_SEVERITY_HIGH` (3) floor `handle_user_prompt_submit` applies. Medium
+ * severity PII — an email address, a phone number — is therefore rewritten in
+ * prompts here where the command hook let it through untouched.
  */
 export const promptHook: Hook<'prompt.submit'> = async ($, e, next) => {
   const ask = engineAsk(
     config,
     (argv, init) => $.process.run(argv, init),
     (url, init) => $.http.fetch(url, init),
-    ms => $.clock.sleep(ms),
+    (ms, options) => $.clock.sleep(ms, options),
   )
-  if (!sessionId) {
-    sessionId = $.session.id()
-  }
+  const { session_id } = await sessionFacts($)
   const answer = await ask({
     hook_event_name: 'PostToolUse',
     tool_name: 'Read',
     tool_input: {},
     tool_response: e.text,
-    session_id: await sessionId.catch(() => ''),
+    session_id,
   })
   if (!answer.ok) {
     if (!config.failClosed) {
@@ -269,7 +336,7 @@ export const promptHook: Hook<'prompt.submit'> = async ($, e, next) => {
   if (r.drop !== undefined) {
     return r
   }
-  return { ...r, context: [...(r.context ?? []), redactionNote(e.text, updated)] }
+  return { ...r, context: [...(r.context ?? []), redactionNote(updated)] }
 }
 
 export const register: Register = (on, options) => {
