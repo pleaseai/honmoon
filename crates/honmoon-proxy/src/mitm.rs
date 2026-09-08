@@ -163,6 +163,46 @@ impl HonmoonHandler {
         Some((name.to_owned(), endpoint.protocol))
     }
 
+    /// Refuse a CONNECT whose destination honmoon inspects inline instead of
+    /// tunnelling.
+    ///
+    /// A CONNECT is a raw tunnel: honmoon only ever sees TLS or opaque bytes
+    /// over it, never PostgreSQL frames. Authorizing one for a
+    /// `protocol: postgres` endpoint would therefore carry every statement past
+    /// the `sql.*` rules that endpoint exists to enforce — declaring the
+    /// protocol would silently turn inspection *off* on this listener. The
+    /// SOCKS5 listener is the path that parses those frames, so this fails
+    /// closed and says so.
+    ///
+    /// `postgres` is the only protocol affected: `kubernetes` is HTTPS and is
+    /// inspected by this very handler, and `tcp` declares no inspection at all.
+    fn refuse_uninspectable_connect(&self, host: &str, port: u16) -> Option<RequestOrResponse> {
+        let (endpoint, protocol) = self.resolve_endpoint(host, port)?;
+        match protocol {
+            EndpointProtocol::Postgres => {}
+            EndpointProtocol::Kubernetes | EndpointProtocol::Tcp => return None,
+        }
+
+        tracing::info!(domain = %host, %endpoint, "CONNECT to an inline-inspected endpoint refused");
+        let facts = Facts {
+            domain: Some(host.to_owned()),
+            endpoint: Some(endpoint.clone()),
+            http: Some(HttpFacts {
+                host: host.to_owned(),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        self.state.audit.record(AuditDraft {
+            decision: Decision::Denied,
+            verdict: Verdict::Deny,
+            rule: None,
+            facts: FactsSummary::from(&facts),
+            approval_id: None,
+        });
+        Some(uninspectable_connect_response(&endpoint))
+    }
+
     /// Apply host-level policy (allow / deny / pause) to `host`.
     ///
     /// `audit_allow` records the `Allow` decision — set for the CONNECT gate so
@@ -673,6 +713,11 @@ impl HttpHandler for HonmoonHandler {
             let authority = req.uri().authority().map(|a| a.as_str()).unwrap_or("");
             let host = canonical_host(authority);
             let port = authority_port(authority).unwrap_or(HTTPS_PORT);
+            // Before the host gate, so an endpoint this listener cannot inspect
+            // is never audited as an allowed connection it then refuses.
+            if let Some(refusal) = self.refuse_uninspectable_connect(&host, port) {
+                return refusal;
+            }
             return match self.host_gate(&host, port, true).await {
                 Gate::Proceed => {
                     self.tunnels.authorize(ctx.client_addr, host, port);
@@ -984,6 +1029,28 @@ fn signed_body_response(scheme: SignedBodyScheme) -> RequestOrResponse {
         .header(header::CONTENT_TYPE, "text/plain; charset=utf-8")
         .header(header::CONTENT_LENGTH, length.to_string())
         .header(HONMOON_REASON, "signed-body-redaction")
+        .header(header::CONNECTION, "close")
+        .body(Body::from(Full::new(hudsucker::hyper::body::Bytes::from(
+            reason,
+        ))))
+        .expect("static response is valid")
+        .into()
+}
+
+/// A `403` explaining that this endpoint is inspected inline, so it must be
+/// dialled through the SOCKS5 listener rather than tunnelled over CONNECT.
+fn uninspectable_connect_response(endpoint: &str) -> RequestOrResponse {
+    let reason = format!(
+        "honmoon: endpoint {endpoint} is declared `protocol: postgres`, so its statements are \
+         inspected inline and it cannot be carried over a CONNECT tunnel. Dial it through the \
+         SOCKS5 listener instead (ALL_PROXY=socks5h://<gateway>:1080).\n"
+    );
+    let length = reason.len();
+    Response::builder()
+        .status(StatusCode::FORBIDDEN)
+        .header(header::CONTENT_TYPE, "text/plain; charset=utf-8")
+        .header(header::CONTENT_LENGTH, length.to_string())
+        .header(HONMOON_REASON, "uninspectable-connect")
         .header(header::CONNECTION, "close")
         .body(Body::from(Full::new(hudsucker::hyper::body::Bytes::from(
             reason,

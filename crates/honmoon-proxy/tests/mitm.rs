@@ -452,6 +452,93 @@ fn block_mode_enforces_http_rules_on_uninspected_body() {
     }));
 }
 
+/// Send a bare `CONNECT host:port` to the proxy and return its response head,
+/// with the audit log so a refusal can be asserted.
+fn connect_response(policy_yaml: &str, host: &str, port: u16) -> (String, Arc<AuditLog>) {
+    let audit = Arc::new(AuditLog::new(1024));
+    let state = GatewayState {
+        policy: Arc::new(Policy::from_yaml(policy_yaml).unwrap()),
+        audit: audit.clone(),
+        approvals: Arc::new(ApprovalRegistry::new()),
+        pause_timeout: Duration::from_secs(10),
+        ca: Arc::new(CaMaterial::generate().unwrap()),
+        intercept: InterceptPolicy::All,
+        pii_mode: PiiMode::Block,
+        redaction: None,
+    };
+    let proxy_port = start_proxy(state);
+    let connect = format!("CONNECT {host}:{port} HTTP/1.1\r\nHost: {host}:{port}\r\n\r\n");
+
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let head = runtime.block_on(async move {
+        let mut tcp = TcpStream::connect(("127.0.0.1", proxy_port)).await.unwrap();
+        tcp.write_all(connect.as_bytes()).await.unwrap();
+        read_head(&mut tcp).await
+    });
+    (head, audit)
+}
+
+/// A policy declaring an inline-inspected `postgres` endpoint alongside an
+/// ordinary `tcp` one, both on loopback.
+fn endpoint_protocol_policy(postgres: u16, plain: u16) -> String {
+    format!(
+        "\
+egress:
+  default: allow
+endpoints:
+  postgres-prod: {{ host: localhost, port: {postgres}, protocol: postgres }}
+  cache-prod: {{ host: localhost, port: {plain}, protocol: tcp }}
+"
+    )
+}
+
+/// A CONNECT tunnel would carry PostgreSQL frames past every `sql.*` rule, so
+/// the endpoint that exists to have them inspected must not be tunnellable.
+#[test]
+fn connect_to_a_postgres_endpoint_is_refused_and_audited() {
+    let postgres = start_hanging_upstream();
+    let plain = start_hanging_upstream();
+    let (response, audit) = connect_response(
+        &endpoint_protocol_policy(postgres, plain),
+        "localhost",
+        postgres,
+    );
+
+    assert!(
+        response.starts_with("HTTP/1.1 403"),
+        "an inline-inspected endpoint must not be tunnelled: {response:?}"
+    );
+    assert!(
+        response
+            .to_ascii_lowercase()
+            .contains("x-honmoon-reason: uninspectable-connect"),
+        "the refusal is labelled: {response:?}"
+    );
+    assert!(
+        audit.recent(50).iter().any(|event| {
+            event.decision == Decision::Denied
+                && event.facts.endpoint.as_deref() == Some("postgres-prod")
+        }),
+        "the refusal must not be silent"
+    );
+}
+
+#[test]
+fn connect_to_an_ordinary_endpoint_still_succeeds() {
+    let postgres = start_hanging_upstream();
+    let plain = start_hanging_upstream();
+    let (response, _) = connect_response(
+        &endpoint_protocol_policy(postgres, plain),
+        "localhost",
+        plain,
+    );
+
+    assert!(
+        response.starts_with("HTTP/1.1 200"),
+        "a `tcp` endpoint declares no inline inspection, so it tunnels: {response:?}"
+    );
+}
+
 /// A policy that names the loopback upstream `k8s-prod` and denies secret
 /// deletion there. `host`/`port` are what the client actually dials, which is
 /// what `Policy::endpoint_for` matches on.
