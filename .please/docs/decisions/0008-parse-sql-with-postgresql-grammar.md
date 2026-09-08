@@ -75,9 +75,10 @@ dangerous direction, because an allow rule scoped to `sql.table == 'scratch'` wo
 dropping `users` alongside it. The verb is still reported, so verb-only rules are unaffected;
 only table-scoped rules stop matching, which leaves the statement to a table-blind decision. The
 same rule covers the other ways one statement reaches past the relation it names: `CASCADE` on a
-`TRUNCATE` or `DROP`, two data-modifying CTEs with the same verb on different tables (both
-execute, verified — neither needs to be referenced), and a `SELECT` whose read set is wider than
-one relation.
+`TRUNCATE` or `DROP`, two data-modifying CTEs with the same verb (both execute, verified —
+neither needs to be referenced), and a `SELECT` whose read set is wider than one relation. In each
+case mentions are counted rather than names compared: whether `x.t` and `t` are the same relation
+is a search-path question, and answering it is the catalog assumption this decision stops making.
 
 **`sql.table` names a table, and nothing else.** `DROP SCHEMA scratch CASCADE` removes every object
 in the schema; `DROP INDEX scratch` and `DROP DATABASE scratch` are different objects again. All of
@@ -88,9 +89,10 @@ parsed path refuses to name would be a route around the guard. A CTE alias is no
 `WITH approved AS (SELECT * FROM secrets) SELECT * FROM approved` reads `secrets`, and reporting
 `approved` would let an allow rule for that table authorize the read. A `SELECT` takes its table
 from the whole statement's read set, CTE bodies included and CTE names excluded, so that query
-reports `secrets` and a CTE over no relation at all reports nothing. An alias is excluded only where it is in
-scope — a non-recursive CTE's own body still sees the real table of that name — so
-`WITH t AS (SELECT * FROM t) SELECT * FROM t, secrets` reads two relations and names none.
+reports `secrets` and a CTE over no relation at all reports nothing. An alias is excluded only where
+it is in scope — a non-recursive CTE's own body still sees the real table of that name, and a
+`WITH` nested in a subquery scopes its aliases to that subquery — so `WITH t AS (SELECT * FROM t)
+SELECT * FROM t, secrets` reads two relations and names none.
 
 **Both prior scanners are kept as the fallback for input the parser rejects**, as
 `parse_sql_heuristic` and `scan_for_statement_separator`. This is the load-bearing part of the
