@@ -93,6 +93,15 @@ function parseVerdict(body: string): Answer {
   if (unknown.length > 0) {
     return { ok: false, cause: `engine output is not a hook verdict (unexpected key "${unknown[0]}")` }
   }
+  // The nested shapes too: a verdict either omits `hookSpecificOutput` or
+  // carries an object, and `updatedToolOutput`, when present, is a value.
+  const output = (parsed as Json).hookSpecificOutput
+  if (output !== undefined && (!output || typeof output !== 'object' || Array.isArray(output))) {
+    return { ok: false, cause: 'engine output is not a hook verdict (hookSpecificOutput is not an object)' }
+  }
+  if (output && (output as Json).updatedToolOutput === null) {
+    return { ok: false, cause: 'engine output is not a hook verdict (updatedToolOutput is null)' }
+  }
   return { ok: true, verdict: parsed as Json }
 }
 
@@ -398,6 +407,10 @@ async function redactResult(engine: Engine, e: ToolEvent, r: ToolResult, session
   if (updated === undefined) {
     return r
   }
+  // A record comes back a record; anything else is not the engine talking.
+  if (!updated || typeof updated !== 'object') {
+    return config.failClosed ? { deny: unavailable('engine returned an unexpected shape') } : r
+  }
   return {
     result: updated as typeof r.result,
     context: [...(r.context ?? []), redactionNote(updated)],
@@ -495,8 +508,14 @@ export const promptHook: Hook<'prompt.submit'> = async ($, e, next) => {
       return { drop: typeof reason === 'string' && reason ? reason : 'honmoon: prompt blocked' }
     }
     const updated = updatedOutput(answer.verdict)
-    if (typeof updated !== 'string') {
+    if (updated === undefined) {
       return next(e)
+    }
+    // A string comes back a string; anything else is not the engine talking.
+    if (typeof updated !== 'string') {
+      return config.failClosed
+        ? { drop: 'honmoon: redaction engine unavailable (engine returned an unexpected shape); prompt not sent' }
+        : next(e)
     }
     const r = await next({ ...e, text: updated })
     if (r.drop !== undefined) {

@@ -145,6 +145,14 @@ describe('tool.call', () => {
     expect(r.deny).toBe('honmoon: redaction engine unavailable (engine output is not JSON); tool output withheld')
   })
 
+  test('denies the output when a verdict carries a null or non-record updatedToolOutput', async () => {
+    applyOptions({})
+    const { $: nulled } = engine(p => (p.hook_event_name === 'PostToolUse' ? { stdout: '{"hookSpecificOutput":{"updatedToolOutput":null}}' } : {}))
+    expect((await runTool(nulled, readEvent, async () => readResult)).deny).toBe('honmoon: redaction engine unavailable (engine output is not a hook verdict (updatedToolOutput is null)); tool output withheld')
+    const { $: stringed } = engine(p => (p.hook_event_name === 'PostToolUse' ? { stdout: redacted('not a record') } : {}))
+    expect((await runTool(stringed, readEvent, async () => readResult)).deny).toBe('honmoon: redaction engine unavailable (engine returned an unexpected shape); tool output withheld')
+  })
+
   test('denies the output when a 200 JSON body is not a hook verdict', async () => {
     applyOptions({ transport: 'http', hookUrl: 'http://127.0.0.1:9/api/hooks/claude-code' })
     const { $ } = engine(() => ({}), () => ({ ok: true, status: 200, headers: {}, text: '{"error":"upstream unavailable"}' }))
@@ -310,6 +318,18 @@ describe('prompt.submit', () => {
     expect(seen).toEqual(['my key is <<hs:abc123>>'])
     expect(r.text).toBe('my key is <<hs:abc123>>')
     expect(r.context).toEqual(['honmoon: 1 value(s) redacted with stable placeholders; treat <<hs:…>> tokens as opaque'])
+  })
+
+  test('drops the prompt when the verdict carries a non-string updatedToolOutput', async () => {
+    applyOptions({})
+    const { $ } = engine(() => ({ stdout: redacted({ text: 'not a string' }) }))
+    let forwarded = false
+    const r = await runPrompt($, { text: 'my key is sk-live-1', wait: false, origin: 'user' }, async () => {
+      forwarded = true
+      return { text: 'x' }
+    })
+    expect(r).toEqual({ drop: 'honmoon: redaction engine unavailable (engine returned an unexpected shape); prompt not sent' })
+    expect(forwarded).toBe(false)
   })
 
   test('drops the prompt when the engine blocks it with no redacted text', async () => {
