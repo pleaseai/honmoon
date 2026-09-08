@@ -80,6 +80,15 @@ const HTTP_PORT: u16 = 80;
 /// matching an authorized CONNECT. Anything else claiming `https://` (an
 /// absolute-form request without CONNECT, an h2 `:authority` mismatch) is not
 /// recognized and gets host-gated like a cleartext request.
+///
+/// The host half of that key is load-bearing, not redundant with the client
+/// address: hudsucker rewrites the authority for HTTP/1.0 and HTTP/1.1 only
+/// (`serve_stream`), and forwards every request by re-issuing it through its own
+/// client at the request's URI rather than piping bytes down the CONNECT tunnel
+/// (`proxy`). So an h2 `:authority` that differs from the CONNECT target is
+/// where the request actually goes, and dropping the host filter to "trust the
+/// recorded tunnel target" would evaluate egress against a host the bytes never
+/// reach while delivering them to one that was never gated.
 #[derive(Default)]
 struct TunnelRegistry {
     tunnels: Mutex<HashMap<SocketAddr, (String, u16)>>,
