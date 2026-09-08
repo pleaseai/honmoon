@@ -465,9 +465,9 @@ function sameKeys(replacement: object, original: unknown): boolean {
   if (!original || typeof original !== 'object') {
     return false
   }
-  const sent = Object.keys(original).sort()
-  const got = Object.keys(replacement).sort()
-  return sent.length === got.length && sent.every((key, i) => key === got[i])
+  const sent = new Set(Object.keys(original))
+  const got = Object.keys(replacement)
+  return sent.size === got.length && got.every(key => sent.has(key))
 }
 
 /** An engine bound to this hook's `$`, with a fresh budget. */
@@ -527,6 +527,36 @@ export const toolHook: MatchedHook<'tool.call', typeof TOOL_MATCHER> = async ($,
  * severity PII — an email address, a phone number — is therefore rewritten in
  * prompts here where the command hook let it through untouched.
  */
+/** What the engine's answer means for a prompt: pass, drop, or rewrite. */
+type PromptVerdict = { kind: 'pass' } | { kind: 'drop', reason: string } | { kind: 'rewrite', text: string }
+
+function promptVerdict(answer: Answer): PromptVerdict {
+  const unavailable = (cause: string): PromptVerdict =>
+    config.failClosed ? { kind: 'drop', reason: `honmoon: redaction engine unavailable (${cause}); prompt not sent` } : { kind: 'pass' }
+  if (!answer.ok) {
+    return unavailable(answer.cause)
+  }
+  const wrong = misrouted(answer.verdict, 'PostToolUse', NOT_PROMPT)
+  if (wrong !== undefined) {
+    return unavailable(wrong)
+  }
+  // A block decision wins over any rewritten text: a verdict that carried both
+  // must never be turned into a forwarded prompt.
+  if (answer.verdict.decision === 'block') {
+    const reason = answer.verdict.reason
+    return { kind: 'drop', reason: typeof reason === 'string' && reason ? reason : 'honmoon: prompt blocked' }
+  }
+  const updated = updatedOutput(answer.verdict)
+  if (updated === undefined) {
+    return { kind: 'pass' }
+  }
+  // A string comes back a string; anything else is not the engine talking.
+  if (typeof updated !== 'string') {
+    return unavailable('engine returned an unexpected shape')
+  }
+  return { kind: 'rewrite', text: updated }
+}
+
 export const promptHook: Hook<'prompt.submit'> = async ($, e, next) => {
   const engine = engineAsk(
     config,
@@ -541,46 +571,24 @@ export const promptHook: Hook<'prompt.submit'> = async ($, e, next) => {
         ? { drop: `honmoon: redaction engine unavailable (${facts.cause}); prompt not sent` }
         : next(e)
     }
-    const answer = await engine.ask({
+    const verdict = promptVerdict(await engine.ask({
       hook_event_name: 'PostToolUse',
       tool_name: 'Read',
       tool_input: {},
       tool_response: e.text,
       session_id: facts.value.session_id,
-    })
-    if (!answer.ok) {
-      if (!config.failClosed) {
-        return next(e)
-      }
-      return { drop: `honmoon: redaction engine unavailable (${answer.cause}); prompt not sent` }
+    }))
+    if (verdict.kind === 'drop') {
+      return { drop: verdict.reason }
     }
-    const wrong = misrouted(answer.verdict, 'PostToolUse', NOT_PROMPT)
-    if (wrong !== undefined) {
-      return config.failClosed
-        ? { drop: `honmoon: redaction engine unavailable (${wrong}); prompt not sent` }
-        : next(e)
-    }
-    // A block decision wins over any rewritten text: a verdict that carried both
-    // must never be turned into a forwarded prompt.
-    if (answer.verdict.decision === 'block') {
-      const reason = answer.verdict.reason
-      return { drop: typeof reason === 'string' && reason ? reason : 'honmoon: prompt blocked' }
-    }
-    const updated = updatedOutput(answer.verdict)
-    if (updated === undefined) {
+    if (verdict.kind === 'pass') {
       return next(e)
     }
-    // A string comes back a string; anything else is not the engine talking.
-    if (typeof updated !== 'string') {
-      return config.failClosed
-        ? { drop: 'honmoon: redaction engine unavailable (engine returned an unexpected shape); prompt not sent' }
-        : next(e)
-    }
-    const r = await next({ ...e, text: updated })
+    const r = await next({ ...e, text: verdict.text })
     if (r.drop !== undefined) {
       return r
     }
-    return { ...r, context: [...(r.context ?? []), redactionNote(updated)] }
+    return { ...r, context: [...(r.context ?? []), redactionNote(verdict.text)] }
   }
   finally {
     engine.close()
