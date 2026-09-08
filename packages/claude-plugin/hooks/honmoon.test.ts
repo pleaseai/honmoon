@@ -196,6 +196,15 @@ describe('tool.call', () => {
     expect(ran).toBe(false)
   })
 
+  test('an empty body is a no-op from the binary but not from the http endpoint', async () => {
+    applyOptions({})
+    const { $: cli } = engine(() => ({ stdout: '' }))
+    expect(await runTool(cli, readEvent, async () => readResult)).toBe(readResult)
+    applyOptions({ transport: 'http', hookUrl: 'http://127.0.0.1:9/api/hooks/claude-code' })
+    const { $: http } = engine(() => ({}), () => ({ ok: true, status: 200, headers: {}, text: '' }))
+    expect((await runTool(http, readEvent, async () => readResult)).deny).toBe('honmoon: redaction engine unavailable (engine output is empty); tool output withheld')
+  })
+
   test('denies the output when a 200 JSON body is not a hook verdict', async () => {
     applyOptions({ transport: 'http', hookUrl: 'http://127.0.0.1:9/api/hooks/claude-code' })
     const { $ } = engine(() => ({}), () => ({ ok: true, status: 200, headers: {}, text: '{"error":"upstream unavailable"}' }))
@@ -361,6 +370,18 @@ describe('prompt.submit', () => {
     expect(seen).toEqual(['my key is <<hs:abc123>>'])
     expect(r.text).toBe('my key is <<hs:abc123>>')
     expect(r.context).toEqual(['honmoon: 1 value(s) redacted with stable placeholders; treat <<hs:…>> tokens as opaque'])
+  })
+
+  test('drops the prompt when the verdict carries a decision other than block', async () => {
+    applyOptions({})
+    const { $ } = engine(() => ({ stdout: '{"decision":"allow"}' }))
+    let forwarded = false
+    const r = await runPrompt($, { text: 'my key is sk-live-1', wait: false, origin: 'user' }, async () => {
+      forwarded = true
+      return { text: 'x' }
+    })
+    expect(r).toEqual({ drop: 'honmoon: redaction engine unavailable (engine returned an unexpected shape (decision "allow")); prompt not sent' })
+    expect(forwarded).toBe(false)
   })
 
   test('drops the prompt when the verdict carries a non-string updatedToolOutput', async () => {

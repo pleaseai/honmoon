@@ -71,10 +71,14 @@ export function configure(options: PluginOptions = {}): Config {
 /** The keys `honmoon hook` and the mgmt endpoint emit (Claude Code hook JSON). */
 const VERDICT_KEYS = new Set(['hookSpecificOutput', 'decision', 'reason'])
 
-function parseVerdict(body: string): Answer {
+function parseVerdict(body: string, transport: 'process' | 'http'): Answer {
   const text = body.trim()
   if (!text) {
-    return { ok: true, verdict: {} }
+    // `honmoon hook` prints nothing for a no-op; the management endpoint
+    // always serializes `{}`, so an empty HTTP body is not the engine talking.
+    return transport === 'process'
+      ? { ok: true, verdict: {} }
+      : { ok: false, cause: 'engine output is empty' }
   }
   let parsed: unknown
   try {
@@ -168,13 +172,13 @@ async function transportCall(config: Config, run: Runner, fetch: Fetcher, payloa
     if (!response.ok) {
       return { ok: false, cause: `HTTP ${response.status}` }
     }
-    return parseVerdict(response.text)
+    return parseVerdict(response.text, 'http')
   }
   const result = await run([config.bin, 'hook'], { stdin: body, timeoutMs: HOOK_BUDGET_MS })
   if (result.exitCode !== 0) {
     return { ok: false, cause: `${config.bin} hook exited ${result.exitCode}` }
   }
-  return parseVerdict(result.stdout)
+  return parseVerdict(result.stdout, 'process')
 }
 
 /**
@@ -565,6 +569,10 @@ function promptVerdict(answer: Answer): PromptVerdict {
   if (answer.verdict.decision === 'block') {
     const reason = answer.verdict.reason
     return { kind: 'drop', reason: typeof reason === 'string' && reason ? reason : 'honmoon: prompt blocked' }
+  }
+  // `block` is the only decision the engine emits; any other is not it talking.
+  if (answer.verdict.decision !== undefined) {
+    return unavailable(`engine returned an unexpected shape (decision ${JSON.stringify(answer.verdict.decision)})`)
   }
   const updated = updatedOutput(answer.verdict)
   if (updated === undefined) {
