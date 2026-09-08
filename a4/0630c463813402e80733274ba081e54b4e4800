@@ -1,0 +1,21 @@
+.claude/agent-memory/review-review-ocr-reviewer/MEMORY.md
+  s_16201d1084e23d::t_f709818dc3be9f 1
+.claude/agent-memory/review-review-ocr-reviewer/ocr-scope-honmoon.md
+  s_16201d1084e23d::t_0ea00000a3371d 1-25
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "a40630c463813402e80733274ba081e54b4e4800",
+  "prompts": {},
+  "sessions": {
+    "s_16201d1084e23d": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "485cab2a-19e0-45a0-af23-bd7911a4fb27",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
