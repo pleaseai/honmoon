@@ -25,12 +25,15 @@
 //! [ADR-0005]: ../../../.please/docs/decisions/0005-empty-namespace-and-bridged-proxy-sockets.md
 
 use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr};
+use std::sync::Arc;
+use std::time::Duration;
 
 use honmoon_core::{
     AuditDraft, Decision, EndpointProtocol, Facts, FactsSummary, Verdict, decide_explained,
 };
 use tokio::io::{AsyncReadExt, AsyncWriteExt, copy_bidirectional};
 use tokio::net::{TcpListener, TcpStream};
+use tokio::sync::Semaphore;
 
 use crate::approval::{HoldOutcome, hold};
 use crate::gateway::GatewayState;
@@ -63,6 +66,19 @@ const REPLY_ADDRESS_NOT_SUPPORTED: u8 = 0x08;
 /// wait on bytes that never come.
 const MAX_METHODS: usize = 255;
 
+/// How long a client has to finish the handshake (greeting + CONNECT request).
+/// The listener takes no credentials, so without a deadline a peer that opens a
+/// socket and then says nothing pins a task and a file descriptor forever. Only
+/// the handshake is bounded — an established tunnel or a PostgreSQL session is
+/// long-lived by design and is never timed out.
+const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Ceiling on SOCKS5 connections in flight at once, each holding a permit for
+/// its whole life. A connection over the cap is **dropped**, not queued: queuing
+/// on an unauthenticated listener only moves the exhaustion from file
+/// descriptors to memory, and a refused client is free to retry.
+const MAX_CONCURRENT_CONNECTIONS: usize = 512;
+
 /// The destination a client asked for, as it declared it: a domain stays a
 /// domain (canonicalized like a CONNECT authority), an IP literal is formatted
 /// back to text. Policy matches on this, never on a resolved address.
@@ -84,6 +100,7 @@ pub async fn serve_socks(state: GatewayState, std_listener: std::net::TcpListene
     let addr = listener.local_addr().expect("listener addr");
     tracing::info!(%addr, "SOCKS5 listener listening");
 
+    let permits = Arc::new(Semaphore::new(MAX_CONCURRENT_CONNECTIONS));
     loop {
         let (client, peer) = match listener.accept().await {
             Ok(accepted) => accepted,
@@ -92,8 +109,15 @@ pub async fn serve_socks(state: GatewayState, std_listener: std::net::TcpListene
                 continue;
             }
         };
+        // At the cap, dropping `client` here closes it immediately — the accept
+        // loop keeps running rather than piling connections up behind itself.
+        let Ok(permit) = Arc::clone(&permits).try_acquire_owned() else {
+            tracing::debug!(%peer, "SOCKS5 connection cap reached; dropping connection");
+            continue;
+        };
         let state = state.clone();
         tokio::spawn(async move {
+            let _permit = permit;
             if let Err(e) = handle_connection(state, client).await {
                 tracing::debug!(%peer, error = %e, "SOCKS5 connection ended");
             }
@@ -104,13 +128,23 @@ pub async fn serve_socks(state: GatewayState, std_listener: std::net::TcpListene
 /// Greet, read the CONNECT request, then dispatch to a protocol runtime or a
 /// gated raw tunnel.
 async fn handle_connection(state: GatewayState, mut client: TcpStream) -> std::io::Result<()> {
-    if !negotiate(&mut client).await? {
+    // Only the handshake is deadlined; what it dispatches to is not.
+    let handshake = tokio::time::timeout(HANDSHAKE_TIMEOUT, async {
+        if !negotiate(&mut client).await? {
+            return Ok(None);
+        }
+        read_request(&mut client).await.map(Some)
+    })
+    .await;
+    let Ok(handshake) = handshake else {
+        tracing::debug!("SOCKS5 handshake timed out; dropping connection");
         return Ok(());
-    }
+    };
 
-    let target = match read_request(&mut client).await? {
-        Ok(target) => target,
-        Err(code) => {
+    let target = match handshake? {
+        None => return Ok(()),
+        Some(Ok(target)) => target,
+        Some(Err(code)) => {
             reply(&mut client, code, None).await?;
             return Ok(());
         }
@@ -190,6 +224,11 @@ async fn read_request(client: &mut TcpStream) -> std::io::Result<Result<Target, 
 /// refuses it. Pure over the request bytes so it can be unit-tested.
 pub(crate) fn parse_request(request: &[u8]) -> Result<Target, u8> {
     if request.len() < 4 || request[0] != VERSION {
+        return Err(REPLY_GENERAL_FAILURE);
+    }
+    // RFC 1928 §4: RSV is reserved and must be zero. A client that sets it is
+    // not speaking the protocol honmoon parses.
+    if request[2] != 0x00 {
         return Err(REPLY_GENERAL_FAILURE);
     }
     if request[1] != CMD_CONNECT {
@@ -292,17 +331,17 @@ async fn connection_gate(state: &GatewayState, target: &Target, endpoint: Option
 
     match outcome.verdict {
         Verdict::Allow => {
-            // Only a named rule is worth an audit entry; auditing every allowed
-            // connection would flood the bounded ring.
-            if outcome.rule.is_some() {
-                state.audit.record(AuditDraft {
-                    decision: Decision::Allowed,
-                    verdict: Verdict::Allow,
-                    rule: outcome.rule,
-                    facts: summary,
-                    approval_id: None,
-                });
-            }
+            // One entry per accepted connection, matching the CONNECT gate
+            // (`host_gate(.., audit_allow = true)` in [`crate::mitm`]) so both
+            // paths log the same thing. It is per connection, not per tunnelled
+            // byte, so the bounded ring is not flooded.
+            state.audit.record(AuditDraft {
+                decision: Decision::Allowed,
+                verdict: Verdict::Allow,
+                rule: outcome.rule,
+                facts: summary,
+                approval_id: None,
+            });
             true
         }
         Verdict::Deny => {
@@ -435,6 +474,17 @@ mod tests {
         let mut unknown = request(ATYP_IPV4, &[127, 0, 0, 1], 5432);
         unknown[3] = 0x09;
         assert_eq!(parse_request(&unknown), Err(REPLY_ADDRESS_NOT_SUPPORTED));
+    }
+
+    #[test]
+    fn refuses_a_non_zero_reserved_byte() {
+        let mut reserved = request(ATYP_IPV4, &[127, 0, 0, 1], 5432);
+        reserved[2] = 0x01;
+        assert_eq!(
+            parse_request(&reserved),
+            Err(REPLY_GENERAL_FAILURE),
+            "RFC 1928 reserves RSV as zero"
+        );
     }
 
     #[test]
