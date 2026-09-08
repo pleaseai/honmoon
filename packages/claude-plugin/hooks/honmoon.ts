@@ -337,25 +337,37 @@ function scannable(e: ToolEvent, r: ToolResult): boolean {
  * reaches the model as an error result, so a redacted error goes out as one.
  */
 async function redactError(engine: Engine, r: ToolResult, session_id: string): Promise<ToolResult> {
-  const text = typeof r.result === 'string' ? r.result : r.text
-  if (typeof text !== 'string') {
+  // The model reads `text`; the transcript stores `result`. Both are scanned
+  // in one call: the engine walks any JSON value it is given.
+  const errored: Record<string, string> = {}
+  if (typeof r.text === 'string') {
+    errored.text = r.text
+  }
+  if (typeof r.result === 'string') {
+    errored.result = r.result
+  }
+  if (Object.keys(errored).length === 0) {
     return r
   }
   const post = await engine.ask({
     hook_event_name: 'PostToolUse',
     tool_name: 'Read',
     tool_input: {},
-    tool_response: text,
+    tool_response: errored,
     session_id,
   })
   if (!post.ok) {
     return config.failClosed ? { deny: unavailable(post.cause) } : r
   }
-  const updated = updatedOutput(post.verdict)
-  if (typeof updated !== 'string') {
+  const updated = updatedOutput(post.verdict) as Partial<Record<'text' | 'result', unknown>> | undefined
+  if (updated === undefined) {
     return r
   }
-  return { deny: `${updated}\n\n${redactionNote(updated)}` }
+  const text = [updated.text, updated.result].find(v => typeof v === 'string')
+  if (typeof text !== 'string') {
+    return config.failClosed ? { deny: unavailable('engine returned an unexpected shape') } : r
+  }
+  return { deny: `${text}\n\n${redactionNote(updated)}` }
 }
 
 /** Redact a settled call's record; `r` itself when nothing was redacted. */

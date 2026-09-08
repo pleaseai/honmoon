@@ -93,15 +93,16 @@ describe('tool.call', () => {
     expect(await runTool($, readEvent, async () => denied)).toBe(denied)
     expect(calls).toHaveLength(1)
     expect(await runTool($, { tool: 'Bash', command: 'ls' }, async () => errored)).toBe(errored)
-    expect(calls[1]?.payload).toMatchObject({ hook_event_name: 'PostToolUse', tool_name: 'Read', tool_response: 'boom' })
+    expect(calls[1]?.payload).toMatchObject({ hook_event_name: 'PostToolUse', tool_name: 'Read', tool_response: { text: 'boom', result: 'boom' } })
   })
 
   test('an errored result that carries a secret becomes an error the model reads redacted', async () => {
     applyOptions({})
-    const { $ } = engine(p => (p.hook_event_name === 'PostToolUse' ? { stdout: redacted('curl: auth failed for key <<hs:k1>>') } : {}))
-    const errored = { isError: true as const, ref: 3, result: 'curl: auth failed for key sk-live-1', text: 'curl: auth failed for key sk-live-1' }
+    const { $, calls } = engine(p => (p.hook_event_name === 'PostToolUse' ? { stdout: redacted({ text: 'Exit 3: auth failed for key <<hs:k1>>', result: 'auth failed for key <<hs:k1>>' }) } : {}))
+    const errored = { isError: true as const, ref: 3, result: 'auth failed for key sk-live-1', text: 'Exit 3: auth failed for key sk-live-1' }
     const r = await runTool($, { tool: 'Bash', command: 'curl' }, async () => errored)
-    expect(r.deny).toStartWith('curl: auth failed for key <<hs:k1>>')
+    expect(calls[0]?.payload.tool_response).toEqual({ text: errored.text, result: errored.result })
+    expect(r.deny).toStartWith('Exit 3: auth failed for key <<hs:k1>>')
     expect(JSON.stringify(r)).not.toContain('sk-live-1')
   })
 

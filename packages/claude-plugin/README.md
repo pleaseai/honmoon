@@ -194,10 +194,13 @@ settings — project settings are not read):
 | `hookToken` | — | Optional bearer token for `hookUrl` |
 | `failMode` | `closed` | `closed` denies tool output / drops the prompt when the engine is unreachable; `open` passes through |
 
-Each hook invocation runs under one 8 s budget, inside the host's 10 s
-per-hook limit. The budget covers the session lookups and every engine call
-the hook makes (a Read makes two), so whatever is still pending when it runs
-out fails closed instead of running past the host and being skipped. Every
+Each hook phase runs under its own 8 s budget, inside the host's 10 s
+per-hook limit. The host budgets only the hook's own work, not the time the
+tool spends inside `next()`, and the module mirrors that: the session lookups
+and the `PreToolUse` check share one budget before the tool runs, and the
+`PostToolUse` redaction gets a fresh one after it, so a slow tool never denies
+its own redaction. Whatever is still pending when a budget runs out fails
+closed instead of running past the host and being skipped. Every
 failure path (spawn error, timeout, non-zero exit, unparseable stdout, HTTP
 error, a rejected session lookup, a `transport` of `http` without a
 `hookUrl`) is caught: the hook itself never throws.
