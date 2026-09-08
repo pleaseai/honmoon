@@ -1137,12 +1137,21 @@ fn request_host(req: &Request<Body>) -> String {
         .unwrap_or_default()
 }
 
-/// The port a non-CONNECT request targets: the URI authority's port when
-/// present, else the `Host` header's, else the scheme default.
+/// The port a non-CONNECT request targets, resolved with the same precedence as
+/// [`request_host`]: the URI authority when it carries one, else the `Host`
+/// header (origin-form requests only), else the scheme default.
+///
+/// The `Host` header is client-controlled, so it is only consulted when the URI
+/// has no authority of its own. Otherwise a client could pair a real URI host
+/// with a fabricated `Host: other:5432` port and have the request resolve to an
+/// `endpoints` entry it never dialed.
 fn request_port(req: &Request<Body>) -> u16 {
     req.uri()
         .port_u16()
         .or_else(|| {
+            if req.uri().host().is_some() {
+                return None;
+            }
             req.headers()
                 .get(header::HOST)
                 .and_then(|value| value.to_str().ok())
@@ -1209,6 +1218,16 @@ mod tests {
             .body(Body::empty())
             .expect("build request");
         assert_eq!(request_port(&cleartext_no_port), HTTP_PORT);
+
+        // A client-supplied `Host` port must not override a URI that already
+        // carries its own authority — pairing a real host with a fabricated
+        // port would resolve an `endpoints` entry the client never dialed.
+        let spoofed_host_header = Request::builder()
+            .uri("http://k8s.internal/api/v1/pods")
+            .header(header::HOST, "k8s.internal:6443")
+            .body(Body::empty())
+            .expect("build request");
+        assert_eq!(request_port(&spoofed_host_header), HTTP_PORT);
     }
 
     #[tokio::test]
