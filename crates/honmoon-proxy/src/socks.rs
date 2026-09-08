@@ -73,6 +73,15 @@ const MAX_METHODS: usize = 255;
 /// long-lived by design and is never timed out.
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
 
+/// How long the upstream TCP connect may take before it is given up on. A
+/// destination that silently drops SYNs would otherwise hold the handler until
+/// the kernel gives up minutes later, and every handler holds one of the
+/// [`MAX_CONCURRENT_CONNECTIONS`] permits for its whole life — so that many
+/// requests to such a host take the listener out of service without sending a
+/// single byte of payload. Only the connect is bounded; the tunnel it opens is
+/// long-lived by design.
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+
 /// Ceiling on SOCKS5 connections in flight at once, each holding a permit for
 /// its whole life. A connection over the cap is **dropped**, not queued: queuing
 /// on an unauthenticated listener only moves the exhaustion from file
@@ -398,13 +407,26 @@ async fn tunnel(mut client: TcpStream, target: Target) -> std::io::Result<()> {
     Ok(())
 }
 
-/// Dial the destination. On failure the client is answered `0x05` and `None` is
-/// returned — the success reply is only ever sent over a live upstream socket.
+/// Dial the destination, giving up after [`CONNECT_TIMEOUT`]. On failure — or
+/// on that deadline — the client is answered `0x05` and `None` is returned; the
+/// success reply is only ever sent over a live upstream socket.
 async fn connect_upstream(
     client: &mut TcpStream,
     target: &Target,
 ) -> std::io::Result<Option<TcpStream>> {
-    match TcpStream::connect((target.host.as_str(), target.port)).await {
+    let connect = TcpStream::connect((target.host.as_str(), target.port));
+    let outcome = match tokio::time::timeout(CONNECT_TIMEOUT, connect).await {
+        Ok(outcome) => outcome,
+        // A host that drops SYNs never fails, it just never answers. Report it
+        // to the client the same way a refused connect is reported: either way
+        // honmoon has no upstream socket to hand over.
+        Err(elapsed) => {
+            tracing::info!(host = %target.host, port = target.port, error = %elapsed, "SOCKS5 upstream connect timed out");
+            reply(client, REPLY_CONNECTION_REFUSED, None).await?;
+            return Ok(None);
+        }
+    };
+    match outcome {
         Ok(upstream) => Ok(Some(upstream)),
         Err(e) => {
             tracing::info!(host = %target.host, port = target.port, error = %e, "SOCKS5 upstream connect failed");
