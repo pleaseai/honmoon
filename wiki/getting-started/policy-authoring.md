@@ -46,8 +46,8 @@ egress:
     - '*.internal.corp'
 
 endpoints:
-  k8s-prod: { host: k8s.internal, port: 6443, protocol: kubernetes }
-  postgres-prod: { host: db.internal, port: 5432, protocol: postgres }
+  k8s-prod: {host: k8s.internal, port: 6443, protocol: kubernetes}
+  postgres-prod: {host: db.internal, port: 5432, protocol: postgres}
 
 rules:
   - name: k8s-no-secret-delete
@@ -108,9 +108,9 @@ than to every host that happens to serve a similar path.
 
 ```yaml
 endpoints:
-  k8s-prod: { host: k8s.internal, port: 6443, protocol: kubernetes }
-  postgres-prod: { host: db.internal, port: 5432, protocol: postgres }
-  cache: { host: redis.internal, port: 6379 } # protocol defaults to tcp
+  k8s-prod: {host: k8s.internal, port: 6443, protocol: kubernetes}
+  postgres-prod: {host: db.internal, port: 5432, protocol: postgres}
+  cache: {host: redis.internal, port: 6379} # protocol defaults to tcp
 ```
 
 | Field | Type | Default | Meaning |
