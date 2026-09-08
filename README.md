@@ -184,6 +184,11 @@ SOCKS-aware launcher such as `proxychains4`, and use `sslmode=prefer`/`disable`,
 inspection needs plaintext between the client and honmoon. See
 [ADR-0007](.please/docs/decisions/0007-inline-postgresql-runtime-semantics.md).
 
+That raw tunnel is a **second egress path with no body inspection**: a client that dials an
+`https://` host through it gets the `domain` gate and nothing else — no TLS interception, no PII
+scan, no redaction, no `http.*` rule. Keep `egress.default: deny` so only allow-listed hosts can
+use it, or pass `--socks-addr off` to run the CONNECT proxy alone.
+
 ### Wire redaction fail modes
 
 `--redact-secrets` (with `--tls-intercept`) rewrites intercepted request bodies before the
