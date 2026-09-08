@@ -90,8 +90,18 @@ that fails to parse: it is refused rather than forwarded blind.
   on `Facts { domain }`, with no SQL inspection at all. Declaring the endpoint is what turns SQL
   rules on, and a rule naming an endpoint the policy never declares is inert (the engine already
   warns about that at load).
-- **A `postgres` endpoint is gated per statement, not per connection.** The egress lists do not
-  decide the connection itself; the rules decide each query. A policy that wants to keep clients
-  off a database entirely should not declare it as an endpoint.
+- **A `postgres` endpoint is gated twice: once at connect, then per statement.** The SOCKS5
+  handshake is gated exactly like a CONNECT (`Facts { domain, endpoint }` → `decide_explained`),
+  so `egress.default: deny` refuses the connection before the runtime ever sees it — declaring an
+  endpoint is not a way past the default. Only an admitted connection reaches the runtime, which
+  then decides each statement. Without this the two data paths would disagree about what the
+  egress default means: it would block a `kubernetes` endpoint over HTTPS while silently admitting
+  a `postgres` one, and a firewall must not have a protocol that ignores its own default.
+- **Statement rules do not fire at connect time, but rule *order* still matters.** A condition
+  over `sql.*` cannot match facts that carry no statement yet, and the engine treats an unknown
+  fact reference as no match (fail-closed), so under `egress.default: allow` the connection gate
+  changes nothing. Under `egress.default: deny` the endpoint needs an explicit connection-level
+  `allow` rule (`condition: "true"`), and because the first matching rule wins that rule must be
+  ordered **after** the statement denies — an `allow` placed first would answer every query.
 - Inspection costs one buffered copy per statement, bounded at 1 MiB. Bulk paths (`COPY`) stay
   zero-copy, which is where the bytes actually are.

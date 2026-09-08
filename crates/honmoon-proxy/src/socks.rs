@@ -7,14 +7,15 @@
 //! endpoint and its protocol runtime — no destination-IP index, no DNS
 //! interception, no virtual-IP allocation.
 //!
-//! Two dispatch outcomes per connection:
+//! Every connection is first gated exactly like a CONNECT — `Facts { domain,
+//! endpoint }` → [`decide_explained`], then allow / deny / hold for approval —
+//! so the egress lists and their default mean the same thing on every path, for
+//! every protocol. Only then is it dispatched:
 //!
 //! 1. The destination resolves to an endpoint declared `protocol: postgres` —
 //!    the connection is handed to [`crate::runtime::postgres`], which parses
-//!    every query frame and applies policy inline.
-//! 2. Anything else (no endpoint, or `tcp`/`kubernetes`) — a generic TCP tunnel
-//!    gated exactly like a CONNECT: `Facts { domain, endpoint }` →
-//!    [`decide_explained`], then allow / deny / hold for approval.
+//!    every query frame and applies policy again, per statement.
+//! 2. Anything else (no endpoint, or `tcp`/`kubernetes`) — a generic TCP tunnel.
 //!
 //! Only no-auth (`0x00`) and `CONNECT` are supported; the listener is meant to
 //! be bound to loopback for a local agent, so there is no client to
@@ -120,12 +121,19 @@ async fn handle_connection(state: GatewayState, mut client: TcpStream) -> std::i
         .policy
         .endpoint_for(&target.host, target.port)
         .map(|(name, endpoint)| (name.to_owned(), endpoint.protocol));
+    let name = endpoint.as_ref().map(|(name, _)| name.clone());
+
+    // Gate the connection before dispatching, so a protocol runtime never
+    // becomes a way around the egress default.
+    if !connection_gate(&state, &target, name).await {
+        return reply(&mut client, REPLY_NOT_ALLOWED, None).await;
+    }
 
     match endpoint {
         Some((name, EndpointProtocol::Postgres)) => {
             run_postgres_endpoint(&state, client, target, name).await
         }
-        other => tunnel(&state, client, target, other.map(|(name, _)| name)).await,
+        _ => tunnel(client, target).await,
     }
 }
 
@@ -258,38 +266,22 @@ fn reply_bytes(code: u8, bound: Option<SocketAddr>) -> Vec<u8> {
     out
 }
 
-/// Gate a connection to a `postgres` endpoint and hand it to the runtime.
+/// Apply connection-level policy to the destination the client asked for.
+/// Returns whether the connection may proceed; a refusal is the caller's `0x02`.
 ///
-/// The connection itself is not gated here: every statement it carries is
-/// decided individually by the runtime, which is the whole point of declaring
-/// the endpoint.
-async fn run_postgres_endpoint(
-    state: &GatewayState,
-    mut client: TcpStream,
-    target: Target,
-    endpoint: String,
-) -> std::io::Result<()> {
-    let upstream = match connect_upstream(&mut client, &target).await? {
-        Some(upstream) => upstream,
-        None => return Ok(()),
-    };
-    reply(&mut client, REPLY_SUCCESS, upstream.local_addr().ok()).await?;
-
-    let facts = Facts {
-        domain: Some(target.host.clone()),
-        endpoint: Some(endpoint),
-        ..Default::default()
-    };
-    postgres::run_postgres(state, client, upstream, facts).await
-}
-
-/// Gate a connection like a CONNECT and, if allowed, splice it raw.
-async fn tunnel(
-    state: &GatewayState,
-    mut client: TcpStream,
-    target: Target,
-    endpoint: Option<String>,
-) -> std::io::Result<()> {
+/// This is the SOCKS5 equivalent of [`crate::mitm`]'s CONNECT host gate, and it
+/// runs for **every** destination — a declared `postgres` endpoint included.
+/// A protocol runtime decides the statements a connection carries, not whether
+/// the connection is permitted at all: without this gate `egress.default: deny`
+/// would block a `kubernetes` endpoint over HTTPS while silently admitting a
+/// `postgres` one, and a firewall must not have a protocol that ignores its own
+/// default.
+///
+/// Statement rules do not fire here: a condition over `sql.*` cannot match facts
+/// that have no statement yet, and an unknown fact reference never matches (the
+/// engine fails closed on it). So a policy that only names `sql.*` conditions
+/// for an endpoint still falls through to the egress lists at connect time.
+async fn connection_gate(state: &GatewayState, target: &Target, endpoint: Option<String>) -> bool {
     let facts = Facts {
         domain: Some(target.host.clone()),
         endpoint,
@@ -298,7 +290,7 @@ async fn tunnel(
     let outcome = decide_explained(&state.policy, &facts);
     let summary = FactsSummary::from(&facts);
 
-    let allowed = match outcome.verdict {
+    match outcome.verdict {
         Verdict::Allow => {
             // Only a named rule is worth an audit entry; auditing every allowed
             // connection would flood the bounded ring.
@@ -325,18 +317,39 @@ async fn tunnel(
             false
         }
         Verdict::Pause => {
-            let approval = connect_summary(&target, outcome.rule.as_deref());
+            let approval = connect_summary(target, outcome.rule.as_deref());
             matches!(
                 hold(state, &target.host, summary, outcome.rule, approval).await,
                 HoldOutcome::Approved
             )
         }
-    };
-
-    if !allowed {
-        return reply(&mut client, REPLY_NOT_ALLOWED, None).await;
     }
+}
 
+/// Hand an already-gated connection to the PostgreSQL runtime, which decides
+/// every statement it carries.
+async fn run_postgres_endpoint(
+    state: &GatewayState,
+    mut client: TcpStream,
+    target: Target,
+    endpoint: String,
+) -> std::io::Result<()> {
+    let upstream = match connect_upstream(&mut client, &target).await? {
+        Some(upstream) => upstream,
+        None => return Ok(()),
+    };
+    reply(&mut client, REPLY_SUCCESS, upstream.local_addr().ok()).await?;
+
+    let facts = Facts {
+        domain: Some(target.host.clone()),
+        endpoint: Some(endpoint),
+        ..Default::default()
+    };
+    postgres::run_postgres(state, client, upstream, facts).await
+}
+
+/// Splice an already-gated connection to its destination, raw.
+async fn tunnel(mut client: TcpStream, target: Target) -> std::io::Result<()> {
     let mut upstream = match connect_upstream(&mut client, &target).await? {
         Some(upstream) => upstream,
         None => return Ok(()),

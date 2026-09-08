@@ -166,6 +166,38 @@ rules:
     )
 }
 
+/// A default-deny policy for the same endpoint. `allow_endpoint` appends an
+/// explicit connection-level `allow` rule **after** the DROP deny, so the
+/// statement rule still wins on a `DROP` (first match wins).
+fn deny_default_policy_yaml(upstream: u16, allow_endpoint: bool) -> String {
+    let allow_rule = if allow_endpoint {
+        r#"
+  - name: allow-postgres-prod
+    endpoint: postgres-prod
+    condition: "true"
+    verdict: allow
+"#
+    } else {
+        ""
+    };
+    format!(
+        r#"
+endpoints:
+  postgres-prod:
+    host: localhost
+    port: {upstream}
+    protocol: postgres
+egress:
+  default: deny
+rules:
+  - name: no-destructive-sql
+    endpoint: postgres-prod
+    condition: "sql.verb == 'DROP' || sql.verb == 'TRUNCATE'"
+    verdict: deny{allow_rule}
+"#
+    )
+}
+
 // --- SOCKS5 client ----------------------------------------------------------
 
 /// Greet, then send a `CONNECT` for `host:port` with the DOMAIN address type.
@@ -459,4 +491,34 @@ fn bind_command_is_rejected_with_0x07() {
 
     let (_s, code) = socks_request(proxy, 0x02, "localhost", pg);
     assert_eq!(code, 0x07, "BIND is not a supported command");
+}
+
+#[test]
+fn postgres_endpoint_is_gated_at_connection_time_by_the_egress_default() {
+    let (upstream, sql) = start_pg_upstream();
+
+    // Without a connection-level allow, the egress default refuses the
+    // connection outright — a declared endpoint is not a way past default-deny.
+    let (refusing, _) = start_socks_proxy(&deny_default_policy_yaml(upstream, false));
+    let (_s, code) = socks_connect(refusing, "localhost", upstream);
+    assert_eq!(
+        code, 0x02,
+        "default-deny must refuse the postgres endpoint too"
+    );
+
+    // With an explicit allow rule ordered after the DROP deny, the connection
+    // comes up and statement rules still decide each query.
+    let (proxy, _) = start_socks_proxy(&deny_default_policy_yaml(upstream, true));
+    let mut s = pg_connect(proxy, upstream);
+
+    s.write_all(&simple_query("SELECT 1")).unwrap();
+    assert_eq!(
+        sql.recv_timeout(Duration::from_secs(5)).unwrap(),
+        "SELECT 1"
+    );
+    assert_eq!(read_until_ready(&mut s)[0].0, b'C');
+
+    s.write_all(&simple_query("DROP TABLE users")).unwrap();
+    assert_refused(&read_until_ready(&mut s));
+    assert_upstream_silent(&sql);
 }
