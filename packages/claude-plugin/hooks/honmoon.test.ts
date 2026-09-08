@@ -145,6 +145,13 @@ describe('tool.call', () => {
     expect(r.deny).toBe('honmoon: redaction engine unavailable (engine output is not JSON); tool output withheld')
   })
 
+  test('denies the output when a 200 JSON body is not a hook verdict', async () => {
+    applyOptions({ transport: 'http', hookUrl: 'http://127.0.0.1:9/api/hooks/claude-code' })
+    const { $ } = engine(() => ({}), () => ({ ok: true, status: 200, headers: {}, text: '{"error":"upstream unavailable"}' }))
+    const r = await runTool($, readEvent, async () => readResult)
+    expect(r.deny).toBe('honmoon: redaction engine unavailable (engine output is not a hook verdict (unexpected key "error")); tool output withheld')
+  })
+
   test('denies the output when the http transport answers non-ok', async () => {
     applyOptions({ transport: 'http', hookUrl: 'http://127.0.0.1:7777/api/hooks/claude-code', hookToken: 't0ken' })
     const { $, fetches } = engine(() => ({}), () => ({ ok: false, status: 503, headers: {}, text: '' }))

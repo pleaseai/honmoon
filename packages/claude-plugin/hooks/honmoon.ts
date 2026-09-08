@@ -68,6 +68,9 @@ export function configure(options: PluginOptions = {}): Config {
 }
 
 /** An empty body is the engine's documented no-op; anything else must be JSON. */
+/** The keys `honmoon hook` and the mgmt endpoint emit (Claude Code hook JSON). */
+const VERDICT_KEYS = new Set(['hookSpecificOutput', 'decision', 'reason', 'continue', 'stopReason', 'suppressOutput', 'systemMessage'])
+
 function parseVerdict(body: string): Answer {
   const text = body.trim()
   if (!text) {
@@ -82,6 +85,13 @@ function parseVerdict(body: string): Answer {
   }
   if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
     return { ok: false, cause: 'engine output is not a JSON object' }
+  }
+  // Only the keys a hook verdict carries. A JSON body from something other
+  // than the engine (an `{ "error": … }` from a proxy or an unhealthy
+  // endpoint answering 200) must not read as "nothing to redact".
+  const unknown = Object.keys(parsed).filter(key => !VERDICT_KEYS.has(key))
+  if (unknown.length > 0) {
+    return { ok: false, cause: `engine output is not a hook verdict (unexpected key "${unknown[0]}")` }
   }
   return { ok: true, verdict: parsed as Json }
 }
