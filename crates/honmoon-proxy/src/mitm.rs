@@ -40,9 +40,10 @@ use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
 
 use honmoon_core::{
-    AuditDraft, DEFAULT_MIN_PII_SEVERITY, Decision, Facts, FactsSummary, HttpFacts, Mapping,
-    PiiFacts, PiiSpan, RedactionOutcome, SecretTokenizer, Verdict, decide_explained,
-    detect_secrets, detect_spans, pii::severity_for_label, redact_with_spans, summarize_spans,
+    AuditDraft, DEFAULT_MIN_PII_SEVERITY, Decision, EndpointProtocol, Facts, FactsSummary,
+    HttpFacts, Mapping, PiiFacts, PiiSpan, RedactionOutcome, SecretTokenizer, Verdict,
+    decide_explained, detect_secrets, detect_spans, pii::severity_for_label,
+    protocols::parse_k8s_request, redact_with_spans, summarize_spans,
 };
 use http_body_util::{BodyExt, Full};
 use hudsucker::hyper::{Method, Request, Response, StatusCode, header};
@@ -53,7 +54,9 @@ use crate::body::{
     Buffered, MAX_INSPECT_BODY, StrictDecode, buffer_up_to, decode_strict, detokenizing_body,
     prefixed_body, utf8_prefix,
 };
-use crate::gateway::{GatewayState, InterceptPolicy, PiiMode, SignedBodyMode, canonical_host};
+use crate::gateway::{
+    GatewayState, InterceptPolicy, PiiMode, SignedBodyMode, authority_port, canonical_host,
+};
 use crate::signed_body::{
     BODY_DIGEST_HEADERS, SignedBodyScheme, authentication_signs_headers, body_signature_scheme,
 };
@@ -65,6 +68,10 @@ const MAX_TRACKED_TUNNELS: usize = 65_536;
 /// Names why honmoon itself produced a response, so a client (or an agent
 /// reading the error) can tell it apart from an upstream failure.
 const HONMOON_REASON: header::HeaderName = header::HeaderName::from_static("x-honmoon-reason");
+/// Default port for a CONNECT authority or an `https://` URI without one.
+const HTTPS_PORT: u16 = 443;
+/// Default port for a cleartext forward-proxy request without one.
+const HTTP_PORT: u16 = 80;
 
 /// CONNECT-authorized tunnels, keyed by the client socket address.
 ///
@@ -75,12 +82,12 @@ const HONMOON_REASON: header::HeaderName = header::HeaderName::from_static("x-ho
 /// recognized and gets host-gated like a cleartext request.
 #[derive(Default)]
 struct TunnelRegistry {
-    tunnels: Mutex<HashMap<SocketAddr, String>>,
+    tunnels: Mutex<HashMap<SocketAddr, (String, u16)>>,
 }
 
 impl TunnelRegistry {
-    /// Record that `addr` holds an authorized CONNECT tunnel to `host`.
-    fn authorize(&self, addr: SocketAddr, host: String) {
+    /// Record that `addr` holds an authorized CONNECT tunnel to `host:port`.
+    fn authorize(&self, addr: SocketAddr, host: String, port: u16) {
         let mut tunnels = self.tunnels.lock().expect("tunnel registry poisoned");
         if tunnels.len() >= MAX_TRACKED_TUNNELS && !tunnels.contains_key(&addr) {
             // Fail safe: dropping entries only re-gates inner requests (their
@@ -88,16 +95,22 @@ impl TunnelRegistry {
             tracing::warn!("tunnel registry full; clearing (inner requests will be re-gated)");
             tunnels.clear();
         }
-        tunnels.insert(addr, host);
+        tunnels.insert(addr, (host, port));
     }
 
-    /// Does `addr` hold an authorized CONNECT tunnel to `host`?
-    fn is_authorized(&self, addr: &SocketAddr, host: &str) -> bool {
+    /// The port `addr` dialed if it holds an authorized CONNECT tunnel to
+    /// `host`, else `None` (the request still needs the host gate).
+    ///
+    /// An inner request carries no reliable port of its own — hudsucker rewrites
+    /// its authority and the `Host` header is client-controlled — so the port an
+    /// endpoint is matched on comes from the CONNECT that opened the tunnel.
+    fn authorized_port(&self, addr: &SocketAddr, host: &str) -> Option<u16> {
         self.tunnels
             .lock()
             .expect("tunnel registry poisoned")
             .get(addr)
-            .is_some_and(|h| h == host)
+            .filter(|(tunnel_host, _)| tunnel_host == host)
+            .map(|(_, port)| *port)
     }
 }
 
@@ -170,14 +183,23 @@ impl HonmoonHandler {
         }
     }
 
+    /// Resolve the policy endpoint declared for the `(host, port)` the client
+    /// dialed, returning its name and protocol.
+    fn resolve_endpoint(&self, host: &str, port: u16) -> Option<(String, EndpointProtocol)> {
+        let (name, endpoint) = self.state.policy.endpoint_for(host, port)?;
+        tracing::debug!(domain = %host, endpoint = %name, protocol = ?endpoint.protocol, "endpoint resolved");
+        Some((name.to_owned(), endpoint.protocol))
+    }
+
     /// Apply host-level policy (allow / deny / pause) to `host`.
     ///
     /// `audit_allow` records the `Allow` decision — set for the CONNECT gate so
     /// the connection is logged, but not for individual forwarded requests (which
     /// would flood the bounded audit ring).
-    async fn host_gate(&self, host: &str, audit_allow: bool) -> Gate {
+    async fn host_gate(&self, host: &str, port: u16, audit_allow: bool) -> Gate {
         let facts = Facts {
             domain: Some(host.to_owned()),
+            endpoint: self.resolve_endpoint(host, port).map(|(name, _)| name),
             http: Some(HttpFacts {
                 host: host.to_owned(),
                 ..Default::default()
@@ -482,10 +504,20 @@ impl HonmoonHandler {
 
     /// Scan a request body for PII. Detect mode audits findings and forwards;
     /// block mode enforces the resulting policy verdict inline.
-    async fn inspect_body(&self, req: Request<Body>) -> RequestOrResponse {
+    ///
+    /// `port` is the port the client actually dialed (the tunnel's CONNECT port
+    /// for an inner request), which is what an `endpoints` entry matches on.
+    async fn inspect_body(&self, req: Request<Body>, port: u16) -> RequestOrResponse {
         let method = req.method().clone();
         let host = request_host(&req);
         let path = req.uri().path().to_owned();
+        let endpoint = self.resolve_endpoint(&host, port);
+        // Only a `kubernetes` endpoint gets k8s facts: this is the one path
+        // where the method and path of a Kubernetes API call are in the clear.
+        let k8s = endpoint
+            .as_ref()
+            .filter(|(_, protocol)| *protocol == EndpointProtocol::Kubernetes)
+            .map(|_| parse_k8s_request(method.as_str(), &path));
 
         let content_length = req
             .headers()
@@ -583,12 +615,14 @@ impl HonmoonHandler {
         // gates below keep these forwards quiet.
         let facts = Facts {
             domain: Some(host.clone()),
+            endpoint: endpoint.map(|(name, _)| name),
             http: Some(HttpFacts {
                 method: method.as_str().to_owned(),
                 host: host.clone(),
                 path: path.clone(),
                 body_size,
             }),
+            k8s,
             pii: pii.clone(),
             ..Default::default()
         };
@@ -705,10 +739,12 @@ impl HonmoonHandler {
 impl HttpHandler for HonmoonHandler {
     async fn handle_request(&mut self, ctx: &HttpContext, req: Request<Body>) -> RequestOrResponse {
         if req.method() == Method::CONNECT {
-            let host = canonical_host(req.uri().authority().map(|a| a.as_str()).unwrap_or(""));
-            return match self.host_gate(&host, true).await {
+            let authority = req.uri().authority().map(|a| a.as_str()).unwrap_or("");
+            let host = canonical_host(authority);
+            let port = authority_port(authority).unwrap_or(HTTPS_PORT);
+            return match self.host_gate(&host, port, true).await {
                 Gate::Proceed => {
-                    self.tunnels.authorize(ctx.client_addr, host);
+                    self.tunnels.authorize(ctx.client_addr, host, port);
                     req.into()
                 }
                 Gate::Block(res) => *res,
@@ -722,13 +758,18 @@ impl HttpHandler for HonmoonHandler {
         // must be host-gated like a cleartext `http://` one, or the egress
         // allowlist could be bypassed.
         let host = request_host(&req);
-        if !self.tunnels.is_authorized(&ctx.client_addr, &host) {
-            if let Gate::Block(res) = self.host_gate(&host, false).await {
-                return *res;
+        let port = match self.tunnels.authorized_port(&ctx.client_addr, &host) {
+            Some(port) => port,
+            None => {
+                let port = request_port(&req);
+                if let Gate::Block(res) = self.host_gate(&host, port, false).await {
+                    return *res;
+                }
+                port
             }
-        }
+        };
 
-        self.inspect_body(req).await
+        self.inspect_body(req, port).await
     }
 
     async fn handle_response(
@@ -1074,6 +1115,23 @@ fn request_host(req: &Request<Body>) -> String {
         .unwrap_or_default()
 }
 
+/// The port a non-CONNECT request targets: the URI authority's port when
+/// present, else the `Host` header's, else the scheme default.
+fn request_port(req: &Request<Body>) -> u16 {
+    req.uri()
+        .port_u16()
+        .or_else(|| {
+            req.headers()
+                .get(header::HOST)
+                .and_then(|value| value.to_str().ok())
+                .and_then(authority_port)
+        })
+        .unwrap_or(match req.uri().scheme_str() {
+            Some("https") => HTTPS_PORT,
+            _ => HTTP_PORT,
+        })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1103,6 +1161,34 @@ mod tests {
         assert_eq!(skipped, 2);
     }
 
+    #[test]
+    fn request_port_falls_back_to_the_scheme_default() {
+        let with_authority_port = Request::builder()
+            .uri("https://k8s.internal:6443/api/v1/pods")
+            .body(Body::empty())
+            .expect("build request");
+        assert_eq!(request_port(&with_authority_port), 6443);
+
+        let with_host_header = Request::builder()
+            .uri("/api/v1/pods")
+            .header(header::HOST, "k8s.internal:6443")
+            .body(Body::empty())
+            .expect("build request");
+        assert_eq!(request_port(&with_host_header), 6443);
+
+        let https_no_port = Request::builder()
+            .uri("https://k8s.internal/api/v1/pods")
+            .body(Body::empty())
+            .expect("build request");
+        assert_eq!(request_port(&https_no_port), HTTPS_PORT);
+
+        let cleartext_no_port = Request::builder()
+            .uri("http://k8s.internal/api/v1/pods")
+            .body(Body::empty())
+            .expect("build request");
+        assert_eq!(request_port(&cleartext_no_port), HTTP_PORT);
+    }
+
     #[tokio::test]
     async fn forwarded_body_stays_encoded_after_inspection() {
         // Only the scan sees decoded bytes — the forwarded body must be the
@@ -1120,7 +1206,8 @@ mod tests {
             .body(Body::from(compressed.clone()))
             .expect("build request");
 
-        let RequestOrResponse::Request(forwarded) = handler.inspect_body(req).await else {
+        let RequestOrResponse::Request(forwarded) = handler.inspect_body(req, HTTPS_PORT).await
+        else {
             panic!("detect-only inspection must forward the request");
         };
         let body = forwarded

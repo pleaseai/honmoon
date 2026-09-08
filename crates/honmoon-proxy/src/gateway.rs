@@ -208,6 +208,19 @@ fn host_of(target: &str) -> &str {
     target.rsplit_once(':').map(|(h, _)| h).unwrap_or(target)
 }
 
+/// Extract the port from a `host:port` authority (handles IPv6 `[::1]:443`).
+///
+/// `None` when the authority carries no explicit port — the caller supplies the
+/// scheme default (443 for CONNECT/https, 80 for cleartext).
+pub(crate) fn authority_port(target: &str) -> Option<u16> {
+    let rest = match target.strip_prefix('[') {
+        Some(rest) => rest.split_once(']').map(|(_, rest)| rest).unwrap_or(""),
+        None => target,
+    };
+    rest.rsplit_once(':')
+        .and_then(|(_, port)| port.parse::<u16>().ok())
+}
+
 /// Canonicalize the CONNECT host for policy evaluation: strip the port, drop a
 /// trailing dot (FQDN root), and lowercase. Without this, `GitHub.com` or
 /// `github.com.` could bypass a `github.com` rule.
@@ -224,6 +237,14 @@ mod tests {
         assert_eq!(host_of("github.com:443"), "github.com");
         assert_eq!(host_of("[::1]:443"), "::1");
         assert_eq!(host_of("nohost"), "nohost");
+    }
+
+    #[test]
+    fn authority_port_parses_explicit_ports_only() {
+        assert_eq!(authority_port("github.com:443"), Some(443));
+        assert_eq!(authority_port("[::1]:6443"), Some(6443));
+        assert_eq!(authority_port("github.com"), None);
+        assert_eq!(authority_port("github.com:https"), None);
     }
 
     #[test]
