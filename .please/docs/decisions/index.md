@@ -11,3 +11,4 @@
 | [0005](0005-empty-namespace-and-bridged-proxy-sockets.md) | Confine `honmoon run` with an empty namespace and bridged proxy sockets | 2026-08-28 | Accepted |
 | [0006](0006-signed-body-requests-under-wire-redaction.md) | Body-signed requests under wire redaction | 2026-09-07 | Accepted |
 | [0007](0007-inline-postgresql-runtime-semantics.md) | Inline PostgreSQL runtime semantics | 2026-09-08 | Accepted |
+| [0008](0008-parse-sql-with-postgresql-grammar.md) | Classify SQL with PostgreSQL's grammar, not a token heuristic | 2026-09-08 | Accepted |
