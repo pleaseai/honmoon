@@ -12,7 +12,7 @@ use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, Instant};
 
-use honmoon_core::{AuditLog, Decision, Policy};
+use honmoon_core::{AuditLog, Decision, Policy, Verdict};
 use honmoon_proxy::approval::{ApprovalDecision, ApprovalRegistry};
 use honmoon_proxy::ca::CaMaterial;
 use honmoon_proxy::gateway::{GatewayState, InterceptPolicy, PiiMode};
@@ -589,6 +589,43 @@ fn connect_to_an_ordinary_endpoint_still_succeeds() {
     assert!(
         response.starts_with("HTTP/1.1 200"),
         "a `tcp` endpoint declares no inline inspection, so it tunnels: {response:?}"
+    );
+}
+
+/// The transport refuses the connection, but the policy said `allow` — the
+/// entry must not claim a rule denied what it allowed.
+#[test]
+fn connect_to_an_allowed_postgres_endpoint_keeps_the_policy_verdict() {
+    let postgres = start_hanging_upstream();
+    let plain = start_hanging_upstream();
+    let policy = format!(
+        "{}rules:
+  - name: allow-prod-db
+    endpoint: postgres-prod
+    condition: \"true\"
+    verdict: allow
+",
+        endpoint_protocol_policy(postgres, plain)
+    );
+    let (response, audit) = connect_response(&policy, "localhost", postgres);
+
+    assert!(
+        response.starts_with("HTTP/1.1 403"),
+        "an inline-inspected endpoint is refused however the policy voted: {response:?}"
+    );
+    let events = audit.recent(50);
+    assert!(
+        events.iter().any(|event| {
+            event.decision == Decision::Denied
+                && event.verdict == Verdict::Allow
+                && event.rule.as_deref() == Some("allow-prod-db")
+        }),
+        "the entry records honmoon's denial against the policy's own verdict: {:?}",
+        events
+    );
+    assert!(
+        !events.iter().any(|e| e.decision == Decision::Allowed),
+        "a connection that is refused must never be audited as allowed"
     );
 }
 

@@ -209,6 +209,11 @@ impl HonmoonHandler {
     ///   transport into inspecting frames it never sees, so the queue would only
     ///   offer an approval that cannot mean what it says. The rule that paused it
     ///   is still what the audit entry names.
+    ///
+    /// The audit entry keeps `decision` and `verdict` apart, as the hold path
+    /// already does: the disposition is a denial (honmoon refused the
+    /// connection) while the verdict stays whatever the policy actually said, so
+    /// the entry never claims a rule denied something it allowed.
     fn refuse_uninspectable_connect(
         &self,
         host: &str,
@@ -240,7 +245,7 @@ impl HonmoonHandler {
         );
         self.state.audit.record(AuditDraft {
             decision: Decision::Denied,
-            verdict: Verdict::Deny,
+            verdict: outcome.verdict,
             // Whatever matched, named — an operator reading the entry needs to
             // see the rule that was in play, not a bare synthetic denial.
             rule: outcome.rule,
