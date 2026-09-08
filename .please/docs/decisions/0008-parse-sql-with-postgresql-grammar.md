@@ -112,6 +112,38 @@ newly refused.
   lexes. Parsing does not fix this — it is an encoding problem, not a grammar one — and closing it
   means tracking the session's encoding and decoding before parsing.
 
+## What `sql.table` and `sql.verb` cannot promise
+
+Parsing settles what the *statement text* says. It cannot settle what the *database* will do with
+it, because some of that lives in the catalog rather than in the message honmoon is holding. These
+are limits of the facts, not defects to be fixed later, and a policy author needs them stated:
+
+- **A view hides the relations behind it.** `SELECT * FROM reporting_v` reports `reporting_v`, and
+  the view may select from `secrets`. Paired with `CREATE OR REPLACE VIEW v AS SELECT * FROM
+  secrets`, which reports only the verb `CREATE`, this is a durable read-path launder that no
+  parser can see: the definition is server-side and the read happens later under a different
+  statement.
+- **Inheritance and partitioning widen a read silently.** `SELECT * FROM parent` also reads every
+  child table, and which tables those are is catalog state.
+- **A function body is opaque.** `SELECT drop_everything()` reports `SELECT`, and a `VOLATILE`
+  function can perform arbitrary DML. `CALL` and `EXECUTE` are the same shape and are tracked in
+  #103.
+- **A statement may read relations it does not write.** `UPDATE a SET … FROM b`,
+  `DELETE FROM a USING b` and `INSERT INTO a SELECT … FROM b` all report the write target
+  correctly and leave the read source unnamed.
+
+The practical consequence: **`sql.table` is dependable for naming what a statement writes, and is
+not a complete account of what it reads.** A policy that must confine reads should not rest on
+`sql.table` alone — restrict the endpoint, or use database-side privileges, where the catalog is
+actually visible. Where honmoon can tell that a statement touches more relations than it names, it
+now reports no table rather than a misleading one, so a table-scoped allow cannot be tricked into
+authorizing an unnamed relation; that is a guard against being wrong, not a claim to completeness.
+
+Representing the full set instead of one relation — `SqlFacts { tables: [...] }`, with rules
+written as `'users' in sql.tables` — would recover the expressiveness that reporting nothing gives
+up. It is not done here because it changes the policy struct, which is ask-first under
+`crates/AGENTS.md` and has to stay in sync with the TypeScript types and JSON Schema (TD-001).
+
 ## Alternatives Considered
 
 - **Keep patching the scanners.** Rejected because six rounds of it had already been tried. Each
