@@ -47,5 +47,7 @@ sha2 = "0.10"
 # Raw namespace/ioctl syscalls for enforced `honmoon run` isolation on Linux (ADR-0005).
 libc = "0.2"
 # Real PostgreSQL grammar for SQL facts: exact agreement with the server's own
-# statement boundaries and wrapper semantics under adversarial input.
-sqlparser = "0.62"
+# statement boundaries and wrapper semantics under adversarial input. `visitor`
+# walks every relation a query reads, subqueries included; it is a proc-macro
+# derive, no I/O.
+sqlparser = { version = "0.62", features = ["visitor"] }

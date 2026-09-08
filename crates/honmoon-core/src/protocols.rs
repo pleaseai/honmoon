@@ -11,10 +11,12 @@ use std::borrow::Cow;
 
 use percent_encoding::percent_decode_str;
 
+use std::ops::ControlFlow;
+
 use crate::{K8sFacts, SqlFacts};
 use sqlparser::ast::{
     CascadeOption, Expr, FromTable, ObjectName, OnConflictAction, OnInsert, Query, SetExpr,
-    Statement, TableFactor, TableObject, TableWithJoins, UtilityOption, Value,
+    Statement, TableFactor, TableObject, UtilityOption, Value, visit_relations,
 };
 use sqlparser::dialect::PostgreSqlDialect;
 use sqlparser::parser::Parser;
@@ -156,20 +158,27 @@ fn sole_relation<T>(targets: &[T], name_of: impl Fn(&T) -> String) -> String {
     }
 }
 
-/// The one relation a `FROM` clause reads, or empty when it reads several.
+/// The one relation a read reads, or empty when it reads several.
 ///
-/// `SELECT * FROM approved JOIN secrets ON …` and `SELECT * FROM approved,
-/// secrets` both read both relations, so naming only `approved` would let an
-/// allow rule scoped to it authorize reading `secrets` alongside. A join makes
-/// the clause multi-relation just as a second `FROM` item does.
-fn sole_read_relation(from: &[TableWithJoins]) -> String {
-    sole_relation(from, |table| {
-        if table.joins.is_empty() {
-            table_factor_name(&table.relation)
-        } else {
-            String::new()
-        }
-    })
+/// A table-scoped allow rule must not authorize a relation the statement does
+/// not name, and a query reaches relations in more places than its first `FROM`
+/// item: a join, a comma list, either side of a `UNION`, a subquery in the
+/// projection (`SELECT (SELECT max(x) FROM secrets) FROM approved`) or in a
+/// `WHERE` (`… WHERE id IN (SELECT id FROM secrets)`). Every one of those reads
+/// two relations while naming only the first. `visit_relations` walks all of
+/// them, so this counts the whole read set rather than one syntactic position.
+///
+/// Occurrences are counted, not distinct names: deciding that two `ObjectName`s
+/// denote the same relation needs the catalog — the schema search path, and
+/// aliases — which is exactly the kind of assumption this parser is here to stop
+/// making. Two mentions means no table.
+fn sole_read_relation(body: &SetExpr) -> String {
+    let mut relations = Vec::new();
+    let _: ControlFlow<()> = visit_relations(body, |name| {
+        relations.push(relation_name(name));
+        ControlFlow::Continue(())
+    });
+    sole_relation(&relations, String::clone)
 }
 
 /// Whether an `EXPLAIN` runs the statement it wraps.
@@ -321,14 +330,25 @@ fn classify_query(query: &Query) -> Option<SqlFacts> {
 
 fn classify_set_expr(body: &SetExpr) -> Option<SqlFacts> {
     match body {
-        SetExpr::Select(select) => facts("SELECT", sole_read_relation(&select.from)),
+        SetExpr::Select(_) => facts("SELECT", sole_read_relation(body)),
         SetExpr::Query(query) => classify_query(query),
         SetExpr::Insert(statement)
         | SetExpr::Update(statement)
         | SetExpr::Delete(statement)
         | SetExpr::Merge(statement) => classify_statement(statement),
         SetExpr::SetOperation { left, right, .. } => {
-            more_dangerous(classify_set_expr(left), classify_set_expr(right))
+            // Both sides execute, so the verb is the more dangerous of the two.
+            // A read spans them, though — `SELECT * FROM a UNION SELECT * FROM
+            // b` reads both — so its table is taken over the whole operation
+            // rather than from the side that won.
+            let merged = more_dangerous(classify_set_expr(left), classify_set_expr(right))?;
+            Some(match merged.verb.as_str() {
+                "SELECT" => SqlFacts {
+                    verb: merged.verb,
+                    table: sole_read_relation(body),
+                },
+                _ => merged,
+            })
         }
         // `VALUES …` and `TABLE t`: no verb in `VERB_PRECEDENCE`, so they keep
         // the classification they had before the parser landed.
@@ -1108,6 +1128,28 @@ mod tests {
 
         // One relation and no join still names it.
         assert_eq!(parse_sql("SELECT * FROM approved").table, "approved");
+    }
+
+    #[test]
+    fn a_select_reading_past_its_from_clause_names_no_table() {
+        // A union reads both sides, and a subquery in the projection or in a
+        // `WHERE` reads a relation the `FROM` clause never names — a
+        // table-scoped allow on `approved` must not authorize `secrets`.
+        for query in [
+            "SELECT * FROM approved UNION SELECT * FROM secrets",
+            "SELECT (SELECT max(x) FROM secrets) FROM approved",
+            "SELECT * FROM approved WHERE id IN (SELECT id FROM secrets)",
+        ] {
+            let facts = parse_sql(query);
+            assert_eq!(facts.verb, "SELECT", "{query}");
+            assert_eq!(facts.table, "", "{query}");
+        }
+
+        // A `WHERE` with no subquery reads one relation and still names it.
+        assert_eq!(
+            parse_sql("SELECT * FROM orders WHERE id = $1").table,
+            "orders"
+        );
     }
 
     #[test]
