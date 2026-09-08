@@ -470,12 +470,18 @@ fn connect_response(policy_yaml: &str, host: &str, port: u16) -> (String, Arc<Au
     let connect = format!("CONNECT {host}:{port} HTTP/1.1\r\nHost: {host}:{port}\r\n\r\n");
 
     let runtime = tokio::runtime::Runtime::new().unwrap();
-    let head = runtime.block_on(async move {
+    let response = runtime.block_on(async move {
         let mut tcp = TcpStream::connect(("127.0.0.1", proxy_port)).await.unwrap();
         tcp.write_all(connect.as_bytes()).await.unwrap();
-        read_head(&mut tcp).await
+        let head = read_head(&mut tcp).await;
+        if head.starts_with("HTTP/1.1 200") {
+            return head; // an established tunnel stays open; there is no body
+        }
+        let mut body = Vec::new();
+        let _ = tcp.read_to_end(&mut body).await;
+        head + &String::from_utf8_lossy(&body)
     });
-    (head, audit)
+    (response, audit)
 }
 
 /// A policy declaring an inline-inspected `postgres` endpoint alongside an
@@ -513,6 +519,10 @@ fn connect_to_a_postgres_endpoint_is_refused_and_audited() {
             .to_ascii_lowercase()
             .contains("x-honmoon-reason: uninspectable-connect"),
         "the refusal is labelled: {response:?}"
+    );
+    assert!(
+        response.contains("--socks-addr") && !response.contains("1080"),
+        "the refusal points at the configured listener, not a guessed port: {response:?}"
     );
     assert!(
         audit.recent(50).iter().any(|event| {

@@ -1080,10 +1080,15 @@ fn signed_body_response(scheme: SignedBodyScheme) -> RequestOrResponse {
 /// A `403` explaining that this endpoint is inspected inline, so it must be
 /// dialled through the SOCKS5 listener rather than tunnelled over CONNECT.
 fn uninspectable_connect_response(endpoint: &str) -> RequestOrResponse {
+    // The listener's address is a CLI flag the data plane never receives, and
+    // `--socks-addr off` disables it entirely — so the message names the flag
+    // rather than inventing a port that may not be listening.
     let reason = format!(
         "honmoon: endpoint {endpoint} is declared `protocol: postgres`, so its statements are \
          inspected inline and it cannot be carried over a CONNECT tunnel. Dial it through the \
-         SOCKS5 listener instead (ALL_PROXY=socks5h://<gateway>:1080).\n"
+         gateway's SOCKS5 listener instead (ALL_PROXY=socks5h://<the gateway's --socks-addr>); \
+         if the gateway was started with `--socks-addr off` there is no such listener and this \
+         endpoint is unreachable.\n"
     );
     let length = reason.len();
     Response::builder()
