@@ -2,5 +2,12 @@
   "name": "@honmoon/claude-plugin",
   "version": "0.1.0",
   "private": true,
-  "description": "Honmoon Claude Code plugin — hook-based secret/PII redaction for transcript hygiene."
+  "description": "Honmoon Claude Code plugin — hook-based secret/PII redaction for transcript hygiene.",
+  "scripts": {
+    "test": "bun test",
+    "typecheck": "tsc --noEmit -p . && tsc --noEmit -p tsconfig.test.json"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.4.0"
+  }
 }
