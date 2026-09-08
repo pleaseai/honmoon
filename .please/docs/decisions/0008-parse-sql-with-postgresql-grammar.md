@@ -60,9 +60,14 @@ can perform all three.
 **What cannot be inspected is refused, not classified.** A `DO` block runs an arbitrary PL/pgSQL
 body while reporting the harmless verb `DO`, and there is nothing to unwrap — the body is not SQL,
 and sqlparser has no `DO` statement at all. It is refused at the runtime, the same fail-closed
-path already taken for a batched or unparseable frame. `CALL`, `EXECUTE` and `COPY` raise the same
-question for different reasons and are tracked in #103; whether to refuse them changes what
-honmoon does to ordinary traffic, so it is deliberately not settled here.
+path already taken for a batched or unparseable frame. Because the parser cannot see `DO`, this is
+the one place left that identifies a statement outside the grammar, and it therefore follows
+PostgreSQL's lexical rules directly rather than splitting on whitespace: a comment is whitespace to
+the server, so `DO/**/$$…$$` executes, and reading the keyword as an identifier run is what keeps
+honmoon's answer identical to the server's in both directions — including `DO$$…$$`, which is one
+identifier to PostgreSQL and rejected by it. `CALL`, `EXECUTE` and `COPY` raise the same question
+for different reasons and are tracked in #103; whether to refuse them changes what honmoon does to
+ordinary traffic, so it is deliberately not settled here.
 
 **A statement naming several relations reports no table.** `SqlFacts` carries one `table`, so for
 `DROP TABLE scratch, users` no single value is correct — and reporting the first is wrong in the
