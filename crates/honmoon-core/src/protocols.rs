@@ -8,6 +8,9 @@
 //! never decrypt or buffer full payloads beyond what a rule needs.
 
 use crate::{K8sFacts, SqlFacts};
+use sqlparser::ast::{FromTable, ObjectName, Query, SetExpr, Statement, TableFactor, TableObject};
+use sqlparser::dialect::PostgreSqlDialect;
+use sqlparser::parser::Parser;
 
 /// Parse a PostgreSQL **simple query** message (`'Q'`) into [`SqlFacts`].
 ///
@@ -41,7 +44,207 @@ pub fn parse_postgres_query(packet: &[u8]) -> Option<SqlFacts> {
 /// only ever fail to match every rule.
 pub const UNKNOWN_VERB: &str = "UNKNOWN";
 
+/// The verbs a statement can *execute*, most dangerous first.
+///
+/// One statement may run more than one of them: `EXPLAIN ANALYZE` runs what it
+/// wraps, and a data-modifying CTE runs inside an outer `SELECT`. Rules here are
+/// deny-oriented (`sql.verb == 'DELETE'` refuses), so the fail-safe answer is
+/// the most dangerous verb the statement actually executes — under-reporting
+/// hands an attacker a bypass, while over-reporting can only refuse something.
+/// The ordering lives here, once, rather than scattered across match arms.
+///
+/// `MERGE` outranks `DELETE`, `UPDATE` and `INSERT` because one `MERGE` can do
+/// all three, so it must not be reported as the weaker of them.
+const VERB_PRECEDENCE: &[&str] = &[
+    "DROP", "TRUNCATE", "ALTER", "MERGE", "DELETE", "UPDATE", "INSERT", "SELECT",
+];
+
 /// Parse the leading verb and best-effort table out of a SQL statement.
+///
+/// Parses with PostgreSQL's own grammar (`sqlparser`) so honmoon agrees with the
+/// server about what a statement *executes*, not merely what it starts with: an
+/// `EXPLAIN ANALYZE DELETE …` is a `DELETE`, and so is a `SELECT` over a
+/// data-modifying CTE. Where several verbs execute, the most dangerous one wins
+/// ([`VERB_PRECEDENCE`]). Only the first statement is classified; a batch is
+/// refused separately by [`carries_multiple_statements`].
+///
+/// Input the parser cannot read falls back to [`parse_sql_heuristic`], the
+/// leading-token scanner that shipped before it — so unparseable-but-benign
+/// traffic keeps classifying exactly as it does today, and no path through this
+/// function is more permissive than that scanner alone.
+pub fn parse_sql(query: &str) -> SqlFacts {
+    let Ok(statements) = Parser::parse_sql(&PostgreSqlDialect {}, query) else {
+        return parse_sql_heuristic(query);
+    };
+    let Some(statement) = statements.first() else {
+        // Nothing to run at all (empty input, only comments, only separators).
+        return SqlFacts {
+            verb: UNKNOWN_VERB.to_owned(),
+            table: String::new(),
+        };
+    };
+    // A statement shape with no dangerous verb of its own (`SET`, `BEGIN`,
+    // `VACUUM`, `VALUES`, …) keeps the classification it has always had.
+    classify_statement(statement).unwrap_or_else(|| parse_sql_heuristic(query))
+}
+
+/// Where `verb` sits in [`VERB_PRECEDENCE`]; anything unlisted ranks last.
+fn verb_rank(verb: &str) -> usize {
+    VERB_PRECEDENCE
+        .iter()
+        .position(|v| *v == verb)
+        .unwrap_or(usize::MAX)
+}
+
+/// The more dangerous of two candidate classifications, `a` winning a tie so the
+/// caller can pass the statement's own verb first and its sub-queries after.
+fn more_dangerous(a: Option<SqlFacts>, b: Option<SqlFacts>) -> Option<SqlFacts> {
+    match (a, b) {
+        (Some(a), Some(b)) => Some(if verb_rank(&b.verb) < verb_rank(&a.verb) {
+            b
+        } else {
+            a
+        }),
+        (a, b) => a.or(b),
+    }
+}
+
+fn facts(verb: &str, table: String) -> Option<SqlFacts> {
+    Some(SqlFacts {
+        verb: verb.to_owned(),
+        table,
+    })
+}
+
+/// The relation an [`ObjectName`] names, normalized like [`clean_identifier`]:
+/// schema qualifier dropped, quotes gone, lowercased. `public.users` → `users`.
+fn relation_name(name: &ObjectName) -> String {
+    name.0
+        .last()
+        .and_then(|part| part.as_ident())
+        .map(|ident| ident.value.to_ascii_lowercase())
+        .unwrap_or_default()
+}
+
+/// The relation a `FROM` item reads, when it is a plain named table.
+fn table_factor_name(factor: &TableFactor) -> String {
+    match factor {
+        TableFactor::Table { name, .. } => relation_name(name),
+        _ => String::new(),
+    }
+}
+
+/// Classify one parsed statement, or `None` when it carries no verb this module
+/// models — the caller then keeps the pre-parser classification for it.
+fn classify_statement(statement: &Statement) -> Option<SqlFacts> {
+    match statement {
+        // `EXPLAIN ANALYZE` *runs* the statement it wraps, so that statement is
+        // what policy has to see; a plain `EXPLAIN` only plans it and stays an
+        // `EXPLAIN`. PostgreSQL also spells the flag as a utility option
+        // (`EXPLAIN (ANALYZE, BUFFERS) …`), which sqlparser keeps in `options`
+        // with `analyze` still false. The wrapped statement may itself be a CTE
+        // query, so recurse rather than classifying it one level deep.
+        Statement::Explain {
+            analyze,
+            options,
+            statement,
+            ..
+        } => {
+            let executes = *analyze
+                || options
+                    .iter()
+                    .flatten()
+                    .any(|option| option.name.value.eq_ignore_ascii_case("analyze"));
+            if executes {
+                classify_statement(statement)
+            } else {
+                facts("EXPLAIN", String::new())
+            }
+        }
+        Statement::Query(query) => classify_query(query),
+        Statement::Insert(insert) => facts(
+            "INSERT",
+            match &insert.table {
+                TableObject::TableName(name) => relation_name(name),
+                _ => String::new(),
+            },
+        ),
+        Statement::Delete(delete) => {
+            let (FromTable::WithFromKeyword(tables) | FromTable::WithoutKeyword(tables)) =
+                &delete.from;
+            facts(
+                "DELETE",
+                tables
+                    .first()
+                    .map(|table| table_factor_name(&table.relation))
+                    .unwrap_or_default(),
+            )
+        }
+        Statement::Update(update) => facts("UPDATE", table_factor_name(&update.table.relation)),
+        Statement::Drop { names, .. } => {
+            facts("DROP", names.first().map(relation_name).unwrap_or_default())
+        }
+        Statement::Truncate(truncate) => facts(
+            "TRUNCATE",
+            truncate
+                .table_names
+                .first()
+                .map(|target| relation_name(&target.name))
+                .unwrap_or_default(),
+        ),
+        Statement::AlterTable(alter) => facts("ALTER", relation_name(&alter.name)),
+        Statement::Merge(merge) => facts("MERGE", table_factor_name(&merge.table)),
+        _ => None,
+    }
+}
+
+/// Classify a query, letting a data-modifying CTE outrank the outer `SELECT`:
+/// `WITH x AS (DELETE FROM t RETURNING *) SELECT * FROM x` executes the `DELETE`,
+/// so reporting the `SELECT` would hide it from every `sql.verb` rule.
+fn classify_query(query: &Query) -> Option<SqlFacts> {
+    let ctes = query
+        .with
+        .iter()
+        .flat_map(|with| &with.cte_tables)
+        .fold(None, |worst, cte| {
+            more_dangerous(worst, classify_query(&cte.query))
+        });
+    more_dangerous(classify_set_expr(&query.body), ctes)
+}
+
+fn classify_set_expr(body: &SetExpr) -> Option<SqlFacts> {
+    match body {
+        SetExpr::Select(select) => facts(
+            "SELECT",
+            select
+                .from
+                .first()
+                .map(|table| table_factor_name(&table.relation))
+                .unwrap_or_default(),
+        ),
+        SetExpr::Query(query) => classify_query(query),
+        SetExpr::Insert(statement)
+        | SetExpr::Update(statement)
+        | SetExpr::Delete(statement)
+        | SetExpr::Merge(statement) => classify_statement(statement),
+        SetExpr::SetOperation { left, right, .. } => {
+            more_dangerous(classify_set_expr(left), classify_set_expr(right))
+        }
+        // `VALUES …` and `TABLE t`: no verb in `VERB_PRECEDENCE`, so they keep
+        // the classification they had before the parser landed.
+        //
+        // A derived table or scalar subquery is deliberately *not* descended
+        // into looking for a nested data-modifying CTE. PostgreSQL refuses to
+        // run one: `SELECT * FROM (WITH y AS (DELETE FROM t RETURNING *) SELECT
+        // * FROM y) z` fails with `ERROR: WITH clause containing a
+        // data-modifying statement must be at the top level`. There is nothing
+        // to catch there, so recursing would only add a way to misclassify.
+        _ => None,
+    }
+}
+
+/// The leading-token classifier honmoon shipped before `sqlparser`, kept as the
+/// fallback for input the real grammar rejects.
 ///
 /// Heuristic, not a full SQL grammar — enough to drive policy on the dangerous
 /// verbs (`DROP`, `TRUNCATE`, `DELETE`, `UPDATE`, `INSERT`, `SELECT`). A verb it
@@ -49,7 +252,7 @@ pub const UNKNOWN_VERB: &str = "UNKNOWN";
 /// is not a precondition for allowing a statement, so ordinary traffic (`WITH`,
 /// `EXPLAIN`, `SET`, `BEGIN`, …) is unaffected. An unclassifiable statement gets
 /// [`UNKNOWN_VERB`].
-pub fn parse_sql(query: &str) -> SqlFacts {
+fn parse_sql_heuristic(query: &str) -> SqlFacts {
     // A comment prologue must not be able to hide the verb: PostgreSQL skips
     // `/* audit */` and `-- x` and executes what follows, so honmoon has to look
     // past them too — otherwise `/* audit */ DROP TABLE users` parses as the verb
@@ -131,12 +334,25 @@ fn clean_identifier(raw: &str) -> String {
 /// The `Q` (simple query) message may legally batch statements, but [`parse_sql`]
 /// only ever classifies the first verb, so `SELECT 1; DROP TABLE users` would be
 /// decided as a `SELECT`. The data plane refuses a batch rather than forward one
-/// uninspected, which makes this deliberately conservative: it errs toward
-/// "multiple" on anything it cannot follow. It must still not trip over an
-/// ordinary statement, so semicolons inside string literals, quoted identifiers,
-/// dollar-quoted bodies and comments are not separators, and a single trailing
-/// `;` is still one statement.
+/// uninspected.
+///
+/// PostgreSQL's own grammar (`sqlparser`) decides where the statement boundaries
+/// are, so the answer is exact on anything it can read. Input it rejects falls
+/// back to [`scan_for_statement_separator`], the byte scanner that shipped before
+/// it, which errs toward "multiple" on anything it cannot follow — so on
+/// unparseable input the behaviour is exactly what ships today, and no path
+/// through this function is more permissive than that scanner alone.
 pub fn carries_multiple_statements(query: &str) -> bool {
+    match Parser::parse_sql(&PostgreSqlDialect {}, query) {
+        Ok(statements) => statements.len() > 1,
+        Err(_) => scan_for_statement_separator(query),
+    }
+}
+
+/// Byte-level scan for a statement separator outside a literal, quoted
+/// identifier, dollar-quoted body or comment. Deliberately conservative: it
+/// answers "multiple" whenever it loses track of where the statement ends.
+fn scan_for_statement_separator(query: &str) -> bool {
     let bytes = query.as_bytes();
     let mut i = 0;
     while i < bytes.len() {
@@ -525,10 +741,102 @@ mod tests {
         // An unrecognized *keyword* is still reported as itself — an unknown
         // verb is not a refusal, and ordinary sessions use plenty of them.
         assert_eq!(parse_sql("VACUUM FULL orders").verb, "VACUUM");
+        // A CTE query is classified by what it executes, not by its leading
+        // keyword: PostgreSQL runs a SELECT here, so `sql.verb == 'SELECT'` is
+        // the rule that should match it. (It used to report `WITH`, which no
+        // rule about reads would ever have matched.)
         assert_eq!(
             parse_sql("with x as (select 1) select * from x").verb,
-            "WITH"
+            "SELECT"
         );
+    }
+
+    #[test]
+    fn explain_analyze_reports_the_statement_it_executes() {
+        // `ANALYZE` makes PostgreSQL *run* the DELETE, so a `sql.verb ==
+        // 'DELETE'` deny rule has to see a DELETE — not the EXPLAIN wrapper.
+        let facts = parse_sql("EXPLAIN ANALYZE DELETE FROM sessions");
+        assert_eq!(facts.verb, "DELETE");
+        assert_eq!(facts.table, "sessions");
+    }
+
+    #[test]
+    fn explain_without_analyze_stays_an_explain() {
+        // Without `ANALYZE` the inner statement is only planned, never run, so
+        // unwrapping it would refuse a harmless plan inspection.
+        let facts = parse_sql("EXPLAIN DELETE FROM sessions");
+        assert_eq!(facts.verb, "EXPLAIN");
+        assert_eq!(facts.table, "");
+    }
+
+    #[test]
+    fn explain_analyze_is_recognized_in_the_option_list_form() {
+        // `EXPLAIN (ANALYZE, BUFFERS) …` executes just as `EXPLAIN ANALYZE`
+        // does; the parser reports that spelling as a utility option instead.
+        let facts = parse_sql("EXPLAIN (ANALYZE, BUFFERS) DELETE FROM sessions");
+        assert_eq!(facts.verb, "DELETE");
+        assert_eq!(facts.table, "sessions");
+    }
+
+    #[test]
+    fn a_data_modifying_cte_outranks_the_outer_select() {
+        // The DELETE inside the CTE executes, so it — and its table — is what
+        // the facts must carry.
+        let facts = parse_sql("WITH x AS (DELETE FROM t RETURNING *) SELECT * FROM x");
+        assert_eq!(facts.verb, "DELETE");
+        assert_eq!(facts.table, "t");
+    }
+
+    #[test]
+    fn a_merge_cte_outranks_the_outer_select() {
+        // PostgreSQL 17 allows MERGE as a data-modifying CTE and runs it:
+        // against a 7-row table this statement left 5, so the MERGE deleted
+        // rows while the facts said `SELECT`. It must report the MERGE.
+        let facts = parse_sql(
+            "WITH x AS (MERGE INTO t USING s ON t.id = s.id \
+             WHEN MATCHED THEN DELETE RETURNING t.id) SELECT * FROM x",
+        );
+        assert_eq!(facts.verb, "MERGE");
+        assert_eq!(facts.table, "t");
+    }
+
+    #[test]
+    fn a_top_level_merge_carries_its_target_table() {
+        // One MERGE can delete, update and insert, so it outranks each of them
+        // — and it now names the relation it writes, which the leading-token
+        // heuristic never extracted.
+        let facts = parse_sql("MERGE INTO t USING s ON t.id = s.id WHEN MATCHED THEN DELETE");
+        assert_eq!(facts.verb, "MERGE");
+        assert_eq!(facts.table, "t");
+    }
+
+    #[test]
+    fn a_read_only_cte_is_not_upgraded() {
+        // Nothing here modifies data, so the query stays a SELECT over `x`.
+        let facts = parse_sql("WITH x AS (SELECT 1) SELECT * FROM x");
+        assert_eq!(facts.verb, "SELECT");
+        assert_eq!(facts.table, "x");
+    }
+
+    #[test]
+    fn unparseable_input_falls_back_to_the_shipped_scanners() {
+        // `DROP INDEX CONCURRENTLY` and an unterminated comment are both beyond
+        // sqlparser, so both must keep answering exactly as they did before it:
+        // the token heuristic's verb/table, and the byte scanner's conservative
+        // "this could be a batch".
+        assert!(
+            Parser::parse_sql(&PostgreSqlDialect {}, "DROP INDEX CONCURRENTLY idx_a").is_err(),
+            "test input must actually be unparseable"
+        );
+        let facts = parse_sql("DROP INDEX CONCURRENTLY idx_a");
+        assert_eq!(facts.verb, "DROP");
+        assert_eq!(facts.table, "idx_a");
+
+        assert!(
+            Parser::parse_sql(&PostgreSqlDialect {}, "SELECT 1; /* unterminated").is_err(),
+            "test input must actually be unparseable"
+        );
+        assert!(carries_multiple_statements("SELECT 1; /* unterminated"));
     }
 
     #[test]
