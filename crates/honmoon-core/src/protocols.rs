@@ -16,8 +16,8 @@ use std::ops::ControlFlow;
 
 use crate::{K8sFacts, SqlFacts};
 use sqlparser::ast::{
-    CascadeOption, Expr, FromTable, ObjectName, ObjectType, OnConflictAction, OnInsert, Query,
-    SetExpr, Statement, TableFactor, TableObject, UtilityOption, Value, Visit, Visitor,
+    CascadeOption, Expr, FromTable, Ident, ObjectName, ObjectType, OnConflictAction, OnInsert,
+    Query, SetExpr, Statement, TableFactor, TableObject, UtilityOption, Value, Visit, Visitor,
 };
 use sqlparser::dialect::PostgreSqlDialect;
 use sqlparser::parser::Parser;
@@ -151,11 +151,33 @@ fn facts(verb: &str, table: String) -> Option<SqlFacts> {
 /// The relation an [`ObjectName`] names, normalized like [`clean_identifier`]:
 /// schema qualifier dropped, quotes gone, lowercased. `public.users` → `users`.
 fn relation_name(name: &ObjectName) -> String {
-    name.0
-        .last()
-        .and_then(|part| part.as_ident())
+    relation_ident(name)
         .map(|ident| ident.value.to_ascii_lowercase())
         .unwrap_or_default()
+}
+
+/// The identifier a relation name ends in — everything before the last `.` is
+/// the schema qualifier.
+fn relation_ident(name: &ObjectName) -> Option<&Ident> {
+    name.0.last().and_then(|part| part.as_ident())
+}
+
+/// An identifier folded the way PostgreSQL folds it: an unquoted one is
+/// downcased, a quoted one keeps the case it was written in. So `"Secrets"` and
+/// `secrets` are two different names to the server, and `"secrets"` and
+/// `secrets` are one.
+///
+/// This is **not** [`relation_name`], which lowercases unconditionally. That is
+/// reporting behaviour rules already depend on — `sql.table` has always been
+/// lowercase — and changing it would move every rule's idea of a table name.
+/// Folding is only ever used to decide *identity* between two names inside one
+/// statement, where getting it wrong hides a real relation behind an alias.
+fn fold_ident(ident: &Ident) -> String {
+    if ident.quote_style == Some('"') {
+        ident.value.clone()
+    } else {
+        ident.value.to_ascii_lowercase()
+    }
 }
 
 /// The relation a `FROM` item reads, when it is a plain named table.
@@ -256,7 +278,7 @@ impl Visitor for ReadSet {
                 names: with
                     .cte_tables
                     .iter()
-                    .map(|cte| cte.alias.name.value.to_ascii_lowercase())
+                    .map(|cte| fold_ident(&cte.alias.name))
                     .collect(),
                 bodies: with
                     .cte_tables
@@ -285,15 +307,20 @@ impl Visitor for ReadSet {
     }
 
     fn pre_visit_relation(&mut self, relation: &ObjectName) -> ControlFlow<()> {
-        let name = relation_name(relation);
+        // Identity is decided on the *folded* name, never the reported one:
+        // PostgreSQL downcases an unquoted identifier and leaves a quoted one
+        // alone, so the alias `"Secrets"` does not hide the table `secrets`.
+        // Comparing lowercased names would let it, and the read set would lose
+        // a relation an allow rule was never scoped to. See [`fold_ident`].
+        let folded = relation_ident(relation).map(fold_ident).unwrap_or_default();
         // Any scope in which the name is visible hides it, so the innermost
         // declaration wins — which is how PostgreSQL resolves it too.
         let is_alias = self
             .scopes
             .iter()
-            .any(|scope| scope.names[..scope.visible].contains(&name));
+            .any(|scope| scope.names[..scope.visible].contains(&folded));
         if !is_alias {
-            self.relations.push(name);
+            self.relations.push(relation_name(relation));
         }
         ControlFlow::Continue(())
     }
@@ -1409,6 +1436,31 @@ mod tests {
         );
         assert_eq!(shadowed.verb, "SELECT");
         assert_eq!(shadowed.table, "a");
+    }
+
+    #[test]
+    fn a_quoted_cte_alias_does_not_hide_an_unquoted_table() {
+        // PostgreSQL folds an unquoted identifier to lower case and leaves a
+        // quoted one as written, so `"Secrets"` and `secrets` are two names.
+        // The alias is the first; the relation read is the real table, and with
+        // `approved` beside it that is two relations, so neither is named.
+        let distinct =
+            parse_sql("WITH \"Secrets\" AS (SELECT 1) SELECT * FROM approved JOIN secrets ON true");
+        assert_eq!(distinct.verb, "SELECT");
+        assert_eq!(distinct.table, "");
+
+        // The same in reverse: `"SECRETS"` is not the unquoted alias `secrets`,
+        // so it is a real relation — reported lowercased, as `sql.table` always
+        // has been.
+        let quoted_upper = parse_sql("WITH secrets AS (SELECT 1) SELECT * FROM \"SECRETS\"");
+        assert_eq!(quoted_upper.verb, "SELECT");
+        assert_eq!(quoted_upper.table, "secrets");
+
+        // A quoted lower-case alias *is* the folded unquoted name, so this one
+        // really is the alias and the query reads no relation at all.
+        let same = parse_sql("WITH \"secrets\" AS (SELECT 1) SELECT * FROM secrets");
+        assert_eq!(same.verb, "SELECT");
+        assert_eq!(same.table, "");
     }
 
     #[test]
