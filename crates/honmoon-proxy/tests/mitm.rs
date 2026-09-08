@@ -261,6 +261,8 @@ fn block_mode_denies_rrn_over_intercepted_tls() {
     }));
 }
 
+/// Pins the downgrade half of the detect-mode rule: this deny *is* caused by a
+/// PII finding, so detect mode audits the would-be verdict and forwards.
 #[test]
 fn detect_mode_audits_but_does_not_deny_rrn() {
     let (response, audit, _) = intercepted_request(
@@ -533,4 +535,29 @@ fn secret_deletion_to_an_undeclared_host_is_allowed() {
         response.starts_with("HTTP/1.1 502"),
         "an undeclared host must not match the k8s rule: {response:?}"
     );
+}
+
+/// The other half of the rule: a verdict that does not depend on PII findings —
+/// here an `endpoints`-bound Kubernetes rule — is enforced in detect mode too,
+/// which is the default the gateway runs in.
+#[test]
+fn detect_mode_enforces_a_kubernetes_endpoint_rule() {
+    let upstream = start_hanging_upstream();
+    let (response, audit, _) = intercepted_request(
+        &k8s_policy("localhost", upstream),
+        PiiMode::Detect,
+        upstream,
+        k8s_request("DELETE", "/api/v1/namespaces/prod/secrets/db"),
+    );
+
+    assert!(
+        response.starts_with("HTTP/1.1 403"),
+        "a non-PII verdict must be enforced in detect mode: {response:?}"
+    );
+    let events = audit.recent(50);
+    assert!(events.iter().any(|event| {
+        event.decision == Decision::Denied
+            && event.rule.as_deref() == Some("k8s-no-secret-delete")
+            && event.facts.endpoint.as_deref() == Some("k8s-prod")
+    }));
 }

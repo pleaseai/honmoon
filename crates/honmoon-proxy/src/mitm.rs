@@ -629,7 +629,29 @@ impl HonmoonHandler {
         let outcome = decide_explained(&self.state.policy, &facts);
         let summary = FactsSummary::from(&facts);
 
-        if self.state.pii_mode == PiiMode::Detect {
+        // Detect mode downgrades only the verdicts PII *caused*. Re-deciding on
+        // the same facts with `pii` cleared says whether this verdict depends on
+        // content scanning: one that stands without it (an endpoint/Kubernetes
+        // or HTTP-metadata rule) is enforced in every mode, because detect-only
+        // is a promise about the PII scanner, not a bypass for the rest of the
+        // policy. The PII-less outcome is the one enforced — it is what the
+        // policy decides on the facts detect mode is willing to act on.
+        let enforced = match self.state.pii_mode {
+            PiiMode::Block => Some(outcome.clone()),
+            PiiMode::Detect if outcome.verdict != Verdict::Allow => {
+                let without_pii = decide_explained(
+                    &self.state.policy,
+                    &Facts {
+                        pii: None,
+                        ..facts.clone()
+                    },
+                );
+                (without_pii.verdict != Verdict::Allow).then_some(without_pii)
+            }
+            PiiMode::Detect => None,
+        };
+
+        let Some(outcome) = enforced else {
             // Keep the detect-only default quiet for clean traffic: only actual
             // findings produce the would-be verdict audit event.
             if let Some(pii) = pii.filter(|p| p.count > 0) {
@@ -661,7 +683,7 @@ impl HonmoonHandler {
                     summary: &summary,
                 },
             );
-        }
+        };
 
         match outcome.verdict {
             Verdict::Allow => {
