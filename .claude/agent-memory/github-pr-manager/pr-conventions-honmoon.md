@@ -22,3 +22,14 @@ failure on branches Graphite has never seen.
 
 **How to apply:** on any honmoon PR, run `gt ls` after `detect-stack-tool.sh` and route on the
 branch's actual tracking state, not the repo's.
+
+## Project board IDs (org `pleaseai`, project 4)
+
+`gh project item-edit` needs raw node IDs, so cache these instead of re-listing fields:
+
+- project id `PVT_kwDODf_st84Bir8b`, Status field `PVTSSF_lADODf_st84Bir8bzhhjAMU`
+- options: Backlog `f75ad846`, Ready `61e4505c`, In progress `47fc9ee4`,
+  In review `df73e18b`, Done `98236657`
+
+`gh project item-add ... --format json` returns the new item's `id` — feed that straight into
+`item-edit --id`.
