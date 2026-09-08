@@ -17,7 +17,7 @@ use std::ops::ControlFlow;
 use crate::{K8sFacts, SqlFacts};
 use sqlparser::ast::{
     CascadeOption, Expr, FromTable, ObjectName, ObjectType, OnConflictAction, OnInsert, Query,
-    SetExpr, Statement, TableFactor, TableObject, UtilityOption, Value, Visit, visit_relations,
+    SetExpr, Statement, TableFactor, TableObject, UtilityOption, Value, Visit, Visitor,
 };
 use sqlparser::dialect::PostgreSqlDialect;
 use sqlparser::parser::Parser;
@@ -113,15 +113,18 @@ fn more_dangerous(a: Option<SqlFacts>, b: Option<SqlFacts>) -> Option<SqlFacts> 
         (Some(a), Some(b)) => Some(match verb_rank(&b.verb).cmp(&verb_rank(&a.verb)) {
             Ordering::Less => b,
             Ordering::Greater => a,
-            // Two writes of the same rank on different relations: neither name
-            // is the answer. `WITH a AS (DELETE FROM t1 RETURNING *), b AS
-            // (DELETE FROM t2 RETURNING *) SELECT 1` runs both CTEs even though
-            // nothing references them — measured on PostgreSQL 17.11, t1 and t2
-            // each went 3 rows to 0 — so naming `t1` would let an allow rule
-            // scoped to it authorize emptying `t2`. Identical names are kept:
-            // two unqualified mentions in one statement resolve under the same
-            // search path, so that is not a catalog assumption.
-            Ordering::Equal if writes(&a.verb) && a.table != b.table => SqlFacts {
+            // Two writes of the same rank: one statement, two write targets,
+            // and `SqlFacts` has room for one name. `WITH a AS (DELETE FROM t1
+            // RETURNING *), b AS (DELETE FROM t2 RETURNING *) SELECT 1` runs
+            // both CTEs even though nothing references them — measured on
+            // PostgreSQL 17.11, t1 and t2 each went 3 rows to 0 — so naming
+            // `t1` would let an allow rule scoped to it authorize emptying
+            // `t2`. Mentions are counted, never compared: by the time a name
+            // reaches `SqlFacts` it has been through [`relation_name`], which
+            // drops the qualifier, so `x.t` and `y.t` are two relations that
+            // look identical here. [`read_set`] counts mentions for the same
+            // reason.
+            Ordering::Equal if writes(&a.verb) => SqlFacts {
                 verb: a.verb,
                 table: String::new(),
             },
@@ -178,16 +181,6 @@ fn sole_relation<T>(targets: &[T], name_of: impl Fn(&T) -> String) -> String {
     }
 }
 
-/// Every relation named anywhere inside `node`, normalized, in source order.
-fn relations_in<V: Visit>(node: &V) -> Vec<String> {
-    let mut relations = Vec::new();
-    let _: ControlFlow<()> = visit_relations(node, |name| {
-        relations.push(relation_name(name));
-        ControlFlow::Continue(())
-    });
-    relations
-}
-
 /// The relations a query actually reads.
 ///
 /// A table-scoped allow rule must not authorize a relation the statement does
@@ -195,15 +188,18 @@ fn relations_in<V: Visit>(node: &V) -> Vec<String> {
 /// `FROM` item: a join, a comma list, either side of a `UNION`, a subquery in
 /// the projection (`SELECT (SELECT max(x) FROM secrets) FROM approved`), in a
 /// `WHERE` (`… WHERE id IN (SELECT id FROM secrets)`), in an `ORDER BY`, or in a
-/// CTE body. `visit_relations` walks all of them.
+/// CTE body — including a `WITH` nested inside a subquery, which is legal
+/// PostgreSQL (`SELECT * FROM (WITH x AS (SELECT * FROM secrets) SELECT * FROM
+/// x) q` reads `secrets`).
 ///
 /// A **CTE alias is not a relation**: it is a name the statement invents, so
 /// `WITH approved AS (SELECT * FROM secrets) SELECT * FROM approved` reads
 /// `secrets`, and reporting `approved` would let an allow rule scoped to it
-/// authorize reading `secrets`. An alias is dropped only where it is in scope —
-/// the outer query, and CTEs declared after it, plus its own body when the
-/// `WITH` is `RECURSIVE`. Inside its own non-recursive body the same word is the
-/// real table (`WITH t AS (SELECT * FROM t) …` reads the table `t`), and
+/// authorize reading `secrets`. An alias hides a name only where it is in
+/// scope, which is why this walks with a scope stack rather than a flat name
+/// list: the outer query and the CTEs declared after it, plus its own body when
+/// the `WITH` is `RECURSIVE`. Inside its own non-recursive body the same word is
+/// the real table (`WITH t AS (SELECT * FROM t) …` reads the table `t`), and
 /// treating it as the alias there would hide a relation.
 ///
 /// Occurrences are counted, not distinct names: deciding that two `ObjectName`s
@@ -211,40 +207,96 @@ fn relations_in<V: Visit>(node: &V) -> Vec<String> {
 /// is exactly the assumption this parser exists to stop making. Two mentions
 /// means no table.
 fn read_set(query: &Query) -> Vec<String> {
-    let recursive = query.with.as_ref().is_some_and(|with| with.recursive);
-    let ctes: Vec<_> = query
-        .with
-        .iter()
-        .flat_map(|with| &with.cte_tables)
-        .collect();
+    let mut walk = ReadSet::default();
+    let _ = query.visit(&mut walk);
+    walk.relations
+}
 
-    // Everything the query mentions, then the CTE bodies removed from it, so
-    // what is left is every mention outside them — the outer body, `ORDER BY`,
-    // `LIMIT`, and each alias where it is referenced.
-    let mut outside = relations_in(query);
-    let mut inside = Vec::new();
-    let mut declared: Vec<String> = Vec::new();
-    for cte in &ctes {
-        let body = relations_in(cte.query.as_ref());
-        for relation in &body {
-            if let Some(at) = outside.iter().position(|other| other == relation) {
-                outside.remove(at);
-            }
-        }
-        // A CTE body sees the aliases declared before it, and its own only when
-        // the `WITH` is `RECURSIVE`.
-        let own = cte.alias.name.value.to_ascii_lowercase();
-        let mut in_scope = declared.clone();
-        if recursive {
-            in_scope.push(own.clone());
-        }
-        inside.extend(body.into_iter().filter(|r| !in_scope.contains(r)));
-        declared.push(own);
+/// One `WITH` clause's aliases, and how much of it is in scope right now.
+struct CteScope {
+    names: Vec<String>,
+    /// The `Query` each alias is defined by, kept by address so the walk can
+    /// tell "I am now inside CTE i" without re-deriving it from the tree.
+    bodies: Vec<*const Query>,
+    recursive: bool,
+    /// How many of `names` are visible here. A non-recursive CTE cannot see
+    /// itself, so its own body sees only the aliases declared before it.
+    visible: usize,
+}
+
+/// Collects the relations a query reads, skipping CTE aliases where they are in
+/// scope. See [`read_set`].
+#[derive(Default)]
+struct ReadSet {
+    scopes: Vec<CteScope>,
+    relations: Vec<String>,
+}
+
+impl ReadSet {
+    /// If `query` is a CTE body of the innermost `WITH`, which one.
+    fn cte_index(&self, query: &Query) -> Option<usize> {
+        let scope = self.scopes.last()?;
+        let address: *const Query = query;
+        scope.bodies.iter().position(|body| *body == address)
     }
-    outside.retain(|relation| !declared.contains(relation));
+}
 
-    inside.append(&mut outside);
-    inside
+impl Visitor for ReadSet {
+    type Break = ();
+
+    fn pre_visit_query(&mut self, query: &Query) -> ControlFlow<()> {
+        if let Some(index) = self.cte_index(query) {
+            let scope = self.scopes.last_mut().expect("cte_index saw a scope");
+            // A `RECURSIVE` alias is in scope inside its own body; a plain one
+            // is not, and the same word there is the real relation.
+            scope.visible = index + usize::from(scope.recursive);
+        }
+        if let Some(with) = &query.with {
+            self.scopes.push(CteScope {
+                names: with
+                    .cte_tables
+                    .iter()
+                    .map(|cte| cte.alias.name.value.to_ascii_lowercase())
+                    .collect(),
+                bodies: with
+                    .cte_tables
+                    .iter()
+                    .map(|cte| cte.query.as_ref() as *const Query)
+                    .collect(),
+                recursive: with.recursive,
+                visible: 0,
+            });
+        }
+        ControlFlow::Continue(())
+    }
+
+    fn post_visit_query(&mut self, query: &Query) -> ControlFlow<()> {
+        if query.with.is_some() {
+            self.scopes.pop();
+        }
+        if let Some(index) = self.cte_index(query) {
+            // Leaving CTE `index`: the CTEs after it, and the outer body, see it.
+            self.scopes
+                .last_mut()
+                .expect("cte_index saw a scope")
+                .visible = index + 1;
+        }
+        ControlFlow::Continue(())
+    }
+
+    fn pre_visit_relation(&mut self, relation: &ObjectName) -> ControlFlow<()> {
+        let name = relation_name(relation);
+        // Any scope in which the name is visible hides it, so the innermost
+        // declaration wins — which is how PostgreSQL resolves it too.
+        let is_alias = self
+            .scopes
+            .iter()
+            .any(|scope| scope.names[..scope.visible].contains(&name));
+        if !is_alias {
+            self.relations.push(name);
+        }
+        ControlFlow::Continue(())
+    }
 }
 
 /// Whether an `EXPLAIN` runs the statement it wraps.
@@ -1339,6 +1391,27 @@ mod tests {
     }
 
     #[test]
+    fn a_cte_nested_in_a_subquery_is_scoped_like_the_outer_one() {
+        // A `WITH` inside a derived table is legal PostgreSQL, and its alias is
+        // no more a relation than an outer one. Only `secrets` is read here.
+        let nested =
+            parse_sql("SELECT * FROM (WITH x AS (SELECT * FROM secrets) SELECT * FROM x) q");
+        assert_eq!(nested.verb, "SELECT");
+        assert_eq!(nested.table, "secrets");
+
+        // Scoping, not a flat name list. The inner `a` alias is visible only
+        // inside the subquery, so the outer CTE's `SELECT * FROM a` reads the
+        // real table `a`; the inner CTE's `SELECT * FROM t` is the outer alias,
+        // and the subquery's `SELECT * FROM a` is the inner alias. One real
+        // relation is read, and it is `a`.
+        let shadowed = parse_sql(
+            "WITH t AS (SELECT * FROM a) SELECT * FROM (WITH a AS (SELECT * FROM t) SELECT * FROM a) q",
+        );
+        assert_eq!(shadowed.verb, "SELECT");
+        assert_eq!(shadowed.table, "a");
+    }
+
+    #[test]
     fn tied_write_verbs_on_different_relations_name_no_table() {
         // Measured on PostgreSQL 17.11: both CTEs executed even though nothing
         // references them — t1 and t2 each went 3 rows to 0 — so naming `t1`
@@ -1349,12 +1422,20 @@ mod tests {
         assert_eq!(two.verb, "DELETE");
         assert_eq!(two.table, "");
 
-        // The same relation on both sides is one relation, and is still named.
+        // Two writes name no table even when the names look the same: by the
+        // time they reach the facts the qualifier is gone, so `x.t` and `y.t`
+        // are indistinguishable here and are two different relations.
+        let qualified = parse_sql(
+            "WITH a AS (DELETE FROM x.t RETURNING *), b AS (DELETE FROM y.t RETURNING *) SELECT 1",
+        );
+        assert_eq!(qualified.verb, "DELETE");
+        assert_eq!(qualified.table, "");
+
         let same = parse_sql(
             "WITH a AS (DELETE FROM t1 RETURNING *), b AS (DELETE FROM t1 RETURNING *) SELECT 1",
         );
         assert_eq!(same.verb, "DELETE");
-        assert_eq!(same.table, "t1");
+        assert_eq!(same.table, "");
 
         // Different ranks are not a tie: the DELETE wins and keeps its table.
         let ranked = parse_sql(
