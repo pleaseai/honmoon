@@ -2662,15 +2662,40 @@ endpoints:
 trimmed) *and* the port must be equal. There is no IP resolution and no wildcard host in v0.1.0
 ([lib.rs:210-227](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/lib.rs#L210-L227)).
 The port comes from what the client dialed — the CONNECT authority for an HTTPS tunnel, defaulting
-to 443 (or 80 for a cleartext forward-proxy request) when the authority carries no explicit port.
+to 443 (or 80 for a cleartext forward-proxy request) when the authority carries no explicit port,
+or the SOCKS5 handshake's own `host:port` for a non-HTTP protocol.
 
 What each `protocol` does today:
 
 | Value | Effect |
 |-------|--------|
 | `kubernetes` | Intercepted HTTPS requests to this endpoint get `k8s` facts (`verb`, `resource`, `namespace`) parsed from the method and path |
-| `postgres` | Name only for now; the PostgreSQL data path is reserved for the SOCKS5 listener |
+| `postgres` | Connections that reach this endpoint **through the SOCKS5 listener** are inspected inline: every `Q` (simple query) and `P` (Parse) frame gets `sql` facts and its own verdict ([ADR-0007](https://github.com/pleaseai/honmoon/blob/main/.please/docs/decisions/0007-inline-postgresql-runtime-semantics.md)) |
 | `tcp` | Name only — the endpoint can be referenced by a rule, but no protocol facts are parsed |
+
+### Reaching a `postgres` endpoint
+
+SQL rules only fire on a connection that arrives through the **SOCKS5 listener** — the CONNECT
+proxy carries HTTP and TLS, and a PostgreSQL client speaks neither. Run the gateway with the
+listener bound (it is on by default) and point the client at it:
+
+```bash
+honmoon gateway --config policies/agent.yaml --socks-addr 127.0.0.1:1080
+```
+
+```bash
+# A client that speaks SOCKS5 dials the endpoint through the listener
+ALL_PROXY=socks5h://127.0.0.1:1080 <your-tool>
+```
+
+`psql` does not speak SOCKS5 itself, so wrap it in a SOCKS-aware launcher (`proxychains4`,
+`tsocks`) or point it at a local forwarder. Use `sslmode=prefer` or `sslmode=disable`: inline
+inspection needs plaintext between the client and honmoon, so `SSLRequest` is declined and
+`sslmode=require` cannot connect. A refused statement comes back as SQLSTATE `42501`
+(insufficient privilege) naming the rule, and the session stays open.
+
+A connection to a host with **no** declared endpoint (or one declared `protocol: tcp`) is a raw
+tunnel through the same listener, gated once on `domain` by the `egress` block — no SQL is parsed.
 
 A rule referencing an endpoint that `endpoints` does not declare is a **load-time warning, not an
 error**: `Facts.endpoint` may be set by other means, and refusing the whole policy over one
@@ -2708,7 +2733,7 @@ when the corresponding parser has run ([lib.rs:119-138](https://github.com/pleas
 | Variable | Fields | Populated by | Status |
 |----------|--------|--------------|--------|
 | `http` | `method`, `host`, `path`, `body_size` | CONNECT proxy sets `host` only today | `host` <span class="status-done">live</span> · rest <span class="status-planned">needs TLS termination</span> |
-| `sql` | `verb`, `table` | `parse_postgres_query` / `parse_sql` | <span class="status-done">parsed & tested</span> · <span class="status-planned">not yet on a live socket (TD-006)</span> |
+| `sql` | `verb`, `table` | `parse_postgres_query` / `parse_sql` | <span class="status-done">live on SOCKS5 connections to a `postgres` endpoint</span> |
 | `k8s` | `verb`, `resource`, `namespace` | `parse_k8s_request` | <span class="status-done">live on intercepted HTTPS to a `kubernetes` endpoint</span> |
 
 ### Example conditions

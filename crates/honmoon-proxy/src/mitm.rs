@@ -49,7 +49,7 @@ use http_body_util::{BodyExt, Full};
 use hudsucker::hyper::{Method, Request, Response, StatusCode, header};
 use hudsucker::{Body, HttpContext, HttpHandler, RequestOrResponse};
 
-use crate::approval::{ApprovalDecision, NewApproval};
+use crate::approval::{HoldOutcome, hold};
 use crate::body::{
     Buffered, MAX_INSPECT_BODY, StrictDecode, buffer_up_to, decode_strict, detokenizing_body,
     prefixed_body, utf8_prefix,
@@ -125,34 +125,6 @@ impl TunnelRegistry {
     }
 }
 
-/// Frees a pending approval slot (and audits the rejection) if the holding
-/// future is dropped before a decision was reached — hudsucker drops the
-/// request future when the waiting client disconnects.
-struct CancelOnDrop {
-    state: GatewayState,
-    id: u64,
-    rule: Option<String>,
-    summary: Option<FactsSummary>,
-    armed: bool,
-}
-
-impl Drop for CancelOnDrop {
-    fn drop(&mut self) {
-        if !self.armed {
-            return;
-        }
-        self.state.approvals.cancel(self.id);
-        tracing::info!(id = self.id, "client gone while held; approval cancelled");
-        self.state.audit.record(AuditDraft {
-            decision: Decision::Rejected,
-            verdict: Verdict::Pause,
-            rule: self.rule.take(),
-            facts: self.summary.take().unwrap_or_default(),
-            approval_id: Some(self.id),
-        });
-    }
-}
-
 struct RedactionInput<'a> {
     scanned: Option<&'a [u8]>,
     decoded: Option<&'a [u8]>,
@@ -202,13 +174,9 @@ impl HonmoonHandler {
         Some((name.to_owned(), endpoint.protocol))
     }
 
-    /// Apply host-level policy (allow / deny / pause) to `host`.
-    ///
-    /// `audit_allow` records the `Allow` decision — set for the CONNECT gate so
-    /// the connection is logged, but not for individual forwarded requests (which
-    /// would flood the bounded audit ring).
-    async fn host_gate(&self, host: &str, port: u16, audit_allow: bool) -> Gate {
-        let facts = Facts {
+    /// The facts a host-level decision is made on.
+    fn host_facts(&self, host: &str, port: u16) -> Facts {
+        Facts {
             domain: Some(host.to_owned()),
             endpoint: self.resolve_endpoint(host, port).map(|(name, _)| name),
             http: Some(HttpFacts {
@@ -216,7 +184,95 @@ impl HonmoonHandler {
                 ..Default::default()
             }),
             ..Default::default()
-        };
+        }
+    }
+
+    /// The endpoint name when `(host, port)` names one honmoon inspects inline
+    /// rather than tunnels.
+    ///
+    /// A CONNECT is a raw tunnel: honmoon only ever sees TLS or opaque bytes
+    /// over it, never PostgreSQL frames. Carrying a `protocol: postgres`
+    /// endpoint over one would take every statement past the `sql.*` rules that
+    /// endpoint exists to enforce — declaring the protocol would silently turn
+    /// inspection *off* on this listener.
+    ///
+    /// `postgres` is the only protocol affected: `kubernetes` is HTTPS and is
+    /// inspected by this very handler, and `tcp` declares no inspection at all.
+    fn uninspectable_endpoint(&self, host: &str, port: u16) -> Option<String> {
+        let (endpoint, protocol) = self.resolve_endpoint(host, port)?;
+        match protocol {
+            EndpointProtocol::Postgres => Some(endpoint),
+            EndpointProtocol::Kubernetes | EndpointProtocol::Tcp => None,
+        }
+    }
+
+    /// Answer a CONNECT to an inline-inspected endpoint, without ever opening a
+    /// tunnel honmoon could not inspect.
+    ///
+    /// Policy still runs and still decides the audit entry, so the transport
+    /// refusal does not cost the connection its rule attribution:
+    ///
+    /// - `deny` is answered exactly as anywhere else — the connection was
+    ///   refused on its own merits and the transport is beside the point.
+    /// - `allow` becomes the transport refusal. No `Allowed` entry is recorded
+    ///   for a connection that never happens.
+    /// - `pause` is refused too, and is **not** held: a human cannot approve a
+    ///   transport into inspecting frames it never sees, so the queue would only
+    ///   offer an approval that cannot mean what it says. The rule that paused it
+    ///   is still what the audit entry names.
+    ///
+    /// The audit entry keeps `decision` and `verdict` apart, as the hold path
+    /// already does: the disposition is a denial (honmoon refused the
+    /// connection) while the verdict stays whatever the policy actually said, so
+    /// the entry never claims a rule denied something it allowed.
+    fn refuse_uninspectable_connect(
+        &self,
+        host: &str,
+        port: u16,
+        endpoint: &str,
+    ) -> RequestOrResponse {
+        let facts = self.host_facts(host, port);
+        let outcome = decide_explained(&self.state.policy, &facts);
+        let summary = FactsSummary::from(&facts);
+
+        if outcome.verdict == Verdict::Deny {
+            tracing::info!(domain = %host, rule = ?outcome.rule, "egress denied");
+            self.state.audit.record(AuditDraft {
+                decision: Decision::Denied,
+                verdict: Verdict::Deny,
+                rule: outcome.rule,
+                facts: summary,
+                approval_id: None,
+            });
+            return status_response(StatusCode::FORBIDDEN);
+        }
+
+        tracing::info!(
+            domain = %host,
+            %endpoint,
+            rule = ?outcome.rule,
+            verdict = ?outcome.verdict,
+            "CONNECT to an inline-inspected endpoint refused"
+        );
+        self.state.audit.record(AuditDraft {
+            decision: Decision::Denied,
+            verdict: outcome.verdict,
+            // Whatever matched, named — an operator reading the entry needs to
+            // see the rule that was in play, not a bare synthetic denial.
+            rule: outcome.rule,
+            facts: summary,
+            approval_id: None,
+        });
+        uninspectable_connect_response(endpoint)
+    }
+
+    /// Apply host-level policy (allow / deny / pause) to `host`.
+    ///
+    /// `audit_allow` records the `Allow` decision — set for the CONNECT gate so
+    /// the connection is logged, but not for individual forwarded requests (which
+    /// would flood the bounded audit ring).
+    async fn host_gate(&self, host: &str, port: u16, audit_allow: bool) -> Gate {
+        let facts = self.host_facts(host, port);
         let outcome = decide_explained(&self.state.policy, &facts);
         let summary = FactsSummary::from(&facts);
 
@@ -255,6 +311,9 @@ impl HonmoonHandler {
     /// Hold a `pause`d request until a human resolves it (or the hold times out).
     /// The client waits the whole time (a CONNECT stays silent until its `200`),
     /// so returning [`Gate::Proceed`] lets it through and [`Gate::Block`] closes it.
+    ///
+    /// The hold itself lives in [`crate::approval::hold`], shared with the SOCKS5
+    /// data path; only the HTTP rendering of the outcome is decided here.
     async fn hold(
         &self,
         host: &str,
@@ -262,77 +321,11 @@ impl HonmoonHandler {
         rule: Option<String>,
         approval_summary: String,
     ) -> Gate {
-        let registration = self.state.approvals.register(NewApproval {
-            domain: Some(host.to_owned()),
-            rule: rule.clone(),
-            summary: approval_summary,
-            ..Default::default()
-        });
-        let Some((pending, rx)) = registration else {
-            // Pending queue is at capacity — fail closed rather than hold.
-            tracing::warn!(domain = %host, "approval queue full; rejecting paused request");
-            self.state.audit.record(AuditDraft {
-                decision: Decision::Rejected,
-                verdict: Verdict::Pause,
-                rule,
-                facts: summary,
-                approval_id: None,
-            });
-            return Gate::Block(Box::new(status_response(StatusCode::SERVICE_UNAVAILABLE)));
-        };
-
-        self.state.audit.record(AuditDraft {
-            decision: Decision::Paused,
-            verdict: Verdict::Pause,
-            rule: rule.clone(),
-            facts: summary.clone(),
-            approval_id: Some(pending.id),
-        });
-        tracing::info!(id = pending.id, domain = %host, "request held for approval");
-
-        // If the client disconnects mid-hold, hudsucker drops this future and
-        // the code after the `await` never runs — the guard then frees the slot
-        // so abandoned holds can't saturate the approval queue.
-        let mut guard = CancelOnDrop {
-            state: self.state.clone(),
-            id: pending.id,
-            rule: rule.clone(),
-            summary: Some(summary.clone()),
-            armed: true,
-        };
-        let decision = match tokio::time::timeout(self.state.pause_timeout, rx).await {
-            Ok(Ok(d)) => d,
-            // Registry dropped (shutdown) — treat as rejection.
-            Ok(Err(_)) => ApprovalDecision::Reject,
-            // Timed out waiting for a human — drop the slot and reject.
-            Err(_elapsed) => {
-                self.state.approvals.cancel(pending.id);
-                tracing::info!(id = pending.id, "approval timed out");
-                ApprovalDecision::Reject
-            }
-        };
-        guard.armed = false;
-
-        match decision {
-            ApprovalDecision::Approve => {
-                self.state.audit.record(AuditDraft {
-                    decision: Decision::Approved,
-                    verdict: Verdict::Pause,
-                    rule,
-                    facts: summary,
-                    approval_id: Some(pending.id),
-                });
-                Gate::Proceed
-            }
-            ApprovalDecision::Reject => {
-                self.state.audit.record(AuditDraft {
-                    decision: Decision::Rejected,
-                    verdict: Verdict::Pause,
-                    rule,
-                    facts: summary,
-                    approval_id: Some(pending.id),
-                });
-                Gate::Block(Box::new(status_response(StatusCode::FORBIDDEN)))
+        match hold(&self.state, host, summary, rule, approval_summary).await {
+            HoldOutcome::Approved => Gate::Proceed,
+            HoldOutcome::Rejected => Gate::Block(Box::new(status_response(StatusCode::FORBIDDEN))),
+            HoldOutcome::QueueFull => {
+                Gate::Block(Box::new(status_response(StatusCode::SERVICE_UNAVAILABLE)))
             }
         }
     }
@@ -775,6 +768,12 @@ impl HttpHandler for HonmoonHandler {
             let authority = req.uri().authority().map(|a| a.as_str()).unwrap_or("");
             let host = canonical_host(authority);
             let port = authority_port(authority).unwrap_or(HTTPS_PORT);
+            // An endpoint this listener cannot inspect takes its own path, which
+            // still runs the policy — but never authorizes (or audits as
+            // allowed) a tunnel that would carry its frames uninspected.
+            if let Some(endpoint) = self.uninspectable_endpoint(&host, port) {
+                return self.refuse_uninspectable_connect(&host, port, &endpoint);
+            }
             return match self.host_gate(&host, port, true).await {
                 Gate::Proceed => {
                     self.tunnels.authorize(ctx.client_addr, host, port);
@@ -1088,6 +1087,33 @@ fn signed_body_response(scheme: SignedBodyScheme) -> RequestOrResponse {
         .header(header::CONTENT_TYPE, "text/plain; charset=utf-8")
         .header(header::CONTENT_LENGTH, length.to_string())
         .header(HONMOON_REASON, "signed-body-redaction")
+        .header(header::CONNECTION, "close")
+        .body(Body::from(Full::new(hudsucker::hyper::body::Bytes::from(
+            reason,
+        ))))
+        .expect("static response is valid")
+        .into()
+}
+
+/// A `403` explaining that this endpoint is inspected inline, so it must be
+/// dialled through the SOCKS5 listener rather than tunnelled over CONNECT.
+fn uninspectable_connect_response(endpoint: &str) -> RequestOrResponse {
+    // The listener's address is a CLI flag the data plane never receives, and
+    // `--socks-addr off` disables it entirely — so the message names the flag
+    // rather than inventing a port that may not be listening.
+    let reason = format!(
+        "honmoon: endpoint {endpoint} is declared `protocol: postgres`, so its statements are \
+         inspected inline and it cannot be carried over a CONNECT tunnel. Dial it through the \
+         gateway's SOCKS5 listener instead (ALL_PROXY=socks5h://<the gateway's --socks-addr>); \
+         if the gateway was started with `--socks-addr off` there is no such listener and this \
+         endpoint is unreachable.\n"
+    );
+    let length = reason.len();
+    Response::builder()
+        .status(StatusCode::FORBIDDEN)
+        .header(header::CONTENT_TYPE, "text/plain; charset=utf-8")
+        .header(header::CONTENT_LENGTH, length.to_string())
+        .header(HONMOON_REASON, "uninspectable-connect")
         .header(header::CONNECTION, "close")
         .body(Body::from(Full::new(hudsucker::hyper::body::Bytes::from(
             reason,

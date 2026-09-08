@@ -12,7 +12,7 @@ use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, Instant};
 
-use honmoon_core::{AuditLog, Decision, Policy};
+use honmoon_core::{AuditLog, Decision, Policy, Verdict};
 use honmoon_proxy::approval::{ApprovalDecision, ApprovalRegistry};
 use honmoon_proxy::ca::CaMaterial;
 use honmoon_proxy::gateway::{GatewayState, InterceptPolicy, PiiMode};
@@ -450,6 +450,183 @@ fn block_mode_enforces_http_rules_on_uninspected_body() {
     assert!(events.iter().any(|event| {
         event.decision == Decision::Denied && event.rule.as_deref() == Some("block-submit-path")
     }));
+}
+
+/// Send a bare `CONNECT host:port` to the proxy and return its response head,
+/// with the audit log so a refusal can be asserted.
+fn connect_response(policy_yaml: &str, host: &str, port: u16) -> (String, Arc<AuditLog>) {
+    let audit = Arc::new(AuditLog::new(1024));
+    let state = GatewayState {
+        policy: Arc::new(Policy::from_yaml(policy_yaml).unwrap()),
+        audit: audit.clone(),
+        approvals: Arc::new(ApprovalRegistry::new()),
+        pause_timeout: Duration::from_secs(10),
+        ca: Arc::new(CaMaterial::generate().unwrap()),
+        intercept: InterceptPolicy::All,
+        pii_mode: PiiMode::Block,
+        redaction: None,
+    };
+    let proxy_port = start_proxy(state);
+    let connect = format!("CONNECT {host}:{port} HTTP/1.1\r\nHost: {host}:{port}\r\n\r\n");
+
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let response = runtime.block_on(async move {
+        let mut tcp = TcpStream::connect(("127.0.0.1", proxy_port)).await.unwrap();
+        tcp.write_all(connect.as_bytes()).await.unwrap();
+        let head = read_head(&mut tcp).await;
+        if head.starts_with("HTTP/1.1 200") {
+            return head; // an established tunnel stays open; there is no body
+        }
+        let mut body = Vec::new();
+        let _ = tcp.read_to_end(&mut body).await;
+        head + &String::from_utf8_lossy(&body)
+    });
+    (response, audit)
+}
+
+/// A policy declaring an inline-inspected `postgres` endpoint alongside an
+/// ordinary `tcp` one, both on loopback.
+fn endpoint_protocol_policy(postgres: u16, plain: u16) -> String {
+    format!(
+        "\
+egress:
+  default: allow
+endpoints:
+  postgres-prod: {{ host: localhost, port: {postgres}, protocol: postgres }}
+  cache-prod: {{ host: localhost, port: {plain}, protocol: tcp }}
+"
+    )
+}
+
+/// A CONNECT tunnel would carry PostgreSQL frames past every `sql.*` rule, so
+/// the endpoint that exists to have them inspected must not be tunnellable.
+#[test]
+fn connect_to_a_postgres_endpoint_is_refused_and_audited() {
+    let postgres = start_hanging_upstream();
+    let plain = start_hanging_upstream();
+    let (response, audit) = connect_response(
+        &endpoint_protocol_policy(postgres, plain),
+        "localhost",
+        postgres,
+    );
+
+    assert!(
+        response.starts_with("HTTP/1.1 403"),
+        "an inline-inspected endpoint must not be tunnelled: {response:?}"
+    );
+    assert!(
+        response
+            .to_ascii_lowercase()
+            .contains("x-honmoon-reason: uninspectable-connect"),
+        "the refusal is labelled: {response:?}"
+    );
+    assert!(
+        response.contains("--socks-addr") && !response.contains("1080"),
+        "the refusal points at the configured listener, not a guessed port: {response:?}"
+    );
+    assert!(
+        audit.recent(50).iter().any(|event| {
+            event.decision == Decision::Denied
+                && event.facts.endpoint.as_deref() == Some("postgres-prod")
+        }),
+        "the refusal must not be silent"
+    );
+    assert!(
+        !audit
+            .recent(50)
+            .iter()
+            .any(|event| event.decision == Decision::Allowed),
+        "a connection that is refused must never be audited as allowed"
+    );
+}
+
+/// A `deny` rule decides the connection on its own merits, so the transport
+/// refusal must not cost the entry its rule attribution.
+#[test]
+fn connect_to_a_denied_postgres_endpoint_keeps_the_rule_attribution() {
+    let postgres = start_hanging_upstream();
+    let plain = start_hanging_upstream();
+    let policy = format!(
+        "{}rules:
+  - name: no-prod-db
+    endpoint: postgres-prod
+    condition: \"true\"
+    verdict: deny
+",
+        endpoint_protocol_policy(postgres, plain)
+    );
+    let (response, audit) = connect_response(&policy, "localhost", postgres);
+
+    assert!(
+        response.starts_with("HTTP/1.1 403"),
+        "a denied endpoint is refused: {response:?}"
+    );
+    let events = audit.recent(50);
+    assert!(
+        events.iter().any(|event| {
+            event.decision == Decision::Denied
+                && event.rule.as_deref() == Some("no-prod-db")
+                && event.facts.endpoint.as_deref() == Some("postgres-prod")
+        }),
+        "the audit entry names the rule that denied it"
+    );
+    assert!(
+        !events.iter().any(|e| e.decision == Decision::Allowed),
+        "a connection that is refused must never be audited as allowed"
+    );
+}
+
+#[test]
+fn connect_to_an_ordinary_endpoint_still_succeeds() {
+    let postgres = start_hanging_upstream();
+    let plain = start_hanging_upstream();
+    let (response, _) = connect_response(
+        &endpoint_protocol_policy(postgres, plain),
+        "localhost",
+        plain,
+    );
+
+    assert!(
+        response.starts_with("HTTP/1.1 200"),
+        "a `tcp` endpoint declares no inline inspection, so it tunnels: {response:?}"
+    );
+}
+
+/// The transport refuses the connection, but the policy said `allow` — the
+/// entry must not claim a rule denied what it allowed.
+#[test]
+fn connect_to_an_allowed_postgres_endpoint_keeps_the_policy_verdict() {
+    let postgres = start_hanging_upstream();
+    let plain = start_hanging_upstream();
+    let policy = format!(
+        "{}rules:
+  - name: allow-prod-db
+    endpoint: postgres-prod
+    condition: \"true\"
+    verdict: allow
+",
+        endpoint_protocol_policy(postgres, plain)
+    );
+    let (response, audit) = connect_response(&policy, "localhost", postgres);
+
+    assert!(
+        response.starts_with("HTTP/1.1 403"),
+        "an inline-inspected endpoint is refused however the policy voted: {response:?}"
+    );
+    let events = audit.recent(50);
+    assert!(
+        events.iter().any(|event| {
+            event.decision == Decision::Denied
+                && event.verdict == Verdict::Allow
+                && event.rule.as_deref() == Some("allow-prod-db")
+        }),
+        "the entry records honmoon's denial against the policy's own verdict: {:?}",
+        events
+    );
+    assert!(
+        !events.iter().any(|e| e.decision == Decision::Allowed),
+        "a connection that is refused must never be audited as allowed"
+    );
 }
 
 /// A policy that names the loopback upstream `k8s-prod` and denies secret

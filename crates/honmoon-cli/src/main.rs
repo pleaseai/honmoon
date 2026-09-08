@@ -44,6 +44,11 @@ enum Command {
         /// Address the egress proxy listens on.
         #[arg(long, default_value = "127.0.0.1:8443", value_name = "HOST:PORT")]
         addr: String,
+        /// Address the SOCKS5 listener binds — the transport for non-HTTP
+        /// protocols (a `protocol: postgres` endpoint is inspected inline).
+        /// `off` disables the listener entirely; the CONNECT proxy keeps running.
+        #[arg(long, default_value = "127.0.0.1:1080", value_name = "HOST:PORT")]
+        socks_addr: String,
         /// Address the management API + dashboard listens on.
         #[arg(long, default_value = "127.0.0.1:8444", value_name = "HOST:PORT")]
         mgmt_addr: String,
@@ -169,6 +174,7 @@ fn main() -> Result<()> {
         Command::Gateway {
             config,
             addr,
+            socks_addr,
             mgmt_addr,
             audit_log,
             hook_token,
@@ -182,6 +188,7 @@ fn main() -> Result<()> {
         } => gateway(GatewayArgs {
             config,
             addr,
+            socks_addr,
             mgmt_addr,
             audit_log,
             hook_token,
@@ -243,6 +250,7 @@ impl From<SignedBodyArg> for SignedBodyMode {
 struct GatewayArgs {
     config: PathBuf,
     addr: String,
+    socks_addr: String,
     mgmt_addr: String,
     audit_log: Option<PathBuf>,
     hook_token: Option<String>,
@@ -270,6 +278,7 @@ fn gateway(args: GatewayArgs) -> Result<()> {
     let GatewayArgs {
         config,
         addr,
+        socks_addr,
         mgmt_addr,
         audit_log,
         hook_token,
@@ -289,7 +298,7 @@ fn gateway(args: GatewayArgs) -> Result<()> {
     let policy_yaml = std::fs::read_to_string(&config)
         .with_context(|| format!("reading policy {}", config.display()))?;
     let policy = Policy::from_yaml(&policy_yaml)?;
-    tracing::info!(rules = policy.rules.len(), %addr, %mgmt_addr, "starting gateway");
+    tracing::info!(rules = policy.rules.len(), %addr, %socks_addr, %mgmt_addr, "starting gateway");
 
     let audit = match &audit_log {
         Some(path) => Arc::new(
@@ -334,9 +343,20 @@ fn gateway(args: GatewayArgs) -> Result<()> {
         redaction,
     };
 
-    // Bind both listeners up front so a bind error is reported before we spawn.
+    // Bind every listener up front so a bind error is reported before we spawn.
     let proxy_listener =
         TcpListener::bind(&addr).with_context(|| format!("binding proxy {addr}"))?;
+    // `off` turns the SOCKS5 transport off entirely: it is a second egress path
+    // (raw for anything that is not a `protocol: postgres` endpoint), so a
+    // deployment that only wants the inspecting CONNECT proxy must be able to
+    // decline it — and must not fail to start because :1080 is taken.
+    let socks_listener = match socks_addr.as_str() {
+        "off" | "none" | "disabled" => None,
+        socks_addr => Some(
+            TcpListener::bind(socks_addr)
+                .with_context(|| format!("binding SOCKS5 listener {socks_addr}"))?,
+        ),
+    };
     let mgmt_listener = TcpListener::bind(&mgmt_addr)
         .with_context(|| format!("binding management API {mgmt_addr}"))?;
 
@@ -347,14 +367,31 @@ fn gateway(args: GatewayArgs) -> Result<()> {
         // Run both servers and surface unexpected proxy termination — otherwise
         // the process would keep serving the management API while egress
         // filtering is silently down.
+        let socks_state = state.clone();
         let proxy_task =
             tokio::spawn(async move { honmoon_proxy::gateway::serve(state, proxy_listener).await });
+        let socks_task = socks_listener.map(|socks_listener| {
+            tokio::spawn(async move {
+                honmoon_proxy::socks::serve_socks(socks_state, socks_listener).await
+            })
+        });
+        // With the listener off there is nothing to join on, so the arm waits
+        // forever instead of firing immediately and killing the gateway.
+        let socks_task = async move {
+            match socks_task {
+                Some(task) => task.await,
+                None => std::future::pending().await,
+            }
+        };
         tokio::select! {
             mgmt = honmoon_mgmt::serve(app_state, mgmt_listener) => {
                 mgmt.context("management API server failed")
             }
             proxy = proxy_task => {
                 anyhow::bail!("proxy server task exited unexpectedly: {proxy:?}")
+            }
+            socks = socks_task => {
+                anyhow::bail!("SOCKS5 listener task exited unexpectedly: {socks:?}")
             }
         }
     })?;

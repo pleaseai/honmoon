@@ -70,13 +70,19 @@ The moat: wire-level protocol parsing beyond HTTP — in `honmoon-core::protocol
 - [x] SQL verb/table heuristic over a statement (`parse_sql`) — DROP/TRUNCATE/DELETE/UPDATE/INSERT/SELECT
 - [x] Kubernetes API facts → `k8s.resource`, `k8s.verb`, `k8s.namespace` (`parse_k8s_request`; core + grouped APIs, list vs get)
 - [x] `sql`/`k8s` facts wired into the CEL engine; per-endpoint policy binding via `Rule::endpoint`
-- [ ] (carried) Live inline TCP relay that feeds the parsers from real traffic — needs endpoint listener config + (for K8s) TLS termination; see TD-006
+- [x] Live inline relay feeding the parsers from real traffic: the SOCKS5 listener
+  (`honmoon-proxy::socks`, `--socks-addr`) dispatches on the handshake's `host:port`, and
+  `honmoon-proxy::runtime::postgres` decides every `Q`/`P` frame inline ([ADR-0007](../.please/docs/decisions/0007-inline-postgresql-runtime-semantics.md))
+- [ ] (carried) Bridge the SOCKS5 listener into `honmoon run`'s sandbox, and TLS termination for a
+  `kubernetes` endpoint reached over SOCKS5; see TD-006
 
 **Exit criteria**: ✅ a `DROP`/`TRUNCATE` against `postgres-prod` and a `delete secrets` against
 `k8s-prod` are caught by policy — proven end-to-end (raw packet/request → parser → `decide()`) by
 `engine.rs::protocol_facts_drive_policy_end_to_end` and against the shipped `policies/agent.yaml` by
-`shipped_example_policy_fires`.
-Note: parsing is engine-complete and tested; wiring it onto a live socket is the data-plane follow-up (TD-006).
+`shipped_example_policy_fires`, and now on a live socket by
+`crates/honmoon-proxy/tests/socks.rs` (a `DROP TABLE` over SOCKS5 is refused with SQLSTATE 42501 and
+never reaches the database).
+Note: PostgreSQL is live; `honmoon run` bridging and a K8s runtime over SOCKS5 remain (TD-006).
 
 ---
 
@@ -99,8 +105,9 @@ Note: parsing is engine-complete and tested; wiring it onto a live socket is the
 live CONNECT, the held request appears on the management API's approval queue, approving it
 (over HTTP) lets the tunnel through (`200`) while rejecting blocks it (`403`), and every step
 (`paused` → `approved`/`rejected`) is recorded in the audit log.
-Note: over CONNECT only `http.host`-based pause rules fire today; SQL/K8s `pause` needs the
-live inline relay + TLS termination (TD-006).
+Note: SQL `pause` now fires on the live PostgreSQL runtime (a held statement waits, then forwards
+on approval — `socks.rs::pause_rule_holds_until_approved_then_forwards`); K8s `pause` still needs
+TLS termination on a SOCKS5-reached endpoint (TD-006).
 
 ---
 

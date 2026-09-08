@@ -157,16 +157,37 @@ rules:
 # Run a single command in isolation — only allowed domains are reachable
 honmoon run --policy policies/agent.yaml -- curl https://api.github.com
 
-# Run the gateway: egress proxy on :8443, management API + dashboard on :8444
+# Run the gateway: egress proxy on :8443, SOCKS5 on :1080, dashboard on :8444
 honmoon gateway --config policies/agent.yaml --audit-log honmoon-audit.jsonl
 # Intercept TLS and enforce PII policy verdicts (detect-only is the default mode)
 honmoon gateway --config policies/agent.yaml --tls-intercept --pii-mode block
 #   proxy:     http://127.0.0.1:8443   (point https_proxy here)
+#   socks5:    127.0.0.1:1080          (point ALL_PROXY here; --socks-addr)
 #   dashboard: http://127.0.0.1:8444   (audit log, approval queue, policy)
 
 # Join a gateway from a client (routes all host traffic)
 honmoon join --gateway honmoon.internal:8443
 ```
+
+### SOCKS5 and inline PostgreSQL inspection
+
+`honmoon gateway` also binds a SOCKS5 listener (`--socks-addr`, default `127.0.0.1:1080`) beside
+the HTTP proxy. It is the transport for everything that speaks neither HTTP nor TLS, and its
+handshake carries the destination `host:port` that selects an endpoint from the policy. A
+connection to a host declared `protocol: postgres` is **inspected inline**: every `Q` (simple
+query) and `P` (Parse) frame is parsed into `sql.verb` / `sql.table` and gets its own verdict, so
+a `DROP TABLE` is refused with SQLSTATE `42501` naming the rule and never reaches the database,
+while the session stays open. Any other destination is a raw tunnel gated on `domain` exactly like
+a CONNECT. PostgreSQL inspection therefore requires the client to dial **through SOCKS5**
+(`ALL_PROXY=socks5h://127.0.0.1:1080`) — `psql` does not speak SOCKS5 natively, so wrap it in a
+SOCKS-aware launcher such as `proxychains4`, and use `sslmode=prefer`/`disable`, since inline
+inspection needs plaintext between the client and honmoon. See
+[ADR-0007](.please/docs/decisions/0007-inline-postgresql-runtime-semantics.md).
+
+That raw tunnel is a **second egress path with no body inspection**: a client that dials an
+`https://` host through it gets the `domain` gate and nothing else — no TLS interception, no PII
+scan, no redaction, no `http.*` rule. Keep `egress.default: deny` so only allow-listed hosts can
+use it, or pass `--socks-addr off` to run the CONNECT proxy alone.
 
 ### Wire redaction fail modes
 
@@ -217,8 +238,9 @@ Consequences worth knowing before you hit them:
 
 - **A client that speaks no proxy fails closed.** Anything that reads neither `HTTP_PROXY` nor
   `ALL_PROXY` — `psql`, `ssh`, a binary with a hardcoded socket — cannot connect at all under
-  `run`. That is the correct default for a firewall, and it is deliberate rather than a bug. Until
-  the SOCKS5 transport lands, use `honmoon gateway` for those protocols.
+  `run`. That is the correct default for a firewall, and it is deliberate rather than a bug.
+  `run` does not yet bridge the SOCKS5 listener into the sandbox, so use `honmoon gateway` — whose
+  SOCKS5 listener carries those protocols — for `psql` and friends.
 - **Names are resolved by the proxy, not by the child.** There is no DNS inside the sandbox on
   either platform. A proxied client does not need it — it hands the proxy a hostname — but a tool
   that resolves before it proxies will fail.
