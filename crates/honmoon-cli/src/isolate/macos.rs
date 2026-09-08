@@ -145,20 +145,27 @@ pub fn sandbox_available() -> bool {
 /// Returns the command's own exit status. `Err` means the sandbox could not be
 /// set up and the command has **not** run, which is what lets the caller fall
 /// back to advisory without any risk of running it twice.
-pub fn run_confined(proxy: SocketAddr, program: &str, args: &[String]) -> io::Result<ExitStatus> {
+pub fn run_confined(
+    proxy: SocketAddr,
+    socks: SocketAddr,
+    program: &str,
+    args: &[String],
+) -> io::Result<ExitStatus> {
     // The profile can only name `localhost`, so a proxy anywhere else would be
     // unreachable from inside it and every child would fail to connect. `run`
     // binds `127.0.0.1:0`, so this is unreachable in practice — it is here so
     // that if it ever stops being true, the run downgrades to advisory with a
     // stated reason instead of confining children into a dead end.
-    if !proxy.ip().is_loopback() {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            format!(
-                "the egress proxy is on {proxy}, but a Seatbelt profile can only \
-                 open a hole to loopback"
-            ),
-        ));
+    for listener in [proxy, socks] {
+        if !listener.ip().is_loopback() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!(
+                    "the egress proxy is on {listener}, but a Seatbelt profile \
+                     can only open a hole to loopback"
+                ),
+            ));
+        }
     }
 
     // Before the spawn, and propagated rather than swallowed: a descriptor that
@@ -180,7 +187,8 @@ pub fn run_confined(proxy: SocketAddr, program: &str, args: &[String]) -> io::Re
         .args(args);
 
     let proxy_url = format!("http://{proxy}");
-    for (key, value) in super::proxy_env(&proxy_url) {
+    let socks_url = format!("socks5h://{socks}");
+    for (key, value) in super::proxy_env(&proxy_url, &socks_url) {
         command.env(key, value);
     }
     // Cleared rather than replaced, which is the opposite of what the Linux
@@ -399,8 +407,15 @@ mod tests {
     #[test]
     fn a_proxy_off_loopback_is_refused_rather_than_confined_into_a_dead_end() {
         let off_box = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 8080);
-        let error = run_confined(off_box, "/usr/bin/true", &[])
+        let loopback = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 8081);
+        let error = run_confined(off_box, loopback, "/usr/bin/true", &[])
             .expect_err("a profile cannot open a hole to anything but loopback");
+        assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+
+        // And the SOCKS5 listener is checked the same way: an off-box address
+        // there would be just as unreachable from inside the profile.
+        let error = run_confined(loopback, off_box, "/usr/bin/true", &[])
+            .expect_err("the SOCKS5 listener is held to the same rule");
         assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
     }
 

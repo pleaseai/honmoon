@@ -333,7 +333,12 @@ fn private_scratch_dir() -> io::Result<PathBuf> {
 /// happens before the `exec`, while a failed `wait` would be a *post*-exec error
 /// that a caller reading it as "setup failed" would answer by starting the
 /// command a second time — unconfined, alongside the first.
-pub fn run_confined(proxy: SocketAddr, program: &str, args: &[String]) -> io::Result<ExitStatus> {
+pub fn run_confined(
+    proxy: SocketAddr,
+    socks: SocketAddr,
+    program: &str,
+    args: &[String],
+) -> io::Result<ExitStatus> {
     use std::os::unix::process::ExitStatusExt;
 
     // Held as a local, never handed to the caller: the wait below already blocks
@@ -341,6 +346,7 @@ pub fn run_confined(proxy: SocketAddr, program: &str, args: &[String]) -> io::Re
     // frame — and a guard returned into a caller that ends in
     // `std::process::exit` would never be dropped at all, leaking the scratch
     // directory on every run.
+    let _ = socks;
     let host_bridge = HostBridge::open(proxy)?;
 
     // Built before the fork: `pre_exec` runs between `fork` and `exec` in a
@@ -621,7 +627,7 @@ pub fn supervise(bridge_socket: &Path, argv: &[String]) -> io::Result<ExitStatus
     let proxy_url = format!("http://127.0.0.1:{port}");
     let mut command = Command::new(program);
     command.args(args);
-    for (key, value) in super::proxy_env(&proxy_url) {
+    for (key, value) in super::proxy_env(&proxy_url, &proxy_url) {
         command.env(key, value);
     }
     // An inherited `no_proxy` is meaningless in here and actively harmful: the

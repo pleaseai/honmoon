@@ -410,8 +410,15 @@ fn run(policy: PathBuf, argv: Vec<String>) -> Result<()> {
     // Bind the proxy socket here and hand it to the proxy thread. Binding in one
     // place (rather than allocating a port, dropping it, and rebinding) closes
     // the TOCTOU window where another process could steal the port.
-    let (v4, v6) = bind_loopback_pair().context("binding egress proxy")?;
-    let addr = v4.local_addr()?;
+    let (http_v4, http_v6) = bind_loopback_pair().context("binding egress proxy")?;
+    // A second pair, on its own port: the CONNECT proxy and the SOCKS5 listener
+    // speak different protocols on the first byte, so they cannot share one.
+    // SOCKS5 is what carries a non-HTTP protocol — a `postgres` endpoint is
+    // inspected inline behind it — and it is the transport ADR-0005 names for
+    // everything `CONNECT` cannot express.
+    let (socks_v4, socks_v6) = bind_loopback_pair().context("binding the SOCKS5 listener")?;
+    let addr = http_v4.local_addr()?;
+    let socks_addr = socks_v4.local_addr()?;
     // Built here rather than inside the thread, because a failure to build one
     // is not a failure the thread can report. `expect` there would unwind the
     // closure, dropping the listeners it captured and handing the proxy port
@@ -421,41 +428,45 @@ fn run(policy: PathBuf, argv: Vec<String>) -> Result<()> {
     // into an unowned port inside the sandbox's one hole. Here it is a `?`.
     let runtime = tokio::runtime::Runtime::new().context("building the proxy runtime")?;
     {
-        // One `GatewayState` behind both listeners rather than one each: it is
+        // One `GatewayState` behind every listener rather than one each: it is
         // `Arc`s throughout, and splitting it would split the audit ring and the
         // approval registry with it, so a verdict's visibility would depend on
-        // which loopback family the client happened to use.
+        // which loopback family — or which protocol — the client happened to
+        // use.
         let state = GatewayState::new(policy.clone());
         std::thread::spawn(move || {
             runtime.block_on(async move {
-                // `select!` rather than `tokio::spawn` for the IPv6 half, and
-                // the reason is the whole point of binding it. `serve` ends
-                // only by panicking, and a panic inside a spawned task is
-                // caught by tokio and parked in a `JoinHandle` nobody joins —
-                // so the IPv6 accept loop could die, drop its listener, and
-                // hand `::1:<port>` back to the first process that asked for
-                // it, while `run` carried on serving IPv4 and still reported
-                // `Enforced`. That is the reopened hole, arrived at silently.
+                // `select!` rather than `tokio::spawn` for the halves beyond the
+                // first, and the reason is the whole point of binding them.
+                // `serve` ends only by panicking, and a panic inside a spawned
+                // task is caught by tokio and parked in a `JoinHandle` nobody
+                // joins — so an accept loop could die, drop its listener, and
+                // hand that address back to the first process that asked for
+                // it, while `run` carried on serving the others and still
+                // reported `Enforced`. That is the reopened hole, arrived at
+                // silently.
                 //
-                // Polled in one task, either loop failing takes the proxy down
-                // with it: the child is then pointed at a dead port and fails
-                // closed, which is the honest outcome. It does not leave a live
-                // child talking to a boundary with half of it missing.
-                match v6 {
-                    Some(v6) => {
-                        tokio::select! {
-                            _ = honmoon_proxy::gateway::serve(state.clone(), v6) => {}
-                            _ = honmoon_proxy::gateway::serve(state, v4) => {}
-                        }
-                    }
-                    None => honmoon_proxy::gateway::serve(state, v4).await,
+                // Polled in one task, any loop failing takes the whole proxy
+                // down with it: the child is then pointed at dead ports and
+                // fails closed, which is the honest outcome. It does not leave
+                // a live child talking to a boundary with part of it missing.
+                tokio::select! {
+                    _ = serve_connect(state.clone(), Some(http_v4)) => {}
+                    _ = serve_connect(state.clone(), http_v6) => {}
+                    _ = serve_socks(state.clone(), Some(socks_v4)) => {}
+                    _ = serve_socks(state, socks_v6) => {}
                 }
             });
         });
     }
 
     let proxy_url = format!("http://{addr}");
-    tracing::info!(%proxy_url, "egress proxy ready");
+    // `socks5h`, not `socks5`: the `h` keeps name resolution on honmoon's side,
+    // so the hostname the client asked for arrives in the SOCKS5 handshake and
+    // can select an endpoint. A client that resolved the name itself would hand
+    // over a bare address and every `endpoints:` entry would stop matching.
+    let socks_url = format!("socks5h://{socks_addr}");
+    tracing::info!(%proxy_url, %socks_url, "egress proxy ready");
 
     // Only Linux and macOS can actually hold the child; `mut` carries a
     // downgrade if that path turns out to be unusable at spawn time.
@@ -467,7 +478,7 @@ fn run(policy: PathBuf, argv: Vec<String>) -> Result<()> {
     // on success: the sandboxed command's exit code is this process's exit code.
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     if isolation == isolate::Isolation::Enforced {
-        match isolate::run_confined(addr, program, args) {
+        match isolate::run_confined(addr, socks_addr, program, args) {
             Ok(status) => std::process::exit(status.code().unwrap_or(1)),
             Err(error) => {
                 // Fail open, per ADR-0005. `run_confined` reports only setup
@@ -496,7 +507,7 @@ fn run(policy: PathBuf, argv: Vec<String>) -> Result<()> {
 
     let mut command = std::process::Command::new(program);
     command.args(args);
-    for (key, value) in isolate::proxy_env(&proxy_url) {
+    for (key, value) in isolate::proxy_env(&proxy_url, &socks_url) {
         command.env(key, value);
     }
     let status = command
@@ -504,6 +515,27 @@ fn run(policy: PathBuf, argv: Vec<String>) -> Result<()> {
         .with_context(|| format!("failed to spawn `{program}`"))?;
 
     std::process::exit(status.code().unwrap_or(1));
+}
+
+/// Serve `listener` as a CONNECT proxy, or wait forever when there is none.
+///
+/// The `Option` is the absent IPv6 half of a [`bind_loopback_pair`]: a host with
+/// no `::1` has nothing to serve there and nothing for a squatter to take, so
+/// the branch simply never resolves rather than ending the `select!` above and
+/// taking the live listeners down with it.
+async fn serve_connect(state: GatewayState, listener: Option<TcpListener>) {
+    match listener {
+        Some(listener) => honmoon_proxy::gateway::serve(state, listener).await,
+        None => std::future::pending().await,
+    }
+}
+
+/// The same, for the SOCKS5 listener.
+async fn serve_socks(state: GatewayState, listener: Option<TcpListener>) {
+    match listener {
+        Some(listener) => honmoon_proxy::socks::serve_socks(state, listener).await,
+        None => std::future::pending().await,
+    }
 }
 
 /// How many ports to try before giving up on finding one free on both loopbacks.
