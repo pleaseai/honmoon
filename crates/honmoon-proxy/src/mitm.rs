@@ -107,19 +107,21 @@ impl TunnelRegistry {
         tunnels.insert(addr, (host, port));
     }
 
-    /// The port `addr` dialed if it holds an authorized CONNECT tunnel to
-    /// `host`, else `None` (the request still needs the host gate).
+    /// Whether `addr` holds an authorized CONNECT tunnel to exactly
+    /// `host:port`. A request that does not match still needs the host gate.
     ///
-    /// An inner request carries no reliable port of its own — hudsucker rewrites
-    /// its authority and the `Host` header is client-controlled — so the port an
-    /// endpoint is matched on comes from the CONNECT that opened the tunnel.
-    fn authorized_port(&self, addr: &SocketAddr, host: &str) -> Option<u16> {
+    /// Both halves are compared. Matching on the host alone would hand the
+    /// CONNECT port back to an h2 request that named a different one: a client
+    /// tunnelled to `cluster.example:443` could send
+    /// `:authority: cluster.example:6443`, be evaluated at 443 (resolving no
+    /// endpoint and parsing no `k8s` facts), and still have hudsucker forward
+    /// it to 6443 — past a deny rule bound to that endpoint.
+    fn is_authorized(&self, addr: &SocketAddr, host: &str, port: u16) -> bool {
         self.tunnels
             .lock()
             .expect("tunnel registry poisoned")
             .get(addr)
-            .filter(|(tunnel_host, _)| tunnel_host == host)
-            .map(|(_, port)| *port)
+            .is_some_and(|(tunnel_host, tunnel_port)| tunnel_host == host && *tunnel_port == port)
     }
 }
 
@@ -788,17 +790,19 @@ impl HttpHandler for HonmoonHandler {
         // URI scheme: an absolute-form `https://` request sent without CONNECT
         // must be host-gated like a cleartext `http://` one, or the egress
         // allowlist could be bypassed.
+        // hudsucker stamps the CONNECT authority — host *and* port — onto every
+        // HTTP/1.x inner request, so a genuine tunnelled request carries its
+        // real destination and matches the registry by construction. An h2
+        // request keeps the client's own `:authority`, which is where hudsucker
+        // will actually forward it, so anything that does not match the tunnel
+        // is gated on the destination it names.
         let host = request_host(&req);
-        let port = match self.tunnels.authorized_port(&ctx.client_addr, &host) {
-            Some(port) => port,
-            None => {
-                let port = request_port(&req);
-                if let Gate::Block(res) = self.host_gate(&host, port, false).await {
-                    return *res;
-                }
-                port
-            }
-        };
+        let port = request_port(&req);
+        if !self.tunnels.is_authorized(&ctx.client_addr, &host, port)
+            && let Gate::Block(res) = self.host_gate(&host, port, false).await
+        {
+            return *res;
+        }
 
         self.inspect_body(req, port).await
     }
@@ -1237,6 +1241,30 @@ mod tests {
             .body(Body::empty())
             .expect("build request");
         assert_eq!(request_port(&spoofed_host_header), HTTP_PORT);
+    }
+
+    #[test]
+    fn tunnel_authorization_requires_the_port_to_match_too() {
+        // hudsucker forwards an h2 request to the `:authority` it names, so a
+        // tunnel to :443 must not lend its authorization to a request naming
+        // :6443 — that would evaluate the request at 443, resolve no endpoint,
+        // parse no `k8s` facts, and still reach the API server on 6443.
+        let registry = TunnelRegistry::default();
+        let addr: SocketAddr = "127.0.0.1:54321".parse().expect("addr");
+        registry.authorize(addr, "cluster.example".to_owned(), HTTPS_PORT);
+
+        assert!(
+            registry.is_authorized(&addr, "cluster.example", HTTPS_PORT),
+            "the CONNECT target itself stays authorized"
+        );
+        assert!(
+            !registry.is_authorized(&addr, "cluster.example", 6443),
+            "a different port on the same host is a different destination"
+        );
+        assert!(
+            !registry.is_authorized(&addr, "other.example", HTTPS_PORT),
+            "a different host is still gated"
+        );
     }
 
     #[tokio::test]
