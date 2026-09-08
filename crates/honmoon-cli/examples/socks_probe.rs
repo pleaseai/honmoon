@@ -194,11 +194,20 @@ fn read_until_ready(stream: &mut TcpStream) -> Vec<(u8, Vec<u8>)> {
 }
 
 /// `host:port`, split without resolving: the host has to stay a name.
+///
+/// A bracketed IPv6 authority (`[::1]:5432`) keeps its brackets through
+/// `rsplit_once`, and `[::1]` is neither a hostname nor an address any
+/// `endpoints:` entry can match — strip them so the SOCKS5 request carries the
+/// address the caller wrote.
 fn split_authority(target: &str) -> (&str, u16) {
     let (host, port) = target.rsplit_once(':').unwrap_or_else(|| {
         eprintln!("socks_probe: {target:?} is not host:port");
         std::process::exit(2);
     });
+    let host = host
+        .strip_prefix('[')
+        .and_then(|inner| inner.strip_suffix(']'))
+        .unwrap_or(host);
     let port = port.parse().unwrap_or_else(|_| {
         eprintln!("socks_probe: {port:?} is not a port");
         std::process::exit(2);
