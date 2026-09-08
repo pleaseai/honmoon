@@ -334,9 +334,9 @@ fn parse_sql_heuristic(query: &str) -> SqlFacts {
         // facts as attacker-chosen text.
         None => UNKNOWN_VERB.to_owned(),
     };
-    // Table extraction below reads the tokens after the first one, unchanged.
-    let mut tokens = query.split_whitespace();
-    let _ = tokens.next();
+    // Table extraction reads the words after the verb, separated the way
+    // PostgreSQL separates them.
+    let tokens = lexical_tokens(query);
 
     // Table extraction depends on the verb's syntax.
     let table = match verb.as_str() {
@@ -358,7 +358,10 @@ fn parse_sql_heuristic(query: &str) -> SqlFacts {
                 "only",
             ];
             tokens
+                .iter()
+                .skip(1)
                 .find(|t| !MODIFIERS.iter().any(|m| t.eq_ignore_ascii_case(m)))
+                .copied()
                 .unwrap_or_default()
         }
         // INSERT INTO x / DELETE FROM x / SELECT ... FROM x
@@ -366,7 +369,7 @@ fn parse_sql_heuristic(query: &str) -> SqlFacts {
             // Find the token after the first FROM/INTO keyword.
             let mut found = "";
             let mut prev_kw = false;
-            for tok in query.split_whitespace().skip(1) {
+            for tok in tokens.iter().skip(1).copied() {
                 if prev_kw {
                     found = tok;
                     break;
@@ -378,7 +381,7 @@ fn parse_sql_heuristic(query: &str) -> SqlFacts {
             found
         }
         // UPDATE x SET ...
-        "UPDATE" => tokens.next().unwrap_or_default(),
+        "UPDATE" => tokens.get(1).copied().unwrap_or_default(),
         _ => "",
     };
 
@@ -388,9 +391,8 @@ fn parse_sql_heuristic(query: &str) -> SqlFacts {
     }
 }
 
-/// The leading keyword of `query`, scanned the way PostgreSQL's lexer does: one
-/// `ident_start` byte (`[A-Za-z\200-\377_]`) followed by `ident_cont` bytes,
-/// ending at the first byte that is neither.
+/// The leading keyword of `query`: an ASCII letter or `_`, followed by
+/// `ident_cont` bytes, ending at the first byte that is neither.
 ///
 /// Knowing nothing about comment syntax is the point — the run simply stops at
 /// `/` and at `-`, so a comment acting as the keyword's terminator needs no
@@ -398,20 +400,58 @@ fn parse_sql_heuristic(query: &str) -> SqlFacts {
 /// identifier `DO$$BEGIN…` and is deliberately **not** recognized as a `DO`:
 /// PostgreSQL rejects that spelling itself (`syntax error at or near "DO$$"`),
 /// and agreeing with the server exactly is what keeps this honest.
+///
+/// The *start* is narrower than PostgreSQL's `ident_start`, which also admits
+/// every byte from `\200` up. Every SQL verb is an ASCII keyword, so nothing
+/// legitimate is lost, and a statement opening with a non-ASCII run stays
+/// [`UNKNOWN_VERB`] rather than putting attacker-chosen text in the facts.
 fn leading_keyword(query: &str) -> Option<&str> {
     let bytes = query.as_bytes();
     let first = *bytes.first()?;
-    if !(first.is_ascii_alphabetic() || first == b'_' || first >= 0x80) {
+    if !(first.is_ascii_alphabetic() || first == b'_') {
         return None;
     }
-    // Every `ident_start` byte is also `ident_cont`, so the run covers the
-    // first byte too. It always ends on an ASCII byte, so the split is on a
-    // character boundary.
+    // The first byte is `ident_cont` too, so the run covers it. It always ends
+    // on an ASCII byte, so the split is on a character boundary.
     let end = bytes
         .iter()
         .position(|byte| !is_identifier_cont(*byte))
         .unwrap_or(bytes.len());
     query.get(..end)
+}
+
+/// Split `query` into words, separated the way PostgreSQL separates them.
+///
+/// Its lexer treats a comment as whitespace, so `DROP/**/TABLE/**/users` is
+/// three words rather than one and a comment can never be absorbed into a
+/// relation name. Only the *separators* are lexical here: a word is otherwise
+/// kept whole, so a schema qualifier (`public.users`), a quoted identifier
+/// (`"Sessions"`) and a trailing `;` all still reach [`clean_identifier`] as one
+/// piece — splitting those into identifier runs would drop the qualifier and
+/// report the schema as the table.
+fn lexical_tokens(query: &str) -> Vec<&str> {
+    let bytes = query.as_bytes();
+    let mut tokens = Vec::new();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i].is_ascii_whitespace() {
+            i += 1;
+            continue;
+        }
+        if let Some((end, _)) = comment_end(bytes, i) {
+            i = end;
+            continue;
+        }
+        let start = i;
+        while i < bytes.len() && !bytes[i].is_ascii_whitespace() && comment_end(bytes, i).is_none()
+        {
+            i += 1;
+        }
+        if let Some(token) = query.get(start..i) {
+            tokens.push(token);
+        }
+    }
+    tokens
 }
 
 /// Normalize a SQL identifier: strip quotes, a trailing `;`, schema qualifier,
@@ -834,6 +874,9 @@ mod tests {
         assert_eq!(parse_sql("").verb, UNKNOWN_VERB);
         assert_eq!(parse_sql("/* nothing else */").verb, UNKNOWN_VERB);
         assert_eq!(parse_sql(";;").verb, UNKNOWN_VERB);
+        // A verb is an ASCII keyword. A leading non-ASCII run is not one, and
+        // must not be echoed into the facts as attacker-chosen text.
+        assert_eq!(parse_sql("안녕 something").verb, UNKNOWN_VERB);
         // An unrecognized *keyword* is still reported as itself — an unknown
         // verb is not a refusal, and ordinary sessions use plenty of them.
         assert_eq!(parse_sql("VACUUM FULL orders").verb, "VACUUM");
@@ -977,6 +1020,34 @@ mod tests {
     }
 
     #[test]
+    fn lexical_tokens_match_whitespace_when_there_is_no_comment() {
+        // The only separator this adds is the comment, so on input without one
+        // the words are exactly what the previous scanner produced — which is
+        // what bounds the blast radius of the change to comment-bearing input.
+        for q in [
+            "DROP INDEX CONCURRENTLY idx_a",
+            "delete from \"Sessions\"",
+            "INSERT INTO logs (a) VALUES (1)",
+            "update Users set x=1",
+            "DROP TABLE IF EXISTS public.users;",
+            "TRUNCATE ONLY accounts",
+            "SELECT * FROM public.orders WHERE id = 1",
+            "VACUUM FULL orders",
+            "EXPLAIN ANALYZE foo",
+            "  ",
+            "",
+            "a$b c",
+            "SELECT 1 AS é",
+        ] {
+            assert_eq!(
+                lexical_tokens(q),
+                q.split_whitespace().collect::<Vec<_>>(),
+                "diverged without a comment: {q:?}"
+            );
+        }
+    }
+
+    #[test]
     fn a_read_only_cte_is_not_upgraded() {
         // Nothing here modifies data, so the query stays a SELECT over `x`.
         let facts = parse_sql("WITH x AS (SELECT 1) SELECT * FROM x");
@@ -997,6 +1068,12 @@ mod tests {
         let facts = parse_sql("DROP INDEX CONCURRENTLY idx_a");
         assert_eq!(facts.verb, "DROP");
         assert_eq!(facts.table, "idx_a");
+
+        // A comment separates words there too, so it cannot be absorbed into
+        // the relation name — the same lexical rule the verb uses.
+        let commented = parse_sql("DROP/**/INDEX/**/CONCURRENTLY/**/idx_a");
+        assert_eq!(commented.verb, "DROP");
+        assert_eq!(commented.table, "idx_a");
 
         assert!(
             Parser::parse_sql(&PostgreSqlDialect {}, "SELECT 1; /* unterminated").is_err(),
