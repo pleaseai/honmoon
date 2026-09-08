@@ -169,7 +169,12 @@ pub fn carries_multiple_statements(query: &str) -> bool {
                     }
                 }
             }
-            b'$' => match dollar_tag_end(bytes, i) {
+            // A `$` only opens a dollar quote at a token boundary: PostgreSQL
+            // allows `$` inside an identifier after its first character, so the
+            // `$tag$` in `foo$tag$` is part of the name, not an opener. Reading
+            // it as one would let `SELECT foo$tag$; DROP TABLE users$tag$` hide
+            // its separator inside a string that is not there.
+            b'$' if !starts_identifier_continuation(bytes, i) => match dollar_tag_end(bytes, i) {
                 Some(body) => {
                     let tag = &bytes[i..body];
                     match bytes[body..].windows(tag.len()).position(|w| w == tag) {
@@ -181,8 +186,20 @@ pub fn carries_multiple_statements(query: &str) -> bool {
                 None => i += 1,
             },
             b';' => {
-                // Anything but whitespace after the separator is a second statement.
-                return bytes[i + 1..].iter().any(|b| !b.is_ascii_whitespace());
+                // A trailing separator is still one statement, and so is one
+                // followed only by whitespace or a comment.
+                let mut j = i + 1;
+                loop {
+                    while bytes.get(j).is_some_and(u8::is_ascii_whitespace) {
+                        j += 1;
+                    }
+                    match comment_end(bytes, j) {
+                        // An unterminated comment hides whatever follows it.
+                        Some((_, false)) => return true,
+                        Some((end, true)) => j = end,
+                        None => return j < bytes.len(),
+                    }
+                }
             }
             _ => i += 1,
         }
@@ -240,6 +257,15 @@ fn comment_end(bytes: &[u8], start: usize) -> Option<(usize, bool)> {
         }
         _ => None,
     }
+}
+
+/// Whether the byte before `start` is an identifier character, i.e. whatever is
+/// at `start` continues a name rather than starting a new token.
+fn starts_identifier_continuation(bytes: &[u8], start: usize) -> bool {
+    start
+        .checked_sub(1)
+        .and_then(|prev| bytes.get(prev))
+        .is_some_and(|c| c.is_ascii_alphanumeric() || *c == b'_' || *c == b'$')
 }
 
 /// If a `$` at `start` opens a dollar quote (`$$` or `$tag$`), the index just
@@ -491,6 +517,7 @@ mod tests {
         assert!(!carries_multiple_statements(
             "SELECT $tag$a; b$tag$ FROM orders"
         ));
+        assert!(!carries_multiple_statements("SELECT $$a;b$$"));
         assert!(!carries_multiple_statements(
             "SELECT 1 -- ; not a statement"
         ));
@@ -498,6 +525,29 @@ mod tests {
         assert!(
             !carries_multiple_statements("SELECT * FROM t WHERE id = $1"),
             "`$1` is a parameter, not a dollar quote"
+        );
+    }
+
+    #[test]
+    fn a_dollar_inside_an_identifier_does_not_open_a_quote() {
+        // `foo$tag$` is one identifier, so the `;` is a real separator — reading
+        // the `$tag$` as a string opener would skip straight past it.
+        assert!(carries_multiple_statements(
+            "SELECT foo$tag$; DROP TABLE users$tag$"
+        ));
+        assert!(!carries_multiple_statements("SELECT a$b FROM orders"));
+    }
+
+    #[test]
+    fn a_trailing_comment_after_the_separator_is_not_a_second_statement() {
+        assert!(!carries_multiple_statements(
+            "SELECT 1; -- trailing comment"
+        ));
+        assert!(!carries_multiple_statements("SELECT 1; /* trailing */"));
+        assert!(!carries_multiple_statements("SELECT 1; /* a */ -- b\n  "));
+        assert!(
+            carries_multiple_statements("SELECT 1; /* unterminated"),
+            "a comment that never closes could be hiding a statement"
         );
     }
 
