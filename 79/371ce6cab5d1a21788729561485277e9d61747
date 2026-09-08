@@ -1,0 +1,19 @@
+crates/honmoon-cli/examples/socks_probe.rs
+  s_16201d1084e23d::t_fc1804fd7367d7 197-201,207-210
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "79371ce6cab5d1a21788729561485277e9d61747",
+  "prompts": {},
+  "sessions": {
+    "s_16201d1084e23d": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "485cab2a-19e0-45a0-af23-bd7911a4fb27",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
