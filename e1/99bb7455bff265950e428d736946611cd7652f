@@ -1,0 +1,21 @@
+packages/policy/schema/policy.schema.json
+  s_04170a69e09558::t_cbad3c970864f6 18-21,32-45
+packages/policy/src/index.ts
+  s_04170a69e09558::t_e0743d2d781ecc 25-34,38-39
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "e199bb7455bff265950e428d736946611cd7652f",
+  "prompts": {},
+  "sessions": {
+    "s_04170a69e09558": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "16addd4e-5aca-4e97-a602-05d3ea9c9f94",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
