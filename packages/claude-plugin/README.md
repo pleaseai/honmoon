@@ -175,7 +175,10 @@ plugin works unchanged on older Claude Code versions.
 
 Only the `Read` result variants the detectors can read are rewritten: `text` and
 `notebook` (its cells are plain JSON). An image or PDF record is base64 bytes and
-is passed through untouched, as is a denied or errored tool result.
+is passed through untouched, as is a denied tool result. An errored result (a
+non-zero Bash exit whose stderr holds a key, say) is scanned too: because a hook
+cannot return its own `isError`, a redacted error goes back as a `deny` carrying
+the redacted text, which the model reads as the tool's error.
 
 ### Options
 

@@ -85,14 +85,32 @@ describe('tool.call', () => {
     expect(r).toBe(readResult)
   })
 
-  test('passes a deny or an errored result straight through', async () => {
+  test('passes a deny, or an errored result with nothing to redact, straight through', async () => {
     applyOptions({})
-    const { $, calls } = engine(p => (p.hook_event_name === 'PreToolUse' ? {} : { stdout: redacted(readRecord) }))
+    const { $, calls } = engine(p => (p.hook_event_name === 'PreToolUse' ? {} : { stdout: '{}' }))
     const denied = { deny: 'permission refused' }
     const errored = { isError: true as const, result: 'boom', text: 'boom' }
     expect(await runTool($, readEvent, async () => denied)).toBe(denied)
+    expect(calls).toHaveLength(1)
     expect(await runTool($, { tool: 'Bash', command: 'ls' }, async () => errored)).toBe(errored)
-    expect(calls.every(c => c.payload.hook_event_name === 'PreToolUse')).toBe(true)
+    expect(calls[1]?.payload).toMatchObject({ hook_event_name: 'PostToolUse', tool_name: 'Read', tool_response: 'boom' })
+  })
+
+  test('an errored result that carries a secret becomes an error the model reads redacted', async () => {
+    applyOptions({})
+    const { $ } = engine(p => (p.hook_event_name === 'PostToolUse' ? { stdout: redacted('curl: auth failed for key <<hs:k1>>') } : {}))
+    const errored = { isError: true as const, ref: 3, result: 'curl: auth failed for key sk-live-1', text: 'curl: auth failed for key sk-live-1' }
+    const r = await runTool($, { tool: 'Bash', command: 'curl' }, async () => errored)
+    expect(r.deny).toStartWith('curl: auth failed for key <<hs:k1>>')
+    expect(JSON.stringify(r)).not.toContain('sk-live-1')
+  })
+
+  test('an errored result is withheld when the engine cannot be reached', async () => {
+    applyOptions({})
+    const { $ } = engine(p => (p.hook_event_name === 'PostToolUse' ? { throws: 'spawn honmoon ENOENT' } : {}))
+    const errored = { isError: true as const, result: 'key sk-live-1', text: 'key sk-live-1' }
+    const r = await runTool($, { tool: 'Bash', command: 'curl' }, async () => errored)
+    expect(r).toEqual({ deny: 'honmoon: redaction engine unavailable (spawn honmoon ENOENT); tool output withheld' })
   })
 
   test('scans WebFetch output through the engine\'s Read gate', async () => {

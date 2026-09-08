@@ -315,8 +315,8 @@ async function denyBeforeRead(engine: Engine, e: ToolEvent, facts: SessionFacts)
 
 /** Whether a settled call carries something the detectors can read. */
 function scannable(e: ToolEvent, r: ToolResult): boolean {
-  // A refusal or an errored call carries no tool record to redact, and core's
-  // own messages are what the model should read.
+  // A refusal carries no tool record to redact; core's own message is what
+  // the model should read. An errored call is handled by `redactError`.
   if (r.deny !== undefined || r.isError) {
     return false
   }
@@ -328,6 +328,34 @@ function scannable(e: ToolEvent, r: ToolResult): boolean {
     return type === 'text' || type === 'notebook'
   }
   return true
+}
+
+/**
+ * Redact an errored call. A hook's own `{ result }` cannot carry `isError`, so
+ * rewriting the record would present a failed command as a success (and a
+ * string would fail core's output-schema check, which fails open). A `deny`
+ * reaches the model as an error result, so a redacted error goes out as one.
+ */
+async function redactError(engine: Engine, r: ToolResult, session_id: string): Promise<ToolResult> {
+  const text = typeof r.result === 'string' ? r.result : r.text
+  if (typeof text !== 'string') {
+    return r
+  }
+  const post = await engine.ask({
+    hook_event_name: 'PostToolUse',
+    tool_name: 'Read',
+    tool_input: {},
+    tool_response: text,
+    session_id,
+  })
+  if (!post.ok) {
+    return config.failClosed ? { deny: unavailable(post.cause) } : r
+  }
+  const updated = updatedOutput(post.verdict)
+  if (typeof updated !== 'string') {
+    return r
+  }
+  return { deny: `${updated}\n\n${redactionNote(updated)}` }
 }
 
 /** Redact a settled call's record; `r` itself when nothing was redacted. */
@@ -387,12 +415,12 @@ export const toolHook: MatchedHook<'tool.call', typeof TOOL_MATCHER> = async ($,
     pre.close()
   }
   const r = await next(e)
-  if (!scannable(e, r)) {
+  if (!r.isError && !scannable(e, r)) {
     return r
   }
   const post = engineFor($)
   try {
-    return await redactResult(post, e, r, session_id)
+    return await (r.isError ? redactError(post, r, session_id) : redactResult(post, e, r, session_id))
   }
   finally {
     post.close()
