@@ -40,6 +40,8 @@ mime_guess = "2"
 time = { version = "0.3", features = ["formatting", "macros"] }
 regex = "1"
 aho-corasick = "1"
+# Decode percent-escaped URL path segments before extracting Kubernetes facts (#88).
+percent-encoding = "2"
 hmac = "0.12"
 sha2 = "0.10"
 # Raw namespace/ioctl syscalls for enforced `honmoon run` isolation on Linux (ADR-0005).

@@ -7,6 +7,8 @@
 //! Scope: we extract only the declared facts (verb/table/resource/namespace),
 //! never decrypt or buffer full payloads beyond what a rule needs.
 
+use percent_encoding::percent_decode_str;
+
 use crate::{K8sFacts, SqlFacts};
 
 /// Parse a PostgreSQL **simple query** message (`'Q'`) into [`SqlFacts`].
@@ -109,13 +111,16 @@ fn clean_identifier(raw: &str) -> String {
 /// API paths, with or without a `namespaces/{ns}` segment. The HTTP method maps to
 /// the resource verb (`GET` → `list`/`get`, `POST` → `create`, etc.).
 pub fn parse_k8s_request(method: &str, path: &str) -> K8sFacts {
-    let segments: Vec<&str> = path
-        .split('?')
-        .next()
-        .unwrap_or(path)
-        .split('/')
-        .filter(|s| !s.is_empty())
-        .collect();
+    // Kubernetes routes on the *decoded* path, so facts have to be read from
+    // the decoded form: `DELETE /api/v1/namespaces/prod/se%63rets/db` deletes a
+    // secret, and a `k8s.resource == 'secrets'` rule has to see it as one.
+    // Order matters in both directions — splitting off the query first keeps an
+    // encoded `%3F` from being mistaken for a query delimiter, and decoding
+    // before the `/` split keeps an encoded `%2F` from hiding a segment
+    // boundary the server will honour.
+    let raw_path = path.split('?').next().unwrap_or(path);
+    let decoded = percent_decode_str(raw_path).decode_utf8_lossy();
+    let segments: Vec<&str> = decoded.split('/').filter(|s| !s.is_empty()).collect();
 
     // Skip the fixed API prefix so the version segment is never mistaken for a
     // resource: core APIs are `/api/{version}/…` (2 segments), grouped APIs are
@@ -278,6 +283,26 @@ mod tests {
         assert_eq!(parse_sql("INSERT INTO logs (a) VALUES (1)").table, "logs");
         assert_eq!(parse_sql("update Users set x=1").table, "users");
         assert_eq!(parse_sql("EXPLAIN ANALYZE foo").verb, "EXPLAIN");
+    }
+
+    #[test]
+    fn k8s_percent_escaped_segments_are_decoded() {
+        // Kubernetes routes on the decoded path, so an escaped resource name
+        // must not slip past a rule matching the decoded one.
+        let escaped = parse_k8s_request("DELETE", "/api/v1/namespaces/prod/se%63rets/db");
+        assert_eq!(escaped.resource, "secrets");
+        assert_eq!(escaped.namespace, "prod");
+        assert_eq!(escaped.verb, "delete");
+
+        // An escaped separator cannot hide a segment boundary the server honours.
+        let escaped_slash = parse_k8s_request("DELETE", "/api/v1/namespaces/prod%2Fsecrets/db");
+        assert_eq!(escaped_slash.namespace, "prod");
+        assert_eq!(escaped_slash.resource, "secrets");
+
+        // A query string is split off before decoding, so an escaped `?` stays
+        // part of the path rather than truncating it.
+        let escaped_query = parse_k8s_request("GET", "/api/v1/namespaces/prod/secrets%3Fx/db");
+        assert_eq!(escaped_query.resource, "secrets?x");
     }
 
     #[test]
