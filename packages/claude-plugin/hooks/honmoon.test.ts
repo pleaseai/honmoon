@@ -234,6 +234,34 @@ describe('tool.call', () => {
     expect(calls).toHaveLength(0)
   })
 
+  test('a slow tool does not spend the budget of its own redaction', async () => {
+    applyOptions({})
+    const { $ } = engine(p => (p.hook_event_name === 'PostToolUse' ? { stdout: redacted({ ...readRecord, file: { ...readRecord.file, content: 'key=<<hs:1>>' } }) } : {}))
+    // The first budget expires while the tool runs; any later one never does.
+    let expire = () => {}
+    let armed = false
+    const $slow = {
+      ...$,
+      clock: {
+        sleep: () => {
+          if (armed) {
+            return new Promise<void>(() => {})
+          }
+          armed = true
+          return new Promise<void>((resolve) => {
+            expire = resolve
+          })
+        },
+      },
+    }
+    const r = await runTool($slow, readEvent, async () => {
+      expire()
+      await Promise.resolve()
+      return readResult
+    })
+    expect(r).toMatchObject({ result: { file: { content: 'key=<<hs:1>>' } } })
+  })
+
   test('transport http without a hookUrl is a configuration error, not a fallback to the binary', async () => {
     applyOptions({ transport: 'http' })
     const { $, calls, fetches } = engine(() => ({}))

@@ -354,29 +354,48 @@ async function redactResult(engine: Engine, e: ToolEvent, r: ToolResult, session
   }
 }
 
-export const toolHook: MatchedHook<'tool.call', typeof TOOL_MATCHER> = async ($, e, next) => {
-  const engine = engineAsk(
+/** An engine bound to this hook's `$`, with a fresh budget. */
+function engineFor($: Parameters<typeof toolHook>[0]): Engine {
+  return engineAsk(
     config,
     (argv, init) => $.process.run(argv, init),
     (url, init) => $.http.fetch(url, init),
     (ms, options) => $.clock.sleep(ms, options),
   )
+}
+
+export const toolHook: MatchedHook<'tool.call', typeof TOOL_MATCHER> = async ($, e, next) => {
+  // The host budgets only the hook's own work, not the time inside `next(e)`
+  // (measured on 2.1.263). Mirror that: one budget before the tool, a fresh
+  // one after, so a slow tool never denies its own redaction.
+  const pre = engineFor($)
+  let session_id: string
   try {
-    const facts = await sessionFacts($, engine)
+    const facts = await sessionFacts($, pre)
     if (!facts.ok) {
       // No per-session salt means no redaction worth trusting: closed denies
       // before the tool runs, open behaves as if the module were absent.
       return config.failClosed ? { deny: unavailable(facts.cause) } : next(e)
     }
-    const denied = await denyBeforeRead(engine, e, facts.value)
+    const denied = await denyBeforeRead(pre, e, facts.value)
     if (denied) {
       return denied
     }
-    const r = await next(e)
-    return scannable(e, r) ? redactResult(engine, e, r, facts.value.session_id) : r
+    session_id = facts.value.session_id
   }
   finally {
-    engine.close()
+    pre.close()
+  }
+  const r = await next(e)
+  if (!scannable(e, r)) {
+    return r
+  }
+  const post = engineFor($)
+  try {
+    return await redactResult(post, e, r, session_id)
+  }
+  finally {
+    post.close()
   }
 }
 
