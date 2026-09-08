@@ -14,8 +14,11 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use honmoon_core::audit::now_rfc3339;
+use honmoon_core::{AuditDraft, Decision, FactsSummary, Verdict};
 use serde::Serialize;
 use tokio::sync::oneshot;
+
+use crate::gateway::GatewayState;
 
 /// A human's resolution of a held request.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -175,6 +178,134 @@ impl ApprovalRegistry {
 
     pub fn is_empty(&self) -> bool {
         self.len() == 0
+    }
+}
+
+/// Frees a pending approval slot (and audits the rejection) if the holding
+/// future is dropped before a decision was reached — the caller's future is
+/// dropped when the waiting client disconnects.
+struct CancelOnDrop {
+    state: GatewayState,
+    id: u64,
+    rule: Option<String>,
+    summary: Option<FactsSummary>,
+    armed: bool,
+}
+
+impl Drop for CancelOnDrop {
+    fn drop(&mut self) {
+        if !self.armed {
+            return;
+        }
+        self.state.approvals.cancel(self.id);
+        tracing::info!(id = self.id, "client gone while held; approval cancelled");
+        self.state.audit.record(AuditDraft {
+            decision: Decision::Rejected,
+            verdict: Verdict::Pause,
+            rule: self.rule.take(),
+            facts: self.summary.take().unwrap_or_default(),
+            approval_id: Some(self.id),
+        });
+    }
+}
+
+/// How a [`hold`] ended.
+pub(crate) enum HoldOutcome {
+    /// A human approved it — the request may proceed.
+    Approved,
+    /// A human rejected it, the hold timed out, or the registry went away.
+    Rejected,
+    /// The pending queue was at capacity, so the request was never held
+    /// (fail-closed: the caller must block it).
+    QueueFull,
+}
+
+/// Hold a `pause`d request until a human resolves it (or the hold times out),
+/// recording the whole lifecycle (`Paused` → `Approved`/`Rejected`) in the audit
+/// log. Transport-agnostic: the HTTP MITM path and the SOCKS5 data path both
+/// hold through this one function, and each renders the outcome its own way.
+///
+/// The client waits for the entire hold, so the caller must not have answered it
+/// yet when calling this.
+pub(crate) async fn hold(
+    state: &GatewayState,
+    host: &str,
+    summary: FactsSummary,
+    rule: Option<String>,
+    approval_summary: String,
+) -> HoldOutcome {
+    let registration = state.approvals.register(NewApproval {
+        domain: Some(host.to_owned()),
+        endpoint: summary.endpoint.clone(),
+        rule: rule.clone(),
+        summary: approval_summary,
+    });
+    let Some((pending, rx)) = registration else {
+        // Pending queue is at capacity — fail closed rather than hold.
+        tracing::warn!(domain = %host, "approval queue full; rejecting paused request");
+        state.audit.record(AuditDraft {
+            decision: Decision::Rejected,
+            verdict: Verdict::Pause,
+            rule,
+            facts: summary,
+            approval_id: None,
+        });
+        return HoldOutcome::QueueFull;
+    };
+
+    state.audit.record(AuditDraft {
+        decision: Decision::Paused,
+        verdict: Verdict::Pause,
+        rule: rule.clone(),
+        facts: summary.clone(),
+        approval_id: Some(pending.id),
+    });
+    tracing::info!(id = pending.id, domain = %host, "request held for approval");
+
+    // If the client disconnects mid-hold, the caller's future is dropped and the
+    // code after the `await` never runs — the guard then frees the slot so
+    // abandoned holds can't saturate the approval queue.
+    let mut guard = CancelOnDrop {
+        state: state.clone(),
+        id: pending.id,
+        rule: rule.clone(),
+        summary: Some(summary.clone()),
+        armed: true,
+    };
+    let decision = match tokio::time::timeout(state.pause_timeout, rx).await {
+        Ok(Ok(d)) => d,
+        // Registry dropped (shutdown) — treat as rejection.
+        Ok(Err(_)) => ApprovalDecision::Reject,
+        // Timed out waiting for a human — drop the slot and reject.
+        Err(_elapsed) => {
+            state.approvals.cancel(pending.id);
+            tracing::info!(id = pending.id, "approval timed out");
+            ApprovalDecision::Reject
+        }
+    };
+    guard.armed = false;
+
+    match decision {
+        ApprovalDecision::Approve => {
+            state.audit.record(AuditDraft {
+                decision: Decision::Approved,
+                verdict: Verdict::Pause,
+                rule,
+                facts: summary,
+                approval_id: Some(pending.id),
+            });
+            HoldOutcome::Approved
+        }
+        ApprovalDecision::Reject => {
+            state.audit.record(AuditDraft {
+                decision: Decision::Rejected,
+                verdict: Verdict::Pause,
+                rule,
+                facts: summary,
+                approval_id: Some(pending.id),
+            });
+            HoldOutcome::Rejected
+        }
     }
 }
 
