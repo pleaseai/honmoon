@@ -5,8 +5,9 @@
 //! framed; `Q` (simple query) and `P` (Parse, extended protocol) carry SQL, so
 //! their statement is parsed into [`SqlFacts`](honmoon_core::SqlFacts) and
 //! decided by the policy engine before a byte reaches the database. Everything
-//! else is streamed through untouched, and the upstream→client direction is a
-//! raw copy.
+//! else is streamed through untouched, and the upstream→client direction is
+//! relayed uninspected — framed only so a refusal cannot land inside a server
+//! message.
 //!
 //! Inspection needs plaintext between the client and honmoon, so `SSLRequest`
 //! and `GSSENCRequest` are answered `N` — the client then falls back to
@@ -21,10 +22,11 @@
 //! [ADR-0007]: ../../../../.please/docs/decisions/0007-inline-postgresql-runtime-semantics.md
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU8, Ordering};
 
 use honmoon_core::{
     AuditDraft, Decision, Facts, FactsSummary, SqlFacts, Verdict, decide_explained,
-    protocols::{parse_postgres_query, parse_sql},
+    protocols::{carries_multiple_statements, parse_postgres_query, parse_sql},
 };
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::TcpStream;
@@ -46,9 +48,9 @@ const CANCEL_REQUEST: u32 = 80_877_102;
 /// Protocol version 3.0, the version every supported client speaks.
 const PROTOCOL_V3: u32 = 196_608;
 
-/// `ReadyForQuery` with transaction status `I` (idle) — sent after every refusal
-/// so the client knows the extended-protocol pipeline is drained.
-const READY_FOR_QUERY: [u8; 6] = [b'Z', 0, 0, 0, 5, b'I'];
+/// Transaction status a session starts in, before the upstream has sent its
+/// first `ReadyForQuery`: idle.
+const STATUS_IDLE: u8 = b'I';
 
 /// SQLSTATE 42501 — insufficient privilege. The closest standard code to "a
 /// policy refused this", and one every driver already surfaces sensibly.
@@ -57,9 +59,29 @@ const SQLSTATE_INSUFFICIENT_PRIVILEGE: &str = "42501";
 /// Copy buffer for the pass-through paths.
 const COPY_CHUNK: usize = 16 * 1024;
 
+/// Largest backend message the upstream→client task buffers before switching to
+/// a streaming copy. A `DataRow` or `CopyData` can be far larger than this, so an
+/// oversized message is copied through in chunks under one held lock rather than
+/// held in memory whole.
+const MAX_BUFFERED_BACKEND_MESSAGE: usize = 64 * 1024;
+
 /// A client writer shared between the refusal path and the upstream→client copy
-/// task, so an injected `ErrorResponse` can never interleave with a server frame.
+/// task. That task writes one **complete** backend message per lock acquisition,
+/// so an injected `ErrorResponse` can only ever land on a message boundary,
+/// never inside a server frame. It does not order the refusal against responses
+/// the client has not read yet — only framing is guarded here.
 type ClientWriter = Arc<Mutex<tokio::net::tcp::OwnedWriteHalf>>;
+
+/// The client-facing side of a session: the shared writer, plus the transaction
+/// status byte (`I`/`T`/`E`) carried by the last `ReadyForQuery` the upstream
+/// sent. A refusal echoes that status instead of always claiming idle — after an
+/// allowed `BEGIN` the upstream really is in a transaction, and a driver told
+/// otherwise makes transaction-bound decisions on a wrong state.
+#[derive(Clone)]
+struct ClientLink {
+    writer: ClientWriter,
+    tx_status: Arc<AtomicU8>,
+}
 
 /// Run the PostgreSQL runtime over an established client/upstream pair.
 ///
@@ -72,32 +94,20 @@ pub async fn run_postgres(
     facts: Facts,
 ) -> std::io::Result<()> {
     let (mut client_read, client_write) = client.into_split();
-    let (mut upstream_read, mut upstream_write) = upstream.into_split();
-    let client_write: ClientWriter = Arc::new(Mutex::new(client_write));
+    let (upstream_read, mut upstream_write) = upstream.into_split();
+    let link = ClientLink {
+        writer: Arc::new(Mutex::new(client_write)),
+        tx_status: Arc::new(AtomicU8::new(STATUS_IDLE)),
+    };
 
-    let mut downstream = tokio::spawn({
-        let client_write = Arc::clone(&client_write);
-        async move {
-            let mut buf = vec![0u8; COPY_CHUNK];
-            loop {
-                let read = match upstream_read.read(&mut buf).await {
-                    Ok(0) | Err(_) => break,
-                    Ok(n) => n,
-                };
-                let mut writer = client_write.lock().await;
-                if writer.write_all(&buf[..read]).await.is_err() {
-                    break;
-                }
-            }
-        }
-    });
+    let mut downstream = tokio::spawn(upstream_to_client(upstream_read, link.clone()));
 
     let outcome = tokio::select! {
         result = client_to_upstream(
             state,
             &mut client_read,
             &mut upstream_write,
-            &client_write,
+            &link,
             &facts,
         ) => result,
         // Upstream closed (or the client's socket died under the copy): the
@@ -108,22 +118,71 @@ pub async fn run_postgres(
     outcome
 }
 
+/// Relay upstream→client, one complete backend message at a time.
+///
+/// Framing matters here even though nothing in this direction is inspected: the
+/// writer is shared with the refusal path, so writing a message in several
+/// locked chunks would let an `ErrorResponse` land inside a server frame and
+/// desynchronise the client. Each message is written under a single lock, and
+/// every `ReadyForQuery` publishes its transaction status for [`refuse`].
+async fn upstream_to_client(mut upstream: tokio::net::tcp::OwnedReadHalf, link: ClientLink) {
+    loop {
+        // Every backend message is `tag(1) | len(4, self-inclusive) | payload`.
+        let mut head = [0u8; 5];
+        if upstream.read_exact(&mut head).await.is_err() {
+            return;
+        }
+        let len = u32::from_be_bytes([head[1], head[2], head[3], head[4]]) as usize;
+        if len < 4 {
+            return; // malformed framing; the stream is no longer trustworthy
+        }
+        let payload_len = len - 4;
+
+        if payload_len > MAX_BUFFERED_BACKEND_MESSAGE {
+            // Too large to hold in memory. Take the lock for the whole copy so a
+            // refusal still cannot slip into the middle of it.
+            let mut writer = link.writer.lock().await;
+            if writer.write_all(&head).await.is_err()
+                || copy_exact(&mut upstream, &mut *writer, payload_len)
+                    .await
+                    .is_err()
+            {
+                return;
+            }
+            continue;
+        }
+
+        let mut payload = vec![0u8; payload_len];
+        if upstream.read_exact(&mut payload).await.is_err() {
+            return;
+        }
+        // `ReadyForQuery` is the only message that states the transaction status.
+        if head[0] == b'Z' && !payload.is_empty() {
+            link.tx_status.store(payload[0], Ordering::Relaxed);
+        }
+        let mut writer = link.writer.lock().await;
+        if writer.write_all(&head).await.is_err() || writer.write_all(&payload).await.is_err() {
+            return;
+        }
+    }
+}
+
 /// Drive the inspected direction: startup negotiation, then the message loop.
 async fn client_to_upstream<R, W>(
     state: &GatewayState,
     client: &mut R,
     upstream: &mut W,
-    client_write: &ClientWriter,
+    link: &ClientLink,
     facts: &Facts,
 ) -> std::io::Result<()>
 where
     R: AsyncRead + Unpin,
     W: AsyncWrite + Unpin,
 {
-    if !startup(client, upstream, client_write).await? {
+    if !startup(client, upstream, link).await? {
         return Ok(());
     }
-    message_loop(state, client, upstream, client_write, facts).await
+    message_loop(state, client, upstream, link, facts).await
 }
 
 /// Negotiate the startup phase.
@@ -131,11 +190,7 @@ where
 /// Returns `true` once a 3.0 `StartupMessage` has been forwarded and the session
 /// enters the message phase, `false` when the connection is finished (a
 /// `CancelRequest` was relayed, or the client sent something unrecognized).
-async fn startup<R, W>(
-    client: &mut R,
-    upstream: &mut W,
-    client_write: &ClientWriter,
-) -> std::io::Result<bool>
+async fn startup<R, W>(client: &mut R, upstream: &mut W, link: &ClientLink) -> std::io::Result<bool>
 where
     R: AsyncRead + Unpin,
     W: AsyncWrite + Unpin,
@@ -162,7 +217,7 @@ where
                 if remaining != 0 {
                     return Ok(false);
                 }
-                let mut writer = client_write.lock().await;
+                let mut writer = link.writer.lock().await;
                 writer.write_all(b"N").await?;
             }
             PROTOCOL_V3 => {
@@ -170,11 +225,13 @@ where
                 copy_exact(client, upstream, remaining).await?;
                 return Ok(true);
             }
-            // A cancel connection carries no queries — relay it verbatim.
+            // A cancel connection carries no queries — relay the packet verbatim
+            // and stop. `CancelRequest` is self-contained, so waiting for the
+            // client's EOF afterwards would only pin the runtime and the upstream
+            // connection for as long as the client cares to hold the socket.
             CANCEL_REQUEST => {
                 upstream.write_all(&head).await?;
                 copy_exact(client, upstream, remaining).await?;
-                tokio::io::copy(client, upstream).await?;
                 return Ok(false);
             }
             _ => {
@@ -190,7 +247,7 @@ async fn message_loop<R, W>(
     state: &GatewayState,
     client: &mut R,
     upstream: &mut W,
-    client_write: &ClientWriter,
+    link: &ClientLink,
     facts: &Facts,
 ) -> std::io::Result<()>
 where
@@ -207,7 +264,12 @@ where
         client.read_exact(&mut len_bytes).await?;
         let len = u32::from_be_bytes(len_bytes) as usize;
         if len < 4 {
-            return Ok(()); // malformed framing; the stream is no longer trustworthy
+            // A protocol violation, not a clean shutdown: say so rather than
+            // reporting the session as having ended normally.
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "malformed framing: length less than 4",
+            ));
         }
         let payload_len = len - 4;
 
@@ -225,23 +287,37 @@ where
             // stays framed, then refuse.
             discard_exact(client, payload_len).await?;
             record(state, facts, None, Decision::Denied, Verdict::Deny);
-            refuse(client_write, "honmoon: query frame exceeds inspection cap").await?;
+            refuse(link, "honmoon: query frame exceeds inspection cap").await?;
             continue;
         }
 
         let mut payload = vec![0u8; payload_len];
         client.read_exact(&mut payload).await?;
 
+        // A simple query may legally carry several statements, but `parse_sql`
+        // only ever sees the first verb — `SELECT 1; DROP TABLE users` would be
+        // decided as a `SELECT` and forwarded whole. Nothing downstream re-reads
+        // the rest, so the frame is refused rather than forwarded uninspected.
+        if tag[0] == b'Q' && payload_carries_multiple_statements(&payload) {
+            record(state, facts, None, Decision::Denied, Verdict::Deny);
+            refuse(
+                link,
+                "honmoon: multi-statement query frames are not inspectable",
+            )
+            .await?;
+            continue;
+        }
+
         let Some(sql) = statement_facts(tag[0], &len_bytes, &payload) else {
             // A `Q`/`P` frame we cannot parse is refused rather than forwarded
             // blind — the same fail-closed posture as the frame cap, and it is
             // audited the same way, so every refusal leaves a trail.
             record(state, facts, None, Decision::Denied, Verdict::Deny);
-            refuse(client_write, "honmoon: unparseable query frame").await?;
+            refuse(link, "honmoon: unparseable query frame").await?;
             continue;
         };
 
-        if decide(state, facts, sql, client_write).await? {
+        if decide(state, facts, sql, link).await? {
             upstream.write_all(&tag).await?;
             upstream.write_all(&len_bytes).await?;
             upstream.write_all(&payload).await?;
@@ -277,12 +353,24 @@ pub(crate) fn parse_message_query(payload: &[u8]) -> Option<&str> {
     std::str::from_utf8(query).ok()
 }
 
+/// Whether a simple-query (`Q`) payload carries more than one statement.
+///
+/// The scanner itself is [`carries_multiple_statements`] in `honmoon-core`,
+/// shared with the comment-stripping [`parse_sql`] does. A payload that does not
+/// decode is left to the caller's unparseable-frame path.
+fn payload_carries_multiple_statements(payload: &[u8]) -> bool {
+    payload
+        .strip_suffix(&[0])
+        .and_then(|query| std::str::from_utf8(query).ok())
+        .is_some_and(carries_multiple_statements)
+}
+
 /// Apply the policy to one statement. Returns whether the frame may be forwarded.
 async fn decide(
     state: &GatewayState,
     base: &Facts,
     sql: SqlFacts,
-    client_write: &ClientWriter,
+    link: &ClientLink,
 ) -> std::io::Result<bool> {
     let facts = Facts {
         sql: Some(sql),
@@ -327,7 +415,7 @@ async fn decide(
     };
 
     if !allowed {
-        refuse(client_write, &denial_message(outcome.rule.as_deref())).await?;
+        refuse(link, &denial_message(outcome.rule.as_deref())).await?;
     }
     Ok(allowed)
 }
@@ -350,11 +438,14 @@ fn record(
 }
 
 /// Answer a refused statement with `ErrorResponse` + `ReadyForQuery`, leaving
-/// the session open.
-async fn refuse(client_write: &ClientWriter, message: &str) -> std::io::Result<()> {
-    let mut writer = client_write.lock().await;
+/// the session open. The `ReadyForQuery` reports the transaction status honmoon
+/// last saw upstream, so a refusal inside an open transaction does not tell the
+/// client it is idle.
+async fn refuse(link: &ClientLink, message: &str) -> std::io::Result<()> {
+    let status = link.tx_status.load(Ordering::Relaxed);
+    let mut writer = link.writer.lock().await;
     writer.write_all(&error_response(message)).await?;
-    writer.write_all(&READY_FOR_QUERY).await
+    writer.write_all(&[b'Z', 0, 0, 0, 5, status]).await
 }
 
 /// The message text a refused statement carries back to the client.
@@ -463,6 +554,27 @@ mod tests {
         truncated.extend_from_slice(b"SELECT 1");
         assert_eq!(parse_message_query(&truncated), None);
         assert_eq!(parse_message_query(b""), None);
+    }
+
+    /// A `Q` payload is the query text plus its NUL terminator.
+    fn q_payload(query: &str) -> Vec<u8> {
+        let mut payload = Vec::from(query.as_bytes());
+        payload.push(0);
+        payload
+    }
+
+    #[test]
+    fn multi_statement_payloads_are_recognized_and_single_ones_are_not() {
+        assert!(payload_carries_multiple_statements(&q_payload(
+            "SELECT 1; DROP TABLE users"
+        )));
+        assert!(!payload_carries_multiple_statements(&q_payload(
+            "SELECT 1;"
+        )));
+        assert!(
+            !payload_carries_multiple_statements(b"SELECT 1; DROP TABLE users"),
+            "a payload with no NUL terminator is the unparseable path's business"
+        );
     }
 
     #[test]

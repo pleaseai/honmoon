@@ -21,6 +21,7 @@ use honmoon_proxy::gateway::GatewayState;
 /// PostgreSQL protocol constants the client helpers below speak.
 const PROTOCOL_V3: u32 = 196_608;
 const SSL_REQUEST: u32 = 80_877_103;
+const CANCEL_REQUEST: u32 = 80_877_102;
 
 // --- fake upstreams ---------------------------------------------------------
 
@@ -28,6 +29,10 @@ const SSL_REQUEST: u32 = 80_877_103;
 /// `CommandComplete` + `ReadyForQuery` and `P` with `ParseComplete`. Every SQL
 /// statement it actually receives is reported on the returned channel, so a test
 /// can assert that a refused statement never arrived.
+///
+/// It tracks the transaction status the way a real server does (`BEGIN` opens
+/// one), and answers `SELECT huge` with a backend message far larger than the
+/// relay's buffering cap.
 fn start_pg_upstream() -> (u16, Receiver<String>) {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port();
@@ -54,6 +59,7 @@ fn start_pg_upstream() -> (u16, Receiver<String>) {
                     return;
                 }
 
+                let mut status = b'I';
                 loop {
                     let mut tag = [0u8; 1];
                     if s.read_exact(&mut tag).is_err() {
@@ -72,12 +78,27 @@ fn start_pg_upstream() -> (u16, Receiver<String>) {
                     let reply = match tag[0] {
                         b'Q' => {
                             let sql = payload.strip_suffix(&[0]).unwrap_or(&payload);
-                            tx.send(String::from_utf8_lossy(sql).into_owned()).unwrap();
-                            let mut out = vec![b'C'];
+                            let sql = String::from_utf8_lossy(sql).into_owned();
+                            let statement = sql.trim().trim_end_matches(';').to_ascii_uppercase();
+                            match statement.as_str() {
+                                "BEGIN" => status = b'T',
+                                "COMMIT" | "ROLLBACK" => status = b'I',
+                                _ => {}
+                            }
+                            tx.send(sql).unwrap();
+
+                            let mut out = Vec::new();
+                            if statement == "SELECT HUGE" {
+                                let row = vec![b'x'; 256 * 1024];
+                                out.push(b'D');
+                                out.extend_from_slice(&((4 + row.len()) as u32).to_be_bytes());
+                                out.extend_from_slice(&row);
+                            }
                             let complete = b"SELECT 1\0";
+                            out.push(b'C');
                             out.extend_from_slice(&((4 + complete.len()) as u32).to_be_bytes());
                             out.extend_from_slice(complete);
-                            out.extend_from_slice(&[b'Z', 0, 0, 0, 5, b'I']);
+                            out.extend_from_slice(&[b'Z', 0, 0, 0, 5, status]);
                             out
                         }
                         b'P' => {
@@ -317,8 +338,14 @@ fn read_until_ready(s: &mut TcpStream) -> Vec<(u8, Vec<u8>)> {
 }
 
 /// Assert the frames carry honmoon's refusal: `ErrorResponse` (SQLSTATE 42501)
-/// followed by `ReadyForQuery`.
+/// followed by `ReadyForQuery` reporting the session as idle.
 fn assert_refused(frames: &[(u8, Vec<u8>)]) {
+    assert_refused_with_status(frames, b'I');
+}
+
+/// As [`assert_refused`], but for a refusal whose `ReadyForQuery` must report
+/// `status` — the transaction state the upstream is actually in.
+fn assert_refused_with_status(frames: &[(u8, Vec<u8>)], status: u8) {
     assert_eq!(frames.len(), 2, "expected ErrorResponse + ReadyForQuery");
     assert_eq!(frames[0].0, b'E', "first frame must be an ErrorResponse");
     let body = String::from_utf8_lossy(&frames[0].1);
@@ -328,7 +355,11 @@ fn assert_refused(frames: &[(u8, Vec<u8>)]) {
     );
     assert!(body.contains("honmoon:"), "message names honmoon: {body:?}");
     assert_eq!(frames[1].0, b'Z');
-    assert_eq!(frames[1].1, vec![b'I'], "session returns to idle");
+    assert_eq!(
+        frames[1].1,
+        vec![status],
+        "the refusal reports the upstream's transaction status"
+    );
 }
 
 /// Nothing should have reached the database.
@@ -392,6 +423,91 @@ fn drop_table_is_refused_with_error_response_and_never_reaches_upstream() {
         "SELECT 1"
     );
     assert_eq!(read_until_ready(&mut s)[0].0, b'C');
+}
+
+#[test]
+fn multi_statement_simple_query_is_refused_and_single_statements_are_not() {
+    let (upstream, sql) = start_pg_upstream();
+    let (proxy, _) = start_socks_proxy(&policy_yaml(upstream));
+
+    let mut s = pg_connect(proxy, upstream);
+    // The policy only ever sees the leading `SELECT`, so forwarding this frame
+    // would run a `DROP` no rule ever decided.
+    s.write_all(&simple_query("SELECT 1; DROP TABLE users"))
+        .unwrap();
+    assert_refused(&read_until_ready(&mut s));
+    assert_upstream_silent(&sql);
+
+    // The ordinary single-statement shapes still go through.
+    for statement in ["SELECT 1;", "SELECT ';' FROM orders"] {
+        s.write_all(&simple_query(statement)).unwrap();
+        assert_eq!(sql.recv_timeout(Duration::from_secs(5)).unwrap(), statement);
+        assert_eq!(read_until_ready(&mut s)[0].0, b'C');
+    }
+}
+
+#[test]
+fn a_refusal_inside_a_transaction_reports_the_upstream_status() {
+    let (upstream, sql) = start_pg_upstream();
+    let (proxy, _) = start_socks_proxy(&policy_yaml(upstream));
+
+    let mut s = pg_connect(proxy, upstream);
+    s.write_all(&simple_query("BEGIN")).unwrap();
+    assert_eq!(sql.recv_timeout(Duration::from_secs(5)).unwrap(), "BEGIN");
+    assert_eq!(
+        read_until_ready(&mut s).last().unwrap().1,
+        vec![b'T'],
+        "the upstream opened a transaction"
+    );
+
+    // The upstream transaction is still open, so telling the client it is idle
+    // would have it make transaction-bound decisions on a wrong state.
+    s.write_all(&simple_query("DROP TABLE users")).unwrap();
+    assert_refused_with_status(&read_until_ready(&mut s), b'T');
+    assert_upstream_silent(&sql);
+}
+
+#[test]
+fn a_backend_message_larger_than_the_relay_buffer_arrives_intact() {
+    let (upstream, sql) = start_pg_upstream();
+    let (proxy, _) = start_socks_proxy(&policy_yaml(upstream));
+
+    let mut s = pg_connect(proxy, upstream);
+    s.write_all(&simple_query("SELECT huge")).unwrap();
+    assert_eq!(
+        sql.recv_timeout(Duration::from_secs(5)).unwrap(),
+        "SELECT huge"
+    );
+
+    // Past the relay's buffering cap, so the message takes the streaming path.
+    let (tag, payload) = read_frame(&mut s);
+    assert_eq!(tag, b'D');
+    assert_eq!(payload.len(), 256 * 1024);
+    assert!(payload.iter().all(|b| *b == b'x'), "relayed unmangled");
+    assert_eq!(read_until_ready(&mut s)[0].0, b'C');
+}
+
+#[test]
+fn cancel_request_ends_the_session_without_waiting_for_client_eof() {
+    let (upstream, _sql) = start_pg_upstream();
+    let (proxy, _) = start_socks_proxy(&policy_yaml(upstream));
+
+    let (mut s, code) = socks_connect(proxy, "localhost", upstream);
+    assert_eq!(code, 0x00);
+
+    // 16 bytes: length, the cancel code, then the backend PID and secret key.
+    let mut packet = Vec::new();
+    packet.extend_from_slice(&16u32.to_be_bytes());
+    packet.extend_from_slice(&CANCEL_REQUEST.to_be_bytes());
+    packet.extend_from_slice(&[0, 0, 0, 7, 0, 0, 0, 42]);
+    s.write_all(&packet).unwrap();
+
+    // A `CancelRequest` is a complete packet, so the runtime lets go of the
+    // connection instead of pinning it until this client — which never closes —
+    // sends EOF.
+    let mut rest = Vec::new();
+    s.read_to_end(&mut rest)
+        .expect("the session must end without waiting for the client to close");
 }
 
 #[test]
