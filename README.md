@@ -129,8 +129,8 @@ Protocol-aware rules using CEL, bound to named endpoints:
 ```yaml
 # Named targets, matched on the exact (host, port) a client dials.
 endpoints:
-  k8s-prod: { host: k8s.internal, port: 6443, protocol: kubernetes }
-  postgres-prod: { host: db.internal, port: 5432, protocol: postgres }
+  k8s-prod: {host: k8s.internal, port: 6443, protocol: kubernetes}
+  postgres-prod: {host: db.internal, port: 5432, protocol: postgres}
 
 rules:
   - name: k8s-no-secret-delete
