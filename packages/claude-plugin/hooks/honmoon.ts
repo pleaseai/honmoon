@@ -45,7 +45,7 @@ type Fetcher = (url: string, init: HttpInit) => Promise<HttpResponse>
 type Sleeper = (ms: number, options?: { signal?: AbortSignal }) => Promise<void>
 type Ask = (payload: Json) => Promise<Answer>
 
-export function configure(options: PluginOptions): Config {
+export function configure(options: PluginOptions = {}): Config {
   const url = typeof options.hookUrl === 'string' ? options.hookUrl.trim() : ''
   // Unset (the manifest declares no default for it, deliberately): `hookUrl`
   // alone selects the http transport, as the README documents.
@@ -121,8 +121,10 @@ export function engineAsk(
   const abort = new AbortController()
   const expired = sleep(HOOK_BUDGET_MS, { signal: abort.signal }).then(
     () => new BudgetExhausted('hook budget exhausted'),
-    // Aborted because the hook already returned: never settle a race.
-    () => new Promise<BudgetExhausted>(() => {}),
+    // Aborted by `close()`, which runs only after the hook has returned, so no
+    // race is still listening; settle anyway rather than leave a promise
+    // pending forever.
+    () => new BudgetExhausted('hook closed'),
   )
   const guard = async <T>(pending: Promise<T>): Promise<Guarded<T>> => {
     // The race only reads whichever promise settles first; mark the other one
@@ -228,7 +230,7 @@ let sessionId: Promise<string> | undefined
 /** The session cwd, which the engine anchors relative `file_path`s against. */
 let sessionCwd: Promise<string> | undefined
 
-export function applyOptions(options: PluginOptions): void {
+export function applyOptions(options: PluginOptions = {}): void {
   config = configure(options)
   sessionId = undefined
   sessionCwd = undefined
