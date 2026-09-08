@@ -50,6 +50,7 @@ use std::os::unix::net::{UnixListener, UnixStream};
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus};
+use std::sync::mpsc;
 use std::thread;
 
 use super::bridge::{self, Upstream};
@@ -178,10 +179,46 @@ impl HostBridge {
             socket,
             socks_socket,
         };
+        // Both binds happen before either pump starts, the same order
+        // [`supervise`] keeps on the far side of the bridge and for the same
+        // reason: a pump started against the first socket is unreachable from
+        // here once it is running, so a failure on the second bind would leave
+        // a live listener and its thread behind while the run drops to
+        // advisory, serving a socket whose directory this value's `Drop` has
+        // already unlinked.
         let listener = UnixListener::bind(&opened.socket)?;
-        thread::spawn(move || bridge::serve(listener, ProxyUpstream(proxy)));
         let socks_listener = UnixListener::bind(&opened.socks_socket)?;
-        thread::spawn(move || bridge::serve(socks_listener, ProxyUpstream(socks)));
+
+        // `Builder::spawn` rather than `thread::spawn`: the latter *panics*
+        // when the thread cannot be created, which unwinds past the `?` that
+        // [`run_confined`] relies on and takes the advisory fallback with it.
+        // A setup failure has to stay a returned error to be one.
+        //
+        // The start gate is what makes that error *clean*. A pump parks on its
+        // receiver instead of accepting immediately, so nothing is served until
+        // both threads exist: if the second `spawn` fails, the `?` drops both
+        // senders on the way out, the first pump's `recv` fails, and it returns
+        // without ever having accepted — closing the same window the paired
+        // binds close above, one layer down. Without it, `Drop` would unlink a
+        // directory whose socket a live thread was still serving.
+        let (start_connect, await_connect) = mpsc::channel::<()>();
+        let (start_socks, await_socks) = mpsc::channel::<()>();
+        thread::Builder::new()
+            .name("honmoon-bridge-connect".into())
+            .spawn(move || {
+                if await_connect.recv().is_ok() {
+                    bridge::serve(listener, ProxyUpstream(proxy));
+                }
+            })?;
+        thread::Builder::new()
+            .name("honmoon-bridge-socks".into())
+            .spawn(move || {
+                if await_socks.recv().is_ok() {
+                    bridge::serve(socks_listener, ProxyUpstream(socks));
+                }
+            })?;
+        let _ = start_connect.send(());
+        let _ = start_socks.send(());
 
         Ok(opened)
     }
@@ -671,10 +708,32 @@ pub fn supervise(
     // otherwise come up with a working `http_proxy` and an `ALL_PROXY` pointing
     // at nothing, and a client reading only the latter would look confined when
     // it was merely broken.
+    //
+    // The pumps then start under the same fallible-spawn and start-gate rules
+    // as [`HostBridge::open`], for a sharper reason than on the host side:
+    // there is no advisory fallback in here. A `thread::spawn` panic would kill
+    // the supervisor with a backtrace instead of returning the `io::Error` this
+    // function's caller can report, and the user's command would never run.
     let socket = bridge_socket.to_path_buf();
-    thread::spawn(move || bridge::serve(listener, SocketUpstream(socket)));
     let socks_socket = socks_bridge_socket.to_path_buf();
-    thread::spawn(move || bridge::serve(socks_listener, SocketUpstream(socks_socket)));
+    let (start_connect, await_connect) = mpsc::channel::<()>();
+    let (start_socks, await_socks) = mpsc::channel::<()>();
+    thread::Builder::new()
+        .name("honmoon-supervise-connect".into())
+        .spawn(move || {
+            if await_connect.recv().is_ok() {
+                bridge::serve(listener, SocketUpstream(socket));
+            }
+        })?;
+    thread::Builder::new()
+        .name("honmoon-supervise-socks".into())
+        .spawn(move || {
+            if await_socks.recv().is_ok() {
+                bridge::serve(socks_listener, SocketUpstream(socks_socket));
+            }
+        })?;
+    let _ = start_connect.send(());
+    let _ = start_socks.send(());
 
     let proxy_url = format!("http://127.0.0.1:{port}");
     // `socks5h`, matching the unconfined path: DNS stays on honmoon's side of
