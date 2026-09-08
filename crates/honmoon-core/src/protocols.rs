@@ -296,7 +296,16 @@ fn starts_identifier_continuation(bytes: &[u8], start: usize) -> bool {
     start
         .checked_sub(1)
         .and_then(|prev| bytes.get(prev))
-        .is_some_and(|c| c.is_ascii_alphanumeric() || *c == b'_' || *c == b'$')
+        .is_some_and(|c| is_identifier_cont(*c))
+}
+
+/// One byte of `ident_cont` as PostgreSQL's lexer defines it:
+/// `[A-Za-z\200-\377_0-9\$]`. **Every** byte from `\200` up counts, so a
+/// non-ASCII letter continues an identifier — an ASCII-only test here would let
+/// `SELECT 1 AS é$tag$; DROP …$tag$` hide its separator inside a dollar quote
+/// that PostgreSQL never opens.
+fn is_identifier_cont(byte: u8) -> bool {
+    byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'$' || byte >= 0x80
 }
 
 /// If a `$` at `start` opens a dollar quote (`$$` or `$tag$`), the index just
@@ -306,10 +315,11 @@ fn dollar_tag_end(bytes: &[u8], start: usize) -> Option<usize> {
     while let Some(&c) = bytes.get(i) {
         match c {
             b'$' => return Some(i + 1),
-            // A tag is an identifier, and it may not start with a digit — that
-            // is a positional parameter.
-            b'_' | b'a'..=b'z' | b'A'..=b'Z' => i += 1,
-            b'0'..=b'9' if i > start + 1 => i += 1,
+            // A tag follows the unquoted-identifier rules, so it may hold
+            // non-ASCII bytes but may not *start* with a digit — that is a
+            // positional parameter, not a tag.
+            b'0'..=b'9' if i == start + 1 => return None,
+            c if is_identifier_cont(c) && c != b'$' => i += 1,
             _ => return None,
         }
     }
@@ -580,6 +590,29 @@ mod tests {
             carries_multiple_statements("SELECT 1; /* unterminated"),
             "a comment that never closes could be hiding a statement"
         );
+    }
+
+    #[test]
+    fn a_non_ascii_identifier_byte_still_blocks_a_dollar_quote() {
+        // `é` is `ident_cont` to PostgreSQL, so `é$tag$` is one identifier and
+        // the `;` that follows is a real separator.
+        assert!(carries_multiple_statements(
+            "SELECT 1 AS é$tag$; DROP TABLE users$tag$"
+        ));
+        // Separated from the identifier, the same `$tag$` genuinely opens a
+        // dollar-quoted body, and the `;` inside it is not a separator.
+        assert!(!carries_multiple_statements(
+            "SELECT é, $tag$a; b$tag$ FROM orders"
+        ));
+        // A tag may itself be non-ASCII. Failing to recognize one would leave
+        // its body scanned as bare SQL, where a `--` inside it would comment out
+        // the separator that follows.
+        assert!(!carries_multiple_statements(
+            "SELECT $é$a; b$é$ FROM orders"
+        ));
+        assert!(carries_multiple_statements(
+            "SELECT $é$--$é$; DROP TABLE users"
+        ));
     }
 
     #[test]
