@@ -49,10 +49,13 @@ argument shape the code does not recognize all count as executing, because this 
 judgement in the classifier whose failure mode is a bypass rather than a refusal. Data-modifying
 CTEs outrank the outer `SELECT`. Where several verbs execute, the most dangerous one is reported,
 ordered once in `VERB_PRECEDENCE`
-(`DROP > TRUNCATE > ALTER > MERGE > DELETE > UPDATE > INSERT > SELECT`). The ordering is
-deny-oriented on purpose: under-reporting a verb is a bypass, while over-reporting one can only
-refuse something. `MERGE` outranks each of `DELETE`/`UPDATE`/`INSERT` because a single `MERGE`
-can perform all three.
+(`DROP > TRUNCATE > ALTER > MERGE > DELETE > UPDATE > INSERT > SELECT`). The ordering picks the
+verb most likely to be the subject of a deny rule. It does not make the other verbs visible: an
+`INSERT … ON CONFLICT DO UPDATE` reports `UPDATE`, and a rule that denies `INSERT` while allowing
+`UPDATE` does not fire on it even though an unseen key inserts. One `sql.verb` cannot carry both
+outcomes; that is the limit tracked in #104, and refusing every upsert instead is the same
+ordinary-traffic call as #103. `MERGE` outranks each of `DELETE`/`UPDATE`/`INSERT` because a
+single `MERGE` can perform all three.
 
 **Statement boundaries come from the parser.** `carries_multiple_statements` returns
 `statements.len() > 1`, which is exact rather than conservative on anything the grammar reads.
@@ -167,10 +170,11 @@ actually visible. Where honmoon can tell that a statement touches more relations
 now reports no table rather than a misleading one, so a table-scoped allow cannot be tricked into
 authorizing an unnamed relation; that is a guard against being wrong, not a claim to completeness.
 
-Representing the full set instead of one relation — `SqlFacts { tables: [...] }`, with rules
-written as `'users' in sql.tables` — would recover the expressiveness that reporting nothing gives
-up. It is not done here because it changes the policy struct, which is ask-first under
-`crates/AGENTS.md` and has to stay in sync with the TypeScript types and JSON Schema (TD-001).
+Representing the full sets instead of one value each — `SqlFacts { verbs: [...], tables: [...] }`,
+with rules written as `'INSERT' in sql.verbs` or `'users' in sql.tables` — would recover what a
+single verb hides and what reporting no table gives up. It is not done here because it changes the
+policy struct, which is ask-first under `crates/AGENTS.md` and has to stay in sync with the
+TypeScript types and JSON Schema (TD-001); #104 is that ask.
 
 ## Alternatives Considered
 
