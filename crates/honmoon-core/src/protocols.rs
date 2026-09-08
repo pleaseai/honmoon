@@ -323,15 +323,20 @@ fn parse_sql_heuristic(query: &str) -> SqlFacts {
     // past them too — otherwise `/* audit */ DROP TABLE users` parses as the verb
     // `/*` and no `sql.verb == 'DROP'` rule ever sees it.
     let query = strip_leading_comments(query);
-    let mut tokens = query.split_whitespace();
-    let verb = match tokens.next() {
-        // A keyword starts with a letter or `_`; anything else is not a verb we
-        // can classify, and must not be echoed back into the facts.
-        Some(token) if token.starts_with(|c: char| c.is_ascii_alphabetic() || c == '_') => {
-            token.to_ascii_uppercase()
-        }
-        _ => UNKNOWN_VERB.to_owned(),
+    // The verb ends where PostgreSQL says an identifier ends, not at the next
+    // space. Its lexer treats a comment as whitespace, so a comment can be the
+    // separator between a keyword and what follows it: `DO/**/$$…$$` and
+    // `DO--c\n$$…$$` both execute the block. Splitting on whitespace made the
+    // "verb" `DO/**/$$BEGIN`, which no rule — and no refusal — ever matched.
+    let verb = match leading_keyword(query) {
+        Some(keyword) => keyword.to_ascii_uppercase(),
+        // Not a keyword we can classify, and it must not be echoed into the
+        // facts as attacker-chosen text.
+        None => UNKNOWN_VERB.to_owned(),
     };
+    // Table extraction below reads the tokens after the first one, unchanged.
+    let mut tokens = query.split_whitespace();
+    let _ = tokens.next();
 
     // Table extraction depends on the verb's syntax.
     let table = match verb.as_str() {
@@ -381,6 +386,32 @@ fn parse_sql_heuristic(query: &str) -> SqlFacts {
         verb,
         table: clean_identifier(table),
     }
+}
+
+/// The leading keyword of `query`, scanned the way PostgreSQL's lexer does: one
+/// `ident_start` byte (`[A-Za-z\200-\377_]`) followed by `ident_cont` bytes,
+/// ending at the first byte that is neither.
+///
+/// Knowing nothing about comment syntax is the point — the run simply stops at
+/// `/` and at `-`, so a comment acting as the keyword's terminator needs no
+/// special case. `$` *is* `ident_cont`, so `DO$$…$$` scans as the single
+/// identifier `DO$$BEGIN…` and is deliberately **not** recognized as a `DO`:
+/// PostgreSQL rejects that spelling itself (`syntax error at or near "DO$$"`),
+/// and agreeing with the server exactly is what keeps this honest.
+fn leading_keyword(query: &str) -> Option<&str> {
+    let bytes = query.as_bytes();
+    let first = *bytes.first()?;
+    if !(first.is_ascii_alphabetic() || first == b'_' || first >= 0x80) {
+        return None;
+    }
+    // Every `ident_start` byte is also `ident_cont`, so the run covers the
+    // first byte too. It always ends on an ASCII byte, so the split is on a
+    // character boundary.
+    let end = bytes
+        .iter()
+        .position(|byte| !is_identifier_cont(*byte))
+        .unwrap_or(bytes.len());
+    query.get(..end)
 }
 
 /// Normalize a SQL identifier: strip quotes, a trailing `;`, schema qualifier,
@@ -920,6 +951,24 @@ mod tests {
         ));
         assert!(is_uninspectable_statement(
             "/* audit */ do $$ begin delete from users; end $$"
+        ));
+        // A comment is whitespace to PostgreSQL's lexer, so it can separate the
+        // keyword from the block: both of these emptied a 5-row table on 17.11
+        // while honmoon read the verb as `DO/**/$$BEGIN` and forwarded them.
+        assert!(is_uninspectable_statement(
+            "DO/**/$$BEGIN DELETE FROM victim; END$$"
+        ));
+        assert!(is_uninspectable_statement(
+            "DO/*x*/$$BEGIN DELETE FROM victim; END$$"
+        ));
+        assert!(is_uninspectable_statement(
+            "DO--c\n$$BEGIN DELETE FROM victim; END$$"
+        ));
+        // `$` is `ident_cont`, so `DO$$…` is one identifier rather than the
+        // keyword `DO`. Missing it is correct: PostgreSQL rejects that spelling
+        // too (`syntax error at or near "DO$$"`), so there is nothing to refuse.
+        assert!(!is_uninspectable_statement(
+            "DO$$BEGIN DELETE FROM victim; END$$"
         ));
         // Ordinary statements stay inspectable and are decided by rules.
         assert!(!is_uninspectable_statement("SELECT * FROM orders"));
