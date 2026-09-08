@@ -8,7 +8,10 @@
 //! never decrypt or buffer full payloads beyond what a rule needs.
 
 use crate::{K8sFacts, SqlFacts};
-use sqlparser::ast::{FromTable, ObjectName, Query, SetExpr, Statement, TableFactor, TableObject};
+use sqlparser::ast::{
+    Expr, FromTable, ObjectName, Query, SetExpr, Statement, TableFactor, TableObject,
+    UtilityOption, Value,
+};
 use sqlparser::dialect::PostgreSqlDialect;
 use sqlparser::parser::Parser;
 
@@ -134,6 +137,82 @@ fn table_factor_name(factor: &TableFactor) -> String {
     }
 }
 
+/// The one relation a statement names, or empty when it names several.
+///
+/// [`SqlFacts`] carries a single `table`, so for `DROP TABLE scratch, users` no
+/// single value is right — and reporting the first is wrong in the dangerous
+/// direction: an allow rule `sql.verb == 'DROP' && sql.table == 'scratch'` would
+/// then authorize dropping `users` alongside it. Reporting nothing instead means
+/// no table-scoped rule can match a multi-target statement, so only a
+/// table-blind rule decides it. **Do not "simplify" this back to `.first()`.**
+fn sole_relation<T>(targets: &[T], name_of: impl Fn(&T) -> String) -> String {
+    match targets {
+        [only] => name_of(only),
+        _ => String::new(),
+    }
+}
+
+/// Whether an `EXPLAIN` runs the statement it wraps.
+///
+/// `analyze` covers the bare `EXPLAIN ANALYZE …` spelling; PostgreSQL also takes
+/// the flag as a utility option, `EXPLAIN (ANALYZE [ boolean ]) …`, which
+/// sqlparser reports in `options` with `analyze` still false.
+///
+/// This is the one judgement here that can create a bypass rather than a false
+/// refusal, so it defaults toward "executes": only an argument that is
+/// *explicitly* false turns it off. A bare `ANALYZE`, `ANALYZE true`, and any
+/// argument shape this does not recognize all count as executing.
+fn explain_executes(analyze: bool, options: Option<&Vec<UtilityOption>>) -> bool {
+    analyze
+        || options.into_iter().flatten().any(|option| {
+            option.name.value.eq_ignore_ascii_case("analyze")
+                && !option_arg_is_false(option.arg.as_ref())
+        })
+}
+
+/// Whether a utility option's argument is an explicit false. A missing argument
+/// is not — `EXPLAIN (ANALYZE) …` executes.
+fn option_arg_is_false(arg: Option<&Expr>) -> bool {
+    match arg {
+        Some(Expr::Value(value)) => match &value.value {
+            Value::Boolean(flag) => !flag,
+            Value::Number(digits, _) => digits == "0",
+            Value::SingleQuotedString(text) => is_false_word(text),
+            _ => false,
+        },
+        Some(Expr::Identifier(ident)) => is_false_word(&ident.value),
+        _ => false,
+    }
+}
+
+/// The words PostgreSQL's `parse_bool` reads as false, case-insensitively.
+fn is_false_word(word: &str) -> bool {
+    ["false", "off", "no", "0", "f", "n"]
+        .iter()
+        .any(|false_word| word.eq_ignore_ascii_case(false_word))
+}
+
+/// Whether a statement runs code honmoon cannot inspect and must therefore
+/// refuse outright rather than classify.
+///
+/// Only `DO` today. A `DO` block executes an arbitrary PL/pgSQL body — measured
+/// against PostgreSQL 17.11, `DO $$ BEGIN DELETE FROM sessions; END $$` really
+/// does empty the table — while the statement itself reports the harmless verb
+/// `DO`, so no `sql.verb` rule can see what it runs. Unlike `EXPLAIN ANALYZE`
+/// there is nothing to unwrap: the body is PL/pgSQL rather than SQL, and
+/// sqlparser 0.62 has no `DO` statement at all. Refusing is the fail-closed
+/// answer, and matches what the runtime already does with a batch or a frame it
+/// cannot parse.
+///
+/// Deliberately narrow. `CALL`, `EXECUTE` and `COPY` raise the same question and
+/// are tracked separately (#103); whether to refuse them is a product decision,
+/// not this predicate's.
+pub fn is_uninspectable_statement(query: &str) -> bool {
+    // sqlparser rejects `DO` outright, so there is no AST node to match on: the
+    // leading keyword, past any comment prologue, is what identifies it.
+    parse_sql_heuristic(query).verb == "DO"
+}
+
 /// Classify one parsed statement, or `None` when it carries no verb this module
 /// models — the caller then keeps the pre-parser classification for it.
 fn classify_statement(statement: &Statement) -> Option<SqlFacts> {
@@ -141,21 +220,16 @@ fn classify_statement(statement: &Statement) -> Option<SqlFacts> {
         // `EXPLAIN ANALYZE` *runs* the statement it wraps, so that statement is
         // what policy has to see; a plain `EXPLAIN` only plans it and stays an
         // `EXPLAIN`. PostgreSQL also spells the flag as a utility option
-        // (`EXPLAIN (ANALYZE, BUFFERS) …`), which sqlparser keeps in `options`
-        // with `analyze` still false. The wrapped statement may itself be a CTE
-        // query, so recurse rather than classifying it one level deep.
+        // (`EXPLAIN (ANALYZE [ boolean ]) …`), value and all — see
+        // [`explain_executes`]. The wrapped statement may itself be a CTE query,
+        // so recurse rather than classifying it one level deep.
         Statement::Explain {
             analyze,
             options,
             statement,
             ..
         } => {
-            let executes = *analyze
-                || options
-                    .iter()
-                    .flatten()
-                    .any(|option| option.name.value.eq_ignore_ascii_case("analyze"));
-            if executes {
+            if explain_executes(*analyze, options.as_ref()) {
                 classify_statement(statement)
             } else {
                 facts("EXPLAIN", String::new())
@@ -174,23 +248,14 @@ fn classify_statement(statement: &Statement) -> Option<SqlFacts> {
                 &delete.from;
             facts(
                 "DELETE",
-                tables
-                    .first()
-                    .map(|table| table_factor_name(&table.relation))
-                    .unwrap_or_default(),
+                sole_relation(tables, |table| table_factor_name(&table.relation)),
             )
         }
         Statement::Update(update) => facts("UPDATE", table_factor_name(&update.table.relation)),
-        Statement::Drop { names, .. } => {
-            facts("DROP", names.first().map(relation_name).unwrap_or_default())
-        }
+        Statement::Drop { names, .. } => facts("DROP", sole_relation(names, relation_name)),
         Statement::Truncate(truncate) => facts(
             "TRUNCATE",
-            truncate
-                .table_names
-                .first()
-                .map(|target| relation_name(&target.name))
-                .unwrap_or_default(),
+            sole_relation(&truncate.table_names, |target| relation_name(&target.name)),
         ),
         Statement::AlterTable(alter) => facts("ALTER", relation_name(&alter.name)),
         Statement::Merge(merge) => facts("MERGE", table_factor_name(&merge.table)),
@@ -808,6 +873,58 @@ mod tests {
         let facts = parse_sql("MERGE INTO t USING s ON t.id = s.id WHEN MATCHED THEN DELETE");
         assert_eq!(facts.verb, "MERGE");
         assert_eq!(facts.table, "t");
+    }
+
+    #[test]
+    fn the_analyze_option_is_read_as_a_boolean_not_a_flag() {
+        // Measured on PostgreSQL 17.11: `EXPLAIN (ANALYZE false) DELETE …` left
+        // all 5 rows in place, so unwrapping it would refuse a plan inspection
+        // that never runs. The other two spellings do execute.
+        assert_eq!(
+            parse_sql("EXPLAIN (ANALYZE false) DELETE FROM sessions").verb,
+            "EXPLAIN"
+        );
+        assert_eq!(
+            parse_sql("EXPLAIN (ANALYZE true) DELETE FROM sessions").verb,
+            "DELETE"
+        );
+        assert_eq!(
+            parse_sql("EXPLAIN (ANALYZE) DELETE FROM sessions").verb,
+            "DELETE"
+        );
+    }
+
+    #[test]
+    fn a_multi_target_drop_or_truncate_names_no_table() {
+        // `DROP TABLE a, b` drops both (measured: neither survived), so naming
+        // only `a` would let an allow rule scoped to a harmless table authorize
+        // the rest of the list. With no table, only a table-blind rule decides.
+        let dropped = parse_sql("DROP TABLE a, b");
+        assert_eq!(dropped.verb, "DROP");
+        assert_eq!(dropped.table, "");
+
+        let truncated = parse_sql("TRUNCATE a, b");
+        assert_eq!(truncated.verb, "TRUNCATE");
+        assert_eq!(truncated.table, "");
+
+        // A single target is unchanged.
+        assert_eq!(parse_sql("DROP TABLE a").table, "a");
+    }
+
+    #[test]
+    fn a_do_block_is_uninspectable() {
+        // The body is PL/pgSQL, not SQL: measured on PostgreSQL 17.11 this
+        // emptied a 5-row table while the facts said the verb was `DO`.
+        assert!(is_uninspectable_statement(
+            "DO $$ BEGIN DELETE FROM sessions; END $$"
+        ));
+        assert!(is_uninspectable_statement(
+            "/* audit */ do $$ begin delete from users; end $$"
+        ));
+        // Ordinary statements stay inspectable and are decided by rules.
+        assert!(!is_uninspectable_statement("SELECT * FROM orders"));
+        assert!(!is_uninspectable_statement("DROP TABLE users"));
+        assert!(!is_uninspectable_statement(""));
     }
 
     #[test]

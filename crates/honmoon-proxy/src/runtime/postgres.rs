@@ -26,7 +26,9 @@ use std::sync::atomic::{AtomicU8, Ordering};
 
 use honmoon_core::{
     AuditDraft, Decision, Facts, FactsSummary, SqlFacts, Verdict, decide_explained,
-    protocols::{carries_multiple_statements, parse_postgres_query, parse_sql},
+    protocols::{
+        carries_multiple_statements, is_uninspectable_statement, parse_postgres_query, parse_sql,
+    },
 };
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::TcpStream;
@@ -308,6 +310,17 @@ where
             continue;
         }
 
+        // A `DO` block runs an arbitrary PL/pgSQL body while reporting the
+        // harmless verb `DO`, and the body is not SQL, so there is nothing to
+        // classify — the statements inside it are simply unreachable. Refuse the
+        // frame, the same fail-closed answer a batch gets. Unlike the batch
+        // check this applies to `P` as well as `Q`: a `DO` block can be prepared.
+        if frame_query(tag[0], &payload).is_some_and(is_uninspectable_statement) {
+            record(state, facts, None, Decision::Denied, Verdict::Deny);
+            refuse(link, "honmoon: DO blocks are not inspectable").await?;
+            continue;
+        }
+
         let Some(sql) = statement_facts(tag[0], &len_bytes, &payload) else {
             // A `Q`/`P` frame we cannot parse is refused rather than forwarded
             // blind — the same fail-closed posture as the frame cap, and it is
@@ -353,16 +366,27 @@ pub(crate) fn parse_message_query(payload: &[u8]) -> Option<&str> {
     std::str::from_utf8(query).ok()
 }
 
+/// The SQL text a statement-bearing frame carries, whichever tag delivered it.
+/// `None` when the payload does not decode — the caller's unparseable-frame path
+/// refuses those.
+fn frame_query(tag: u8, payload: &[u8]) -> Option<&str> {
+    match tag {
+        // A `Q` payload is the query text plus its NUL terminator.
+        b'Q' => payload
+            .strip_suffix(&[0])
+            .and_then(|query| std::str::from_utf8(query).ok()),
+        b'P' => parse_message_query(payload),
+        _ => None,
+    }
+}
+
 /// Whether a simple-query (`Q`) payload carries more than one statement.
 ///
 /// The scanner itself is [`carries_multiple_statements`] in `honmoon-core`,
 /// shared with the comment-stripping [`parse_sql`] does. A payload that does not
 /// decode is left to the caller's unparseable-frame path.
 fn payload_carries_multiple_statements(payload: &[u8]) -> bool {
-    payload
-        .strip_suffix(&[0])
-        .and_then(|query| std::str::from_utf8(query).ok())
-        .is_some_and(carries_multiple_statements)
+    frame_query(b'Q', payload).is_some_and(carries_multiple_statements)
 }
 
 /// Apply the policy to one statement. Returns whether the frame may be forwarded.
@@ -574,6 +598,27 @@ mod tests {
         assert!(
             !payload_carries_multiple_statements(b"SELECT 1; DROP TABLE users"),
             "a payload with no NUL terminator is the unparseable path's business"
+        );
+    }
+
+    #[test]
+    fn a_do_block_is_recognized_in_both_statement_bearing_tags() {
+        // `DO $$ … $$` is one statement, so the batch check waves it through;
+        // the frame is refused for being uninspectable instead. It reaches the
+        // runtime as either tag, so both extractions have to see it.
+        let block = "DO $$ BEGIN DELETE FROM users; END $$";
+        assert!(!payload_carries_multiple_statements(&q_payload(block)));
+        assert!(frame_query(b'Q', &q_payload(block)).is_some_and(is_uninspectable_statement));
+        assert!(
+            frame_query(b'P', &parse_payload("stmt", block))
+                .is_some_and(is_uninspectable_statement)
+        );
+
+        // An ordinary statement is still decided by policy, not refused.
+        assert!(!frame_query(b'Q', &q_payload("SELECT 1")).is_some_and(is_uninspectable_statement));
+        assert!(
+            !frame_query(b'P', &parse_payload("", "DROP TABLE users"))
+                .is_some_and(is_uninspectable_statement)
         );
     }
 

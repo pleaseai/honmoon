@@ -447,6 +447,28 @@ fn multi_statement_simple_query_is_refused_and_single_statements_are_not() {
 }
 
 #[test]
+fn a_do_block_is_refused_and_never_reaches_upstream() {
+    let (upstream, sql) = start_pg_upstream();
+    let (proxy, _) = start_socks_proxy(&policy_yaml(upstream));
+
+    let mut s = pg_connect(proxy, upstream);
+    // The body is PL/pgSQL, so no rule can see the DELETE inside it — the
+    // statement would reach the database reporting only the verb `DO`.
+    s.write_all(&simple_query("DO $$ BEGIN DELETE FROM users; END $$"))
+        .unwrap();
+    assert_refused(&read_until_ready(&mut s));
+    assert_upstream_silent(&sql);
+
+    // The refusal is specific to the block, not a dead session.
+    s.write_all(&simple_query("SELECT 1")).unwrap();
+    assert_eq!(
+        sql.recv_timeout(Duration::from_secs(5)).unwrap(),
+        "SELECT 1"
+    );
+    assert_eq!(read_until_ready(&mut s)[0].0, b'C');
+}
+
+#[test]
 fn a_refusal_inside_a_transaction_reports_the_upstream_status() {
     let (upstream, sql) = start_pg_upstream();
     let (proxy, _) = start_socks_proxy(&policy_yaml(upstream));
