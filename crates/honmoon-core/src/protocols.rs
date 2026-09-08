@@ -13,8 +13,8 @@ use percent_encoding::percent_decode_str;
 
 use crate::{K8sFacts, SqlFacts};
 use sqlparser::ast::{
-    Expr, FromTable, ObjectName, Query, SetExpr, Statement, TableFactor, TableObject,
-    UtilityOption, Value,
+    CascadeOption, Expr, FromTable, ObjectName, OnConflictAction, OnInsert, Query, SetExpr,
+    Statement, TableFactor, TableObject, TableWithJoins, UtilityOption, Value,
 };
 use sqlparser::dialect::PostgreSqlDialect;
 use sqlparser::parser::Parser;
@@ -156,6 +156,22 @@ fn sole_relation<T>(targets: &[T], name_of: impl Fn(&T) -> String) -> String {
     }
 }
 
+/// The one relation a `FROM` clause reads, or empty when it reads several.
+///
+/// `SELECT * FROM approved JOIN secrets ON …` and `SELECT * FROM approved,
+/// secrets` both read both relations, so naming only `approved` would let an
+/// allow rule scoped to it authorize reading `secrets` alongside. A join makes
+/// the clause multi-relation just as a second `FROM` item does.
+fn sole_read_relation(from: &[TableWithJoins]) -> String {
+    sole_relation(from, |table| {
+        if table.joins.is_empty() {
+            table_factor_name(&table.relation)
+        } else {
+            String::new()
+        }
+    })
+}
+
 /// Whether an `EXPLAIN` runs the statement it wraps.
 ///
 /// `analyze` covers the bare `EXPLAIN ANALYZE …` spelling; PostgreSQL also takes
@@ -240,13 +256,27 @@ fn classify_statement(statement: &Statement) -> Option<SqlFacts> {
             }
         }
         Statement::Query(query) => classify_query(query),
-        Statement::Insert(insert) => facts(
-            "INSERT",
-            match &insert.table {
+        Statement::Insert(insert) => {
+            let table = match &insert.table {
                 TableObject::TableName(name) => relation_name(name),
                 _ => String::new(),
-            },
-        ),
+            };
+            // `ON CONFLICT … DO UPDATE` really runs an UPDATE on the existing
+            // row — measured on PostgreSQL 17.11, the update arm took a column
+            // from 100 to 999 — so an `sql.verb == 'UPDATE'` rule has to see it.
+            // `DO NOTHING` stays a plain INSERT. Both write the insert target,
+            // so the table is the same either way; the precedence table picks
+            // the verb rather than an arm here.
+            let conflict_update = matches!(
+                &insert.on,
+                Some(OnInsert::OnConflict(conflict))
+                    if matches!(conflict.action, OnConflictAction::DoUpdate(_))
+            );
+            more_dangerous(
+                facts("INSERT", table.clone()),
+                conflict_update.then(|| facts("UPDATE", table)).flatten(),
+            )
+        }
         Statement::Delete(delete) => {
             let (FromTable::WithFromKeyword(tables) | FromTable::WithoutKeyword(tables)) =
                 &delete.from;
@@ -256,10 +286,18 @@ fn classify_statement(statement: &Statement) -> Option<SqlFacts> {
             )
         }
         Statement::Update(update) => facts("UPDATE", table_factor_name(&update.table.relation)),
+        // `CASCADE` reaches objects the statement never names, so neither of
+        // these can honestly report one relation — see [`sole_relation`], whose
+        // rule this extends from "names several" to "affects several".
+        Statement::Drop { cascade: true, .. } => facts("DROP", String::new()),
         Statement::Drop { names, .. } => facts("DROP", sole_relation(names, relation_name)),
         Statement::Truncate(truncate) => facts(
             "TRUNCATE",
-            sole_relation(&truncate.table_names, |target| relation_name(&target.name)),
+            if truncate.cascade == Some(CascadeOption::Cascade) {
+                String::new()
+            } else {
+                sole_relation(&truncate.table_names, |target| relation_name(&target.name))
+            },
         ),
         Statement::AlterTable(alter) => facts("ALTER", relation_name(&alter.name)),
         Statement::Merge(merge) => facts("MERGE", table_factor_name(&merge.table)),
@@ -283,14 +321,7 @@ fn classify_query(query: &Query) -> Option<SqlFacts> {
 
 fn classify_set_expr(body: &SetExpr) -> Option<SqlFacts> {
     match body {
-        SetExpr::Select(select) => facts(
-            "SELECT",
-            select
-                .from
-                .first()
-                .map(|table| table_factor_name(&table.relation))
-                .unwrap_or_default(),
-        ),
+        SetExpr::Select(select) => facts("SELECT", sole_read_relation(&select.from)),
         SetExpr::Query(query) => classify_query(query),
         SetExpr::Insert(statement)
         | SetExpr::Update(statement)
@@ -1059,6 +1090,62 @@ mod tests {
                 "diverged without a comment: {q:?}"
             );
         }
+    }
+
+    #[test]
+    fn a_select_over_several_relations_names_none_of_them() {
+        // A join and a comma list both read both relations (PostgreSQL reads
+        // `secrets` in each), so naming only `approved` would let an allow rule
+        // scoped to it authorize reading the other.
+        for query in [
+            "SELECT * FROM approved JOIN secrets ON approved.id = secrets.id",
+            "SELECT * FROM approved, secrets",
+        ] {
+            let facts = parse_sql(query);
+            assert_eq!(facts.verb, "SELECT");
+            assert_eq!(facts.table, "", "{query}");
+        }
+
+        // One relation and no join still names it.
+        assert_eq!(parse_sql("SELECT * FROM approved").table, "approved");
+    }
+
+    #[test]
+    fn a_cascading_truncate_or_drop_names_no_table() {
+        // Measured on PostgreSQL 17.11: `TRUNCATE scratch CASCADE` reported
+        // `truncate cascades to table "dependent"` and emptied it, so an allow
+        // rule scoped to `scratch` would authorize emptying tables it never
+        // named.
+        let truncated = parse_sql("TRUNCATE scratch CASCADE");
+        assert_eq!(truncated.verb, "TRUNCATE");
+        assert_eq!(truncated.table, "");
+
+        // `DROP … CASCADE` reaches dependent *objects* (views, constraints)
+        // rather than tables, so it is the milder case — carried here for
+        // consistency, not for a reported bypass.
+        let dropped = parse_sql("DROP TABLE x CASCADE");
+        assert_eq!(dropped.verb, "DROP");
+        assert_eq!(dropped.table, "");
+
+        // Without CASCADE both still name their single target.
+        assert_eq!(parse_sql("TRUNCATE scratch").table, "scratch");
+        assert_eq!(parse_sql("DROP TABLE x").table, "x");
+    }
+
+    #[test]
+    fn an_upserting_insert_reports_the_update_it_runs() {
+        // Measured on PostgreSQL 17.11: on an existing key the DO UPDATE arm
+        // ran and took the column from 100 to 999, while the facts said
+        // `INSERT` — so an `sql.verb == 'UPDATE'` deny rule never fired.
+        let upsert =
+            parse_sql("INSERT INTO up VALUES (1, 0) ON CONFLICT (id) DO UPDATE SET a = 999");
+        assert_eq!(upsert.verb, "UPDATE");
+        assert_eq!(upsert.table, "up");
+
+        // `DO NOTHING` writes only on the insert path, so it stays an INSERT.
+        let ignored = parse_sql("INSERT INTO up VALUES (1, 0) ON CONFLICT DO NOTHING");
+        assert_eq!(ignored.verb, "INSERT");
+        assert_eq!(ignored.table, "up");
     }
 
     #[test]
