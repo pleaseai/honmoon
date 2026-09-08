@@ -247,19 +247,24 @@ export function applyOptions(options: PluginOptions = {}): void {
  * unforgeable. A lookup that fails is an engine that is unavailable.
  */
 async function once(
-  cached: Promise<string> | undefined,
+  get: () => Promise<string> | undefined,
+  set: (p: Promise<string> | undefined) => void,
   load: () => Promise<string>,
-  store: (p: Promise<string> | undefined) => void,
 ): Promise<string> {
+  let cached = get()
   if (!cached) {
     cached = load()
-    store(cached)
+    set(cached)
   }
   try {
     return await cached
   }
   catch (error) {
-    store(undefined)
+    // Evict only our own promise: a concurrent call may already have stored a
+    // fresh lookup, and a late rejection must not throw that one away.
+    if (get() === cached) {
+      set(undefined)
+    }
     throw error
   }
 }
@@ -273,8 +278,8 @@ interface SessionFacts { session_id: string, cwd: string }
  */
 async function sessionFacts($: Parameters<typeof promptHook>[0], engine: Engine): Promise<Guarded<SessionFacts>> {
   const facts = await engine.guard(Promise.all([
-    once(sessionId, () => $.session.id(), p => (sessionId = p)),
-    once(sessionCwd, () => $.session.cwd(), p => (sessionCwd = p)),
+    once(() => sessionId, p => (sessionId = p), () => $.session.id()),
+    once(() => sessionCwd, p => (sessionCwd = p), () => $.session.cwd()),
   ]))
   if (!facts.ok) {
     return { ok: false, cause: `session lookup failed: ${facts.cause}` }
