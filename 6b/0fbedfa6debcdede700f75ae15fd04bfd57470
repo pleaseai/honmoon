@@ -1,0 +1,22 @@
+crates/honmoon-core/src/protocols.rs
+  s_9db9412633686d::t_1b4a27d20e21be 292
+  s_9db9412633686d::t_02354d4093562d 159-174,259-260,263-279,289-291,296-300,324,1095-1149
+  s_9db9412633686d::t_78750452e6736c 16-17
+  s_9db9412633686d::t_eedf3941488c7f 1150
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "6b0fbedfa6debcdede700f75ae15fd04bfd57470",
+  "prompts": {},
+  "sessions": {
+    "s_9db9412633686d": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "48cf2c87-6132-47ec-b772-0666fa6084c0",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
