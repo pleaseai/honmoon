@@ -1,0 +1,19 @@
+crates/honmoon-cli/src/main.rs
+  s_2a3e1085f100f4::t_3cf3b38c197d79 47-50,174,188,250,278,298,346-347,358,361-363,371-373
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "783866ea809be8821eb28876a0be8ad183883807",
+  "prompts": {},
+  "sessions": {
+    "s_2a3e1085f100f4": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "4e51a985-ae08-4b72-9b71-5e920ba4fb56",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
