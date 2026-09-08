@@ -1,0 +1,31 @@
+crates/honmoon-proxy/src/gateway.rs
+  s_04170a69e09558::t_b50d0259d5ba88 211-223,242-249
+crates/honmoon-proxy/src/mitm.rs
+  s_04170a69e09558::t_60355b560ea52a 43-46,57-59,71-74,85,89-90,98,101-107,112-113,186-193,199,202,507-510,514-520,618,625,742-745,747,761-768,770,772,1118-1134,1164-1191,1209-1210
+crates/honmoon-proxy/tests/mitm.rs
+  s_27bde9469c6a17::t_5f8625db0b2fde 452-536
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "c257cabadad27db6ea160b2e2297e262d9cd6a79",
+  "prompts": {},
+  "sessions": {
+    "s_04170a69e09558": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "16addd4e-5aca-4e97-a602-05d3ea9c9f94",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    },
+    "s_27bde9469c6a17": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "42b6ffc0-48e2-4b77-b418-7ae9840eea89",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
