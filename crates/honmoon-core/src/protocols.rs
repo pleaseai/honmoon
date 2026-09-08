@@ -7,6 +7,8 @@
 //! Scope: we extract only the declared facts (verb/table/resource/namespace),
 //! never decrypt or buffer full payloads beyond what a rule needs.
 
+use std::borrow::Cow;
+
 use percent_encoding::percent_decode_str;
 
 use crate::{K8sFacts, SqlFacts};
@@ -119,7 +121,14 @@ pub fn parse_k8s_request(method: &str, path: &str) -> K8sFacts {
     // before the `/` split keeps an encoded `%2F` from hiding a segment
     // boundary the server will honour.
     let raw_path = path.split('?').next().unwrap_or(path);
-    let decoded = percent_decode_str(raw_path).decode_utf8_lossy();
+    // Almost every real path carries no escape at all, and decoding one costs a
+    // decode pass plus a UTF-8 revalidation of a `&str` that was already valid.
+    // Scanning for `%` first keeps that off the common path.
+    let decoded = if raw_path.contains('%') {
+        percent_decode_str(raw_path).decode_utf8_lossy()
+    } else {
+        Cow::Borrowed(raw_path)
+    };
     let segments: Vec<&str> = decoded.split('/').filter(|s| !s.is_empty()).collect();
 
     // Skip the fixed API prefix so the version segment is never mistaken for a
