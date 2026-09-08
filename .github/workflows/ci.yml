@@ -56,8 +56,9 @@ jobs:
         env:
           HONMOON_REQUIRE_ENFORCEMENT: '1'
         # cargo-llvm-cov's documented manual sequence rather than the one-shot
-        # form, because the isolation tests exec `bypass_probe` as a fixture out
-        # of `target/.../debug/examples` and nothing else puts it there. Measured:
+        # form, because the isolation tests exec `bypass_probe` and `socks_probe`
+        # as fixtures out of `target/.../debug/examples` and nothing else puts
+        # them there. Measured:
         # `--all-targets` compiles examples as *test* targets, and the one-shot
         # `cargo llvm-cov` runs `cargo test --tests`, so neither leaves a runnable
         # binary. `show-env` points the explicit build at the same instrumented
@@ -66,7 +67,7 @@ jobs:
         run: |
           source <(cargo llvm-cov show-env --export-prefix)
           cargo llvm-cov clean --workspace
-          cargo build --locked -p honmoon-cli --example bypass_probe
+          cargo build --locked -p honmoon-cli --example bypass_probe --example socks_probe
           cargo test --locked --workspace
           cargo llvm-cov report --lcov --output-path lcov.info
 
@@ -110,12 +111,12 @@ jobs:
         # not arrive as a green build.
         env:
           HONMOON_REQUIRE_ENFORCEMENT: '1'
-        # The example is built explicitly for the same reason as in the ubuntu
-        # job: the isolation tests exec `bypass_probe` out of the target
-        # directory, and `--all-targets` compiles examples as test targets rather
-        # than leaving a runnable binary there.
+        # The examples are built explicitly for the same reason as in the ubuntu
+        # job: the isolation tests exec `bypass_probe` and `socks_probe` out of
+        # the target directory, and `--all-targets` compiles examples as test
+        # targets rather than leaving runnable binaries there.
         run: |
-          cargo build --locked -p honmoon-cli --example bypass_probe
+          cargo build --locked -p honmoon-cli --example bypass_probe --example socks_probe
           cargo test --locked -p honmoon-cli
 
   js:
