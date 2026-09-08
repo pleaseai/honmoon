@@ -1,0 +1,2 @@
+- [honmoon SQL classification verification](honmoon-postgres-sql-classification.md) — hypothesize sqlparser-accepted-but-unwalked AST shapes, then verify against real Postgres before reporting; local psql/initdb available
+- [ocr scoping on honmoon](ocr-scoping-honmoon.md) — no REVIEW_OCR_DEFAULT_FLAGS configured; use --from REVIEW_BASE_REF --to HEAD even with clean tree for stacked-PR reviews
