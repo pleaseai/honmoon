@@ -352,6 +352,12 @@ async function denyBeforeRead(engine: Engine, e: ToolEvent, facts: SessionFacts)
   if (wrong !== undefined) {
     return config.failClosed ? { deny: unavailable(wrong) } : undefined
   }
+  // The engine either denies or says nothing; any other decision value is not
+  // the engine talking (an `{}` no-op is how it permits).
+  const decision = hookSpecific(pre.verdict).permissionDecision
+  if (decision !== undefined && decision !== 'deny') {
+    return config.failClosed ? { deny: unavailable(`engine returned an unexpected shape (permissionDecision ${JSON.stringify(decision)})`) } : undefined
+  }
   const reason = denyReason(pre.verdict)
   return reason ? { deny: reason } : undefined
 }
@@ -440,13 +446,28 @@ async function redactResult(engine: Engine, e: ToolEvent, r: ToolResult, session
     return r
   }
   // A record comes back a record; anything else is not the engine talking.
-  if (!updated || typeof updated !== 'object' || Array.isArray(updated)) {
+  if (!updated || typeof updated !== 'object' || Array.isArray(updated) || !sameKeys(updated, r.result)) {
     return config.failClosed ? { deny: unavailable('engine returned an unexpected shape') } : r
   }
   return {
     result: updated as typeof r.result,
     context: [...(r.context ?? []), redactionNote(updated)],
   }
+}
+
+/**
+ * Whether the replacement has exactly the keys of the record that was sent.
+ * The engine rewrites values in place, so the keys never change; a record
+ * with other keys would fail core's output-schema check, which skips the hook
+ * and lets the unredacted result stand.
+ */
+function sameKeys(replacement: object, original: unknown): boolean {
+  if (!original || typeof original !== 'object') {
+    return false
+  }
+  const sent = Object.keys(original).sort()
+  const got = Object.keys(replacement).sort()
+  return sent.length === got.length && sent.every((key, i) => key === got[i])
 }
 
 /** An engine bound to this hook's `$`, with a fresh budget. */

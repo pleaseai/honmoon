@@ -153,6 +153,21 @@ describe('tool.call', () => {
     expect((await runTool(stringed, readEvent, async () => readResult)).deny).toBe('honmoon: redaction engine unavailable (engine returned an unexpected shape); tool output withheld')
     const { $: listed } = engine(p => (p.hook_event_name === 'PostToolUse' ? { stdout: redacted([]) } : {}))
     expect((await runTool(listed, readEvent, async () => readResult)).deny).toBe('honmoon: redaction engine unavailable (engine returned an unexpected shape); tool output withheld')
+    const { $: reshaped } = engine(p => (p.hook_event_name === 'PostToolUse' ? { stdout: redacted({ type: 'text' }) } : {}))
+    expect((await runTool(reshaped, readEvent, async () => readResult)).deny).toBe('honmoon: redaction engine unavailable (engine returned an unexpected shape); tool output withheld')
+  })
+
+  test('denies the read when PreToolUse answers with a decision other than deny', async () => {
+    applyOptions({})
+    const allow = JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'allow' } })
+    const { $ } = engine(p => (p.hook_event_name === 'PreToolUse' ? { stdout: allow } : {}))
+    let ran = false
+    const r = await runTool($, readEvent, async () => {
+      ran = true
+      return readResult
+    })
+    expect(r.deny).toBe('honmoon: redaction engine unavailable (engine returned an unexpected shape (permissionDecision "allow")); tool output withheld')
+    expect(ran).toBe(false)
   })
 
   test('denies the output when the verdict answers a different event than the one sent', async () => {
