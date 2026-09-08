@@ -2358,16 +2358,24 @@ the proxy directly; `run`'s env-var exec wiring is covered by the CLI itself, no
 
 | Command | What happens | Status | Source |
 |---------|--------------|--------|--------|
-| `honmoon run --policy P -- <cmd>` | Ephemeral proxy started, child exec'd with `https_proxy` set | <span class="status-done">works</span> (Linux: empty-namespace isolation; macOS: Seatbelt profile; advisory elsewhere) | [main.rs:66-98](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-cli/src/main.rs#L66-L98) |
+| `honmoon run --policy P -- <cmd>` | Two ephemeral listeners started (CONNECT + SOCKS5), child exec'd with the `http_proxy` family and `ALL_PROXY` set | <span class="status-done">works</span> (Linux: empty-namespace isolation; macOS: Seatbelt profile; advisory elsewhere) | [main.rs:387-470](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-cli/src/main.rs#L387-L470) |
 | `honmoon gateway --config P --addr A` | Standalone CONNECT proxy bound to `A` | <span class="status-done">works</span> | [main.rs:53-57](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-cli/src/main.rs#L53-L57) |
 | `honmoon join --gateway G` | — | <span class="status-planned">stub: `bail!`</span> | [main.rs:58-60](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-cli/src/main.rs#L58-L60) |
 
 ## 1. Run a command behind a policy
 
-`honmoon run` binds an ephemeral egress proxy on `127.0.0.1:0`, spawns the proxy on a
-background thread, then execs your command with all proxy env vars pointed at it. Only
-hosts your policy allows can be reached; everything else gets a `403`
-([main.rs:66-98](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-cli/src/main.rs#L66-L98)).
+`honmoon run` binds *two* ephemeral listeners on `127.0.0.1:0` — the terminating CONNECT proxy
+and the SOCKS5 one — serves both from a single background thread, then execs your command with the
+`http_proxy`/`https_proxy` family pointed at the first and `all_proxy`/`ALL_PROXY` at the second
+([mod.rs:128-138](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-cli/src/isolate/mod.rs#L128-L138)).
+One thread, not one per listener, is deliberate: a panicking accept loop parked in its own task
+would drop its listener and hand the port back while `run` still reported `Enforced`, so all four
+loops share one `tokio::select!` and any of them failing takes the whole proxy down
+([main.rs:420-443](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-cli/src/main.rs#L420-L443)).
+Only hosts your policy allows can be reached; everything else is refused — a `403` on the CONNECT
+path ([mitm.rs:206](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-proxy/src/mitm.rs#L206)),
+a `0x02` reply on the SOCKS5 one
+([socks.rs:126-129](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-proxy/src/socks.rs#L126-L129)).
 
 ```bash
 # Build the binary once
@@ -2402,7 +2410,7 @@ sequenceDiagram
   CH-->>CLI: exit code
   CLI-->>U: propagate exit code
 ```
-<!-- Sources: crates/honmoon-cli/src/main.rs:66-98, crates/honmoon-proxy/src/gateway.rs:62-112 -->
+<!-- Sources: crates/honmoon-cli/src/main.rs:387-470, crates/honmoon-proxy/src/gateway.rs:62-112 -->
 
 ::: warning Enforcing on Linux and macOS, advisory everywhere else
 On **Linux** the child is spawned into an empty user + network namespace holding nothing but
@@ -2411,14 +2419,15 @@ loopback, with **both** of honmoon's proxies bridged in over one Unix socket eac
 variables are set by the in-namespace supervisor and point the child at loopback ports *inside* its
 own namespace rather than at the host's proxies: `http_proxy` / `https_proxy` (and uppercase) at
 the CONNECT proxy, `all_proxy` / `ALL_PROXY` at the SOCKS5 listener as `socks5h://127.0.0.1:PORT`
-([linux.rs](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-cli/src/isolate/linux.rs)).
+([linux.rs:738-748](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-cli/src/isolate/linux.rs#L738-L748)).
 The `h` keeps DNS on honmoon's side, which is what puts the hostname into the SOCKS5 handshake
 where it selects an `endpoints:` entry — so a `protocol: postgres` endpoint is inspected statement
-by statement under `run` just as it is under `gateway`.
+by statement under `run` just as it is under `gateway`
+([socks.rs:119-137](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-proxy/src/socks.rs#L119-L137)).
 On **macOS** there is no namespace and nothing to bridge: the child keeps the host's loopback, where
 both proxies are already listening, and a Seatbelt profile under `sandbox-exec` denies every socket
 but those two ports — one `remote ip` rule each, never a wildcard
-([macos.rs](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-cli/src/isolate/macos.rs)).
+([macos.rs:355-364](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-cli/src/isolate/macos.rs#L355-L364)).
 On both, an **unprivileged** child that ignores the variables reaches nothing over the network
 rather than bypassing policy. Nor is there DNS inside the sandbox on
 either platform; a proxied client does not need it, but a tool that resolves before it proxies will
