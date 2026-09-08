@@ -7,6 +7,11 @@ egress:
     - github.com
     - '*.githubusercontent.com'
     - api.anthropic.com
+    # Hosts the `endpoints` below name. Without an allow entry the egress
+    # default (deny) blocks the connection at the CONNECT gate, before any
+    # endpoint rule can be reached.
+    - k8s.internal
+    - db.internal
   deny:
     - '*.internal.corp'
 
