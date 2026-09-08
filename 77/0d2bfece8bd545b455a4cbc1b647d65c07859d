@@ -1,0 +1,20 @@
+crates/honmoon-proxy/src/mitm.rs
+  s_a7a4243946dbca::t_cc62d25bf7d652 1140-1147,1152-1154
+  s_a7a4243946dbca::t_a58dd27828394c 1221-1230
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "770d2bfece8bd545b455a4cbc1b647d65c07859d",
+  "prompts": {},
+  "sessions": {
+    "s_a7a4243946dbca": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "b70a0eb9-3089-4589-934a-5f53e0103e73",
+        "model": "unknown"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
