@@ -1,0 +1,22 @@
+crates/honmoon-cli/src/isolate/linux.rs
+  s_16201d1084e23d::t_7ce94640830597 182-188,191-195,206-207,213-214
+  s_16201d1084e23d::t_eb8c530fb370d5 196-205,208-212,215-221
+  s_16201d1084e23d::t_347b037e285461 711-716,719-736
+  s_16201d1084e23d::t_de44ab48c9e062 53
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "1012fbb1aa05d5b148e90d44eb120268583a5b40",
+  "prompts": {},
+  "sessions": {
+    "s_16201d1084e23d": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "485cab2a-19e0-45a0-af23-bd7911a4fb27",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
