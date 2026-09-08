@@ -371,9 +371,9 @@ fn gateway(args: GatewayArgs) -> Result<()> {
         let proxy_task =
             tokio::spawn(async move { honmoon_proxy::gateway::serve(state, proxy_listener).await });
         let socks_task = socks_listener.map(|socks_listener| {
-            tokio::spawn(
-                async move { honmoon_proxy::socks::serve_socks(socks_state, socks_listener).await },
-            )
+            tokio::spawn(async move {
+                honmoon_proxy::socks::serve_socks(socks_state, socks_listener).await
+            })
         });
         // With the listener off there is nothing to join on, so the arm waits
         // forever instead of firing immediately and killing the gateway.
