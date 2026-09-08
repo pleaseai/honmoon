@@ -159,6 +159,11 @@ are limits of the facts, not defects to be fixed later, and a policy author need
 - **A function body is opaque.** `SELECT drop_everything()` reports `SELECT`, and a `VOLATILE`
   function can perform arbitrary DML. `CALL` and `EXECUTE` are the same shape and are tracked in
   #103.
+- **`sql.table` has no schema.** It is the bare last component of the name, so
+  `sql.table == 'users'` matches `public.users`, `staging.users` and any other schema's `users`
+  alike. Whether two of those are the same relation depends on the session's `search_path`, which
+  is catalog state; inside the parser a qualified name is only ever used for identity (a
+  `schema.name` is never a CTE alias), never collapsed into one.
 - **A statement may read relations it does not write.** `UPDATE a SET … FROM b`,
   `DELETE FROM a USING b` and `INSERT INTO a SELECT … FROM b` all report the write target
   correctly and leave the read source unnamed.
