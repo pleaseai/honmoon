@@ -34,13 +34,36 @@ pub fn parse_postgres_query(packet: &[u8]) -> Option<SqlFacts> {
     Some(parse_sql(query))
 }
 
+/// The verb reported when a statement has no classifiable leading word — it is
+/// empty, or starts with punctuation rather than a keyword. A rule can name it
+/// (`sql.verb == 'UNKNOWN'`) and deny it; echoing the punctuation back as the
+/// verb instead would put an attacker-chosen string into the facts, where it can
+/// only ever fail to match every rule.
+pub const UNKNOWN_VERB: &str = "UNKNOWN";
+
 /// Parse the leading verb and best-effort table out of a SQL statement.
 ///
 /// Heuristic, not a full SQL grammar — enough to drive policy on the dangerous
-/// verbs (`DROP`, `TRUNCATE`, `DELETE`, `UPDATE`, `INSERT`, `SELECT`).
+/// verbs (`DROP`, `TRUNCATE`, `DELETE`, `UPDATE`, `INSERT`, `SELECT`). A verb it
+/// does not recognize is reported as-is and carries no table; recognizing a verb
+/// is not a precondition for allowing a statement, so ordinary traffic (`WITH`,
+/// `EXPLAIN`, `SET`, `BEGIN`, …) is unaffected. An unclassifiable statement gets
+/// [`UNKNOWN_VERB`].
 pub fn parse_sql(query: &str) -> SqlFacts {
+    // A comment prologue must not be able to hide the verb: PostgreSQL skips
+    // `/* audit */` and `-- x` and executes what follows, so honmoon has to look
+    // past them too — otherwise `/* audit */ DROP TABLE users` parses as the verb
+    // `/*` and no `sql.verb == 'DROP'` rule ever sees it.
+    let query = strip_leading_comments(query);
     let mut tokens = query.split_whitespace();
-    let verb = tokens.next().unwrap_or_default().to_ascii_uppercase();
+    let verb = match tokens.next() {
+        // A keyword starts with a letter or `_`; anything else is not a verb we
+        // can classify, and must not be echoed back into the facts.
+        Some(token) if token.starts_with(|c: char| c.is_ascii_alphabetic() || c == '_') => {
+            token.to_ascii_uppercase()
+        }
+        _ => UNKNOWN_VERB.to_owned(),
+    };
 
     // Table extraction depends on the verb's syntax.
     let table = match verb.as_str() {
@@ -101,6 +124,139 @@ fn clean_identifier(raw: &str) -> String {
         .unwrap_or("")
         .trim_matches(|c| c == '"' || c == '`')
         .to_ascii_lowercase()
+}
+
+/// Whether a SQL statement string carries more than one statement.
+///
+/// The `Q` (simple query) message may legally batch statements, but [`parse_sql`]
+/// only ever classifies the first verb, so `SELECT 1; DROP TABLE users` would be
+/// decided as a `SELECT`. The data plane refuses a batch rather than forward one
+/// uninspected, which makes this deliberately conservative: it errs toward
+/// "multiple" on anything it cannot follow. It must still not trip over an
+/// ordinary statement, so semicolons inside string literals, quoted identifiers,
+/// dollar-quoted bodies and comments are not separators, and a single trailing
+/// `;` is still one statement.
+pub fn carries_multiple_statements(query: &str) -> bool {
+    let bytes = query.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if let Some((end, terminated)) = comment_end(bytes, i) {
+            if !terminated {
+                return true; // unterminated comment: the rest is unreadable
+            }
+            i = end;
+            continue;
+        }
+        match bytes[i] {
+            // A string literal or a quoted identifier, where the quote is
+            // doubled to escape itself.
+            quote @ (b'\'' | b'"') => {
+                i += 1;
+                loop {
+                    match bytes.get(i) {
+                        // Unterminated: honmoon cannot tell where the statement
+                        // ends, so it is not inspectable.
+                        None => return true,
+                        Some(&c) if c == quote => {
+                            if bytes.get(i + 1) == Some(&quote) {
+                                i += 2;
+                            } else {
+                                i += 1;
+                                break;
+                            }
+                        }
+                        Some(_) => i += 1,
+                    }
+                }
+            }
+            b'$' => match dollar_tag_end(bytes, i) {
+                Some(body) => {
+                    let tag = &bytes[i..body];
+                    match bytes[body..].windows(tag.len()).position(|w| w == tag) {
+                        Some(end) => i = body + end + tag.len(),
+                        None => return true, // unterminated dollar quote
+                    }
+                }
+                // `$1` and friends are parameter placeholders, not quotes.
+                None => i += 1,
+            },
+            b';' => {
+                // Anything but whitespace after the separator is a second statement.
+                return bytes[i + 1..].iter().any(|b| !b.is_ascii_whitespace());
+            }
+            _ => i += 1,
+        }
+    }
+    false
+}
+
+/// Skip leading whitespace and comments, so the caller sees the first real token.
+fn strip_leading_comments(query: &str) -> &str {
+    let bytes = query.as_bytes();
+    let mut i = 0;
+    loop {
+        while bytes.get(i).is_some_and(u8::is_ascii_whitespace) {
+            i += 1;
+        }
+        match comment_end(bytes, i) {
+            Some((end, _)) => i = end,
+            None => return query.get(i..).unwrap_or_default(),
+        }
+    }
+}
+
+/// If a SQL comment opens at `start`, where it ends.
+///
+/// `Some((end, terminated))`: `end` is the index just past the comment (the end
+/// of the input when it never closed) and `terminated` says whether it closed —
+/// callers weigh that differently, since reading a verb is simply over at the
+/// end of the input while a scanner looking for statement separators cannot
+/// trust what it never saw. `None` when no comment opens at `start`. A `--`
+/// comment runs to the end of its line; `/* */` blocks **nest**, as PostgreSQL's do.
+fn comment_end(bytes: &[u8], start: usize) -> Option<(usize, bool)> {
+    match (bytes.get(start)?, bytes.get(start + 1)) {
+        (b'-', Some(b'-')) => Some(match bytes[start..].iter().position(|b| *b == b'\n') {
+            Some(end) => (start + end + 1, true),
+            None => (bytes.len(), true),
+        }),
+        (b'/', Some(b'*')) => {
+            let mut depth = 1usize;
+            let mut i = start + 2;
+            while depth > 0 {
+                match (bytes.get(i), bytes.get(i + 1)) {
+                    (Some(b'/'), Some(b'*')) => {
+                        depth += 1;
+                        i += 2;
+                    }
+                    (Some(b'*'), Some(b'/')) => {
+                        depth -= 1;
+                        i += 2;
+                    }
+                    (Some(_), _) => i += 1,
+                    (None, _) => return Some((bytes.len(), false)),
+                }
+            }
+            Some((i, true))
+        }
+        _ => None,
+    }
+}
+
+/// If a `$` at `start` opens a dollar quote (`$$` or `$tag$`), the index just
+/// past its opening delimiter; `None` when it is something else.
+fn dollar_tag_end(bytes: &[u8], start: usize) -> Option<usize> {
+    let mut i = start + 1;
+    while let Some(&c) = bytes.get(i) {
+        match c {
+            b'$' => return Some(i + 1),
+            // A tag is an identifier, and it may not start with a digit — that
+            // is a positional parameter.
+            b'_' | b'a'..=b'z' | b'A'..=b'Z' => i += 1,
+            b'0'..=b'9' if i > start + 1 => i += 1,
+            _ => return None,
+        }
+    }
+    None
 }
 
 /// Derive [`K8sFacts`] from a Kubernetes API request (HTTP method + path).
@@ -270,6 +426,86 @@ mod tests {
         let secret = parse_k8s_request("GET", "/api/v1/namespaces/prod/secrets");
         assert_eq!(secret.resource, "secrets");
         assert_eq!(secret.namespace, "prod");
+    }
+
+    #[test]
+    fn a_comment_prologue_cannot_hide_the_verb() {
+        // PostgreSQL skips the comment and executes the DROP, so honmoon must
+        // classify it as a DROP too — otherwise the prefix is a one-line bypass.
+        let block = parse_sql("/* audit */ DROP TABLE users");
+        assert_eq!(block.verb, "DROP");
+        assert_eq!(block.table, "users");
+
+        let line = parse_sql("-- audit\nDROP TABLE users");
+        assert_eq!(line.verb, "DROP");
+        assert_eq!(line.table, "users");
+
+        // Nested and stacked comments, and a plain statement, are unaffected.
+        assert_eq!(
+            parse_sql("/* a /* b */ c */ /* d */ TRUNCATE t").verb,
+            "TRUNCATE"
+        );
+        assert_eq!(parse_sql("SELECT * FROM orders").verb, "SELECT");
+    }
+
+    #[test]
+    fn an_unclassifiable_statement_reports_the_unknown_verb() {
+        // Nothing but a comment, and punctuation where a keyword belongs: the
+        // facts must carry a verb a rule can deny, not attacker-chosen text.
+        assert_eq!(parse_sql("").verb, UNKNOWN_VERB);
+        assert_eq!(parse_sql("/* nothing else */").verb, UNKNOWN_VERB);
+        assert_eq!(parse_sql(";;").verb, UNKNOWN_VERB);
+        // An unrecognized *keyword* is still reported as itself — an unknown
+        // verb is not a refusal, and ordinary sessions use plenty of them.
+        assert_eq!(parse_sql("VACUUM FULL orders").verb, "VACUUM");
+        assert_eq!(
+            parse_sql("with x as (select 1) select * from x").verb,
+            "WITH"
+        );
+    }
+
+    #[test]
+    fn detects_a_second_statement_in_a_simple_query() {
+        assert!(carries_multiple_statements("SELECT 1; DROP TABLE users"));
+        assert!(carries_multiple_statements(
+            "SELECT 1;\n  DROP TABLE users;"
+        ));
+    }
+
+    #[test]
+    fn a_single_statement_survives_its_trailing_semicolon() {
+        assert!(!carries_multiple_statements("SELECT 1"));
+        assert!(!carries_multiple_statements("SELECT 1;"));
+        assert!(!carries_multiple_statements("SELECT 1;  \n"));
+    }
+
+    #[test]
+    fn a_quoted_or_commented_semicolon_is_not_a_separator() {
+        assert!(!carries_multiple_statements("SELECT ';' FROM orders"));
+        assert!(!carries_multiple_statements(
+            "SELECT 'it''s; fine' FROM orders"
+        ));
+        assert!(!carries_multiple_statements(
+            r#"SELECT "we;ird" FROM orders"#
+        ));
+        assert!(!carries_multiple_statements(
+            "SELECT $tag$a; b$tag$ FROM orders"
+        ));
+        assert!(!carries_multiple_statements(
+            "SELECT 1 -- ; not a statement"
+        ));
+        assert!(!carries_multiple_statements("SELECT /* ; /* ; */ ; */ 1"));
+        assert!(
+            !carries_multiple_statements("SELECT * FROM t WHERE id = $1"),
+            "`$1` is a parameter, not a dollar quote"
+        );
+    }
+
+    #[test]
+    fn an_unterminated_quote_or_comment_errs_toward_refusing() {
+        assert!(carries_multiple_statements("SELECT 'oops"));
+        assert!(carries_multiple_statements("SELECT $tag$oops"));
+        assert!(carries_multiple_statements("SELECT /* oops"));
     }
 
     #[test]
