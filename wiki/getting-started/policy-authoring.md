@@ -161,7 +161,16 @@ tunnel through the same listener, gated once on `domain` by the `egress` block �
 A rule referencing an endpoint that `endpoints` does not declare is a **load-time warning, not an
 error**: `Facts.endpoint` may be set by other means, and refusing the whole policy over one
 dangling name would fail open for every other rule
-([lib.rs:199-215](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/lib.rs#L199-L215)).
+([lib.rs:235-245](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/lib.rs#L235-L245)).
+
+That tolerance covers *undefined references only*. An unusable `endpoints` entry is a **load-time
+error** — the policy is rejected outright
+([lib.rs:191-210](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/lib.rs#L191-L210)):
+
+| Mistake | Why it fails the load |
+|---------|-----------------------|
+| `port: 0` | Not a dialable port; the JSON Schema requires 1–65535 |
+| Two names on the same `(host, port)` | Lookup would silently pick one and shadow the other, so only one of the author's rules would ever fire (hosts compared case-insensitively with a trailing dot trimmed) |
 
 ## Protocol rules with CEL
 

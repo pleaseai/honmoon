@@ -3,7 +3,7 @@
 //! This crate is intentionally transport-agnostic. The proxy crate feeds it
 //! protocol [`Facts`] and receives a [`Verdict`].
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 
 use serde::{Deserialize, Serialize};
 
@@ -170,12 +170,41 @@ pub struct K8sFacts {
 impl Policy {
     /// Parse a policy from YAML.
     ///
-    /// Undefined endpoint references are warned about, not rejected — see
-    /// [`Policy::warn_undefined_endpoints`].
+    /// An unusable `endpoints` entry is an error (see
+    /// [`Policy::validate_endpoints`]); an *undefined* endpoint reference is only
+    /// a warning (see [`Policy::warn_undefined_endpoints`]).
     pub fn from_yaml(src: &str) -> Result<Self, Error> {
         let policy: Self = serde_yaml::from_str(src).map_err(Error::Parse)?;
+        policy.validate_endpoints()?;
         policy.warn_undefined_endpoints();
         Ok(policy)
+    }
+
+    /// Reject `endpoints` entries that could never resolve or that resolve
+    /// ambiguously.
+    ///
+    /// Port 0 is not a dialable port (the JSON Schema requires 1–65535), and two
+    /// names on the same target would make [`Policy::endpoint_for`] silently
+    /// pick one and shadow the other — an author who wrote two rules would see
+    /// only one of them fire. Both are the author's mistake, not untrusted
+    /// input, so they fail the load loudly instead of degrading at request time.
+    fn validate_endpoints(&self) -> Result<(), Error> {
+        let mut seen: HashMap<(String, u16), &str> = HashMap::new();
+        for (name, endpoint) in &self.endpoints {
+            if endpoint.port == 0 {
+                return Err(Error::EndpointPortZero { name: name.clone() });
+            }
+            let target = (normalize_host(&endpoint.host), endpoint.port);
+            if let Some(first) = seen.insert(target, name.as_str()) {
+                return Err(Error::DuplicateEndpointTarget {
+                    first: first.to_owned(),
+                    second: name.clone(),
+                    host: endpoint.host.clone(),
+                    port: endpoint.port,
+                });
+            }
+        }
+        Ok(())
     }
 
     /// Look up the endpoint declared for the `(host, port)` a client dialed.
@@ -185,6 +214,7 @@ impl Policy {
     /// a rule for an endpoint declared by a name that never resolves simply
     /// never matches, which is the fail-closed outcome.
     pub fn endpoint_for(&self, host: &str, port: u16) -> Option<(&str, &Endpoint)> {
+        // Same normalization as `normalize_host`, without its allocation.
         let host = host.trim_end_matches('.');
         self.endpoints.iter().find_map(|(name, endpoint)| {
             (endpoint.port == port
@@ -215,10 +245,27 @@ impl Policy {
     }
 }
 
+/// Canonicalize an endpoint host for comparison: drop a trailing FQDN dot and
+/// lowercase.
+fn normalize_host(host: &str) -> String {
+    host.trim_end_matches('.').to_ascii_lowercase()
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     #[error("failed to parse policy: {0}")]
     Parse(#[from] serde_yaml::Error),
+    #[error("endpoint `{name}` has port 0; valid ports are 1-65535")]
+    EndpointPortZero { name: String },
+    #[error(
+        "endpoints `{first}` and `{second}` both target {host}:{port}; each target must have one name"
+    )]
+    DuplicateEndpointTarget {
+        first: String,
+        second: String,
+        host: String,
+        port: u16,
+    },
 }
 
 #[cfg(test)]
@@ -309,6 +356,35 @@ endpoints:
             policy.endpoint_for("K8S.INTERNAL.", 6443).map(|e| e.0),
             Some("k8s-prod")
         );
+    }
+
+    #[test]
+    fn rejects_an_endpoint_with_port_zero() {
+        let error = Policy::from_yaml("endpoints:\n  broken: { host: db.internal, port: 0 }\n")
+            .expect_err("port 0 is not dialable");
+
+        assert!(
+            matches!(&error, Error::EndpointPortZero { name } if name == "broken"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn rejects_two_endpoints_on_the_same_target() {
+        let error = Policy::from_yaml(
+            r#"
+endpoints:
+  k8s-prod: { host: k8s.internal, port: 6443 }
+  k8s-alias: { host: K8s.Internal., port: 6443 }
+"#,
+        )
+        .expect_err("a target must have a single name");
+
+        let Error::DuplicateEndpointTarget { first, second, .. } = &error else {
+            panic!("unexpected error: {error}");
+        };
+        // `endpoints` is a BTreeMap, so the reported order is by name.
+        assert_eq!((first.as_str(), second.as_str()), ("k8s-alias", "k8s-prod"));
     }
 
     #[test]

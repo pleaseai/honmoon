@@ -105,6 +105,8 @@ enum Command {
         signed_body: SignedBodyArg,
         /// How detected PII policy verdicts are handled: detect audits the
         /// would-be verdict; block enforces allow/deny/pause inline.
+        /// Detect only downgrades verdicts caused by PII findings; endpoint and
+        /// Kubernetes rules are always enforced.
         #[arg(long, value_enum, default_value_t = PiiModeArg::Detect)]
         pii_mode: PiiModeArg,
         /// CA certificate path (PEM). Auto-generated on first run if missing.

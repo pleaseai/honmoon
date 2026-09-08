@@ -211,10 +211,13 @@ fn host_of(target: &str) -> &str {
 /// Extract the port from a `host:port` authority (handles IPv6 `[::1]:443`).
 ///
 /// `None` when the authority carries no explicit port — the caller supplies the
-/// scheme default (443 for CONNECT/https, 80 for cleartext).
+/// scheme default (443 for CONNECT/https, 80 for cleartext). An *unbracketed*
+/// authority with more than one colon is a bare IPv6 address, not `host:port`:
+/// reading `::1` as port 1 would let a client claim any endpoint's port.
 pub(crate) fn authority_port(target: &str) -> Option<u16> {
     let rest = match target.strip_prefix('[') {
         Some(rest) => rest.split_once(']').map(|(_, rest)| rest).unwrap_or(""),
+        None if target.matches(':').count() > 1 => return None,
         None => target,
     };
     rest.rsplit_once(':')
@@ -245,6 +248,9 @@ mod tests {
         assert_eq!(authority_port("[::1]:6443"), Some(6443));
         assert_eq!(authority_port("github.com"), None);
         assert_eq!(authority_port("github.com:https"), None);
+        // A bare IPv6 address carries no port, bracketed or not.
+        assert_eq!(authority_port("::1"), None);
+        assert_eq!(authority_port("[::1]"), None);
     }
 
     #[test]
