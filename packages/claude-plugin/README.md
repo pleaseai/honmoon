@@ -142,6 +142,78 @@ To re-verify against your Claude Code version:
 )
 ```
 
+## Function hooks (early access)
+
+Claude Code 2.1.263 ships a prototype **function hooks** API behind
+`CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1`: a plugin may name a TypeScript module in
+`hooks/hooks.json` and register hooks that wrap the tool chain in-process. This
+plugin ships one — `hooks/honmoon.ts` — beside the command hooks above. The API
+is pre-release and may change between Claude Code releases.
+
+```sh
+CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1 claude --plugin-dir /path/to/honmoon/packages/claude-plugin
+```
+
+Without the flag the module is ignored and only the command hooks run, so the
+plugin works unchanged on older Claude Code versions.
+
+### What changes versus the command hooks
+
+| | Command hooks | Function-hooks module |
+|---|---|---|
+| Prompts | **Blocked** — a command hook cannot rewrite a prompt | **Rewritten**: the redacted prompt is submitted, with a context note telling the model values were replaced. It is dropped only when the engine blocks it with no redacted text, or the engine is unreachable |
+| Tool output | `Read`, `Bash`, `Grep` | `Read`, `Bash`, `Grep` **and `WebFetch`** |
+| Engine unreachable | **Fails open** (the tool call proceeds unredacted) | **Fails closed**: the tool result is denied (`honmoon: redaction engine unavailable (…); tool output withheld`) and the prompt is dropped. Set `failMode: "open"` for the old behavior |
+| Transport | `honmoon hook` subprocess | `honmoon hook` subprocess, or HTTP to the management API |
+
+Only the `Read` result variant that carries text is rewritten — an image, PDF or
+notebook record is passed through untouched — and a denied or errored tool
+result is always passed through as core produced it.
+
+### Options
+
+Configure with `/plugin configure honmoon-redact`, or in settings.json under
+`pluginConfigs["honmoon-redact"].options` (user, `--settings` or managed
+settings — project settings are not read):
+
+| Option | Default | Meaning |
+|---|---|---|
+| `transport` | `process` | `process` runs `honmoon hook`; `http` POSTs the same JSON to `hookUrl` |
+| `honmoonBin` | `honmoon` | The binary the `process` transport runs (command name or absolute path) |
+| `hookUrl` | — | Management-API endpoint, e.g. `http://127.0.0.1:7777/api/hooks/claude-code`. Setting it selects the `http` transport unless `transport` says otherwise |
+| `hookToken` | — | Optional bearer token for `hookUrl` |
+| `failMode` | `closed` | `closed` denies tool output / drops the prompt when the engine is unreachable; `open` passes through |
+
+The engine call is capped at 8 s, inside the host's 10 s per-hook budget, and
+every failure path (spawn error, timeout, non-zero exit, unparseable stdout,
+HTTP error) is caught: the hook itself never throws.
+
+### Both layers run at once
+
+With the flag on, the command hooks **and** the module both fire on the same
+tool call. This is harmless: placeholders are keyed by the session salt, so the
+command hook redacts first (it runs beneath the module, inside its `next()`) and
+the module then finds nothing left to redact and hands back the result it was
+given, verbatim. Verified on 2.1.263 — the module's engine call returns an empty
+verdict and the transcript carries one set of placeholders. Drop the `hooks` key
+from `hooks/hooks.json` to run the module alone.
+
+### Typings
+
+`hooks/honmoon.ts` is typed against `.claude/types/claude-code.d.ts`, generated
+by `/plugin-types` (its header records the Claude Code version that wrote it).
+Regenerate after a Claude Code update:
+
+```sh
+cd packages/claude-plugin
+CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1 claude -p --output-format text "/plugin-types"
+```
+
+`hooks/claude-code-grep.d.ts` adds `Grep`, which 2.1.263's `/plugin-types` does
+not emit although the tool exists at run time; delete it if a regenerated
+`claude-code.d.ts` declares `Grep` itself. `bun test` and `bun run typecheck`
+cover the module.
+
 ## Known limitation — detector coverage
 
 The detectors are **precision-first**, so a few shapes can slip through — the
@@ -163,8 +235,10 @@ are gaps to be aware of:
 
 ## Scope
 
-This ships the **command transport** (works with only the binary installed). A
-gateway-direct HTTP transport (`type: "http"` hooks posting to the honmoon
-management API, sharing the tokenization mapping with a co-running proxy) is a
-planned follow-up. HTTP hooks fail open, so it will not become the silent
-default.
+The command hooks ship the **command transport** (works with only the binary
+installed). A gateway-direct HTTP transport (`type: "http"` hooks posting to the
+honmoon management API, sharing the tokenization mapping with a co-running proxy)
+is a planned follow-up for them; settings-level HTTP hooks fail open, so it will
+not become the silent default. The function-hooks module above already offers
+the HTTP transport (`transport: "http"`), where honmoon controls the failure
+mode itself and defaults to failing closed.
