@@ -8,6 +8,6 @@
     "typecheck": "tsc --noEmit -p . && tsc --noEmit -p tsconfig.test.json"
   },
   "devDependencies": {
-    "@types/bun": "latest"
+    "@types/bun": "^1.4.0"
   }
 }

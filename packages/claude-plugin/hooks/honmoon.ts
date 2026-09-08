@@ -103,20 +103,10 @@ interface Engine {
   close: () => void
 }
 
-/**
- * Bind the transport and start the hook's budget. Nothing here throws and
- * nothing outlives the budget: a spawn error, timeout, non-zero exit, bad JSON,
- * HTTP error, or a rejected lookup all come back as `{ ok: false }` so the
- * caller can make the fail-closed decision while the host still listens.
- */
-export function engineAsk(
-  config: Config,
-  run: Runner,
-  fetch: Fetcher,
-  sleep: Sleeper,
-): Engine {
-  // The budget timer is the hook's own; `close()` aborts it so a fast answer
-  // does not leave an 8 s timer (and this closure) pending per tool call —
+/** Start the hook's budget timer; `guard` races anything against it. */
+function startBudget(sleep: Sleeper): Pick<Engine, 'guard' | 'close'> {
+  // The timer is the hook's own; `close()` aborts it so a fast answer does not
+  // leave an 8 s timer (and this closure) pending per tool call —
   // `$.clock.sleep` takes the signal for exactly this.
   const abort = new AbortController()
   const expired = sleep(HOOK_BUDGET_MS, { signal: abort.signal }).then(
@@ -141,33 +131,46 @@ export function engineAsk(
       return { ok: false, cause: error instanceof Error ? error.message : String(error) }
     }
   }
-  const call = async (payload: Json): Promise<Answer> => {
-    if (config.error) {
-      return { ok: false, cause: config.error }
-    }
-    const body = JSON.stringify(payload)
-    if (config.url) {
-      const headers: Record<string, string> = { 'content-type': 'application/json' }
-      if (config.token) {
-        headers.authorization = `Bearer ${config.token}`
-      }
-      const response = await fetch(config.url, { method: 'POST', headers, body })
-      if (!response.ok) {
-        return { ok: false, cause: `HTTP ${response.status}` }
-      }
-      return parseVerdict(response.text)
-    }
-    const result = await run([config.bin, 'hook'], { stdin: body, timeoutMs: HOOK_BUDGET_MS })
-    if (result.exitCode !== 0) {
-      return { ok: false, cause: `${config.bin} hook exited ${result.exitCode}` }
-    }
-    return parseVerdict(result.stdout)
+  return { guard, close: () => abort.abort() }
+}
+
+/** One engine round trip over the configured transport; may throw. */
+async function transportCall(config: Config, run: Runner, fetch: Fetcher, payload: Json): Promise<Answer> {
+  if (config.error) {
+    return { ok: false, cause: config.error }
   }
+  const body = JSON.stringify(payload)
+  if (config.url) {
+    const headers: Record<string, string> = { 'content-type': 'application/json' }
+    if (config.token) {
+      headers.authorization = `Bearer ${config.token}`
+    }
+    const response = await fetch(config.url, { method: 'POST', headers, body })
+    if (!response.ok) {
+      return { ok: false, cause: `HTTP ${response.status}` }
+    }
+    return parseVerdict(response.text)
+  }
+  const result = await run([config.bin, 'hook'], { stdin: body, timeoutMs: HOOK_BUDGET_MS })
+  if (result.exitCode !== 0) {
+    return { ok: false, cause: `${config.bin} hook exited ${result.exitCode}` }
+  }
+  return parseVerdict(result.stdout)
+}
+
+/**
+ * Bind the transport and start the hook's budget. Nothing here throws and
+ * nothing outlives the budget: a spawn error, timeout, non-zero exit, bad JSON,
+ * HTTP error, or a rejected lookup all come back as `{ ok: false }` so the
+ * caller can make the fail-closed decision while the host still listens.
+ */
+export function engineAsk(config: Config, run: Runner, fetch: Fetcher, sleep: Sleeper): Engine {
+  const budget = startBudget(sleep)
   const ask: Ask = async (payload) => {
-    const answer = await guard(call(payload))
+    const answer = await budget.guard(transportCall(config, run, fetch, payload))
     return answer.ok ? answer.value : answer
   }
-  return { ask, guard, close: () => abort.abort() }
+  return { ask, ...budget }
 }
 
 function hookSpecific(verdict: Json): Json {
@@ -280,6 +283,72 @@ async function sessionFacts($: Parameters<typeof promptHook>[0], engine: Engine)
   return { ok: true, value: { session_id, cwd } }
 }
 
+type ToolEvent = Parameters<typeof toolHook>[1]
+type ToolResult = Awaited<ReturnType<Parameters<typeof toolHook>[2]>>
+
+/** Ask the engine whether a Read may open the file at all; a deny, or nothing. */
+async function denyBeforeRead(engine: Engine, e: ToolEvent, facts: SessionFacts): Promise<{ deny: string } | undefined> {
+  if (e.tool !== 'Read') {
+    return undefined
+  }
+  const pre = await engine.ask({
+    hook_event_name: 'PreToolUse',
+    tool_name: 'Read',
+    tool_input: { file_path: e.file_path },
+    // The http transport resolves a relative `file_path` against this and
+    // denies the read as "unresolved" without it (honmoon-mgmt
+    // `resolve_agent_path`); the command hooks get it from the host payload.
+    cwd: facts.cwd,
+    session_id: facts.session_id,
+  })
+  if (!pre.ok) {
+    return config.failClosed ? { deny: unavailable(pre.cause) } : undefined
+  }
+  const reason = denyReason(pre.verdict)
+  return reason ? { deny: reason } : undefined
+}
+
+/** Whether a settled call carries something the detectors can read. */
+function scannable(e: ToolEvent, r: ToolResult): boolean {
+  // A refusal or an errored call carries no tool record to redact, and core's
+  // own messages are what the model should read.
+  if (r.deny !== undefined || r.isError) {
+    return false
+  }
+  // Only the variants the detectors can read. An image or pdf record holds
+  // base64 bytes, and rewriting it would corrupt it; a notebook record is plain
+  // JSON cells, so it is scanned like any other text.
+  if (e.tool === 'Read') {
+    const type = (r.result as { type?: string } | undefined)?.type
+    return type === 'text' || type === 'notebook'
+  }
+  return true
+}
+
+/** Redact a settled call's record; `r` itself when nothing was redacted. */
+async function redactResult(engine: Engine, e: ToolEvent, r: ToolResult, session_id: string): Promise<ToolResult> {
+  const post = await engine.ask({
+    hook_event_name: 'PostToolUse',
+    tool_name: engineToolName(e.tool),
+    tool_input: {},
+    tool_response: r.result,
+    session_id,
+  })
+  if (!post.ok) {
+    return config.failClosed ? { deny: unavailable(post.cause) } : r
+  }
+  const updated = updatedOutput(post.verdict)
+  // Nothing redacted: hand back exactly what `next` resolved to, so core reuses
+  // the messages it already built (`ref`/`text`).
+  if (updated === undefined) {
+    return r
+  }
+  return {
+    result: updated as typeof r.result,
+    context: [...(r.context ?? []), redactionNote(updated)],
+  }
+}
+
 export const toolHook: MatchedHook<'tool.call', typeof TOOL_MATCHER> = async ($, e, next) => {
   const engine = engineAsk(
     config,
@@ -294,68 +363,12 @@ export const toolHook: MatchedHook<'tool.call', typeof TOOL_MATCHER> = async ($,
       // before the tool runs, open behaves as if the module were absent.
       return config.failClosed ? { deny: unavailable(facts.cause) } : next(e)
     }
-    const { session_id, cwd } = facts.value
-
-    if (e.tool === 'Read') {
-      const pre = await engine.ask({
-        hook_event_name: 'PreToolUse',
-        tool_name: 'Read',
-        tool_input: { file_path: e.file_path },
-        // The http transport resolves a relative `file_path` against this and
-        // denies the read as "unresolved" without it (honmoon-mgmt
-        // `resolve_agent_path`); the command hooks get it from the host payload.
-        cwd,
-        session_id,
-      })
-      if (!pre.ok) {
-        if (config.failClosed) {
-          return { deny: unavailable(pre.cause) }
-        }
-      }
-      else {
-        const reason = denyReason(pre.verdict)
-        if (reason) {
-          return { deny: reason }
-        }
-      }
+    const denied = await denyBeforeRead(engine, e, facts.value)
+    if (denied) {
+      return denied
     }
-
     const r = await next(e)
-    // A refusal or an errored call carries no tool record to redact, and core's
-    // own messages are what the model should read.
-    if (r.deny !== undefined || r.isError) {
-      return r
-    }
-    // Only the variants the detectors can read. An image or pdf record holds
-    // base64 bytes, and rewriting it would corrupt it; a notebook record is plain
-    // JSON cells, so it is scanned like any other text.
-    if (e.tool === 'Read') {
-      const type = (r.result as { type?: string } | undefined)?.type
-      if (type !== 'text' && type !== 'notebook') {
-        return r
-      }
-    }
-
-    const post = await engine.ask({
-      hook_event_name: 'PostToolUse',
-      tool_name: engineToolName(e.tool),
-      tool_input: {},
-      tool_response: r.result,
-      session_id,
-    })
-    if (!post.ok) {
-      return config.failClosed ? { deny: unavailable(post.cause) } : r
-    }
-    const updated = updatedOutput(post.verdict)
-    // Nothing redacted: hand back exactly what `next` resolved to, so core reuses
-    // the messages it already built (`ref`/`text`).
-    if (updated === undefined) {
-      return r
-    }
-    return {
-      result: updated as typeof r.result,
-      context: [...(r.context ?? []), redactionNote(updated)],
-    }
+    return scannable(e, r) ? redactResult(engine, e, r, facts.value.session_id) : r
   }
   finally {
     engine.close()
