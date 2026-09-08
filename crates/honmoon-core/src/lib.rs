@@ -59,7 +59,12 @@ pub struct Policy {
 
 /// A named network target: the `(host, port)` a client dials, plus the wire
 /// protocol Honmoon should parse facts from once it gets there.
+///
+/// Unknown keys are rejected (the JSON Schema forbids them too): a misspelled
+/// `protocol` would otherwise fall back to [`EndpointProtocol::Tcp`] and
+/// silently turn the endpoint's protocol inspection off.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Endpoint {
     pub host: String,
     pub port: u16,
@@ -385,6 +390,22 @@ endpoints:
         };
         // `endpoints` is a BTreeMap, so the reported order is by name.
         assert_eq!((first.as_str(), second.as_str()), ("k8s-alias", "k8s-prod"));
+    }
+
+    /// A misspelled key must not silently disable protocol inspection: without
+    /// `deny_unknown_fields`, `protcol: postgres` would parse as a `tcp`
+    /// endpoint and every SQL rule for it would go inert.
+    #[test]
+    fn rejects_an_endpoint_with_an_unknown_key() {
+        let error = Policy::from_yaml(
+            "endpoints:\n  db: { host: db.internal, port: 5432, protcol: postgres }\n",
+        )
+        .expect_err("a misspelled key must not parse");
+
+        assert!(
+            matches!(error, Error::Parse(_)),
+            "unexpected error: {error}"
+        );
     }
 
     #[test]
