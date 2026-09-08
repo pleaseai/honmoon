@@ -73,7 +73,24 @@ ordinary traffic, so it is deliberately not settled here.
 `DROP TABLE scratch, users` no single value is correct — and reporting the first is wrong in the
 dangerous direction, because an allow rule scoped to `sql.table == 'scratch'` would then authorize
 dropping `users` alongside it. The verb is still reported, so verb-only rules are unaffected;
-only table-scoped rules stop matching, which leaves the statement to a table-blind decision.
+only table-scoped rules stop matching, which leaves the statement to a table-blind decision. The
+same rule covers the other ways one statement reaches past the relation it names: `CASCADE` on a
+`TRUNCATE` or `DROP`, two data-modifying CTEs with the same verb on different tables (both
+execute, verified — neither needs to be referenced), and a `SELECT` whose read set is wider than
+one relation.
+
+**`sql.table` names a table, and nothing else.** `DROP SCHEMA scratch CASCADE` removes every object
+in the schema; `DROP INDEX scratch` and `DROP DATABASE scratch` are different objects again. All of
+them used to report table `scratch`, so an allow rule written for a table of that name authorized
+the lot. Only a `DROP TABLE` reports its relation now; every other object kind reports the verb
+alone. The parse-failure fallback follows the same rule, because a fallback that named what the
+parsed path refuses to name would be a route around the guard. A CTE alias is not a table either:
+`WITH approved AS (SELECT * FROM secrets) SELECT * FROM approved` reads `secrets`, and reporting
+`approved` would let an allow rule for that table authorize the read. A `SELECT` takes its table
+from the whole statement's read set, CTE bodies included and CTE names excluded, so that query
+reports `secrets` and a CTE over no relation at all reports nothing. An alias is excluded only where it is in
+scope — a non-recursive CTE's own body still sees the real table of that name — so
+`WITH t AS (SELECT * FROM t) SELECT * FROM t, secrets` reads two relations and names none.
 
 **Both prior scanners are kept as the fallback for input the parser rejects**, as
 `parse_sql_heuristic` and `scan_for_statement_separator`. This is the load-bearing part of the
@@ -97,9 +114,17 @@ newly refused.
 - **`WITH … SELECT` over read-only CTEs now reports `SELECT`, not `WITH`.** A `sql.verb == 'SELECT'`
   rule matches queries it previously missed — an added match on read rules, so a deny-reads policy
   tightens.
+- **Classification costs real parsing time now.** The `parse_sql_statement` benchmarks in
+  `crates/honmoon-core/benches/policy_engine.rs` went from about 3 µs per statement to 30–150 µs
+  depending on the statement, and `parse_postgres_wire_query` from 3 µs to 28 µs. CodSpeed reports
+  this as a regression on every PR that touches it, and it is one: the scanner did less work
+  because it read less of the statement, which is what this decision replaces. The cost sits
+  below the round-trip to PostgreSQL by two to three orders of magnitude and is bounded by the
+  frame size cap (ADR-0007), so it is accepted rather than optimized away.
 - **The same `Q` payload is parsed twice**, once by `carries_multiple_statements` and once by
-  `parse_sql`. Accepted for now; the data plane has a frame size cap (ADR-0007) that bounds the
-  input, and merging the two would change the public surface `honmoon-proxy` depends on.
+  `parse_sql`. Accepted for now; the frame size cap bounds the input, and merging the two would
+  change the public surface `honmoon-proxy` depends on. It is also the obvious first cut if the
+  cost above ever matters.
 - **Data-modifying CTEs nested below the top level need no handling.** PostgreSQL rejects them
   itself (`ERROR: WITH clause containing a data-modifying statement must be at the top level`,
   verified against 17.11), so a nested `WITH … DELETE` inside a derived table or scalar subquery
@@ -122,7 +147,8 @@ are limits of the facts, not defects to be fixed later, and a policy author need
   the view may select from `secrets`. Paired with `CREATE OR REPLACE VIEW v AS SELECT * FROM
   secrets`, which reports only the verb `CREATE`, this is a durable read-path launder that no
   parser can see: the definition is server-side and the read happens later under a different
-  statement.
+  statement. The same holds on the write side: `INSERT INTO my_view …` names the updatable view
+  PostgreSQL rewrites through, not the table it lands in.
 - **Inheritance and partitioning widen a read silently.** `SELECT * FROM parent` also reads every
   child table, and which tables those are is catalog state.
 - **A function body is opaque.** `SELECT drop_everything()` reports `SELECT`, and a `VOLATILE`
