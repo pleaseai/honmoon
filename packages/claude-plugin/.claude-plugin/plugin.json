@@ -10,6 +10,42 @@
   "homepage": "https://github.com/pleaseai/honmoon",
   "repository": "https://github.com/pleaseai/honmoon",
   "license": "MIT",
-  "keywords": ["security", "redaction", "secrets", "pii", "dlp", "hooks"],
-  "hooks": "./hooks/hooks.json"
+  "keywords": [
+    "security",
+    "redaction",
+    "secrets",
+    "pii",
+    "dlp",
+    "hooks"
+  ],
+  "userConfig": {
+    "transport": {
+      "title": "Engine transport",
+      "type": "string",
+      "description": "How the hooks module reaches the redaction engine: \"process\" (runs `honmoon hook`) or \"http\" (POSTs to hookUrl). Left unset it is \"http\" when hookUrl is set and \"process\" otherwise — declaring a default here would fill the field in for every user and make hookUrl alone unable to select the http transport."
+    },
+    "honmoonBin": {
+      "title": "honmoon binary",
+      "type": "string",
+      "description": "The honmoon binary the process transport runs (command name or absolute path).",
+      "default": "honmoon"
+    },
+    "hookUrl": {
+      "title": "Management API hook URL",
+      "type": "string",
+      "description": "Management-API endpoint for the http transport, e.g. http://127.0.0.1:7777/api/hooks/claude-code."
+    },
+    "hookToken": {
+      "title": "Management API bearer token",
+      "type": "string",
+      "description": "Optional bearer token for hookUrl.",
+      "sensitive": true
+    },
+    "failMode": {
+      "title": "Failure mode",
+      "type": "string",
+      "description": "What the hooks module does when the engine is unreachable: \"closed\" (default, deny the tool output / drop the prompt) or \"open\" (pass through, like the command hooks).",
+      "default": "closed"
+    }
+  }
 }
