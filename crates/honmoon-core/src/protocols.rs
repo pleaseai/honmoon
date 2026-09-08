@@ -307,18 +307,28 @@ impl Visitor for ReadSet {
     }
 
     fn pre_visit_relation(&mut self, relation: &ObjectName) -> ControlFlow<()> {
-        // Identity is decided on the *folded* name, never the reported one:
-        // PostgreSQL downcases an unquoted identifier and leaves a quoted one
-        // alone, so the alias `"Secrets"` does not hide the table `secrets`.
-        // Comparing lowercased names would let it, and the read set would lose
-        // a relation an allow rule was never scoped to. See [`fold_ident`].
+        // Only a bare name can be an alias. A CTE reference is a single
+        // identifier in PostgreSQL's grammar, so `public.secrets` is looked up
+        // in the catalog and is a real relation however the CTE beside it is
+        // named — `WITH secrets AS (…) SELECT * FROM approved JOIN
+        // public.secrets ON true` reads both tables. Matching on the last
+        // component alone would drop the qualified one from the read set and
+        // leave an allow rule scoped to `approved` authorizing `secrets`.
+        //
+        // Identity is then decided on the *folded* name, never the reported
+        // one: PostgreSQL downcases an unquoted identifier and leaves a quoted
+        // one alone, so the alias `"Secrets"` does not hide the table
+        // `secrets`. Comparing lowercased names would let it. See
+        // [`fold_ident`].
+        let bare = relation.0.len() == 1;
         let folded = relation_ident(relation).map(fold_ident).unwrap_or_default();
         // Any scope in which the name is visible hides it, so the innermost
         // declaration wins — which is how PostgreSQL resolves it too.
-        let is_alias = self
-            .scopes
-            .iter()
-            .any(|scope| scope.names[..scope.visible].contains(&folded));
+        let is_alias = bare
+            && self
+                .scopes
+                .iter()
+                .any(|scope| scope.names[..scope.visible].contains(&folded));
         if !is_alias {
             self.relations.push(relation_name(relation));
         }
@@ -1461,6 +1471,26 @@ mod tests {
         let same = parse_sql("WITH \"secrets\" AS (SELECT 1) SELECT * FROM secrets");
         assert_eq!(same.verb, "SELECT");
         assert_eq!(same.table, "");
+    }
+
+    #[test]
+    fn a_qualified_relation_is_never_a_cte_alias() {
+        // A CTE reference is a bare identifier; `public.secrets` goes to the
+        // catalog however the CTE beside it is named. Verified on PostgreSQL
+        // 17.11: this statement seq-scans both `approved` and `secrets`, so
+        // two relations are read and neither is named.
+        let qualified = parse_sql(
+            "WITH secrets AS (SELECT 1) SELECT * FROM approved JOIN public.secrets ON true",
+        );
+        assert_eq!(qualified.verb, "SELECT");
+        assert_eq!(qualified.table, "");
+
+        // The CTE body reads the real qualified table and the outer query reads
+        // the alias, so one relation is read. (A non-recursive CTE is out of
+        // scope in its own body anyway, so both readings agree here.)
+        let shadowing = parse_sql("WITH t AS (SELECT * FROM public.t) SELECT * FROM t");
+        assert_eq!(shadowing.verb, "SELECT");
+        assert_eq!(shadowing.table, "t");
     }
 
     #[test]
