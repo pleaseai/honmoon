@@ -163,44 +163,91 @@ impl HonmoonHandler {
         Some((name.to_owned(), endpoint.protocol))
     }
 
-    /// Refuse a CONNECT whose destination honmoon inspects inline instead of
-    /// tunnelling.
-    ///
-    /// A CONNECT is a raw tunnel: honmoon only ever sees TLS or opaque bytes
-    /// over it, never PostgreSQL frames. Authorizing one for a
-    /// `protocol: postgres` endpoint would therefore carry every statement past
-    /// the `sql.*` rules that endpoint exists to enforce — declaring the
-    /// protocol would silently turn inspection *off* on this listener. The
-    /// SOCKS5 listener is the path that parses those frames, so this fails
-    /// closed and says so.
-    ///
-    /// `postgres` is the only protocol affected: `kubernetes` is HTTPS and is
-    /// inspected by this very handler, and `tcp` declares no inspection at all.
-    fn refuse_uninspectable_connect(&self, host: &str, port: u16) -> Option<RequestOrResponse> {
-        let (endpoint, protocol) = self.resolve_endpoint(host, port)?;
-        match protocol {
-            EndpointProtocol::Postgres => {}
-            EndpointProtocol::Kubernetes | EndpointProtocol::Tcp => return None,
-        }
-
-        tracing::info!(domain = %host, %endpoint, "CONNECT to an inline-inspected endpoint refused");
-        let facts = Facts {
+    /// The facts a host-level decision is made on.
+    fn host_facts(&self, host: &str, port: u16) -> Facts {
+        Facts {
             domain: Some(host.to_owned()),
-            endpoint: Some(endpoint.clone()),
+            endpoint: self.resolve_endpoint(host, port).map(|(name, _)| name),
             http: Some(HttpFacts {
                 host: host.to_owned(),
                 ..Default::default()
             }),
             ..Default::default()
-        };
+        }
+    }
+
+    /// The endpoint name when `(host, port)` names one honmoon inspects inline
+    /// rather than tunnels.
+    ///
+    /// A CONNECT is a raw tunnel: honmoon only ever sees TLS or opaque bytes
+    /// over it, never PostgreSQL frames. Carrying a `protocol: postgres`
+    /// endpoint over one would take every statement past the `sql.*` rules that
+    /// endpoint exists to enforce — declaring the protocol would silently turn
+    /// inspection *off* on this listener.
+    ///
+    /// `postgres` is the only protocol affected: `kubernetes` is HTTPS and is
+    /// inspected by this very handler, and `tcp` declares no inspection at all.
+    fn uninspectable_endpoint(&self, host: &str, port: u16) -> Option<String> {
+        let (endpoint, protocol) = self.resolve_endpoint(host, port)?;
+        match protocol {
+            EndpointProtocol::Postgres => Some(endpoint),
+            EndpointProtocol::Kubernetes | EndpointProtocol::Tcp => None,
+        }
+    }
+
+    /// Answer a CONNECT to an inline-inspected endpoint, without ever opening a
+    /// tunnel honmoon could not inspect.
+    ///
+    /// Policy still runs and still decides the audit entry, so the transport
+    /// refusal does not cost the connection its rule attribution:
+    ///
+    /// - `deny` is answered exactly as anywhere else — the connection was
+    ///   refused on its own merits and the transport is beside the point.
+    /// - `allow` becomes the transport refusal. No `Allowed` entry is recorded
+    ///   for a connection that never happens.
+    /// - `pause` is refused too, and is **not** held: a human cannot approve a
+    ///   transport into inspecting frames it never sees, so the queue would only
+    ///   offer an approval that cannot mean what it says. The rule that paused it
+    ///   is still what the audit entry names.
+    fn refuse_uninspectable_connect(
+        &self,
+        host: &str,
+        port: u16,
+        endpoint: &str,
+    ) -> RequestOrResponse {
+        let facts = self.host_facts(host, port);
+        let outcome = decide_explained(&self.state.policy, &facts);
+        let summary = FactsSummary::from(&facts);
+
+        if outcome.verdict == Verdict::Deny {
+            tracing::info!(domain = %host, rule = ?outcome.rule, "egress denied");
+            self.state.audit.record(AuditDraft {
+                decision: Decision::Denied,
+                verdict: Verdict::Deny,
+                rule: outcome.rule,
+                facts: summary,
+                approval_id: None,
+            });
+            return status_response(StatusCode::FORBIDDEN);
+        }
+
+        tracing::info!(
+            domain = %host,
+            %endpoint,
+            rule = ?outcome.rule,
+            verdict = ?outcome.verdict,
+            "CONNECT to an inline-inspected endpoint refused"
+        );
         self.state.audit.record(AuditDraft {
             decision: Decision::Denied,
             verdict: Verdict::Deny,
-            rule: None,
-            facts: FactsSummary::from(&facts),
+            // Whatever matched, named — an operator reading the entry needs to
+            // see the rule that was in play, not a bare synthetic denial.
+            rule: outcome.rule,
+            facts: summary,
             approval_id: None,
         });
-        Some(uninspectable_connect_response(&endpoint))
+        uninspectable_connect_response(endpoint)
     }
 
     /// Apply host-level policy (allow / deny / pause) to `host`.
@@ -209,15 +256,7 @@ impl HonmoonHandler {
     /// the connection is logged, but not for individual forwarded requests (which
     /// would flood the bounded audit ring).
     async fn host_gate(&self, host: &str, port: u16, audit_allow: bool) -> Gate {
-        let facts = Facts {
-            domain: Some(host.to_owned()),
-            endpoint: self.resolve_endpoint(host, port).map(|(name, _)| name),
-            http: Some(HttpFacts {
-                host: host.to_owned(),
-                ..Default::default()
-            }),
-            ..Default::default()
-        };
+        let facts = self.host_facts(host, port);
         let outcome = decide_explained(&self.state.policy, &facts);
         let summary = FactsSummary::from(&facts);
 
@@ -713,10 +752,11 @@ impl HttpHandler for HonmoonHandler {
             let authority = req.uri().authority().map(|a| a.as_str()).unwrap_or("");
             let host = canonical_host(authority);
             let port = authority_port(authority).unwrap_or(HTTPS_PORT);
-            // Before the host gate, so an endpoint this listener cannot inspect
-            // is never audited as an allowed connection it then refuses.
-            if let Some(refusal) = self.refuse_uninspectable_connect(&host, port) {
-                return refusal;
+            // An endpoint this listener cannot inspect takes its own path, which
+            // still runs the policy — but never authorizes (or audits as
+            // allowed) a tunnel that would carry its frames uninspected.
+            if let Some(endpoint) = self.uninspectable_endpoint(&host, port) {
+                return self.refuse_uninspectable_connect(&host, port, &endpoint);
             }
             return match self.host_gate(&host, port, true).await {
                 Gate::Proceed => {

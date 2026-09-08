@@ -521,6 +521,49 @@ fn connect_to_a_postgres_endpoint_is_refused_and_audited() {
         }),
         "the refusal must not be silent"
     );
+    assert!(
+        !audit
+            .recent(50)
+            .iter()
+            .any(|event| event.decision == Decision::Allowed),
+        "a connection that is refused must never be audited as allowed"
+    );
+}
+
+/// A `deny` rule decides the connection on its own merits, so the transport
+/// refusal must not cost the entry its rule attribution.
+#[test]
+fn connect_to_a_denied_postgres_endpoint_keeps_the_rule_attribution() {
+    let postgres = start_hanging_upstream();
+    let plain = start_hanging_upstream();
+    let policy = format!(
+        "{}rules:
+  - name: no-prod-db
+    endpoint: postgres-prod
+    condition: \"true\"
+    verdict: deny
+",
+        endpoint_protocol_policy(postgres, plain)
+    );
+    let (response, audit) = connect_response(&policy, "localhost", postgres);
+
+    assert!(
+        response.starts_with("HTTP/1.1 403"),
+        "a denied endpoint is refused: {response:?}"
+    );
+    let events = audit.recent(50);
+    assert!(
+        events.iter().any(|event| {
+            event.decision == Decision::Denied
+                && event.rule.as_deref() == Some("no-prod-db")
+                && event.facts.endpoint.as_deref() == Some("postgres-prod")
+        }),
+        "the audit entry names the rule that denied it"
+    );
+    assert!(
+        !events.iter().any(|e| e.decision == Decision::Allowed),
+        "a connection that is refused must never be audited as allowed"
+    );
 }
 
 #[test]
