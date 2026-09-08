@@ -1,0 +1,40 @@
+packages/claude-plugin/.claude-plugin/plugin.json
+  s_588bec6ad874eb::t_0b21cd637304c1 25
+packages/claude-plugin/tsconfig.json
+  s_588bec6ad874eb::t_d078636f7783be 15
+packages/claude-plugin/README.md
+  s_588bec6ad874eb::t_d08da686a9f8f5 62-67
+  s_588bec6ad874eb::t_b258b7f765f279 170-171,176-178
+  s_588bec6ad874eb::t_55729f82766d1e 188-189
+packages/claude-plugin/hooks/honmoon.test.ts
+  s_588bec6ad874eb::t_e121e85a1347fd 33
+  s_588bec6ad874eb::t_fffc9c9fefd762 143-215
+packages/claude-plugin/hooks/honmoon.ts
+  s_588bec6ad874eb::t_53a347fa646083 290
+  s_588bec6ad874eb::t_c2eac9dc94cff5 99-111,113,118-119
+  s_588bec6ad874eb::t_106464ded396c9 33
+  s_588bec6ad874eb::t_2038f76b38d9d3 77
+  s_588bec6ad874eb::t_3cd3200af710ec 181-182,187-220
+  s_588bec6ad874eb::t_be93eb79ae716c 339
+  s_588bec6ad874eb::t_3622081b3d1141 120,262-269
+  s_588bec6ad874eb::t_fe5c641703e456 296-304,311,313,319
+  s_588bec6ad874eb::t_a791ee2ff29487 38-40,45
+  s_588bec6ad874eb::t_506d9fe9f61107 148-156
+  s_588bec6ad874eb::t_34991b789c6af1 228,230,237-240
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "ecb495dd7d81acefa9b1cfc3c0c076dc0c3b862a",
+  "prompts": {},
+  "sessions": {
+    "s_588bec6ad874eb": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "0b3c3a62-ca93-4c1e-acc8-2853e3f89570",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
