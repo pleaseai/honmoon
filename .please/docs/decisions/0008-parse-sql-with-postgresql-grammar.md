@@ -43,8 +43,12 @@ explicitly, per the ask-first rule in `crates/AGENTS.md`. It is pure parsing wit
 
 **Classify by what a statement executes, not by what it starts with.** `EXPLAIN ANALYZE` and
 `EXPLAIN (ANALYZE, …)` are unwrapped to the statement they run; a plain `EXPLAIN` is not, because
-it only plans. Data-modifying CTEs outrank the outer `SELECT`. Where several verbs execute, the
-most dangerous one is reported, ordered once in `VERB_PRECEDENCE`
+it only plans. `EXPLAIN (ANALYZE [ boolean ])` takes a value, and it is honoured — but only an
+argument that is *explicitly* false turns execution off. A bare `ANALYZE`, `ANALYZE true`, and any
+argument shape the code does not recognize all count as executing, because this is the one
+judgement in the classifier whose failure mode is a bypass rather than a refusal. Data-modifying
+CTEs outrank the outer `SELECT`. Where several verbs execute, the most dangerous one is reported,
+ordered once in `VERB_PRECEDENCE`
 (`DROP > TRUNCATE > ALTER > MERGE > DELETE > UPDATE > INSERT > SELECT`). The ordering is
 deny-oriented on purpose: under-reporting a verb is a bypass, while over-reporting one can only
 refuse something. `MERGE` outranks each of `DELETE`/`UPDATE`/`INSERT` because a single `MERGE`
@@ -52,6 +56,19 @@ can perform all three.
 
 **Statement boundaries come from the parser.** `carries_multiple_statements` returns
 `statements.len() > 1`, which is exact rather than conservative on anything the grammar reads.
+
+**What cannot be inspected is refused, not classified.** A `DO` block runs an arbitrary PL/pgSQL
+body while reporting the harmless verb `DO`, and there is nothing to unwrap — the body is not SQL,
+and sqlparser has no `DO` statement at all. It is refused at the runtime, the same fail-closed
+path already taken for a batched or unparseable frame. `CALL`, `EXECUTE` and `COPY` raise the same
+question for different reasons and are tracked in #103; whether to refuse them changes what
+honmoon does to ordinary traffic, so it is deliberately not settled here.
+
+**A statement naming several relations reports no table.** `SqlFacts` carries one `table`, so for
+`DROP TABLE scratch, users` no single value is correct — and reporting the first is wrong in the
+dangerous direction, because an allow rule scoped to `sql.table == 'scratch'` would then authorize
+dropping `users` alongside it. The verb is still reported, so verb-only rules are unaffected;
+only table-scoped rules stop matching, which leaves the statement to a table-blind decision.
 
 **Both prior scanners are kept as the fallback for input the parser rejects**, as
 `parse_sql_heuristic` and `scan_for_statement_separator`. This is the load-bearing part of the
