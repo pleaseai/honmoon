@@ -1,0 +1,25 @@
+crates/honmoon-cli/src/isolate/linux.rs
+  s_04170a69e09558::t_5a33ca003e8bde 336-341,349,630
+crates/honmoon-cli/src/isolate/macos.rs
+  s_04170a69e09558::t_a82e42bd8b1fc6 148-153,159-168,190-191,410-411,414-419
+crates/honmoon-cli/src/isolate/mod.rs
+  s_04170a69e09558::t_33adf457931a81 100,105,108,116-128,130-135,212,220-248,251-253
+crates/honmoon-cli/src/main.rs
+  s_04170a69e09558::t_a5bb57c34df5f2 413-421,431,434-435,439-447,449-457,464-469,481,510,520-540
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "581e267dd5c472e69081f4b46b41209b809d206d",
+  "prompts": {},
+  "sessions": {
+    "s_04170a69e09558": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "16addd4e-5aca-4e97-a602-05d3ea9c9f94",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
