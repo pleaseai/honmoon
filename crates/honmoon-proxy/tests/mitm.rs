@@ -738,3 +738,86 @@ fn detect_mode_enforces_a_kubernetes_endpoint_rule() {
             && event.facts.endpoint.as_deref() == Some("k8s-prod")
     }));
 }
+
+/// The policy shape from #99: an "allow-clean" rule (`pii.count == 0`) sitting
+/// *before* the endpoint-bound Kubernetes deny. Detect mode used to re-decide
+/// with `pii` cleared, which made allow-clean match first and silently dropped
+/// the deny.
+fn allow_clean_k8s_policy(host: &str, port: u16) -> String {
+    format!(
+        "\
+egress:
+  default: allow
+endpoints:
+  k8s-prod: {{ host: {host}, port: {port}, protocol: kubernetes }}
+rules:
+  - name: allow-clean
+    endpoint: '*'
+    condition: \"pii.count == 0\"
+    verdict: allow
+  - name: k8s-no-secret-delete
+    endpoint: k8s-prod
+    condition: \"k8s.resource == 'secrets' && k8s.verb == 'delete'\"
+    verdict: deny
+"
+    )
+}
+
+/// A Kubernetes request whose body carries a valid RRN, so the real `pii`
+/// summary is non-empty and the allow-clean rule does not match on the first
+/// (unmodified-facts) pass. The body mirrors [`rrn_request`]'s surface form;
+/// the Kubernetes facts still come from the method and path.
+fn k8s_request_with_rrn(method: &str, path: &str) -> Vec<u8> {
+    let body = format!("form field with rrn={VALID_RRN} inside");
+    format!(
+        "{method} {path} HTTP/1.1\r\nHost: localhost\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+        body.len(),
+        body
+    )
+    .into_bytes()
+}
+
+/// Regression for #99, detect mode: the endpoint deny must survive an
+/// allow-clean rule that precedes it. The enforced pass skips `pii`-reading
+/// rules instead of rebinding an empty summary, so allow-clean cannot mask it.
+#[test]
+fn detect_mode_enforces_an_endpoint_rule_behind_an_allow_clean_pii_rule() {
+    let upstream = start_hanging_upstream();
+    let (response, audit, _) = intercepted_request(
+        &allow_clean_k8s_policy("localhost", upstream),
+        PiiMode::Detect,
+        upstream,
+        k8s_request_with_rrn("DELETE", "/api/v1/namespaces/prod/secrets/db"),
+    );
+
+    assert!(
+        response.starts_with("HTTP/1.1 403"),
+        "an allow-clean rule must not mask the endpoint deny in detect mode: {response:?}"
+    );
+    let events = audit.recent(50);
+    assert!(events.iter().any(|event| {
+        event.decision == Decision::Denied && event.rule.as_deref() == Some("k8s-no-secret-delete")
+    }));
+}
+
+/// The other half of #99's acceptance: block mode enforces the same deny, so
+/// the two modes agree on this policy shape.
+#[test]
+fn block_mode_enforces_an_endpoint_rule_behind_an_allow_clean_pii_rule() {
+    let upstream = start_hanging_upstream();
+    let (response, audit, _) = intercepted_request(
+        &allow_clean_k8s_policy("localhost", upstream),
+        PiiMode::Block,
+        upstream,
+        k8s_request_with_rrn("DELETE", "/api/v1/namespaces/prod/secrets/db"),
+    );
+
+    assert!(
+        response.starts_with("HTTP/1.1 403"),
+        "expected an inline 403 before the upstream leg: {response:?}"
+    );
+    let events = audit.recent(50);
+    assert!(events.iter().any(|event| {
+        event.decision == Decision::Denied && event.rule.as_deref() == Some("k8s-no-secret-delete")
+    }));
+}
