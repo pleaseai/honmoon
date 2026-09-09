@@ -1,0 +1,14 @@
+.please/docs/tracks/tech-debt-tracker.md
+  h_9ee0685e8f5c3a 18
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "1cb1472a65e38772971b1d171c00db118e59e621",
+  "prompts": {},
+  "humans": {
+    "h_9ee0685e8f5c3a": {
+      "author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
