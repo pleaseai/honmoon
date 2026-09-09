@@ -36,7 +36,30 @@ pub fn decide(policy: &Policy, facts: &Facts) -> Verdict {
 /// facts simply does not match (it cannot turn a deny into an allow), and the
 /// egress default is `deny`.
 pub fn decide_explained(policy: &Policy, facts: &Facts) -> Outcome {
+    decide_rules(policy, facts, false)
+}
+
+/// Decide the [`Outcome`] as if content scanning never ran: rules whose CEL
+/// conditions read `pii` are skipped entirely rather than evaluated against the
+/// empty default summary, so an "allow-clean" rule (`pii.count == 0`) cannot
+/// mask a later endpoint or Kubernetes deny. This is what detect mode enforces:
+/// the policy's decision on the facts it is willing to act on.
+///
+/// Egress precedence is unchanged — when no non-`pii` rule matches, the domain
+/// lists and `egress.default` decide exactly as in [`decide_explained`].
+pub fn decide_without_pii_rules(policy: &Policy, facts: &Facts) -> Outcome {
+    decide_rules(policy, facts, true)
+}
+
+/// Shared rule loop for [`decide_explained`] and [`decide_without_pii_rules`].
+///
+/// With `skip_pii_rules`, a rule whose condition references the `pii` variable
+/// is passed over as if it were not in the policy at all.
+fn decide_rules(policy: &Policy, facts: &Facts, skip_pii_rules: bool) -> Outcome {
     for rule in &policy.rules {
+        if skip_pii_rules && condition_reads_pii(&rule.condition) {
+            continue;
+        }
         if endpoint_matches(&rule.endpoint, facts.endpoint.as_deref())
             && eval_condition(&rule.condition, facts)
         {
@@ -50,6 +73,16 @@ pub fn decide_explained(policy: &Policy, facts: &Facts) -> Outcome {
         verdict: egress_verdict(policy, facts),
         rule: None,
     }
+}
+
+/// Whether a CEL condition reads the `pii` variable, via the parsed expression's
+/// reference set (never a substring match on the condition text).
+///
+/// A condition that fails to compile is reported as *not* reading `pii`: it can
+/// never match either way, so skipping it changes nothing and the fail-closed
+/// behaviour of [`eval_condition`] is preserved.
+fn condition_reads_pii(condition: &str) -> bool {
+    Program::compile(condition).is_ok_and(|program| program.references().has_variable("pii"))
 }
 
 fn egress_verdict(policy: &Policy, facts: &Facts) -> Verdict {
@@ -312,6 +345,84 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(super::decide(&policy, &clean), Verdict::Allow);
+    }
+
+    /// Regression for #99: an "allow-clean" rule (`pii.count == 0`) placed
+    /// before an endpoint-bound Kubernetes deny must not mask that deny once
+    /// the PII scanner's findings are taken off the table.
+    ///
+    /// [`decide_without_pii_rules`](super::decide_without_pii_rules) skips the
+    /// `pii`-reading rule outright, so the endpoint deny still wins — which is
+    /// what detect mode enforces.
+    #[test]
+    fn pii_rules_are_skipped_not_rebound_to_an_empty_summary() {
+        use crate::detect_pii;
+        use crate::protocols::parse_k8s_request;
+
+        let policy = Policy::from_yaml(
+            "egress:\n  default: allow\nrules:\n  \
+             - name: allow-clean\n    endpoint: '*'\n    condition: \"pii.count == 0\"\n    verdict: allow\n  \
+             - name: no-prod-secret-delete\n    endpoint: k8s-prod\n    condition: \"k8s.resource == 'secrets' && k8s.verb == 'delete'\"\n    verdict: deny\n",
+        )
+        .unwrap();
+
+        // Real PII findings in the body → allow-clean does not match, so the
+        // endpoint deny wins on the plain path too.
+        let leak = Facts {
+            endpoint: Some("k8s-prod".into()),
+            k8s: Some(parse_k8s_request(
+                "DELETE",
+                "/api/v1/namespaces/prod/secrets/db",
+            )),
+            pii: detect_pii(r#"{"user":{"rrn":"670125-1230644"}}"#),
+            ..Default::default()
+        };
+        assert!(leak.pii.as_ref().is_some_and(|p| p.count > 0));
+        assert_eq!(super::decide(&policy, &leak), Verdict::Deny);
+        assert_eq!(
+            super::decide_without_pii_rules(&policy, &leak),
+            super::Outcome {
+                verdict: Verdict::Deny,
+                rule: Some("no-prod-secret-delete".into()),
+            }
+        );
+
+        // The masking this function exists to avoid: clearing `pii` binds the
+        // empty default, allow-clean matches first, and the deny disappears.
+        let cleared = Facts {
+            pii: None,
+            ..leak.clone()
+        };
+        assert_eq!(super::decide(&policy, &cleared), Verdict::Allow);
+
+        // Skipping is unconditional — it does not depend on the summary being
+        // non-empty. Clean facts on the bound endpoint still lose allow-clean,
+        // so the k8s deny is reached all the same.
+        let clean_delete = Facts {
+            pii: detect_pii(r#"{"order":"ORD-1234567890"}"#),
+            ..leak.clone()
+        };
+        assert_eq!(super::decide(&policy, &clean_delete), Verdict::Allow);
+        assert_eq!(
+            super::decide_without_pii_rules(&policy, &clean_delete)
+                .rule
+                .as_deref(),
+            Some("no-prod-secret-delete")
+        );
+
+        // With no rule left to match, egress precedence is untouched.
+        let unbound = Facts {
+            endpoint: Some("api-egress".into()),
+            pii: None,
+            ..Default::default()
+        };
+        assert_eq!(
+            super::decide_without_pii_rules(&policy, &unbound),
+            super::Outcome {
+                verdict: Verdict::Allow, // egress default
+                rule: None,
+            }
+        );
     }
 
     /// Guards the shipped example policy against parser/condition drift: the

@@ -42,8 +42,8 @@ use std::sync::{Arc, Mutex};
 use honmoon_core::{
     AuditDraft, DEFAULT_MIN_PII_SEVERITY, Decision, EndpointProtocol, Facts, FactsSummary,
     HttpFacts, Mapping, PiiFacts, PiiSpan, RedactionOutcome, SecretTokenizer, Verdict,
-    decide_explained, detect_secrets, detect_spans, pii::severity_for_label,
-    protocols::parse_k8s_request, redact_with_spans, summarize_spans,
+    decide_explained, decide_without_pii_rules, detect_secrets, detect_spans,
+    pii::severity_for_label, protocols::parse_k8s_request, redact_with_spans, summarize_spans,
 };
 use http_body_util::{BodyExt, Full};
 use hudsucker::hyper::{Method, Request, Response, StatusCode, header};
@@ -633,23 +633,19 @@ impl HonmoonHandler {
         let outcome = decide_explained(&self.state.policy, &facts);
         let summary = FactsSummary::from(&facts);
 
-        // Detect mode downgrades only the verdicts PII *caused*. Re-deciding on
-        // the same facts with `pii` cleared says whether this verdict depends on
-        // content scanning: one that stands without it (an endpoint/Kubernetes
-        // or HTTP-metadata rule) is enforced in every mode, because detect-only
-        // is a promise about the PII scanner, not a bypass for the rest of the
-        // policy. The PII-less outcome is the one enforced — it is what the
-        // policy decides on the facts detect mode is willing to act on.
+        // Detect mode downgrades only the verdicts PII *caused*. The enforced
+        // pass re-decides with the `pii`-reading rules skipped entirely, which
+        // says whether this verdict depends on content scanning: one that
+        // stands without those rules (an endpoint/Kubernetes or HTTP-metadata
+        // rule) is enforced in every mode, because detect-only is a promise
+        // about the PII scanner, not a bypass for the rest of the policy.
+        // Skipping beats rebinding an empty summary: an "allow-clean" rule
+        // (`pii.count == 0`) would otherwise match on the second pass and mask
+        // a later endpoint deny (#99).
         let enforced = match self.state.pii_mode {
             PiiMode::Block => Some(outcome.clone()),
             PiiMode::Detect if outcome.verdict != Verdict::Allow => {
-                let without_pii = decide_explained(
-                    &self.state.policy,
-                    &Facts {
-                        pii: None,
-                        ..facts.clone()
-                    },
-                );
+                let without_pii = decide_without_pii_rules(&self.state.policy, &facts);
                 (without_pii.verdict != Verdict::Allow).then_some(without_pii)
             }
             PiiMode::Detect => None,
