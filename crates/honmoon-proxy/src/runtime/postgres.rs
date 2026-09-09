@@ -61,6 +61,11 @@ const SQLSTATE_INSUFFICIENT_PRIVILEGE: &str = "42501";
 /// Copy buffer for the pass-through paths.
 const COPY_CHUNK: usize = 16 * 1024;
 
+/// How long the upstream→client relay is given to deliver the database's last
+/// response after the client stopped sending. Bounded so a server that never
+/// closes its half cannot pin the connection open.
+const DRAIN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
 /// Largest backend message the upstream→client task buffers before switching to
 /// a streaming copy. A `DataRow` or `CopyData` can be far larger than this, so an
 /// oversized message is copied through in chunks under one held lock rather than
@@ -104,6 +109,7 @@ pub async fn run_postgres(
 
     let mut downstream = tokio::spawn(upstream_to_client(upstream_read, link.clone()));
 
+    let mut client_sent_everything = false;
     let outcome = tokio::select! {
         result = client_to_upstream(
             state,
@@ -111,11 +117,30 @@ pub async fn run_postgres(
             &mut upstream_write,
             &link,
             &facts,
-        ) => result,
+        ) => {
+            // Only a *clean* end of a stream that reached the message phase
+            // earns the drain below. An error means the client is gone or its
+            // stream desynced, and a session that ended during startup never
+            // forwarded a query, so in neither case is a last response still
+            // owed — draining anyway would let an abandoned session pin an
+            // upstream connection and a task for the whole `DRAIN_TIMEOUT`.
+            client_sent_everything = matches!(result, Ok(true));
+            result.map(|_| ())
+        }
         // Upstream closed (or the client's socket died under the copy): the
         // session is over in both directions.
         _ = &mut downstream => Ok(()),
     };
+
+    // The client sent everything it had. Half-close the upstream write half so
+    // the database sees the end of input and flushes whatever it still owes,
+    // then let the relay deliver it. Aborting straight away instead would
+    // truncate the response to a client that sent its last query and shut down
+    // its write half before reading.
+    if client_sent_everything {
+        let _ = upstream_write.shutdown().await;
+        let _ = tokio::time::timeout(DRAIN_TIMEOUT, &mut downstream).await;
+    }
     downstream.abort();
     outcome
 }
@@ -170,19 +195,26 @@ async fn upstream_to_client(mut upstream: tokio::net::tcp::OwnedReadHalf, link: 
 }
 
 /// Drive the inspected direction: startup negotiation, then the message loop.
+///
+/// Returns `true` only when the client's stream ended *cleanly* after its
+/// traffic reached the upstream, so the database may still owe a response and
+/// the caller should drain. Returns `false` when nothing is owed: the session
+/// ended during startup (a relayed `CancelRequest`, an unrecognized packet, or
+/// a client that left before negotiating), or the connection was reset mid-
+/// session, where no one is left to read the last response.
 async fn client_to_upstream<R, W>(
     state: &GatewayState,
     client: &mut R,
     upstream: &mut W,
     link: &ClientLink,
     facts: &Facts,
-) -> std::io::Result<()>
+) -> std::io::Result<bool>
 where
     R: AsyncRead + Unpin,
     W: AsyncWrite + Unpin,
 {
     if !startup(client, upstream, link).await? {
-        return Ok(());
+        return Ok(false);
     }
     message_loop(state, client, upstream, link, facts).await
 }
@@ -245,13 +277,19 @@ where
 }
 
 /// Frame the client's messages and decide the ones that carry SQL.
+///
+/// Returns `true` only for a *clean* end of input between messages: the client
+/// finished and may still be waiting for the response to its last query. A
+/// reset or aborted connection returns `false` — nothing is waiting for that
+/// response, and draining would pin an upstream connection and a task for the
+/// whole `DRAIN_TIMEOUT`.
 async fn message_loop<R, W>(
     state: &GatewayState,
     client: &mut R,
     upstream: &mut W,
     link: &ClientLink,
     facts: &Facts,
-) -> std::io::Result<()>
+) -> std::io::Result<bool>
 where
     R: AsyncRead + Unpin,
     W: AsyncWrite + Unpin,
@@ -259,8 +297,16 @@ where
     loop {
         // Every frontend message after startup is `tag(1) | len(4, self-inclusive)`.
         let mut tag = [0u8; 1];
-        if client.read_exact(&mut tag).await.is_err() {
-            return Ok(()); // client closed
+        match client.read_exact(&mut tag).await {
+            Ok(_) => {}
+            // A clean end of input on a message boundary: the client sent
+            // everything it had, and the database may still owe a response.
+            Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => return Ok(true),
+            // A reset or aborted connection. Nobody is left to read the last
+            // response, so draining would just hold an upstream connection and
+            // a task open for `DRAIN_TIMEOUT` — which a client can repeat until
+            // the connection cap is exhausted.
+            Err(_) => return Ok(false),
         }
         let mut len_bytes = [0u8; 4];
         client.read_exact(&mut len_bytes).await?;
@@ -549,6 +595,114 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A `ClientLink` backed by a real loopback connection: the writer is a
+    /// concrete `OwnedWriteHalf`, so it cannot be faked with an in-memory buffer.
+    /// The peer socket comes back with it and must be kept alive by the caller.
+    async fn loopback_link() -> (ClientLink, TcpStream) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let (client, accepted) = tokio::join!(TcpStream::connect(addr), listener.accept());
+        let (_read, write) = client.unwrap().into_split();
+        let link = ClientLink {
+            writer: Arc::new(Mutex::new(write)),
+            tx_status: Arc::new(AtomicU8::new(STATUS_IDLE)),
+        };
+        (link, accepted.unwrap().0)
+    }
+
+    fn startup_packet(code: u32, body: &[u8]) -> Vec<u8> {
+        let len = 8 + body.len();
+        let mut packet = Vec::with_capacity(len);
+        packet.extend_from_slice(&(len as u32).to_be_bytes());
+        packet.extend_from_slice(&code.to_be_bytes());
+        packet.extend_from_slice(body);
+        packet
+    }
+
+    #[tokio::test]
+    async fn a_session_that_never_leaves_startup_does_not_ask_for_a_drain() {
+        let state = GatewayState::new(honmoon_core::Policy::default());
+        let mut client = std::io::Cursor::new(startup_packet(0xDEAD_BEEF, b""));
+        let mut upstream: Vec<u8> = Vec::new();
+        let (link, _peer) = loopback_link().await;
+
+        let drain =
+            client_to_upstream(&state, &mut client, &mut upstream, &link, &Facts::default())
+                .await
+                .unwrap();
+
+        assert!(
+            !drain,
+            "an unrecognized startup packet forwards nothing upstream, so no response is owed"
+        );
+        assert!(upstream.is_empty(), "nothing reached the upstream");
+    }
+
+    /// Yields `head`, then fails with `kind` — a client that resets rather than
+    /// closing cleanly.
+    struct ResetAfter {
+        head: std::io::Cursor<Vec<u8>>,
+        kind: std::io::ErrorKind,
+    }
+
+    impl AsyncRead for ResetAfter {
+        fn poll_read(
+            mut self: std::pin::Pin<&mut Self>,
+            cx: &mut std::task::Context<'_>,
+            buf: &mut tokio::io::ReadBuf<'_>,
+        ) -> std::task::Poll<std::io::Result<()>> {
+            if (self.head.position() as usize) < self.head.get_ref().len() {
+                return std::pin::Pin::new(&mut self.head).poll_read(cx, buf);
+            }
+            std::task::Poll::Ready(Err(std::io::Error::new(self.kind, "reset")))
+        }
+    }
+
+    #[tokio::test]
+    async fn a_client_that_resets_mid_session_does_not_ask_for_a_drain() {
+        let state = GatewayState::new(honmoon_core::Policy::default());
+        // A valid startup packet reaches the upstream, then the client RSTs
+        // before sending a single frontend message. Nobody is left to read a
+        // response, so holding the upstream for DRAIN_TIMEOUT would let a
+        // client repeat this until the connection cap is exhausted.
+        let mut client = ResetAfter {
+            head: std::io::Cursor::new(startup_packet(PROTOCOL_V3, b"user\0me\0\0")),
+            kind: std::io::ErrorKind::ConnectionReset,
+        };
+        let mut upstream: Vec<u8> = Vec::new();
+        let (link, _peer) = loopback_link().await;
+
+        let drain =
+            client_to_upstream(&state, &mut client, &mut upstream, &link, &Facts::default())
+                .await
+                .unwrap();
+
+        assert!(!drain, "a reset connection is not a clean end of input");
+        assert!(
+            !upstream.is_empty(),
+            "the startup packet still reached the upstream"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_session_that_reaches_the_message_phase_asks_for_a_drain() {
+        let state = GatewayState::new(honmoon_core::Policy::default());
+        // A 3.0 StartupMessage, then EOF: the client sent everything it had.
+        let mut client = std::io::Cursor::new(startup_packet(PROTOCOL_V3, b"user\0me\0\0"));
+        let mut upstream: Vec<u8> = Vec::new();
+        let (link, _peer) = loopback_link().await;
+
+        let drain =
+            client_to_upstream(&state, &mut client, &mut upstream, &link, &Facts::default())
+                .await
+                .unwrap();
+
+        assert!(
+            drain,
+            "the startup packet reached the upstream, so its response must still be drained"
+        );
+    }
 
     fn parse_payload(name: &str, query: &str) -> Vec<u8> {
         let mut payload = Vec::new();

@@ -25,6 +25,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::{self, Receiver};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -43,20 +44,31 @@ fn honmoon() -> PathBuf {
 /// as *test* targets rather than leaving a runnable binary here. Say so out
 /// loud instead of letting it surface as a bare `No such file or directory`
 /// from deep inside the sandbox.
-fn probe() -> PathBuf {
+fn example(name: &str) -> PathBuf {
     let path = honmoon()
         .parent()
         .expect("the test binary lives in a target directory")
         .join("examples")
-        .join("bypass_probe");
+        .join(name);
     assert!(
         path.exists(),
         "the probe fixture is missing at {path:?} — build it with \
-         `cargo build -p honmoon-cli --example bypass_probe`, or run the suite \
+         `cargo build -p honmoon-cli --example {name}`, or run the suite \
          as a plain `cargo test -p honmoon-cli`. Note that `--all-targets` does \
          *not* produce it: it compiles examples as test targets instead."
     );
     path
+}
+
+/// The child that ignores every proxy variable and dials the target itself.
+fn probe() -> PathBuf {
+    example("bypass_probe")
+}
+
+/// The child that cooperates over SOCKS5: it reads `ALL_PROXY` and speaks the
+/// PostgreSQL protocol through the tunnel honmoon gives it.
+fn socks_probe() -> PathBuf {
+    example("socks_probe")
 }
 
 /// A scratch directory that removes itself, holding this test's policy file.
@@ -139,13 +151,17 @@ fn spawn_origin() -> Origin {
 }
 
 fn run_sandboxed(policy: &Path, probe_args: &[&str]) -> Output {
+    run_sandboxed_fixture(policy, &probe(), probe_args)
+}
+
+fn run_sandboxed_fixture(policy: &Path, fixture: &Path, probe_args: &[&str]) -> Output {
     let mut command = Command::new(honmoon());
     command
         .arg("run")
         .arg("--policy")
         .arg(policy)
         .arg("--")
-        .arg(probe())
+        .arg(fixture)
         .args(probe_args);
     command.output().expect("run honmoon")
 }
@@ -511,5 +527,244 @@ fn the_sandbox_leaves_no_scratch_directory_behind() {
          `run` ends in std::process::exit, which runs no destructors, so \
          anything relying on Drop across that call leaks one directory per \
          invocation."
+    );
+}
+
+// --- the SOCKS5 half of ADR-0005 --------------------------------------------
+//
+// `honmoon run` exposes two listeners, and until now only the CONNECT one was
+// asserted end to end. The cases below cover the other: a client speaking
+// SOCKS5 to a declared `postgres` endpoint is inspected statement by statement,
+// and one that speaks neither proxy protocol still reaches nothing.
+//
+// The fake database sits on **host** loopback, outside whatever the child gets.
+// That is the point rather than a convenience: on Linux the child's namespace
+// has no route to it at all, and on macOS the Seatbelt profile refuses its
+// port, so the only way the statements below can arrive is through honmoon's
+// bridge — which is exactly the claim under test.
+
+/// A fake PostgreSQL server on host loopback that reports every statement it
+/// actually receives, and stops accepting when dropped.
+///
+/// Deliberately the minimum that a driver-shaped client will talk to: startup
+/// is answered with `AuthenticationOk` + `ReadyForQuery`, and a simple query
+/// with `CommandComplete` + `ReadyForQuery`. Reporting the SQL is what lets a
+/// test assert the *absence* of a refused statement, which no observation of
+/// the client alone can establish.
+struct PgUpstream {
+    address: SocketAddr,
+    statements: Receiver<String>,
+    stop: Arc<AtomicBool>,
+}
+
+impl PgUpstream {
+    fn port(&self) -> u16 {
+        self.address.port()
+    }
+
+    /// The next statement the database saw, or `None` if it saw none.
+    fn next_statement(&self) -> Option<String> {
+        self.statements.recv_timeout(Duration::from_secs(5)).ok()
+    }
+
+    /// Nothing reached the database in the time a forwarded statement would
+    /// have.
+    fn saw_nothing(&self) -> bool {
+        self.statements
+            .recv_timeout(Duration::from_millis(500))
+            .is_err()
+    }
+}
+
+impl Drop for PgUpstream {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::SeqCst);
+        let _ = TcpStream::connect(self.address);
+    }
+}
+
+fn spawn_pg_upstream() -> PgUpstream {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind the fake database");
+    let address = listener.local_addr().expect("database address");
+    let (sender, statements) = mpsc::channel();
+    let stop = Arc::new(AtomicBool::new(false));
+    let acceptor_stop = Arc::clone(&stop);
+    thread::spawn(move || {
+        while let Ok((mut stream, _)) = listener.accept() {
+            if acceptor_stop.load(Ordering::SeqCst) {
+                break;
+            }
+            let sender = sender.clone();
+            thread::spawn(move || {
+                // StartupMessage: a self-inclusive Int32 length, then the body.
+                // honmoon has already answered the client's SSLRequest with
+                // `N`, so this is the first thing the database sees.
+                let mut length = [0_u8; 4];
+                if stream.read_exact(&mut length).is_err() {
+                    return;
+                }
+                let declared = u32::from_be_bytes(length) as usize;
+                let mut startup = vec![0_u8; declared.saturating_sub(4)];
+                if stream.read_exact(&mut startup).is_err() {
+                    return;
+                }
+                let mut hello = vec![b'R', 0, 0, 0, 8, 0, 0, 0, 0];
+                hello.extend_from_slice(&[b'Z', 0, 0, 0, 5, b'I']);
+                if stream.write_all(&hello).is_err() {
+                    return;
+                }
+
+                loop {
+                    let mut tag = [0_u8; 1];
+                    if stream.read_exact(&mut tag).is_err() {
+                        return;
+                    }
+                    let mut length = [0_u8; 4];
+                    if stream.read_exact(&mut length).is_err() {
+                        return;
+                    }
+                    let declared = u32::from_be_bytes(length) as usize;
+                    let mut payload = vec![0_u8; declared.saturating_sub(4)];
+                    if stream.read_exact(&mut payload).is_err() {
+                        return;
+                    }
+                    if tag[0] != b'Q' {
+                        continue;
+                    }
+                    let sql = payload.strip_suffix(&[0]).unwrap_or(&payload);
+                    if sender
+                        .send(String::from_utf8_lossy(sql).into_owned())
+                        .is_err()
+                    {
+                        return;
+                    }
+                    let complete = b"SELECT 1\0";
+                    let mut reply = vec![b'C'];
+                    reply.extend_from_slice(&((4 + complete.len()) as u32).to_be_bytes());
+                    reply.extend_from_slice(complete);
+                    reply.extend_from_slice(&[b'Z', 0, 0, 0, 5, b'I']);
+                    if stream.write_all(&reply).is_err() {
+                        return;
+                    }
+                }
+            });
+        }
+    });
+    PgUpstream {
+        address,
+        statements,
+        stop,
+    }
+}
+
+/// `postgres-prod` names the fake database, and `DROP` is denied on it.
+///
+/// The endpoint's host is `localhost` rather than `127.0.0.1` because that is
+/// the name the client puts in the SOCKS5 handshake, and matching it is what
+/// `socks5h` exists to make possible.
+fn postgres_policy(upstream: u16) -> String {
+    format!(
+        "version: 1\n\
+         endpoints:\n  \
+           postgres-prod: {{ host: localhost, port: {upstream}, protocol: postgres }}\n\
+         egress:\n  \
+           default: allow\n\
+         rules:\n  \
+           - name: no-destructive-sql\n    \
+             endpoint: postgres-prod\n    \
+             condition: \"sql.verb == 'DROP'\"\n    \
+             verdict: deny\n"
+    )
+}
+
+#[test]
+fn a_socks_speaking_child_reaches_a_postgres_endpoint_and_a_drop_is_refused() {
+    let upstream = spawn_pg_upstream();
+    let scratch = Scratch::with_policy("socks-pg", &postgres_policy(upstream.port()));
+    if !enforcing_or_skip(&scratch.policy(), "socks-pg") {
+        return;
+    }
+
+    let target = format!("localhost:{}", upstream.port());
+
+    // The allowed statement first, which is this test's own control: without it
+    // the refusal below could equally be a tunnel that never worked.
+    let allowed = run_sandboxed_fixture(
+        &scratch.policy(),
+        &socks_probe(),
+        &["pg", &target, "SELECT 1"],
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&allowed.stdout).trim(),
+        "ok",
+        "a confined child speaking SOCKS5 must reach a declared postgres \
+         endpoint: `ALL_PROXY` is the only route it has, and the database is on \
+         host loopback, outside its namespace.\nstderr: {}",
+        String::from_utf8_lossy(&allowed.stderr)
+    );
+    assert_eq!(
+        upstream.next_statement().as_deref(),
+        Some("SELECT 1"),
+        "the statement has to arrive at the database, not merely be answered \
+         somewhere along the way"
+    );
+
+    let refused = run_sandboxed_fixture(
+        &scratch.policy(),
+        &socks_probe(),
+        &["pg", &target, "DROP TABLE users"],
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&refused.stdout).trim(),
+        "refused",
+        "a denied verb must come back as an ErrorResponse the client can read, \
+         rather than a dropped connection.\nstderr: {}",
+        String::from_utf8_lossy(&refused.stderr)
+    );
+    assert!(
+        upstream.saw_nothing(),
+        "the DROP reached the database. Inspecting a statement after forwarding \
+         it is not enforcement."
+    );
+}
+
+#[test]
+fn a_child_that_ignores_every_proxy_variable_cannot_reach_the_database() {
+    let upstream = spawn_pg_upstream();
+    let scratch = Scratch::with_policy("socks-bypass", &postgres_policy(upstream.port()));
+    if !enforcing_or_skip(&scratch.policy(), "socks-bypass") {
+        return;
+    }
+
+    let target = upstream.address.to_string();
+    let args = ["direct", target.as_str()];
+
+    // The control, as everywhere in this file: the port has to be reachable
+    // when honmoon is not involved, or the confined result proves nothing.
+    let control = run_unsandboxed(&args);
+    assert_eq!(
+        control.status.code(),
+        Some(0),
+        "the probe must reach the database when honmoon is not involved, or \
+         this test cannot distinguish confinement from a broken fixture"
+    );
+
+    // `bypass_probe direct` reads neither `HTTP_PROXY` nor `ALL_PROXY` — it
+    // dials the address itself, which is what a client with its own dialler
+    // does. Declaring the endpoint in the policy does not make that route
+    // exist: Linux has no interface to carry it, and the Seatbelt profile
+    // opens honmoon's two ports and nothing else.
+    let confined = run_sandboxed(&scratch.policy(), &args);
+    assert_eq!(
+        confined.status.code(),
+        Some(UNREACHABLE),
+        "a child that honours neither proxy variable reached the database \
+         directly, so a declared endpoint became a way around policy rather \
+         than a way through it.\nstderr: {}",
+        String::from_utf8_lossy(&confined.stderr)
+    );
+    assert!(
+        upstream.saw_nothing(),
+        "the direct dial got far enough to send a statement"
     );
 }

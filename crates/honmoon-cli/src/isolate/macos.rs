@@ -26,9 +26,12 @@
 //!   claim this product does not test, cannot tune per policy, and would break
 //!   ordinary tools to honour. `srt` restricts the filesystem in the same
 //!   profile; honmoon does not, and that is a choice rather than an omission.
-//! - **One remote address: the proxy.** `remote ip` matches the port as well as
-//!   the host, so a neighbouring service on loopback stays unreachable — which
-//!   the integration suite asserts by putting an origin server there.
+//! - **Two remote addresses: honmoon's two listeners.** One rule per port — the
+//!   CONNECT proxy and the SOCKS5 listener — rather than one widened to
+//!   `localhost:*`. `remote ip` matches the port as well as the host, so a
+//!   neighbouring service on loopback stays unreachable, which the integration
+//!   suite asserts by putting an origin server there. Widening to every
+//!   loopback port would hand that origin server back.
 //! - **Filesystem `AF_UNIX` sockets stay reachable**, matching Linux, where only
 //!   the network namespace is replaced. On both platforms this is a *documented
 //!   escape* rather than an oversight: a local daemon behind a socket
@@ -49,12 +52,12 @@
 //!   which names an operation rather than a path.
 //! - Seatbelt's `remote ip` filter accepts only `*` or `localhost` as a host —
 //!   a literal `127.0.0.1` is rejected by the profile compiler — and `localhost`
-//!   covers `::1` as well as `127.0.0.1`. The hole is therefore two addresses
-//!   wide, so `run` binds the proxy on **both** loopback families at one port
-//!   (`bind_loopback_pair` in `main.rs`) rather than on IPv4 alone. Without
-//!   that, an unrelated process holding the same port number on `::1` would be
-//!   sitting inside the one exception this profile makes, reachable by the child
-//!   with no policy in the way.
+//!   covers `::1` as well as `127.0.0.1`. Each hole is therefore two addresses
+//!   wide, so `run` binds **both** loopback families at each port
+//!   (`bind_loopback_pair` in `main.rs`, called once per listener) rather than
+//!   IPv4 alone. Without that, an unrelated process holding the same port
+//!   number on `::1` would be sitting inside an exception this profile makes,
+//!   reachable by the child with no policy in the way.
 //! - The child shares the host's loopback, so a listener it binds there is
 //!   visible to other processes on this machine. Under Linux that loopback is
 //!   private to the namespace. Nothing off-box can reach it on either platform.
@@ -63,13 +66,16 @@
 //!   channel to that one peer. The child needs those three descriptors to be a
 //!   usable command at all. This needs an operator to have wired honmoon's stdio
 //!   to a network peer; it is not something the child can arrange.
-//! - **A descendant that outlives `run` keeps an exception to a port `run` no
+//! - **A descendant that outlives `run` keeps an exception to ports `run` no
 //!   longer owns.** `Command::status` waits for the *direct* child, so a command
-//!   that daemonizes returns immediately and `run` exits, closing both loopback
-//!   listeners — while the surviving descendant still carries the profile, and
-//!   its one TCP exception still names `localhost:<proxy_port>`. That port is
-//!   now free, the descendant can read the number out of its own environment,
-//!   and whatever local process binds it next is an off-policy relay.
+//!   that daemonizes returns immediately and `run` exits, closing every loopback
+//!   listener — while the surviving descendant still carries the profile, and
+//!   its TCP exceptions still name `localhost:<proxy_port>` and
+//!   `localhost:<socks_port>`. Those ports are now free, the descendant can read
+//!   both numbers out of its own environment, and whatever local process binds
+//!   one next is an off-policy relay. This is the #74 caveat, and it now covers
+//!   **both** ports rather than one: adding the SOCKS5 listener widened the
+//!   window from one port to two without changing its shape.
 //!
 //!   Linux does not have this, and the asymmetry is structural rather than an
 //!   oversight here: there the child is in an empty namespace, so when the
@@ -107,10 +113,13 @@ const DEV_FD: &str = "/dev/fd";
 /// stdin, stdout and stderr — the three the child keeps.
 const STDIO_DESCRIPTORS: libc::c_int = 3;
 
-/// A port no run will use, for compiling the profile during the probe.
+/// Ports no run will use, for compiling the profile during the probe.
 ///
-/// Only its syntax matters there; nothing binds it.
+/// Only their syntax matters there; nothing binds them. Two distinct numbers
+/// rather than one repeated, so the probe compiles the same *shape* a real run
+/// does — two separate `remote ip` rules.
 const PROBE_PORT: u16 = u16::MAX;
+const PROBE_SOCKS_PORT: u16 = u16::MAX - 1;
 
 /// Can this host actually confine a child?
 ///
@@ -124,12 +133,12 @@ const PROBE_PORT: u16 = u16::MAX;
 /// documented behaviour, instead of a run that dies with a compiler backtrace.
 ///
 /// It also means the only thing that varies between here and [`run_confined`]
-/// is a `u16` rendered by `format!`, so a profile that compiles now compiles
+/// is two `u16`s rendered by `format!`, so a profile that compiles now compiles
 /// then.
 pub fn sandbox_available() -> bool {
     Command::new(SANDBOX_EXEC)
         .arg("-p")
-        .arg(profile(PROBE_PORT))
+        .arg(profile(PROBE_PORT, PROBE_SOCKS_PORT))
         .arg("--")
         .arg("/usr/bin/true")
         .stdin(Stdio::null())
@@ -145,20 +154,27 @@ pub fn sandbox_available() -> bool {
 /// Returns the command's own exit status. `Err` means the sandbox could not be
 /// set up and the command has **not** run, which is what lets the caller fall
 /// back to advisory without any risk of running it twice.
-pub fn run_confined(proxy: SocketAddr, program: &str, args: &[String]) -> io::Result<ExitStatus> {
+pub fn run_confined(
+    proxy: SocketAddr,
+    socks: SocketAddr,
+    program: &str,
+    args: &[String],
+) -> io::Result<ExitStatus> {
     // The profile can only name `localhost`, so a proxy anywhere else would be
     // unreachable from inside it and every child would fail to connect. `run`
     // binds `127.0.0.1:0`, so this is unreachable in practice — it is here so
     // that if it ever stops being true, the run downgrades to advisory with a
     // stated reason instead of confining children into a dead end.
-    if !proxy.ip().is_loopback() {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            format!(
-                "the egress proxy is on {proxy}, but a Seatbelt profile can only \
-                 open a hole to loopback"
-            ),
-        ));
+    for listener in [proxy, socks] {
+        if !listener.ip().is_loopback() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!(
+                    "the egress proxy is on {listener}, but a Seatbelt profile \
+                     can only open a hole to loopback"
+                ),
+            ));
+        }
     }
 
     // Before the spawn, and propagated rather than swallowed: a descriptor that
@@ -174,13 +190,14 @@ pub fn run_confined(proxy: SocketAddr, program: &str, args: &[String]) -> io::Re
     // `sandbox-exec` rather than as the thing to confine.
     command
         .arg("-p")
-        .arg(profile(proxy.port()))
+        .arg(profile(proxy.port(), socks.port()))
         .arg("--")
         .arg(program)
         .args(args);
 
     let proxy_url = format!("http://{proxy}");
-    for (key, value) in super::proxy_env(&proxy_url) {
+    let socks_url = format!("socks5h://{socks}");
+    for (key, value) in super::proxy_env(&proxy_url, &socks_url) {
         command.env(key, value);
     }
     // Cleared rather than replaced, which is the opposite of what the Linux
@@ -200,7 +217,7 @@ pub fn run_confined(proxy: SocketAddr, program: &str, args: &[String]) -> io::Re
     // command's own. A profile that failed to compile would exit 65 here without
     // running anything — indistinguishable from a child that chose to exit 65 —
     // but `sandbox_available()` compiled this exact profile moments ago and the
-    // only thing that has changed since is a `u16` rendered by `format!`.
+    // only thing that has changed since is two `u16`s rendered by `format!`.
     command.status()
 }
 
@@ -318,9 +335,9 @@ fn open_descriptors() -> io::Result<Vec<libc::c_int>> {
 /// Built inline rather than written to a file: the Linux path's scratch
 /// directory produced a whole class of bugs — a squattable name, a `sun_path`
 /// overflow, a umask that stripped the owner bits — and none of them can exist
-/// for a string that never touches the filesystem. `proxy_port` is a `u16`
+/// for a string that never touches the filesystem. Both ports are `u16`s
 /// rendered by `format!`, so there is nothing here to inject into.
-fn profile(proxy_port: u16) -> String {
+fn profile(proxy_port: u16, socks_port: u16) -> String {
     format!(
         r#"(version 1)
 
@@ -335,10 +352,16 @@ fn profile(proxy_port: u16) -> String {
 ;; Take away every socket the child could open, in any address family.
 (deny network*)
 
-;; Hand back exactly one remote address: honmoon's ephemeral proxy. The filter
-;; matches the port too, so the rest of loopback stays unreachable. `localhost`
-;; is not a convenience spelling — the profile compiler rejects a literal IP.
+;; Hand back exactly two remote addresses: honmoon's two ephemeral listeners.
+;; The filter matches the port too, so the rest of loopback stays unreachable —
+;; one rule per port rather than a single rule with a wildcard port, which would
+;; hand back every neighbouring service on this machine. `localhost` is not a
+;; convenience spelling: the profile compiler rejects a literal IP.
 (allow network-outbound (remote ip "localhost:{proxy_port}"))
+
+;; The SOCKS5 listener, which is what carries a protocol CONNECT cannot express
+;; — `ALL_PROXY` names this port (ADR-0005).
+(allow network-outbound (remote ip "localhost:{socks_port}"))
 
 ;; Filesystem AF_UNIX sockets stay reachable, matching Linux, where only the
 ;; network namespace is replaced. A documented escape on both platforms: a local
@@ -360,17 +383,23 @@ mod tests {
     use std::net::{IpAddr, Ipv4Addr};
 
     #[test]
-    fn the_profile_opens_the_proxy_port_and_nothing_else_on_the_network() {
-        let text = profile(41234);
+    fn the_profile_opens_both_honmoon_ports_and_nothing_else_on_the_network() {
+        let text = profile(41234, 41235);
         assert!(
             text.contains(r#"(deny network*)"#),
-            "the profile has to start from no sockets at all, or the allow below \
-             is an addition to the host's network rather than a replacement for \
+            "the profile has to start from no sockets at all, or the allows below \
+             are an addition to the host's network rather than a replacement for \
              it:\n{text}"
         );
         assert!(
             text.contains(r#"(allow network-outbound (remote ip "localhost:41234"))"#),
-            "the proxy's exact port must be the hole, not a wildcard:\n{text}"
+            "the CONNECT proxy's exact port must be a hole, not a wildcard:\n{text}"
+        );
+        assert!(
+            text.contains(r#"(allow network-outbound (remote ip "localhost:41235"))"#),
+            "the SOCKS5 listener's exact port must be a hole too, or `ALL_PROXY` \
+             names an address the profile refuses and every non-HTTP client \
+             fails closed against honmoon's own listener:\n{text}"
         );
         assert!(
             !text.contains(r#"remote ip "*"#),
@@ -379,9 +408,30 @@ mod tests {
         );
     }
 
+    /// Two ports are handed back, and *only* two. The cheap way to cover a
+    /// second listener would have been `localhost:*`, which reads like a
+    /// tightening of `(deny network*)` and is in fact the whole of loopback —
+    /// every neighbouring service on the machine, which the integration suite
+    /// puts an origin server among.
+    #[test]
+    fn the_profile_never_widens_the_hole_to_every_loopback_port() {
+        let text = profile(41234, 41235);
+        assert!(
+            !text.contains(r#"localhost:*"#),
+            "a port wildcard on localhost hands the child every local service, \
+             not just honmoon's two listeners:\n{text}"
+        );
+        assert_eq!(
+            text.matches("remote ip").count(),
+            2,
+            "exactly two remote-ip exceptions: the CONNECT proxy and the SOCKS5 \
+             listener. A third is a hole nobody decided to open:\n{text}"
+        );
+    }
+
     #[test]
     fn the_profile_denies_the_resolver_after_allowing_unix_sockets() {
-        let text = profile(1024);
+        let text = profile(1024, 1080);
         let allow = text
             .find("(allow network-outbound (remote unix-socket))")
             .expect("filesystem Unix sockets stay reachable, matching Linux");
@@ -399,8 +449,15 @@ mod tests {
     #[test]
     fn a_proxy_off_loopback_is_refused_rather_than_confined_into_a_dead_end() {
         let off_box = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 8080);
-        let error = run_confined(off_box, "/usr/bin/true", &[])
+        let loopback = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 8081);
+        let error = run_confined(off_box, loopback, "/usr/bin/true", &[])
             .expect_err("a profile cannot open a hole to anything but loopback");
+        assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+
+        // And the SOCKS5 listener is checked the same way: an off-box address
+        // there would be just as unreachable from inside the profile.
+        let error = run_confined(loopback, off_box, "/usr/bin/true", &[])
+            .expect_err("the SOCKS5 listener is held to the same rule");
         assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
     }
 

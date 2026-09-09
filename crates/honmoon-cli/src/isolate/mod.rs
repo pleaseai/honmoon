@@ -97,14 +97,15 @@ impl Isolation {
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 pub fn run_confined(
     proxy: std::net::SocketAddr,
+    socks: std::net::SocketAddr,
     program: &str,
     args: &[String],
 ) -> std::io::Result<std::process::ExitStatus> {
     #[cfg(target_os = "linux")]
-    return linux::run_confined(proxy, program, args);
+    return linux::run_confined(proxy, socks, program, args);
 
     #[cfg(target_os = "macos")]
-    return macos::run_confined(proxy, program, args);
+    return macos::run_confined(proxy, socks, program, args);
 }
 
 /// The proxy variables handed to a wrapped child.
@@ -112,14 +113,26 @@ pub fn run_confined(
 /// Six spellings because there is no single convention: curl reads the lowercase
 /// forms, many Go and Java clients read the uppercase ones, and `all_proxy`
 /// catches clients that route non-HTTP schemes through the same setting.
-pub fn proxy_env(proxy_url: &str) -> [(&'static str, &str); 6] {
+///
+/// The two URLs are two different listeners, not two spellings of one. HTTP
+/// clients get the CONNECT proxy; `all_proxy` gets the SOCKS5 one, because
+/// SOCKS5 is what carries a protocol `CONNECT` cannot express — a `postgres`
+/// endpoint, say, which honmoon inspects inline behind that listener.
+///
+/// `socks_url` must be a **`socks5h://`** URL. The `h` moves name resolution to
+/// honmoon's side, which is what puts the hostname the client asked for into the
+/// SOCKS5 handshake, where it selects an endpoint. Under plain `socks5://` the
+/// client resolves first and hands over a bare address, and every `endpoints:`
+/// entry stops matching — the request is still policed, but only as an anonymous
+/// address rather than as the service the operator named.
+pub fn proxy_env<'a>(http_url: &'a str, socks_url: &'a str) -> [(&'static str, &'a str); 6] {
     [
-        ("http_proxy", proxy_url),
-        ("https_proxy", proxy_url),
-        ("HTTP_PROXY", proxy_url),
-        ("HTTPS_PROXY", proxy_url),
-        ("all_proxy", proxy_url),
-        ("ALL_PROXY", proxy_url),
+        ("http_proxy", http_url),
+        ("https_proxy", http_url),
+        ("HTTP_PROXY", http_url),
+        ("HTTPS_PROXY", http_url),
+        ("all_proxy", socks_url),
+        ("ALL_PROXY", socks_url),
     ]
 }
 
@@ -196,7 +209,7 @@ mod tests {
 
     #[test]
     fn proxy_env_covers_every_spelling_a_client_might_read() {
-        let env = proxy_env("http://127.0.0.1:8080");
+        let env = proxy_env("http://127.0.0.1:8080", "socks5h://127.0.0.1:1080");
         for name in ["http_proxy", "HTTP_PROXY", "all_proxy", "ALL_PROXY"] {
             assert!(
                 env.iter().any(|(key, _)| *key == name),
@@ -204,10 +217,40 @@ mod tests {
                  otherwise reach the network unproxied"
             );
         }
+    }
+
+    #[test]
+    fn proxy_env_points_each_variable_at_the_listener_that_speaks_its_protocol() {
+        let env = proxy_env("http://127.0.0.1:8080", "socks5h://127.0.0.1:1080");
+        for name in ["http_proxy", "https_proxy", "HTTP_PROXY", "HTTPS_PROXY"] {
+            let value = env
+                .iter()
+                .find(|(key, _)| *key == name)
+                .map(|(_, value)| *value);
+            assert_eq!(
+                value,
+                Some("http://127.0.0.1:8080"),
+                "{name} names the CONNECT proxy"
+            );
+        }
+        for name in ["all_proxy", "ALL_PROXY"] {
+            let value = env
+                .iter()
+                .find(|(key, _)| *key == name)
+                .map(|(_, value)| *value);
+            assert_eq!(
+                value,
+                Some("socks5h://127.0.0.1:1080"),
+                "{name} names the SOCKS5 listener; pointing it at the CONNECT \
+                 port would leave a non-HTTP client speaking SOCKS5 to a proxy \
+                 that cannot answer it"
+            );
+        }
         assert!(
             env.iter()
-                .all(|(_, value)| *value == "http://127.0.0.1:8080"),
-            "every variable must point at the same proxy"
+                .any(|(key, value)| *key == "ALL_PROXY" && value.starts_with("socks5h://")),
+            "the h in socks5h is what keeps DNS on honmoon's side, so the \
+             hostname reaches the handshake and can select an endpoint"
         );
     }
 }
