@@ -1,0 +1,1 @@
+- [Honmoon proxy sync-point tracking](honmoon_proxy_sync_point_tracking.md) — ClientLink forwarded/delivered barrier in postgres.rs: why Relaxed+watch asymmetry is correct, and its convention-only invariant gap
