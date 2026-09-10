@@ -1,0 +1,20 @@
+crates/honmoon-core/benches/policy_engine.rs
+  s_4d4ce11359883c::t_622faa347f8355 10-11,21-39,157-175
+  s_4d4ce11359883c::t_66ad77f20d576a 176
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "8c71cc801e4f93ac6e1b8a1c05d33e600c4c1093",
+  "prompts": {},
+  "sessions": {
+    "s_4d4ce11359883c": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d8cbd35d-8ae4-4ea7-be45-710c9ce6a90b",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
