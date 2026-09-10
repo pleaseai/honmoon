@@ -1,0 +1,19 @@
+apps/web/src/sections/Barrier.tsx
+  s_04ae6c79652774::t_b0c65df44da326 38,40
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.2",
+  "base_commit_sha": "79eec8f91e6778a230c94b0786c90c704f2ad585",
+  "prompts": {},
+  "sessions": {
+    "s_04ae6c79652774": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "4c2370c4-7b3c-43e4-b48f-e674206df267",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "DANNY NA <danny@pusan.ac.kr>"
+    }
+  }
+}

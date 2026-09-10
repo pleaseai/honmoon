@@ -1,0 +1,49 @@
+apps/web/src/sections/Hero.tsx
+  s_04ae6c79652774::t_25203dcd5e4093 8
+  s_04ae6c79652774::t_d29972a3878a03 15-16
+apps/web/src/sections/Barrier.tsx
+  s_04ae6c79652774::t_3880f455537b9d 12
+  s_04ae6c79652774::t_a164fd050df58d 38,40
+  s_04ae6c79652774::t_e2e37f787dfa38 17-18
+  s_04ae6c79652774::t_2b2488c8bca1ea 63
+  s_04ae6c79652774::t_d4de32384d33da 58
+apps/web/src/sections/Policy.tsx
+  s_04ae6c79652774::t_87dcdabab11edc 27
+  s_04ae6c79652774::t_3dfd89694d9ee5 30
+  s_04ae6c79652774::t_bc7e5bfa266fbb 31
+  s_04ae6c79652774::t_edd15a804d016a 29
+apps/web/src/sections/HowItWorks.tsx
+  s_04ae6c79652774::t_f9928c30eeccdd 12
+  s_04ae6c79652774::t_76d7a2433c9840 18
+apps/web/src/sections/OpenCore.tsx
+  s_04ae6c79652774::t_30e7aa968de7bc 17
+  s_04ae6c79652774::t_73a03f5e7f466e 14
+  s_04ae6c79652774::t_ab309aa6073671 12
+  s_04ae6c79652774::t_8f5c85cb132e9a 7
+apps/web/src/sections/Threat.tsx
+  s_04ae6c79652774::t_3d4e4f923a699b 6-7
+apps/web/src/sections/Footer.tsx
+  s_04ae6c79652774::t_30673fd54c48d5 9
+  s_04ae6c79652774::t_125b5c77ee77a7 29
+  s_04ae6c79652774::t_91be42791332d4 23
+apps/web/index.html
+  s_04ae6c79652774::t_e46cdd52e0915f 6
+apps/web/src/sections/Cta.tsx
+  s_04ae6c79652774::t_affb250015df52 8-9
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.2",
+  "base_commit_sha": "9c550393dfdf5f6b77ccadf4286dcd059496b1f6",
+  "prompts": {},
+  "sessions": {
+    "s_04ae6c79652774": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "4c2370c4-7b3c-43e4-b48f-e674206df267",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "DANNY NA <danny@pusan.ac.kr>"
+    }
+  }
+}
