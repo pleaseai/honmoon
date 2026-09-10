@@ -1,1 +1,2 @@
 - [Honmoon crate-table convention](honmoon_crate_table_convention.md) — AGENTS.md/ARCHITECTURE.md name honmoon-core's engine functions explicitly; check new decide-family exports against them
+- [ADR-0006 signed-header amendment verified](adr_0006_signed_header_amendment.md) — PR #115 clean doc PR; calibration point, only soft spot is auto-maintained decisions/index.md title
