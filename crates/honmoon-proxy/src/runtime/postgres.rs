@@ -729,6 +729,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::approval::ApprovalDecision;
 
     /// A `ClientLink` backed by a real loopback connection: the writer is a
     /// concrete `OwnedWriteHalf`, so it cannot be faked with an in-memory buffer.
@@ -836,6 +837,92 @@ mod tests {
             drain,
             "the startup packet reached the upstream, so its response must still be drained"
         );
+    }
+
+    /// A `Q` frame carrying `sql`, as the client puts it on the wire.
+    fn simple_query(sql: &str) -> Vec<u8> {
+        let mut frame = vec![b'Q'];
+        frame.extend_from_slice(&((5 + sql.len()) as u32).to_be_bytes());
+        frame.extend_from_slice(sql.as_bytes());
+        frame.push(0);
+        frame
+    }
+
+    /// A policy that holds every `DELETE` for a human.
+    fn pause_delete_policy() -> honmoon_core::Policy {
+        honmoon_core::Policy::from_yaml(
+            "egress:\n  default: allow\nrules:\n  - name: review-delete\n    endpoint: '*'\n    condition: \"sql.verb == 'DELETE'\"\n    verdict: pause\n",
+        )
+        .expect("valid policy")
+    }
+
+    #[tokio::test]
+    async fn a_client_that_leaves_mid_hold_cancels_its_approval_and_forwards_nothing() {
+        let state = GatewayState::new(pause_delete_policy());
+        // The client sends a statement the policy pauses, then goes away.
+        let mut client = std::io::Cursor::new(simple_query("DELETE FROM sessions"));
+        let mut upstream: Vec<u8> = Vec::new();
+        let (link, _peer) = loopback_link().await;
+
+        // A human approving the moment anything appears in the queue: exactly
+        // the race the defect allowed. The hold used to sit there until
+        // `pause_timeout` no matter what the client did, so this approval landed
+        // and the `DELETE` reached the database on behalf of a client that was
+        // already gone (#102). It must now find nothing left to approve.
+        let approver = {
+            let approvals = Arc::clone(&state.approvals);
+            tokio::spawn(async move {
+                loop {
+                    if let Some(pending) = approvals.pending().first() {
+                        approvals.resolve(pending.id, ApprovalDecision::Approve);
+                        return;
+                    }
+                    tokio::task::yield_now().await;
+                }
+            })
+        };
+
+        let drain = message_loop(&state, &mut client, &mut upstream, &link, &Facts::default())
+            .await
+            .unwrap();
+        approver.abort();
+
+        assert!(
+            upstream.is_empty(),
+            "a statement whose client is gone must never reach the database"
+        );
+        assert!(
+            !drain,
+            "nobody is left to read the answer, so nothing is owed"
+        );
+        assert!(
+            state.approvals.is_empty(),
+            "the abandoned hold released its approval slot"
+        );
+        assert!(
+            state
+                .approvals
+                .resolve(1, ApprovalDecision::Approve)
+                .is_none(),
+            "a human can no longer approve the statement after its client left"
+        );
+    }
+
+    #[tokio::test]
+    async fn bytes_pipelined_behind_a_held_statement_survive_the_disconnect_watch() {
+        // Watching for the disconnect reads the client socket, so whatever the
+        // client pipelined behind its held statement has to come back out of the
+        // pushback buffer rather than being swallowed.
+        let mut reader = HeldReader::new(std::io::Cursor::new(b"SYNC".to_vec()));
+        reader.watch_disconnect().await;
+
+        let mut first = [0u8; 2];
+        reader.read_exact(&mut first).await.unwrap();
+        let mut rest = [0u8; 2];
+        reader.read_exact(&mut rest).await.unwrap();
+        assert_eq!(&first, b"SY");
+        assert_eq!(&rest, b"NC", "a partial take leaves the remainder buffered");
+        assert_eq!(reader.buffered(), 0);
     }
 
     fn parse_payload(name: &str, query: &str) -> Vec<u8> {

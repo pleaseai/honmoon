@@ -355,6 +355,8 @@ pub(crate) async fn hold_until(
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
     use super::*;
 
     #[tokio::test]
@@ -393,6 +395,97 @@ mod tests {
         // Freeing a slot lets a new request register again.
         reg.cancel(1);
         assert!(reg.register(NewApproval::default()).is_some());
+    }
+
+    /// State whose ephemeral CA is the only slow part; every hold test needs one.
+    fn state() -> GatewayState {
+        GatewayState::new(honmoon_core::Policy::default())
+    }
+
+    fn summary() -> FactsSummary {
+        FactsSummary {
+            domain: Some("db.internal".into()),
+            ..Default::default()
+        }
+    }
+
+    #[tokio::test]
+    async fn an_abandoned_hold_frees_its_slot_and_audits_the_rejection() {
+        let state = state();
+
+        let outcome = hold_until(
+            &state,
+            "db.internal",
+            summary(),
+            Some("review-delete".into()),
+            "postgres-prod DELETE sessions".into(),
+            std::future::ready(()),
+        )
+        .await;
+
+        assert!(
+            matches!(outcome, HoldOutcome::Abandoned),
+            "a client that left before a human decided abandons its hold"
+        );
+        assert!(
+            state.approvals.is_empty(),
+            "an abandoned hold must not stay in the approval queue"
+        );
+        assert!(
+            state
+                .approvals
+                .resolve(1, ApprovalDecision::Approve)
+                .is_none(),
+            "a human can no longer approve a statement whose client is gone"
+        );
+
+        let events = state.audit.recent(2);
+        assert_eq!(events[0].decision, Decision::Rejected);
+        assert_eq!(events[0].approval_id, Some(1));
+        assert_eq!(events[1].decision, Decision::Paused);
+    }
+
+    #[tokio::test]
+    async fn a_decision_already_in_hand_beats_a_simultaneous_abandonment() {
+        let state = state();
+        // The resolver approves and *then* releases the abandonment signal, so
+        // both arms of the hold's `select!` are ready in the same poll. The
+        // decision must win: auditing an abandonment over an approval a human
+        // really made would misreport the hold, and the slot it would cancel is
+        // one `resolve` has already taken.
+        let gone = Arc::new(tokio::sync::Notify::new());
+        let resolver = {
+            let approvals = Arc::clone(&state.approvals);
+            let gone = Arc::clone(&gone);
+            tokio::spawn(async move {
+                loop {
+                    if let Some(pending) = approvals.pending().first() {
+                        approvals.resolve(pending.id, ApprovalDecision::Approve);
+                        gone.notify_one();
+                        return;
+                    }
+                    tokio::task::yield_now().await;
+                }
+            })
+        };
+
+        let outcome = hold_until(
+            &state,
+            "db.internal",
+            summary(),
+            None,
+            "postgres-prod DELETE sessions".into(),
+            async move { gone.notified().await },
+        )
+        .await;
+        resolver.await.unwrap();
+
+        assert!(matches!(outcome, HoldOutcome::Approved));
+        assert_eq!(
+            state.audit.recent(1)[0].decision,
+            Decision::Approved,
+            "the approval is audited, not an abandonment"
+        );
     }
 
     #[test]
