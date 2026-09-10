@@ -1,0 +1,25 @@
+.claude/agent-memory/review-review-documentation-analyzer/honmoon_pg_runtime_timeout_docs.md
+  s_85a852507dfbd0::t_1ac47d6d470727 1-24
+.claude/agent-memory/review-review-pr-test-analyzer/socks_fake_pg_upstream_swallows_sync.md
+  s_85a852507dfbd0::t_dfe691f4a0c3e5 1-34
+.claude/agent-memory/review-review-pr-test-analyzer/MEMORY.md
+  s_85a852507dfbd0::t_c65b4a00a02998 2
+.claude/agent-memory/review-review-documentation-analyzer/MEMORY.md
+  s_85a852507dfbd0::t_26114800848fc2 2
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "16815e0e788dabad13f36e818200a0addea25546",
+  "prompts": {},
+  "sessions": {
+    "s_85a852507dfbd0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "cb4670ad-8046-4aa5-b876-712fecc38af2",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
