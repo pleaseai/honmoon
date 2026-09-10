@@ -1,0 +1,26 @@
+.claude/agent-memory/review-review-code-reviewer/feedback_pii_attribution_pattern.md
+  s_4d4ce11359883c::t_163dd12a733a36 9-14,26-29
+.claude/agent-memory/review-review-comment-analyzer/MEMORY.md
+  s_4d4ce11359883c::t_163dd12a733a36 1
+.claude/agent-memory/review-review-silent-failure-hunter/project_engine_pii_attribution.md
+  s_4d4ce11359883c::t_163dd12a733a36 33-42
+.claude/agent-memory/review-review-security-reviewer/detect-mode-pii-attribution.md
+  s_4d4ce11359883c::t_163dd12a733a36 18-21,26-29
+  s_4d4ce11359883c::t_679b1933e6c434 11-12,23-24
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "42aef9506fe01bc40f7b25dda63b228633163100",
+  "prompts": {},
+  "sessions": {
+    "s_4d4ce11359883c": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d8cbd35d-8ae4-4ea7-be45-710c9ce6a90b",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
