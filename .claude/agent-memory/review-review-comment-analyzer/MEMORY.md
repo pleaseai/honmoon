@@ -1,0 +1,1 @@
+- [engine PII-audit monotonicity gap](engine_pii_audit_monotonicity.md) — honmoon-core decide_pii_audit_only can be stricter than block mode; overclaiming doc comments in PR #108

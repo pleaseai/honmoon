@@ -1,2 +1,3 @@
 - [crates/AGENTS.md rules to check](project_agents_md_rules.md) — Always/Ask-first/Never boundary table; new workspace deps need "ask first"
 - [Trust-the-header regression pattern](feedback_trust_the_header_regression_pattern.md) — decode-then-scan logic that skips scanning when a client lies about the encoding header is a regression, not a footnote
+- [PII attribution pattern (#99)](feedback_pii_attribution_pattern.md) — decide_pii_audit_only proof sketch + the 3 test cases to require on future changes to it

@@ -1,1 +1,2 @@
 - [Framing deliberate skips](feedback_framing_deliberate_skips.md) — a skip marked "do not flag" can still hide a flaggable gap (e.g. missing logging) in a stated sub-guarantee.
+- [engine.rs PII attribution](project_engine_pii_attribution.md) — decide_pii_audit_only design verified sound; only gap is eval_condition's unlogged execution errors.
