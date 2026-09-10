@@ -35,9 +35,9 @@ export function Barrier() {
             </div>
 
             <div className="g-row" data-v="mask" style={{ '--i': 1 } as React.CSSProperties}>
-              <div className="g-req"><span className="g-who">mina</span><span className="g-cmd">POST llm-api · "…SSN <span className="sv">123-45-••••</span>…"</span></div>
+              <div className="g-req"><span className="g-who">mina</span><span className="g-cmd">POST llm-api · "…resident ID <span className="sv">900101-•••••••</span>…"</span></div>
               <div className="g-track"><span className="g-token"></span></div>
-              <div className="g-out"><span className="g-chip">MASK</span><span className="g-rule">pii masking</span><span className="g-result">delivered · the raw SSN never left the machine</span></div>
+              <div className="g-out"><span className="g-chip">MASK</span><span className="g-rule">pii masking</span><span className="g-result">delivered · the raw resident ID never left the machine</span></div>
             </div>
 
             <div className="g-row" data-v="deny" style={{ '--i': 2 } as React.CSSProperties}>
