@@ -290,6 +290,15 @@ pub async fn run_postgres(
 
     let mut client_sent_everything = false;
     let outcome = tokio::select! {
+        // Poll the message loop first. When the relay's exit releases a refusal
+        // that was waiting to be ordered behind it, both arms become ready in
+        // the same wake-up — and an unbiased `select!` would pick between them
+        // at random, dropping the loop half the time before it writes the `42501`
+        // it had just been cleared to send. Biased, the loop takes the lock and
+        // writes (neither yields once the relay is gone: it released the lock on
+        // its way out) and the session ends on the very next poll. Nothing is
+        // starved: the arm below is still reached the moment the loop is pending.
+        biased;
         result = client_to_upstream(
             state,
             &mut client_read,
@@ -1681,6 +1690,62 @@ mod tests {
         .await
         .expect("the session finished");
         assert!(drain.unwrap());
+    }
+
+    /// A connected loopback pair: the end a test drives, and the end handed to
+    /// the code under test.
+    async fn socket_pair() -> (TcpStream, TcpStream) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let (near, accepted) = tokio::join!(TcpStream::connect(addr), listener.accept());
+        (near.unwrap(), accepted.unwrap().0)
+    }
+
+    #[tokio::test]
+    async fn an_upstream_that_closes_mid_refusal_still_lets_the_client_be_told() {
+        let state = GatewayState::new(deny_drop_policy());
+        // The whole session, not just the message loop: the relay's exit both
+        // releases the waiting refusal *and* completes the future `run_postgres`
+        // races the loop against, so the two become ready together. An unbiased
+        // `select!` drops the loop half the time and the client — whose own
+        // socket is fine — reads an unexplained close instead of its 42501,
+        // which is the outcome ADR-0007 wrote the injected answer to prevent.
+        let (mut client, client_end) = socket_pair().await;
+        let (upstream_end, mut database) = socket_pair().await;
+
+        let session = tokio::spawn(async move {
+            run_postgres(&state, client_end, upstream_end, Facts::default()).await
+        });
+
+        client
+            .write_all(&startup_packet(PROTOCOL_V3, b"user\0me\0\0"))
+            .await
+            .unwrap();
+        // Answer the handshake, so the only response still owed is the SELECT's.
+        let mut startup_seen = vec![0u8; 13];
+        database.read_exact(&mut startup_seen).await.unwrap();
+        database.write_all(&[b'Z', 0, 0, 0, 5, b'I']).await.unwrap();
+        assert_eq!(read_message_tag(&mut client).await, b'Z');
+
+        // Pipeline an allowed statement the database never answers, then a
+        // denied one, and drop the database while the refusal waits behind it.
+        client
+            .write_all(&pipelined_select_then_drop())
+            .await
+            .unwrap();
+        let mut forwarded = vec![0u8; simple_query("SELECT pg_sleep(1)").len()];
+        database.read_exact(&mut forwarded).await.unwrap();
+        drop(database);
+
+        let told = async {
+            assert_eq!(read_message_tag(&mut client).await, b'E');
+            assert_eq!(read_message_tag(&mut client).await, b'Z');
+        };
+        tokio::time::timeout(std::time::Duration::from_secs(10), told)
+            .await
+            .expect("the client is told why its statement was refused");
+
+        session.await.unwrap().unwrap();
     }
 
     #[tokio::test]

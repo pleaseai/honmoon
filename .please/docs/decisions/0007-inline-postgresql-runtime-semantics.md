@@ -146,7 +146,11 @@ that fails to parse: it is refused rather than forwarded blind.
     no further `ReadyForQuery` can arrive and there is nothing left to order against. The wait
     therefore ends the moment the relay does, so the refusal is written on a client socket that is
     still healthy — rather than being cancelled unwritten when the relay's exit ends the session,
-    which would hand the client the unexplained reset this whole answer exists to avoid.
+    which would hand the client the unexplained reset this whole answer exists to avoid. Releasing
+    the wait is only half of that: the same exit also readies the future the runtime races the
+    message loop against, so the race is **biased** toward the loop. Otherwise the two become
+    ready together and an unbiased choice discards the refusal about half the time, which is the
+    reset again by a narrower path.
   - **The abandoned-hold courtesy notice budgets ordering and writing apart.** That notice already
     runs under a 5-second bound so a half-closed client cannot pin the session. The same half-close
     is what stalls the ordering wait, so the wait is capped at a 1-second slice of that budget and
