@@ -1091,12 +1091,21 @@ mod tests {
         frames
     }
 
-    /// The pipelined pair the client sends in both ordering tests: an allowed
+    /// The pipelined pair the client sends in the ordering tests: an allowed
     /// statement the database is still working on, then a denied one.
     fn pipelined_select_then_drop() -> Vec<u8> {
         let mut frames = simple_query("SELECT pg_sleep(1)");
         frames.extend_from_slice(&simple_query("DROP TABLE users"));
         frames
+    }
+
+    /// A `P` (Parse) frame carrying `query`, as the client puts it on the wire.
+    fn parse_frame(name: &str, query: &str) -> Vec<u8> {
+        let payload = parse_payload(name, query);
+        let mut frame = vec![b'P'];
+        frame.extend_from_slice(&((4 + payload.len()) as u32).to_be_bytes());
+        frame.extend_from_slice(&payload);
+        frame
     }
 
     fn startup_packet(code: u32, body: &[u8]) -> Vec<u8> {
@@ -1508,30 +1517,170 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
-    async fn a_refusal_is_not_wedged_by_a_database_that_never_answers() {
+    async fn a_silent_database_costs_one_stall_window_and_is_then_written_off() {
         let state = GatewayState::new(deny_drop_policy());
         // Sitting behind an earlier response must not become a way to lose the
-        // refusal altogether. The relay is alive but the database says nothing,
-        // so the `SELECT`'s `ReadyForQuery` never arrives; the barrier gives up
-        // after `REFUSAL_ORDER_TIMEOUT` and answers anyway.
-        let mut client = std::io::Cursor::new(pipelined_select_then_drop());
+        // refusal altogether: the relay is alive but the database says nothing,
+        // so the `SELECT`'s `ReadyForQuery` never arrives and the wait expires.
+        // The answer that never came is then written off — the counters are
+        // monotonic, so leaving the skew would make the *second* `DROP` pay the
+        // same window again, and every refusal after it for the whole session.
+        let mut frames = pipelined_select_then_drop();
+        frames.extend_from_slice(&simple_query("DROP TABLE accounts"));
+        let mut client = std::io::Cursor::new(frames);
         let mut upstream: Vec<u8> = Vec::new();
         let (link, mut peer) = loopback_link().await;
         let (_database, _relay) = loopback_relay(link.clone()).await;
 
+        let started = tokio::time::Instant::now();
         let facts = Facts::default();
         let session = message_loop(&state, &mut client, &mut upstream, &link, &facts);
         let client_view = async {
-            assert_eq!(
-                read_message_tag(&mut peer).await,
-                b'E',
-                "a silent database costs the refusal its ordering, never the client its answer"
-            );
-            assert_eq!(read_message_tag(&mut peer).await, b'Z');
+            for _ in 0..2 {
+                assert_eq!(
+                    read_message_tag(&mut peer).await,
+                    b'E',
+                    "a silent database costs the refusal its ordering, never the client its answer"
+                );
+                assert_eq!(read_message_tag(&mut peer).await, b'Z');
+            }
         };
 
         let (drain, ()) = tokio::join!(session, client_view);
-        assert!(drain.unwrap(), "the session survives the late refusal");
+        assert!(drain.unwrap(), "the session survives the late refusals");
+        assert_eq!(
+            started.elapsed(),
+            REFUSAL_ORDER_STALL_TIMEOUT,
+            "one stall window for the whole session, not one per refusal"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_pipeline_that_keeps_moving_never_hits_the_stall_bound() {
+        // The bound is on the stall, not on the wait. Two answers are owed and
+        // each arrives just inside a window, so every delivery buys another one
+        // and the barrier releases on the second answer instead of expiring —
+        // a database working steadily through a statement that outlives one
+        // window is ordered properly rather than cut off.
+        //
+        // Driven straight against the link: a real socket in the wait path
+        // would let the paused clock jump to the stall deadline before the
+        // relay's read completes, and the test would measure the bound it is
+        // meant to prove is not reached.
+        let (link, _peer) = loopback_link().await;
+        link.forwarded_sync_point();
+        link.forwarded_sync_point();
+        let step = REFUSAL_ORDER_STALL_TIMEOUT - std::time::Duration::from_secs(5);
+
+        let started = tokio::time::Instant::now();
+        let answers = async {
+            for _ in 0..2 {
+                tokio::time::sleep(step).await;
+                link.delivered_sync_point();
+            }
+        };
+        tokio::join!(link.await_forwarded_responses(), answers);
+
+        assert_eq!(
+            started.elapsed(),
+            2 * step,
+            "the wait ended on the last answer, not on the stall bound"
+        );
+        assert_eq!(
+            link.forwarded.load(Ordering::Relaxed),
+            2,
+            "nothing was written off — every answer arrived"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_relay_that_stops_releases_the_refusal_waiting_behind_it() {
+        let state = GatewayState::new(deny_drop_policy());
+        // The database goes away while the refusal is queued behind its answer.
+        // Nothing is left to order against, so the wait must end at once: a
+        // refusal still parked here is cancelled unwritten when the relay's exit
+        // ends the session, and a client whose own socket is fine reads an
+        // unexplained close instead of its 42501 (ADR-0007).
+        let mut client = std::io::Cursor::new(pipelined_select_then_drop());
+        let mut upstream: Vec<u8> = Vec::new();
+        let (link, mut peer) = loopback_link().await;
+        let (database, _relay) = loopback_relay(link.clone()).await;
+
+        let facts = Facts::default();
+        let session = message_loop(&state, &mut client, &mut upstream, &link, &facts);
+        let client_view = async {
+            // Nothing may arrive while the database is merely quiet...
+            let mut early = [0u8; 1];
+            assert!(
+                tokio::time::timeout(
+                    std::time::Duration::from_millis(200),
+                    peer.read_exact(&mut early),
+                )
+                .await
+                .is_err(),
+                "the refusal overtook the response to the statement before it"
+            );
+            // ...but the moment the database is gone, the answer goes out.
+            drop(database);
+            assert_eq!(read_message_tag(&mut peer).await, b'E');
+            assert_eq!(read_message_tag(&mut peer).await, b'Z');
+        };
+
+        let (drain, ()) = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            tokio::join!(session, client_view)
+        })
+        .await
+        .expect("the refusal is written as soon as the relay ends, not after the stall bound");
+        assert!(drain.unwrap());
+    }
+
+    #[tokio::test]
+    async fn a_refusal_waits_for_an_extended_protocol_batch_ended_by_sync() {
+        let state = GatewayState::new(deny_drop_policy());
+        // The path every driver using prepared statements takes. `Parse` earns
+        // no `ReadyForQuery` of its own — the batch's `Sync` does — so the
+        // refusal has to wait behind the `Sync`, not behind the `Parse`.
+        let mut frames = parse_frame("stmt", "SELECT 1");
+        frames.extend_from_slice(&[b'S', 0, 0, 0, 4]);
+        frames.extend_from_slice(&simple_query("DROP TABLE users"));
+        let mut client = std::io::Cursor::new(frames);
+        let mut upstream: Vec<u8> = Vec::new();
+        let (link, mut peer) = loopback_link().await;
+        let (mut database, _relay) = loopback_relay(link.clone()).await;
+
+        let facts = Facts::default();
+        let session = message_loop(&state, &mut client, &mut upstream, &link, &facts);
+        let client_view = async {
+            let mut early = [0u8; 1];
+            assert!(
+                tokio::time::timeout(
+                    std::time::Duration::from_millis(200),
+                    peer.read_exact(&mut early),
+                )
+                .await
+                .is_err(),
+                "the refusal overtook the batch it was pipelined behind"
+            );
+
+            // `ParseComplete`, then the `Sync`'s `ReadyForQuery`.
+            database.write_all(&[b'1', 0, 0, 0, 4]).await.unwrap();
+            database.write_all(&[b'Z', 0, 0, 0, 5, b'I']).await.unwrap();
+
+            let seen = [
+                read_message_tag(&mut peer).await,
+                read_message_tag(&mut peer).await,
+                read_message_tag(&mut peer).await,
+                read_message_tag(&mut peer).await,
+            ];
+            assert_eq!(seen, [b'1', b'Z', b'E', b'Z']);
+        };
+
+        let (drain, ()) = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            tokio::join!(session, client_view)
+        })
+        .await
+        .expect("the session finished");
+        assert!(drain.unwrap());
     }
 
     #[tokio::test]
