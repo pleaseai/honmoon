@@ -35,7 +35,7 @@ cargo run -p honmoon-cli -- gateway --config policies/agent.yaml --addr 127.0.0.
 
 | Path | What |
 |------|------|
-| `crates/honmoon-core/` | Policy model, `decide_explained()` engine, `audit` log, protocol parsers. **Transport-agnostic — no I/O.** |
+| `crates/honmoon-core/` | Policy model, `decide_explained()` / `decide_pii_audit_only()` engine, `audit` log, protocol parsers. **Transport-agnostic — no I/O.** |
 | `crates/honmoon-proxy/` | tokio CONNECT egress proxy + `approval` registry (pause hold). |
 | `crates/honmoon-mgmt/` | In-process axum management API + embedded dashboard (`rust-embed`). |
 | `crates/honmoon-cli/` | `honmoon` binary (`run` / `gateway` / `join`). |
