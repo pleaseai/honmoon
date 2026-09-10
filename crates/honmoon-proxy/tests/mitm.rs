@@ -738,3 +738,87 @@ fn detect_mode_enforces_a_kubernetes_endpoint_rule() {
             && event.facts.endpoint.as_deref() == Some("k8s-prod")
     }));
 }
+
+/// The `k8s_policy` shape with a `pii.count == 0 -> allow` exemption in front of
+/// the deny. A body carrying PII stops the exemption from matching, so the
+/// endpoint-bound deny is what the policy returns — and it owes nothing to the
+/// summary it never read.
+fn allow_clean_then_k8s_policy(host: &str, port: u16) -> String {
+    format!(
+        "\
+egress:
+  default: allow
+endpoints:
+  k8s-prod: {{ host: {host}, port: {port}, protocol: kubernetes }}
+rules:
+  - name: allow-clean
+    endpoint: '*'
+    condition: \"pii.count == 0\"
+    verdict: allow
+  - name: k8s-no-secret-delete
+    endpoint: k8s-prod
+    condition: \"k8s.resource == 'secrets' && k8s.verb == 'delete'\"
+    verdict: deny
+"
+    )
+}
+
+fn k8s_request_with_rrn(method: &str, path: &str) -> Vec<u8> {
+    let body = format!("{{\"note\":\"rrn={VALID_RRN}\"}}");
+    format!(
+        "{method} {path} HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len()
+    )
+    .into_bytes()
+}
+
+/// Delete a secret on `k8s-prod` with a PII-carrying body, under the
+/// exemption-first policy.
+fn secret_delete_with_pii_body(pii_mode: PiiMode) -> (String, Arc<AuditLog>) {
+    let upstream = start_hanging_upstream();
+    let (response, audit, _) = intercepted_request(
+        &allow_clean_then_k8s_policy("localhost", upstream),
+        pii_mode,
+        upstream,
+        k8s_request_with_rrn("DELETE", "/api/v1/namespaces/prod/secrets/db"),
+    );
+    (response, audit)
+}
+
+/// Regression for #99: detect mode used to re-decide the whole policy with the
+/// summary cleared, which let the `allow-clean` rule match and silently dropped
+/// the Kubernetes deny. Per-rule attribution keeps the deny — it never read the
+/// summary, so detect mode has nothing to hold back.
+#[test]
+fn detect_mode_enforces_an_endpoint_deny_behind_an_allow_clean_rule() {
+    let (response, audit) = secret_delete_with_pii_body(PiiMode::Detect);
+
+    assert!(
+        response.starts_with("HTTP/1.1 403"),
+        "an endpoint deny must survive an allow-clean rule in detect mode: {response:?}"
+    );
+    let events = audit.recent(50);
+    assert!(events.iter().any(|event| {
+        event.decision == Decision::Denied
+            && event.rule.as_deref() == Some("k8s-no-secret-delete")
+            && event.facts.endpoint.as_deref() == Some("k8s-prod")
+    }));
+}
+
+/// The mode the detect path is measured against: block mode denies the same
+/// request, so the two modes agree on a verdict PII did not cause.
+#[test]
+fn block_mode_enforces_an_endpoint_deny_behind_an_allow_clean_rule() {
+    let (response, audit) = secret_delete_with_pii_body(PiiMode::Block);
+
+    assert!(
+        response.starts_with("HTTP/1.1 403"),
+        "expected an inline 403 before the upstream leg: {response:?}"
+    );
+    let events = audit.recent(50);
+    assert!(events.iter().any(|event| {
+        event.decision == Decision::Denied
+            && event.rule.as_deref() == Some("k8s-no-secret-delete")
+            && event.facts.endpoint.as_deref() == Some("k8s-prod")
+    }));
+}

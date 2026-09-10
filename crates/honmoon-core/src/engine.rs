@@ -369,6 +369,108 @@ mod tests {
         assert_eq!(super::decide(&policy, &clean), Verdict::Allow);
     }
 
+    /// A policy that exempts clean traffic before an `endpoints`-bound deny.
+    /// The deny reads only Kubernetes facts, so detect mode enforces it: the
+    /// allow-clean rule failing to match is not the same as PII causing the
+    /// deny (regression for the residual left by #88).
+    #[test]
+    fn endpoint_deny_after_an_allow_clean_rule_survives_pii_audit_only() {
+        use crate::{K8sFacts, detect_pii};
+
+        let policy = Policy::from_yaml(
+            "egress:\n  default: allow\nrules:\n  \
+             - name: allow-clean\n    endpoint: '*'\n    condition: \"pii.count == 0\"\n    verdict: allow\n  \
+             - name: k8s-no-secret-delete\n    endpoint: k8s-prod\n    condition: \"k8s.resource == 'secrets' && k8s.verb == 'delete'\"\n    verdict: deny\n",
+        )
+        .unwrap();
+
+        let leak = Facts {
+            endpoint: Some("k8s-prod".into()),
+            k8s: Some(K8sFacts {
+                verb: "delete".into(),
+                resource: "secrets".into(),
+                ..Default::default()
+            }),
+            pii: detect_pii(r#"{"user":{"rrn":"670125-1230644"}}"#),
+            ..Default::default()
+        };
+        // With findings the allow-clean rule cannot match, so the deny wins —
+        // and it stands with PII held back, because it never read the summary.
+        assert_eq!(super::decide(&policy, &leak), Verdict::Deny);
+        assert_eq!(
+            super::decide_pii_audit_only(&policy, &leak).verdict,
+            Verdict::Deny
+        );
+
+        // A clean body takes the exemption in both readings.
+        let clean = Facts {
+            pii: None,
+            ..leak.clone()
+        };
+        assert_eq!(super::decide(&policy, &clean), Verdict::Allow);
+        assert_eq!(
+            super::decide_pii_audit_only(&policy, &clean).verdict,
+            Verdict::Allow
+        );
+    }
+
+    /// The other half of the attribution: a verdict the summary *did* cause is
+    /// held back, and the remaining rules still decide rather than the walk
+    /// stopping at the skipped rule.
+    #[test]
+    fn pii_caused_verdict_is_held_back_and_later_rules_decide() {
+        use crate::{K8sFacts, detect_pii};
+
+        let policy = Policy::from_yaml(
+            "egress:\n  default: allow\nrules:\n  \
+             - name: block-pii\n    endpoint: '*'\n    condition: \"pii.count > 0\"\n    verdict: deny\n  \
+             - name: review-prod-delete\n    endpoint: k8s-prod\n    condition: \"k8s.verb == 'delete'\"\n    verdict: pause\n",
+        )
+        .unwrap();
+
+        let leak = Facts {
+            endpoint: Some("k8s-prod".into()),
+            k8s: Some(K8sFacts {
+                verb: "delete".into(),
+                resource: "secrets".into(),
+                ..Default::default()
+            }),
+            pii: detect_pii(r#"{"user":{"rrn":"670125-1230644"}}"#),
+            ..Default::default()
+        };
+        let outcome = super::decide_explained(&policy, &leak);
+        assert_eq!(outcome.verdict, Verdict::Deny);
+        assert_eq!(outcome.rule.as_deref(), Some("block-pii"));
+
+        let enforceable = super::decide_pii_audit_only(&policy, &leak);
+        assert_eq!(enforceable.verdict, Verdict::Pause);
+        assert_eq!(enforceable.rule.as_deref(), Some("review-prod-delete"));
+    }
+
+    /// Holding PII back must never *add* a restriction: an allow granted on the
+    /// strength of a finding (a low-severity exemption) still stands, so detect
+    /// mode cannot deny what block mode forwards.
+    #[test]
+    fn pii_caused_allow_is_not_held_back() {
+        use crate::detect_pii;
+
+        let policy = Policy::from_yaml(
+            "egress:\n  default: deny\nrules:\n  \
+             - name: allow-low-severity\n    endpoint: '*'\n    condition: \"pii.count > 0 && pii.max_severity < 3\"\n    verdict: allow\n",
+        )
+        .unwrap();
+
+        let low = Facts {
+            pii: detect_pii(r#"{"ip":"10.0.0.1"}"#),
+            ..Default::default()
+        };
+        assert_eq!(super::decide(&policy, &low), Verdict::Allow);
+        assert_eq!(
+            super::decide_pii_audit_only(&policy, &low).verdict,
+            Verdict::Allow
+        );
+    }
+
     /// Guards the shipped example policy against parser/condition drift: the
     /// real `policies/agent.yaml` rules must fire for the facts our parsers emit.
     #[test]
