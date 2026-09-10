@@ -1,0 +1,43 @@
+.claude/agent-memory/review-review-comment-analyzer/honmoon-approval-hold-docs.md
+  s_4e2aa5e2a3bc91::t_07dc103ad30618 1-33
+crates/honmoon-proxy/src/runtime/postgres.rs
+  s_4e2aa5e2a3bc91::t_aab020e2771142 939-966,973-976,978,981-984,986-987,991-997,1003,1014-1015
+  s_4e2aa5e2a3bc91::t_86ad638522a7c3 998-1001,1006-1012
+  s_4e2aa5e2a3bc91::t_0fdd982a9c8801 979-980
+  s_4e2aa5e2a3bc91::t_8617f2716d47bc 440,444,456,473,480,487,523,649-653
+  s_4e2aa5e2a3bc91::t_274642fff1e37e 967-972,977,985,988-990,1002,1004-1005,1013
+  s_4e2aa5e2a3bc91::t_b19f55dea28779 68-69,71-79,327,331-340,344-348,355-363,365-376,395-398
+  s_4e2aa5e2a3bc91::t_a2a88bf2e62da1 904-909
+.claude/agent-memory/review-review-pr-test-analyzer/postgres_held_reader_cursor_races.md
+  s_4e2aa5e2a3bc91::t_8935c80ad9195f 1-37
+.claude/agent-memory/review-review-security-reviewer/approval-hold-abandonment-model.md
+  s_4e2aa5e2a3bc91::t_73eb1a6e3efb31 1-25
+.claude/agent-memory/review-review-security-reviewer/MEMORY.md
+  s_4e2aa5e2a3bc91::t_73eb1a6e3efb31 3
+crates/honmoon-proxy/src/approval.rs
+  s_4e2aa5e2a3bc91::t_86ad638522a7c3 206-209
+  s_4e2aa5e2a3bc91::t_ce33367170bbca 509-547
+  s_4e2aa5e2a3bc91::t_e8f06a2da01549 184-188,203-205,306-309,317,324-335
+.claude/agent-memory/review-review-pr-test-analyzer/MEMORY.md
+  s_4e2aa5e2a3bc91::t_5f89ecf8289dd7 2
+.claude/agent-memory/review-review-comment-analyzer/MEMORY.md
+  s_4e2aa5e2a3bc91::t_82aaa6b7154d3b 1
+.please/docs/decisions/0007-inline-postgresql-runtime-semantics.md
+  s_4e2aa5e2a3bc91::t_86ad638522a7c3 118-133
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "8fb27cdf1b179d9cbb8bc1f45e075c2ed529a0b5",
+  "prompts": {},
+  "sessions": {
+    "s_4e2aa5e2a3bc91": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "706b0600-0545-48ab-adbd-2d6c5ddb7d40",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
