@@ -27,4 +27,7 @@ tokio-rustls = "0.26"
 rustls-pemfile = "2"
 # Compress test bodies for the Content-Encoding inspection tests.
 flate2.workspace = true
+# Bind a client socket to a fixed port (and RST-close it) so a test can present
+# the proxy with a reused client SocketAddr.
+socket2 = "0.6"
 serde_json.workspace = true

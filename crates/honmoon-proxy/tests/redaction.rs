@@ -20,6 +20,11 @@ const RRN: &str = "670125-1230644";
 const SALT: &[u8] = b"proxy-wire-redaction-test-salt";
 const SIGV4: &str = "AWS4-HMAC-SHA256 Credential=AKIA/20260907/us-east-1/s3/aws4_request, \
      SignedHeaders=host;x-amz-date, Signature=abc";
+/// A SigV4 credential whose `SignedHeaders` list covers the headers the
+/// redaction rewrite has to re-frame — what an AWS SDK upload signs.
+const SIGV4_SIGNED_FRAMING: &str = "AWS4-HMAC-SHA256 \
+     Credential=AKIA/20260907/us-east-1/s3/aws4_request, \
+     SignedHeaders=content-encoding;content-length;host;x-amz-date, Signature=abc";
 
 const MAX_BODY: usize = 2 * 1024 * 1024;
 
@@ -1010,4 +1015,99 @@ fn unsigned_payload_sigv4_request_keeps_client_accept_encoding_while_redacted() 
     assert!(!text.contains(SECRET));
     assert!(text.contains("<<hs:"));
     assert_eq!(mappings.unwrap().len(), 1);
+}
+
+// `UNSIGNED-PAYLOAD` leaves the body redactable, but SigV4 signs headers even
+// when it does not sign the payload — and re-framing the redacted body rewrites
+// `Content-Length`, which an SDK upload lists in `SignedHeaders`. Forwarding it
+// would break the signature just as surely as rewriting a signed body, so it
+// takes the same fail-closed decision.
+#[test]
+fn unsigned_payload_upload_signing_content_length_is_blocked_by_default() {
+    let (upstream, captured) = start_upstream(ResponseMode::Static(b"ok".to_vec()));
+    let (proxy, mappings) = start_proxy(true);
+    let body = format!("key={SECRET}");
+
+    let response = proxy_request(
+        proxy,
+        upstream,
+        body.as_bytes(),
+        &[
+            ("Authorization", SIGV4_SIGNED_FRAMING),
+            ("x-amz-content-sha256", "UNSIGNED-PAYLOAD"),
+        ],
+    );
+    let headers = response_headers(&response);
+    assert!(response.starts_with(b"HTTP/1.1 403"));
+    assert_eq!(
+        header_value(&headers, "x-honmoon-reason"),
+        Some("signed-header-redaction")
+    );
+    let text = String::from_utf8_lossy(&response);
+    assert!(text.contains("content-length"));
+    // The request carries no Content-Encoding, so the rewrite would not drop
+    // one and the signature over it is not what breaks.
+    assert!(!text.contains("content-encoding"));
+    assert!(text.contains("--signed-body forward"));
+    assert!(captured.recv_timeout(Duration::from_millis(250)).is_err());
+    assert_eq!(mappings.unwrap().len(), 0);
+}
+
+// Dropping the client's `Content-Encoding` breaks a signature over it the same
+// way, and the block message names every header the rewrite would change.
+#[test]
+fn unsigned_payload_upload_signing_content_encoding_is_blocked_by_default() {
+    use std::io::Write as _;
+
+    let (upstream, captured) = start_upstream(ResponseMode::Static(b"ok".to_vec()));
+    let (proxy, mappings) = start_proxy(true);
+    let original = format!("compressed key={SECRET}");
+    let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+    encoder.write_all(original.as_bytes()).unwrap();
+    let compressed = encoder.finish().unwrap();
+
+    let response = proxy_request(
+        proxy,
+        upstream,
+        &compressed,
+        &[
+            ("Authorization", SIGV4_SIGNED_FRAMING),
+            ("x-amz-content-sha256", "UNSIGNED-PAYLOAD"),
+            ("Content-Encoding", "gzip"),
+        ],
+    );
+    assert!(response.starts_with(b"HTTP/1.1 403"));
+    let text = String::from_utf8_lossy(&response);
+    assert!(text.contains("content-length"));
+    assert!(text.contains("content-encoding"));
+    assert!(captured.recv_timeout(Duration::from_millis(250)).is_err());
+    assert_eq!(mappings.unwrap().len(), 0);
+}
+
+// `forward` is the same escape hatch it is for a body-signed request: the
+// client's bytes and framing headers reach the upstream exactly as signed, and
+// no mapping is recorded for a substitution that never happened.
+#[test]
+fn header_signed_request_is_forwarded_unredacted_in_forward_mode() {
+    let (upstream, captured) = start_upstream(ResponseMode::Static(b"ok".to_vec()));
+    let (proxy, mappings) = start_proxy_with_signed_body(true, SignedBodyMode::Forward);
+    let body = format!("key={SECRET}");
+
+    let response = proxy_request(
+        proxy,
+        upstream,
+        body.as_bytes(),
+        &[
+            ("Authorization", SIGV4_SIGNED_FRAMING),
+            ("x-amz-content-sha256", "UNSIGNED-PAYLOAD"),
+        ],
+    );
+    assert!(response.starts_with(b"HTTP/1.1 200"));
+    let forwarded = captured.recv_timeout(Duration::from_secs(5)).unwrap();
+    assert_eq!(forwarded.body, body.as_bytes());
+    assert_eq!(
+        header_value(&forwarded.headers, "content-length"),
+        Some(body.len().to_string().as_str())
+    );
+    assert_eq!(mappings.unwrap().len(), 0);
 }

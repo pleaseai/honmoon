@@ -2,3 +2,5 @@
 - [Hook machine-salt security model](hook-salt-security-model.md) — how honmoon-cli's HMAC salt is stored, its 0600 invariant, and the fail-open fallback
 - [Detect-mode PII attribution](detect-mode-pii-attribution.md) — decide_pii_audit_only skip model; the Allow carve-out and Pause-skip invariants to re-check
 - [Postgres refusal ordering barrier](postgres-refusal-ordering-barrier.md) — forwarded/delivered sync-point invariant and its four known residual gaps
+- [MITM tunnel authorization model](mitm-tunnel-authorization-model.md) — shape-3 recognition rides the hudsucker handler clone lineage; host+port both load-bearing for h2
+- [Signed-body detection invariants](signed-body-detection-invariants.md) — over-inclusion in signed_body.rs leaks under --signed-body forward; each detector needs real scheme evidence (X-Amz-Algorithm gate)

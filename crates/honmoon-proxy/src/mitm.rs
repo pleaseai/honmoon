@@ -16,11 +16,11 @@
 //!    [`PiiMode`](crate::gateway::PiiMode).
 //!
 //! Whether a request is an inner request (shape 3) is decided by the
-//! [`TunnelRegistry`] — the client's socket must have an authorized CONNECT to
-//! that host — **not** by the URI scheme: a client could send an absolute-form
-//! `GET https://…` without CONNECT (or spoof `:authority` over h2), and trusting
-//! the scheme would let it skip the host gate. Unrecognized requests are gated
-//! like shape 2.
+//! [`AuthorizedTunnel`] this handler clone carries — the connection it arrived
+//! on must have made an authorized CONNECT to that host — **not** by the URI
+//! scheme: a client could send an absolute-form `GET https://…` without CONNECT
+//! (or spoof `:authority` over h2), and trusting the scheme would let it skip
+//! the host gate. Unrecognized requests are gated like shape 2.
 //!
 //! Content inspection defaults to **detect-only** for backward compatibility:
 //! PII findings and the policy's would-be verdict are audited, then forwarded.
@@ -36,8 +36,6 @@
 //! [`InterceptPolicy`](crate::gateway::InterceptPolicy).
 
 use std::collections::{BTreeSet, HashMap};
-use std::net::SocketAddr;
-use std::sync::{Arc, Mutex};
 
 use honmoon_core::{
     AuditDraft, DEFAULT_MIN_PII_SEVERITY, Decision, EndpointProtocol, Facts, FactsSummary,
@@ -58,13 +56,10 @@ use crate::gateway::{
     GatewayState, InterceptPolicy, PiiMode, SignedBodyMode, authority_port, canonical_host,
 };
 use crate::signed_body::{
-    BODY_DIGEST_HEADERS, SignedBodyScheme, authentication_signs_headers, body_signature_scheme,
+    BODY_DIGEST_HEADERS, REWRITTEN_FRAMING_HEADERS, SignedBodyScheme, authentication_signs_headers,
+    body_signature_scheme, signed_headers_among,
 };
 
-/// Backstop cap on tracked tunnels. Entries are overwritten per client socket
-/// but never individually removed (hudsucker exposes no close event), so this
-/// bounds memory under long-running / hostile traffic.
-const MAX_TRACKED_TUNNELS: usize = 65_536;
 /// Names why honmoon itself produced a response, so a client (or an agent
 /// reading the error) can tell it apart from an upstream failure.
 const HONMOON_REASON: header::HeaderName = header::HeaderName::from_static("x-honmoon-reason");
@@ -73,55 +68,54 @@ const HTTPS_PORT: u16 = 443;
 /// Default port for a cleartext forward-proxy request without one.
 const HTTP_PORT: u16 = 80;
 
-/// CONNECT-authorized tunnels, keyed by the client socket address.
+/// The CONNECT tunnel the connection this handler clone serves is authorized
+/// for.
 ///
-/// hudsucker forces each HTTP/1.x inner request's URI authority to its tunnel's
-/// CONNECT authority, so an inner request is recognized by (client addr → host)
-/// matching an authorized CONNECT. Anything else claiming `https://` (an
-/// absolute-form request without CONNECT, an h2 `:authority` mismatch) is not
-/// recognized and gets host-gated like a cleartext request.
+/// Authorization belongs to an accepted connection, not to an address. The
+/// handler is cloned per request off a per-connection prototype; hudsucker then
+/// moves the clone that handled the CONNECT into the task that owns the tunnel
+/// and serves every decrypted inner request from a clone of *that* instance
+/// (`InternalProxy::process_connect` → `serve_stream`). Recording the
+/// authorized target on the handler therefore reaches exactly this tunnel's
+/// inner requests and dies with the tunnel — where a registry keyed by the
+/// client `SocketAddr` outlived the connection that earned it and lent its
+/// target to whatever later connection reused the source port (#100).
 ///
-/// The host half of that key is load-bearing, not redundant with the client
-/// address: hudsucker rewrites the authority for HTTP/1.0 and HTTP/1.1 only
-/// (`serve_stream`), and forwards every request by re-issuing it through its own
-/// client at the request's URI rather than piping bytes down the CONNECT tunnel
-/// (`proxy`). So an h2 `:authority` that differs from the CONNECT target is
-/// where the request actually goes, and dropping the host filter to "trust the
-/// recorded tunnel target" would evaluate egress against a host the bytes never
-/// reach while delivering them to one that was never gated.
-#[derive(Default)]
-struct TunnelRegistry {
-    tunnels: Mutex<HashMap<SocketAddr, (String, u16)>>,
+/// A clone that carries no tunnel (a fresh connection, a plain forward-proxy
+/// request) is host-gated, so losing this state can only re-gate a request, it
+/// can never skip a gate.
+#[derive(Clone)]
+struct AuthorizedTunnel {
+    host: String,
+    port: u16,
 }
 
-impl TunnelRegistry {
-    /// Record that `addr` holds an authorized CONNECT tunnel to `host:port`.
-    fn authorize(&self, addr: SocketAddr, host: String, port: u16) {
-        let mut tunnels = self.tunnels.lock().expect("tunnel registry poisoned");
-        if tunnels.len() >= MAX_TRACKED_TUNNELS && !tunnels.contains_key(&addr) {
-            // Fail safe: dropping entries only re-gates inner requests (their
-            // hosts were already allowed once), it never skips a gate.
-            tracing::warn!("tunnel registry full; clearing (inner requests will be re-gated)");
-            tunnels.clear();
-        }
-        tunnels.insert(addr, (host, port));
-    }
-
-    /// Whether `addr` holds an authorized CONNECT tunnel to exactly
-    /// `host:port`. A request that does not match still needs the host gate.
+impl AuthorizedTunnel {
+    /// Whether this tunnel authorizes a request to exactly `host:port`.
     ///
-    /// Both halves are compared. Matching on the host alone would hand the
-    /// CONNECT port back to an h2 request that named a different one: a client
-    /// tunnelled to `cluster.example:443` could send
+    /// hudsucker forces each HTTP/1.x inner request's URI authority to its
+    /// tunnel's CONNECT authority, so a genuine tunnelled request matches by
+    /// construction. Anything else claiming `https://` (an absolute-form
+    /// request without CONNECT, an h2 `:authority` mismatch) does not match and
+    /// gets host-gated like a cleartext request.
+    ///
+    /// The host is load-bearing, not redundant with the connection: hudsucker
+    /// rewrites the authority for HTTP/1.0 and HTTP/1.1 only (`serve_stream`),
+    /// and forwards every request by re-issuing it through its own client at
+    /// the request's URI rather than piping bytes down the CONNECT tunnel
+    /// (`proxy`). So an h2 `:authority` that differs from the CONNECT target is
+    /// where the request actually goes, and trusting the recorded tunnel target
+    /// would evaluate egress against a host the bytes never reach while
+    /// delivering them to one that was never gated.
+    ///
+    /// The port is compared for the same reason. Matching on the host alone
+    /// would hand the CONNECT port back to an h2 request that named a different
+    /// one: a client tunnelled to `cluster.example:443` could send
     /// `:authority: cluster.example:6443`, be evaluated at 443 (resolving no
     /// endpoint and parsing no `k8s` facts), and still have hudsucker forward
     /// it to 6443 — past a deny rule bound to that endpoint.
-    fn is_authorized(&self, addr: &SocketAddr, host: &str, port: u16) -> bool {
-        self.tunnels
-            .lock()
-            .expect("tunnel registry poisoned")
-            .get(addr)
-            .is_some_and(|(tunnel_host, tunnel_port)| tunnel_host == host && *tunnel_port == port)
+    fn authorizes(&self, host: &str, port: u16) -> bool {
+        self.host == host && self.port == port
     }
 }
 
@@ -154,16 +148,33 @@ enum Gate {
 #[derive(Clone)]
 pub struct HonmoonHandler {
     state: GatewayState,
-    /// Shared across per-connection clones (all derive from one prototype).
-    tunnels: Arc<TunnelRegistry>,
+    /// Set on the clone that handles an allowed CONNECT, and inherited by the
+    /// clones hudsucker serves that tunnel's inner requests from. `None` on
+    /// every clone taken from the per-connection prototype, so authorization
+    /// cannot outlive the connection that earned it.
+    tunnel: Option<AuthorizedTunnel>,
 }
 
 impl HonmoonHandler {
     pub fn new(state: GatewayState) -> Self {
         Self {
             state,
-            tunnels: Arc::new(TunnelRegistry::default()),
+            tunnel: None,
         }
+    }
+
+    /// Record that the connection this clone serves holds an authorized CONNECT
+    /// tunnel to `host:port`.
+    fn authorize_tunnel(&mut self, host: String, port: u16) {
+        self.tunnel = Some(AuthorizedTunnel { host, port });
+    }
+
+    /// Whether this clone's tunnel authorizes a request to exactly `host:port`.
+    /// A request that does not match still needs the host gate.
+    fn tunnel_authorizes(&self, host: &str, port: u16) -> bool {
+        self.tunnel
+            .as_ref()
+            .is_some_and(|tunnel| tunnel.authorizes(host, port))
     }
 
     /// Resolve the policy endpoint declared for the `(host, port)` the client
@@ -487,6 +498,52 @@ impl HonmoonHandler {
         let labels = outcome.labels();
         let bytes = hudsucker::hyper::body::Bytes::from(outcome.text);
         let length = bytes.len();
+
+        // SigV4 and its peers sign *headers* even when the payload is out of
+        // the signature (`UNSIGNED-PAYLOAD`), and re-framing the rewritten body
+        // changes headers a `SignedHeaders` list routinely names — an AWS SDK
+        // upload signs `content-length`. Breaking the signature that way earns
+        // the same opaque upstream rejection as rewriting a signed body, so it
+        // takes the same `--signed-body` decision. Only the headers this
+        // rewrite would actually change are asked about: a signed
+        // `Content-Encoding` the request never sent, or a signed
+        // `Content-Length` the redacted body happens to match, survives it.
+        let reframed = reframed_headers(request.headers(), length);
+        let broken = signed_headers_among(request.headers(), request.uri(), &reframed);
+        if !broken.is_empty() {
+            let signed = broken
+                .iter()
+                .map(header::HeaderName::as_str)
+                .collect::<Vec<_>>()
+                .join(", ");
+            return match redaction.signed_body {
+                SignedBodyMode::Forward => {
+                    tracing::warn!(
+                        domain = %host,
+                        headers = %signed,
+                        "wire redaction bypassed for header-signed request (fail open)"
+                    );
+                    request.into()
+                }
+                SignedBodyMode::Block => {
+                    tracing::warn!(
+                        domain = %host,
+                        headers = %signed,
+                        "header-signed request blocked: re-framing the redacted body would \
+                         invalidate its signature"
+                    );
+                    self.state.audit.record(AuditDraft {
+                        decision: Decision::Denied,
+                        verdict: Verdict::Deny,
+                        rule: Some("wire-redaction/signed-headers".to_owned()),
+                        facts: summary.clone(),
+                        approval_id: None,
+                    });
+                    signed_headers_response(&signed)
+                }
+            };
+        }
+
         redaction.mappings.record(outcome.mapping);
         tracing::info!(
             domain = %host,
@@ -767,7 +824,11 @@ impl HonmoonHandler {
 }
 
 impl HttpHandler for HonmoonHandler {
-    async fn handle_request(&mut self, ctx: &HttpContext, req: Request<Body>) -> RequestOrResponse {
+    async fn handle_request(
+        &mut self,
+        _ctx: &HttpContext,
+        req: Request<Body>,
+    ) -> RequestOrResponse {
         if req.method() == Method::CONNECT {
             let authority = req.uri().authority().map(|a| a.as_str()).unwrap_or("");
             let host = canonical_host(authority);
@@ -780,7 +841,7 @@ impl HttpHandler for HonmoonHandler {
             }
             return match self.host_gate(&host, port, true).await {
                 Gate::Proceed => {
-                    self.tunnels.authorize(ctx.client_addr, host, port);
+                    self.authorize_tunnel(host, port);
                     req.into()
                 }
                 Gate::Block(res) => *res,
@@ -789,19 +850,19 @@ impl HttpHandler for HonmoonHandler {
 
         // A decrypted inner request (injected by hudsucker after TLS
         // termination) was already authorized at its CONNECT — inspect only. It
-        // is recognized by its client socket's authorized tunnel, *not* by the
+        // is recognized by the tunnel this handler clone inherited, *not* by the
         // URI scheme: an absolute-form `https://` request sent without CONNECT
         // must be host-gated like a cleartext `http://` one, or the egress
         // allowlist could be bypassed.
         // hudsucker stamps the CONNECT authority — host *and* port — onto every
         // HTTP/1.x inner request, so a genuine tunnelled request carries its
-        // real destination and matches the registry by construction. An h2
-        // request keeps the client's own `:authority`, which is where hudsucker
-        // will actually forward it, so anything that does not match the tunnel
-        // is gated on the destination it names.
+        // real destination and matches by construction. An h2 request keeps the
+        // client's own `:authority`, which is where hudsucker will actually
+        // forward it, so anything that does not match the tunnel is gated on the
+        // destination it names.
         let host = request_host(&req);
         let port = request_port(&req);
-        if !self.tunnels.is_authorized(&ctx.client_addr, &host, port)
+        if !self.tunnel_authorizes(&host, port)
             && let Gate::Block(res) = self.host_gate(&host, port, false).await
         {
             return *res;
@@ -1075,6 +1136,70 @@ fn redact_json_with_spans(
     }
 }
 
+/// A `403` explaining that redaction cannot re-frame a request whose signature
+/// covers the framing headers the rewrite has to change — the header-signed
+/// counterpart of [`signed_body_response`].
+fn signed_headers_response(signed: &str) -> RequestOrResponse {
+    let reason = format!(
+        "honmoon: this request's signature covers {signed}, and wire redaction would rewrite \
+         those headers to re-frame the redacted body; the upstream would reject the forwarded \
+         request. Remove the sensitive value, or run the gateway with --signed-body forward to \
+         send it unredacted.\n"
+    );
+    let length = reason.len();
+    Response::builder()
+        .status(StatusCode::FORBIDDEN)
+        .header(header::CONTENT_TYPE, "text/plain; charset=utf-8")
+        .header(header::CONTENT_LENGTH, length.to_string())
+        .header(HONMOON_REASON, "signed-header-redaction")
+        .header(header::CONNECTION, "close")
+        .body(Body::from(Full::new(hudsucker::hyper::body::Bytes::from(
+            reason,
+        ))))
+        .expect("static response is valid")
+        .into()
+}
+
+/// Which of [`REWRITTEN_FRAMING_HEADERS`] replacing the body with `new_length`
+/// bytes of identity-encoded text would actually change on the wire.
+///
+/// `Content-Encoding` and `Transfer-Encoding` are only dropped when the request
+/// carries them, and `Content-Length` is only re-framed when what the rewrite
+/// will send differs from what the client sent — a signature over a header the
+/// rewrite leaves as it found it is not broken by the rewrite.
+fn reframed_headers(headers: &header::HeaderMap, new_length: usize) -> Vec<header::HeaderName> {
+    REWRITTEN_FRAMING_HEADERS
+        .into_iter()
+        .filter(|name| {
+            if *name == header::CONTENT_LENGTH {
+                !content_length_survives_rewrite(headers, new_length)
+            } else {
+                headers.contains_key(name)
+            }
+        })
+        .collect()
+}
+
+/// Whether the `Content-Length` the rewrite inserts is byte-identical to the
+/// one the client sent — the only case where a signature over that header
+/// survives.
+///
+/// The comparison is on the wire bytes, not on a parsed length: the rewrite
+/// writes the canonical `new_length.to_string()`, so a non-canonical `012` or
+/// `+12` that parses to the same number is still a different value than the
+/// one the client signed. Absent, repeated, or non-canonical values all count
+/// as changed, which is the fail-closed reading.
+fn content_length_survives_rewrite(headers: &header::HeaderMap, new_length: usize) -> bool {
+    let mut values = headers.get_all(header::CONTENT_LENGTH).iter();
+    let Some(value) = values.next() else {
+        return false;
+    };
+    if values.next().is_some() {
+        return false;
+    }
+    value.as_bytes() == new_length.to_string().as_bytes()
+}
+
 /// A `403` explaining that redaction cannot rewrite a body-signed request, so
 /// the operator sees an actionable local failure instead of an opaque upstream
 /// signature rejection.
@@ -1235,6 +1360,51 @@ mod tests {
         assert_eq!(skipped, 2);
     }
 
+    /// The rewrite only breaks a signature over a framing header it actually
+    /// changes, so only those may take the `--signed-body` decision.
+    #[test]
+    fn only_the_framing_headers_the_rewrite_changes_are_reframed() {
+        let mut headers = header::HeaderMap::new();
+        headers.insert(header::CONTENT_LENGTH, "12".parse().expect("length"));
+        assert!(
+            reframed_headers(&headers, 12).is_empty(),
+            "a redacted body of the same size re-frames nothing"
+        );
+        assert_eq!(reframed_headers(&headers, 20), [header::CONTENT_LENGTH]);
+
+        headers.insert(header::CONTENT_ENCODING, "gzip".parse().expect("encoding"));
+        assert_eq!(
+            reframed_headers(&headers, 12),
+            [header::CONTENT_ENCODING],
+            "a Content-Encoding the request carries is always dropped"
+        );
+
+        // A chunked request declares no length, so the Content-Length the
+        // rewrite adds is a change from what the client sent.
+        let mut chunked = header::HeaderMap::new();
+        chunked.insert(header::TRANSFER_ENCODING, "chunked".parse().expect("te"));
+        assert_eq!(
+            reframed_headers(&chunked, 12),
+            [header::CONTENT_LENGTH, header::TRANSFER_ENCODING]
+        );
+
+        // The rewrite writes the canonical decimal, so a non-canonical value
+        // that parses to the same number is still replaced on the wire — and a
+        // repeated Content-Length is not a value the rewrite preserves either.
+        let mut non_canonical = header::HeaderMap::new();
+        non_canonical.insert(header::CONTENT_LENGTH, "012".parse().expect("length"));
+        assert_eq!(
+            reframed_headers(&non_canonical, 12),
+            [header::CONTENT_LENGTH],
+            "a leading-zero length the rewrite rewrites to `12` is not preserved"
+        );
+
+        let mut repeated = header::HeaderMap::new();
+        repeated.append(header::CONTENT_LENGTH, "12".parse().expect("length"));
+        repeated.append(header::CONTENT_LENGTH, "12".parse().expect("length"));
+        assert_eq!(reframed_headers(&repeated, 12), [header::CONTENT_LENGTH]);
+    }
+
     #[test]
     fn request_port_falls_back_to_the_scheme_default() {
         let with_authority_port = Request::builder()
@@ -1273,27 +1443,71 @@ mod tests {
         assert_eq!(request_port(&spoofed_host_header), HTTP_PORT);
     }
 
+    /// A handler prototype, as [`hudsucker::Proxy`] holds it before cloning one
+    /// per connection.
+    fn handler_prototype() -> HonmoonHandler {
+        let policy =
+            honmoon_core::Policy::from_yaml("egress:\n  default: allow\n").expect("policy");
+        HonmoonHandler::new(GatewayState::new(policy))
+    }
+
     #[test]
     fn tunnel_authorization_requires_the_port_to_match_too() {
         // hudsucker forwards an h2 request to the `:authority` it names, so a
         // tunnel to :443 must not lend its authorization to a request naming
         // :6443 — that would evaluate the request at 443, resolve no endpoint,
         // parse no `k8s` facts, and still reach the API server on 6443.
-        let registry = TunnelRegistry::default();
-        let addr: SocketAddr = "127.0.0.1:54321".parse().expect("addr");
-        registry.authorize(addr, "cluster.example".to_owned(), HTTPS_PORT);
+        let mut tunnel = handler_prototype();
+        tunnel.authorize_tunnel("cluster.example".to_owned(), HTTPS_PORT);
 
         assert!(
-            registry.is_authorized(&addr, "cluster.example", HTTPS_PORT),
+            tunnel.tunnel_authorizes("cluster.example", HTTPS_PORT),
             "the CONNECT target itself stays authorized"
         );
         assert!(
-            !registry.is_authorized(&addr, "cluster.example", 6443),
+            !tunnel.tunnel_authorizes("cluster.example", 6443),
             "a different port on the same host is a different destination"
         );
         assert!(
-            !registry.is_authorized(&addr, "other.example", HTTPS_PORT),
+            !tunnel.tunnel_authorizes("other.example", HTTPS_PORT),
             "a different host is still gated"
+        );
+    }
+
+    #[test]
+    fn tunnel_authorization_reaches_inner_requests_but_not_a_later_connection() {
+        // The clone chain hudsucker drives: one prototype, a clone per accepted
+        // connection, a clone per request off that, and — for a CONNECT — the
+        // tunnel task keeping the request clone and serving every decrypted
+        // inner request from a clone of it.
+        let prototype = handler_prototype();
+
+        let mut connection = prototype.clone();
+        let mut tunnel = connection.clone();
+        tunnel.authorize_tunnel("cluster.example".to_owned(), HTTPS_PORT);
+        assert!(
+            tunnel
+                .clone()
+                .tunnel_authorizes("cluster.example", HTTPS_PORT),
+            "a decrypted inner request over this tunnel must be recognized"
+        );
+
+        // The tunnel closes; a later connection reuses the same client
+        // SocketAddr (a recycled source port, or an intermediate NAT). It gets
+        // its own clone of the prototype, so it inherits nothing: authorization
+        // is scoped to the connection that earned it, not to an address.
+        drop(tunnel);
+        let reused_addr = prototype.clone();
+        assert!(
+            !reused_addr.tunnel_authorizes("cluster.example", HTTPS_PORT),
+            "a later connection reusing the address must not inherit the tunnel"
+        );
+        // The connection the CONNECT arrived on is likewise untouched: the
+        // authorization lives on the request clone, not on shared state.
+        connection.authorize_tunnel("other.example".to_owned(), HTTPS_PORT);
+        assert!(
+            !prototype.tunnel_authorizes("other.example", HTTPS_PORT),
+            "authorizing a tunnel must not write back to the shared prototype"
         );
     }
 

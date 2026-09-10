@@ -1,2 +1,3 @@
 - [Honmoon crate-table convention](honmoon_crate_table_convention.md) — AGENTS.md/ARCHITECTURE.md name honmoon-core's engine functions explicitly; check new decide-family exports against them
-- [Honmoon PG runtime timeout docs](honmoon_pg_runtime_timeout_docs.md) — runtime timeouts (DRAIN_TIMEOUT, REFUSAL_ORDER_TIMEOUT) live in ADR-0007, not README; don't flag as missing
+- [Honmoon PG runtime timeout docs](honmoon_pg_runtime_timeout_docs.md) — runtime timeouts (DRAIN_TIMEOUT, REFUSAL_ORDER_STALL_TIMEOUT) live in ADR-0007, not README; don't flag as missing
+- [ADR-0006 signed-header amendment verified](adr_0006_signed_header_amendment.md) — PR #115 clean doc PR; calibration point, only soft spot is auto-maintained decisions/index.md title

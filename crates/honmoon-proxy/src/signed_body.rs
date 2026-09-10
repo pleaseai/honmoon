@@ -85,6 +85,124 @@ pub fn authentication_signs_headers(headers: &HeaderMap, uri: &Uri) -> bool {
         || cavage_headers_param_present(headers)
 }
 
+/// Headers the wire-redaction rewrite re-frames or drops when it replaces a
+/// request body.
+///
+/// `Content-Length` describes the new bytes and the replacement body is
+/// decoded UTF-8 text rather than the client's compressed or chunked
+/// representation, so all three have to change with the body — unlike
+/// `Accept-Encoding`, which the proxy can simply leave alone. They are also
+/// routinely named in a `SignedHeaders` list (an AWS SDK upload signs
+/// `content-length`), so they need the same one-definition agreement between
+/// rewriting and detection that [`BODY_DIGEST_HEADERS`] has: this is the set
+/// [`mitm`](crate::mitm) rewrites and the set it asks
+/// [`signed_headers_among`] about.
+pub const REWRITTEN_FRAMING_HEADERS: [header::HeaderName; 3] = [
+    header::CONTENT_LENGTH,
+    header::CONTENT_ENCODING,
+    header::TRANSFER_ENCODING,
+];
+
+/// Which of `candidates` this request's authentication actually signs, in the
+/// order given.
+///
+/// A signature over a header is broken by rewriting that header just as surely
+/// as a body-covering one is broken by rewriting the payload, and honmoon can
+/// re-sign neither. [`authentication_signs_headers`] answers the coarser
+/// question — is *anything* header-signed — and is deliberately broad, because
+/// its only consequence is leaving one header alone. This one drives the same
+/// block-or-forward decision as [`body_signature_scheme`], so it parses the
+/// covered list instead of assuming: a SigV4 `SignedHeaders` list (from the
+/// `Authorization` credential or a presigned `X-Amz-SignedHeaders` query
+/// parameter), an RFC 9421 component list under a label `Signature` carries,
+/// or a draft-cavage `headers="…"` parameter. Over-inclusion here would refuse
+/// redactable traffic under `block` and, worse, forward the secret unredacted
+/// under `--signed-body forward`, so a name counts only when one of those
+/// lists genuinely holds it.
+pub fn signed_headers_among(
+    headers: &HeaderMap,
+    uri: &Uri,
+    candidates: &[header::HeaderName],
+) -> Vec<header::HeaderName> {
+    candidates
+        .iter()
+        .filter(|name| header_is_signed(headers, uri, name.as_str()))
+        .cloned()
+        .collect()
+}
+
+/// Whether any recognized scheme's signature covers the header `name`.
+fn header_is_signed(headers: &HeaderMap, uri: &Uri, name: &str) -> bool {
+    sigv4_signs_header(headers, uri, name)
+        || message_signature_covers(headers, |component| component.eq_ignore_ascii_case(name))
+        || cavage_signature_covers(headers, |component| component.eq_ignore_ascii_case(name))
+}
+
+/// Whether a SigV4 `SignedHeaders` list covers `name`.
+fn sigv4_signs_header(headers: &HeaderMap, uri: &Uri, name: &str) -> bool {
+    sigv4_signed_header_lists(headers, uri).iter().any(|list| {
+        list.split(';')
+            .any(|covered| covered.trim().eq_ignore_ascii_case(name))
+    })
+}
+
+/// Every `SignedHeaders` list the request carries: the `SignedHeaders=`
+/// credential parameter of an `AWS4-…` `Authorization`, and the
+/// `X-Amz-SignedHeaders` query parameter of a presigned URL.
+///
+/// The parameter name is anchored to the start of a top-level, comma-separated
+/// segment (see [`split_top_level_params`]), so it cannot match inside the
+/// `Credential` path or a base64 `Signature` that happens to spell it, and
+/// *every* list is returned rather than the first, so a decoy cannot shadow
+/// the real parameter.
+fn sigv4_signed_header_lists(headers: &HeaderMap, uri: &Uri) -> Vec<String> {
+    let mut lists: Vec<String> = header_values(headers, &header::AUTHORIZATION)
+        .filter(|value| is_sigv4_authorization(value))
+        .flat_map(|value| {
+            split_top_level_params(value).filter_map(|segment| {
+                // A covered list is lowercase header names, so the lowercased
+                // copy serves as both the match and the value.
+                let lowered = segment.trim().to_ascii_lowercase();
+                let rest = lowered.strip_prefix("signedheaders")?.trim_start();
+                Some(rest.strip_prefix('=')?.trim_start().to_owned())
+            })
+        })
+        .collect();
+    // The query list counts only on a request that actually carries SigV4.
+    // `X-Amz-SignedHeaders` is a bare query parameter any client can append to
+    // any URL, and a covered framing header decides block-or-forward: without
+    // this gate a crafted `?X-Amz-SignedHeaders=content-length` on an ordinary
+    // request would earn a spurious 403 under `block` and, under `forward`,
+    // send its unredacted body upstream. The `Authorization` branch above is
+    // already gated the same way, and `aws_sigv4_authenticates` is the module's
+    // one definition of "this request is SigV4".
+    if aws_sigv4_authenticates(headers, uri) {
+        if let Some(query) = uri.query() {
+            lists.extend(query.split('&').filter_map(|pair| {
+                let (name, value) = pair.split_once('=').unwrap_or((pair, ""));
+                name.eq_ignore_ascii_case("X-Amz-SignedHeaders")
+                    .then(|| decode_percent_separators(value))
+            }));
+        }
+    }
+    lists
+}
+
+/// A presigned URL carries its `SignedHeaders` list in the query string, where
+/// the `;` separators are percent-encoded. Header names are tokens and are
+/// never themselves encoded, so restoring the separator is all this list
+/// needs — a full percent-decoder would only widen what a crafted query can
+/// turn into a separator.
+fn decode_percent_separators(value: &str) -> String {
+    value.replace("%3B", ";").replace("%3b", ";")
+}
+
+/// Whether an `Authorization` field value is a SigV4 credential.
+fn is_sigv4_authorization(value: &str) -> bool {
+    starts_with_ignore_ascii_case(value, "AWS4-HMAC-SHA256")
+        || starts_with_ignore_ascii_case(value, "AWS4-ECDSA-P256-SHA256")
+}
+
 /// SigV4 binds the body through the payload hash, unless the request opted out
 /// of payload signing with `UNSIGNED-PAYLOAD` / `STREAMING-UNSIGNED-PAYLOAD…`.
 fn aws_sigv4_signs_body(headers: &HeaderMap, uri: &Uri) -> bool {
@@ -107,10 +225,8 @@ fn aws_sigv4_signs_body(headers: &HeaderMap, uri: &Uri) -> bool {
 /// Whether the request carries SigV4 authentication at all — header-signed
 /// or presigned — irrespective of whether the payload itself is signed.
 fn aws_sigv4_authenticates(headers: &HeaderMap, uri: &Uri) -> bool {
-    let signed_authorization = header_str(headers, &header::AUTHORIZATION).is_some_and(|value| {
-        starts_with_ignore_ascii_case(value, "AWS4-HMAC-SHA256")
-            || starts_with_ignore_ascii_case(value, "AWS4-ECDSA-P256-SHA256")
-    });
+    let signed_authorization =
+        header_str(headers, &header::AUTHORIZATION).is_some_and(is_sigv4_authorization);
     // A presigned URL carries the algorithm in the query string instead.
     let presigned = uri.query().is_some_and(|query| {
         query.split('&').any(|pair| {
@@ -135,6 +251,16 @@ fn aws_sigv4_authenticates(headers: &HeaderMap, uri: &Uri) -> bool {
 /// both is scanned, and labels are matched across all of them rather than
 /// only within a single field value.
 fn message_signature_covers_body_digest(headers: &HeaderMap) -> bool {
+    message_signature_covers(headers, is_body_digest_header)
+}
+
+/// RFC 9421: whether some member's component list names a component `covered`
+/// accepts, under a label `Signature` actually carries.
+///
+/// The label matching, and why it is required, is described on
+/// [`message_signature_covers_body_digest`] — the only caller that asks about
+/// the body. Callers asking about a header pass their own predicate.
+fn message_signature_covers(headers: &HeaderMap, covered: impl Fn(&str) -> bool + Copy) -> bool {
     let signed_labels: HashSet<String> = header_values(headers, &SIGNATURE)
         .flat_map(signature_member_labels)
         .collect();
@@ -142,7 +268,7 @@ fn message_signature_covers_body_digest(headers: &HeaderMap) -> bool {
         return false;
     }
     header_values(headers, &SIGNATURE_INPUT)
-        .flat_map(signature_input_body_digest_labels)
+        .flat_map(|value| signature_input_labels_covering(value, covered))
         .any(|label| signed_labels.contains(&label))
 }
 
@@ -164,20 +290,23 @@ fn message_signature_present(headers: &HeaderMap) -> bool {
 }
 
 /// The dictionary-member labels (e.g. `sig1`) inside a `Signature-Input`
-/// field value whose parenthesised component list names a body digest.
+/// field value whose parenthesised component list names a covered component.
 ///
 /// A member is `label=value`, members separated by a top-level comma (see
 /// [`split_top_level_params`]). The label is the token before the member's
 /// first `=`, trimmed of whitespace. Labels are normalized to lowercase for
-/// the comparison in [`message_signature_covers_body_digest`] — dictionary
+/// the comparison in [`message_signature_covers`] — dictionary
 /// keys are case-sensitive tokens per Structured Fields, but signature labels
 /// are lowercase in practice, and both sides of that comparison are
 /// normalized identically, so this cannot turn a mismatch into a false match.
-fn signature_input_body_digest_labels(value: &str) -> impl Iterator<Item = String> + '_ {
-    split_top_level_params(value).filter_map(|member| {
+fn signature_input_labels_covering<'a>(
+    value: &'a str,
+    covered: impl Fn(&str) -> bool + 'a,
+) -> impl Iterator<Item = String> + 'a {
+    split_top_level_params(value).filter_map(move |member| {
         let (label, rest) = member.split_once('=')?;
         let label = label.trim();
-        if label.is_empty() || !signature_input_lists_body_digest(rest) {
+        if label.is_empty() || !signature_input_lists_component(rest, &covered) {
             return None;
         }
         Some(label.to_ascii_lowercase())
@@ -186,7 +315,7 @@ fn signature_input_body_digest_labels(value: &str) -> impl Iterator<Item = Strin
 
 /// The dictionary-member labels present in a `Signature` field value, e.g.
 /// `sig1` and `sig2` in `sig1=:abc:, sig2=:def:`. Normalized to lowercase to
-/// match [`signature_input_body_digest_labels`].
+/// match [`signature_input_labels_covering`].
 fn signature_member_labels(value: &str) -> impl Iterator<Item = String> + '_ {
     split_top_level_params(value).filter_map(|member| {
         let (label, _) = member.split_once('=')?;
@@ -224,7 +353,7 @@ fn is_body_digest_header(name: &str) -> bool {
 
 /// Whether the parenthesised component list of a `Signature-Input` member —
 /// not the member's other `;param=value` metadata — names a quoted component
-/// that is one of [`BODY_DIGEST_HEADERS`].
+/// that `covered` accepts.
 ///
 /// A single-pass, quote-aware scan: paren depth is tracked only outside a
 /// quoted string, since a `(` or `)` inside a quoted parameter value (e.g. a
@@ -242,7 +371,7 @@ fn is_body_digest_header(name: &str) -> bool {
 /// RFC 8941 puts no whitespace around a parameter's `=`, but whitespace is
 /// tolerated here anyway: treating one more quoted string as a parameter
 /// value can only make this predicate stricter, which is the safe direction.
-fn signature_input_lists_body_digest(value: &str) -> bool {
+fn signature_input_lists_component(value: &str, covered: impl Fn(&str) -> bool) -> bool {
     let mut depth: u32 = 0;
     let mut in_quote = false;
     let mut escaped = false;
@@ -258,7 +387,7 @@ fn signature_input_lists_body_digest(value: &str) -> bool {
                 escaped = true;
             } else if ch == '"' {
                 in_quote = false;
-                if depth >= 1 && !is_param_value && is_body_digest_header(&current) {
+                if depth >= 1 && !is_param_value && covered(&current) {
                     return true;
                 }
                 current.clear();
@@ -295,11 +424,17 @@ fn signature_input_lists_body_digest(value: &str) -> bool {
 /// field may in principle repeat), and the `headers` parameter's grammar
 /// permits whitespace around `=`.
 fn cavage_signature_covers_digest(headers: &HeaderMap) -> bool {
+    cavage_signature_covers(headers, is_body_digest_header)
+}
+
+/// draft-cavage: whether some `headers="…"` parameter's covered list names a
+/// header `covered` accepts, from either carrier field.
+fn cavage_signature_covers(headers: &HeaderMap, covered: impl Fn(&str) -> bool) -> bool {
     let candidates = header_values(headers, &SIGNATURE)
         .chain(header_values(headers, &header::AUTHORIZATION).filter_map(strip_signature_scheme));
     candidates
         .flat_map(cavage_headers_params)
-        .any(|covered| covered.split_whitespace().any(is_body_digest_header))
+        .any(|list| list.split_whitespace().any(&covered))
 }
 
 /// draft-cavage: whether the request carries a `headers="…"` auth-param at
@@ -452,6 +587,26 @@ mod tests {
             );
         }
         authentication_signs_headers(&map, &uri.parse::<Uri>().expect("uri"))
+    }
+
+    /// The framing headers the rewrite would change that this request signs,
+    /// as the names [`mitm`](crate::mitm) puts in its block message.
+    fn signed_framing(headers: &[(&str, &str)], uri: &str) -> Vec<String> {
+        let mut map = HeaderMap::new();
+        for (name, value) in headers {
+            map.insert(
+                header::HeaderName::from_bytes(name.as_bytes()).expect("header name"),
+                header::HeaderValue::from_str(value).expect("header value"),
+            );
+        }
+        signed_headers_among(
+            &map,
+            &uri.parse::<Uri>().expect("uri"),
+            &REWRITTEN_FRAMING_HEADERS,
+        )
+        .iter()
+        .map(|name| name.as_str().to_owned())
+        .collect()
     }
 
     /// The case this predicate exists for: a SigV4 request that opts out of
@@ -930,6 +1085,161 @@ mod tests {
                 "https://api.example.com/v1"
             ),
             None
+        );
+    }
+
+    /// The gap #83 closes: `UNSIGNED-PAYLOAD` leaves the body redactable, but
+    /// an AWS SDK upload signs `content-length` — which the rewrite must
+    /// re-frame — so the request is broken by redaction anyway.
+    #[test]
+    fn sigv4_signed_headers_list_covers_the_framing_headers_it_names() {
+        let headers = [
+            (
+                "authorization",
+                "AWS4-HMAC-SHA256 Credential=AKIA/20260907/us-east-1/s3/aws4_request, \
+                 SignedHeaders=content-length;host;x-amz-date, Signature=abc",
+            ),
+            ("x-amz-content-sha256", "UNSIGNED-PAYLOAD"),
+        ];
+        let uri = "https://s3.amazonaws.com/b/k";
+        assert_eq!(scheme(&headers, uri), None, "body should not be signed");
+        assert_eq!(signed_framing(&headers, uri), ["content-length"]);
+    }
+
+    /// A `SignedHeaders` list that names none of them leaves redaction free to
+    /// re-frame the body — the common `SignedHeaders=host;x-amz-date` upload.
+    #[test]
+    fn sigv4_signed_headers_list_that_names_no_framing_header_signs_none() {
+        let headers = [
+            (
+                "authorization",
+                "AWS4-HMAC-SHA256 Credential=AKIA/20260907/us-east-1/s3/aws4_request, \
+                 SignedHeaders=host;x-amz-date, Signature=abc",
+            ),
+            ("x-amz-content-sha256", "UNSIGNED-PAYLOAD"),
+        ];
+        let uri = "https://s3.amazonaws.com/b/k";
+        assert!(signed_framing(&headers, uri).is_empty());
+    }
+
+    /// A presigned URL carries the list in the query string, where the `;`
+    /// separators are percent-encoded.
+    #[test]
+    fn presigned_sigv4_signed_headers_query_param_is_separator_decoded() {
+        assert_eq!(
+            signed_framing(
+                &[("x-amz-content-sha256", "UNSIGNED-PAYLOAD")],
+                "https://s3.amazonaws.com/b/k?X-Amz-Algorithm=AWS4-HMAC-SHA256\
+                 &X-Amz-SignedHeaders=content-encoding%3Bhost&X-Amz-Signature=abc"
+            ),
+            ["content-encoding"]
+        );
+    }
+
+    /// RFC 9421: a component list naming a framing header counts only under a
+    /// label `Signature` actually carries, exactly as the body-digest reading
+    /// does — the two share one scan.
+    #[test]
+    fn message_signature_covers_a_framing_component_only_under_a_signed_label() {
+        let uri = "https://api.example.com/v1";
+        assert_eq!(
+            signed_framing(
+                &[
+                    (
+                        "signature-input",
+                        r#"sig1=("@method" "content-length");created=1"#
+                    ),
+                    ("signature", "sig1=:abc:")
+                ],
+                uri
+            ),
+            ["content-length"]
+        );
+        assert!(
+            signed_framing(
+                &[
+                    (
+                        "signature-input",
+                        r#"sig1=("@method" "content-length");created=1"#
+                    ),
+                    ("signature", "sig2=:abc:")
+                ],
+                uri
+            )
+            .is_empty(),
+            "a component list under an unsigned label covers nothing"
+        );
+    }
+
+    /// draft-cavage lists its covered headers space-separated in `headers="…"`.
+    #[test]
+    fn cavage_headers_param_covers_the_framing_headers_it_names() {
+        assert_eq!(
+            signed_framing(
+                &[(
+                    "signature",
+                    r#"keyId="k",headers="(request-target) host content-length content-encoding",signature="abc""#
+                )],
+                "https://api.example.com/v1"
+            ),
+            ["content-length", "content-encoding"]
+        );
+    }
+
+    /// draft-cavage and RFC 9421 both cover `transfer-encoding` like any other
+    /// header the rewrite drops.
+    #[test]
+    fn a_signed_transfer_encoding_is_covered_like_the_other_framing_headers() {
+        let headers = [
+            (
+                "authorization",
+                "AWS4-HMAC-SHA256 Credential=AKIA/20260907/us-east-1/s3/aws4_request, \
+                 SignedHeaders=host;transfer-encoding;x-amz-date, Signature=abc",
+            ),
+            ("x-amz-content-sha256", "UNSIGNED-PAYLOAD"),
+        ];
+        assert_eq!(
+            signed_framing(&headers, "https://s3.amazonaws.com/b/k"),
+            ["transfer-encoding"]
+        );
+    }
+
+    /// Bearer-token traffic signs nothing, so redaction re-frames it freely —
+    /// the same over-inclusion trap [`body_signature_scheme`] avoids.
+    #[test]
+    fn bearer_token_request_signs_no_framing_headers() {
+        assert!(
+            signed_framing(
+                &[
+                    ("authorization", "Bearer sk-live-token"),
+                    ("content-length", "42"),
+                ],
+                "https://api.example.com/v1"
+            )
+            .is_empty()
+        );
+    }
+
+    /// `X-Amz-SignedHeaders` is a bare query parameter, so an unsigned request
+    /// can carry one. Honoring it without SigV4 evidence would earn a spurious
+    /// 403 under `block` and forward the body unredacted under `forward`.
+    #[test]
+    fn signed_headers_query_param_without_sigv4_evidence_signs_nothing() {
+        assert!(
+            signed_framing(
+                &[("authorization", "Bearer sk-live-token")],
+                "https://api.example.com/v1?X-Amz-SignedHeaders=content-length"
+            )
+            .is_empty(),
+            "a query parameter alone is not a signature"
+        );
+        assert!(
+            signed_framing(
+                &[],
+                "https://api.example.com/v1?X-Amz-SignedHeaders=content-length"
+            )
+            .is_empty(),
+            "nor is it one on an unauthenticated request"
         );
     }
 }
