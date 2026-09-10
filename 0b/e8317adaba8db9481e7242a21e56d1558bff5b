@@ -1,0 +1,19 @@
+crates/honmoon-core/src/engine.rs
+  s_4d4ce11359883c::t_ade32fb0197e65 493-497,519-663
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "0be8317adaba8db9481e7242a21e56d1558bff5b",
+  "prompts": {},
+  "sessions": {
+    "s_4d4ce11359883c": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d8cbd35d-8ae4-4ea7-be45-710c9ce6a90b",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
