@@ -1,0 +1,21 @@
+wiki/getting-started/quick-start.md
+  s_369c7c85945b86::t_77f8649905f059 33,35
+wiki/llms-full.txt
+  s_369c7c85945b86::t_c6bf9c23fe42ba 2376,2378
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "cd5bedbfc3b6548022f81fd4f30ef30b306c31b0",
+  "prompts": {},
+  "sessions": {
+    "s_369c7c85945b86": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "41e2e947-c23f-40e8-8836-85370da12387",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
