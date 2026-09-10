@@ -2,7 +2,7 @@
 
 use cel_interpreter::{Context, Program, Value};
 
-use crate::{Facts, Policy, Verdict};
+use crate::{Facts, PiiFacts, Policy, Rule, Verdict};
 
 /// A decision plus the reason it was reached.
 ///
@@ -36,20 +36,72 @@ pub fn decide(policy: &Policy, facts: &Facts) -> Verdict {
 /// facts simply does not match (it cannot turn a deny into an allow), and the
 /// egress default is `deny`.
 pub fn decide_explained(policy: &Policy, facts: &Facts) -> Outcome {
+    decide_with(policy, facts, PiiWeight::Decides)
+}
+
+/// Decide the [`Outcome`] for `facts` with PII findings held back from
+/// enforcement — the decision detect mode acts on.
+///
+/// Detect mode promises that content scanning never blocks; it is not a bypass
+/// for the rest of the policy. So a rule that fires *only because* the request
+/// carried PII is skipped and evaluation continues with the remaining rules,
+/// while a rule that matches on endpoint, Kubernetes, SQL, or HTTP-metadata
+/// facts still decides. The verdict the skipped rule would have produced stays
+/// visible through [`decide_explained`], which callers audit as the would-be.
+///
+/// The attribution is per rule: a rule is PII-caused when it matches the real
+/// facts but would not match with the PII summary cleared. That is what
+/// separates a verdict PII *produced* from one that merely came after a rule
+/// reading PII — an `endpoints`-bound deny preceded by `pii.count == 0 -> allow`
+/// is enforced here, because the deny itself never consulted the summary.
+///
+/// Only non-[`Allow`](Verdict::Allow) verdicts are held back. A PII-caused
+/// *allow* (an exemption for low-severity findings, say) still stands, so
+/// detect mode can never deny something block mode would let through.
+pub fn decide_pii_audit_only(policy: &Policy, facts: &Facts) -> Outcome {
+    decide_with(policy, facts, PiiWeight::AuditsOnly)
+}
+
+/// How much say the PII summary has in the enforced verdict.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PiiWeight {
+    /// PII findings decide like any other fact (block mode).
+    Decides,
+    /// PII findings are recorded, never enforced (detect mode).
+    AuditsOnly,
+}
+
+fn decide_with(policy: &Policy, facts: &Facts, pii_weight: PiiWeight) -> Outcome {
     for rule in &policy.rules {
-        if endpoint_matches(&rule.endpoint, facts.endpoint.as_deref())
-            && eval_condition(&rule.condition, facts)
+        if !endpoint_matches(&rule.endpoint, facts.endpoint.as_deref())
+            || !eval_condition(&rule.condition, facts, facts.pii.as_ref())
         {
-            return Outcome {
-                verdict: rule.verdict,
-                rule: Some(rule.name.clone()),
-            };
+            continue;
         }
+        if pii_weight == PiiWeight::AuditsOnly
+            && rule.verdict != Verdict::Allow
+            && pii_caused(rule, facts)
+        {
+            continue;
+        }
+        return Outcome {
+            verdict: rule.verdict,
+            rule: Some(rule.name.clone()),
+        };
     }
     Outcome {
         verdict: egress_verdict(policy, facts),
         rule: None,
     }
+}
+
+/// Whether the PII summary is what made `rule` match: it fires on the real
+/// facts (the caller has already checked that) but not on the same facts with
+/// the summary cleared.
+fn pii_caused(rule: &Rule, facts: &Facts) -> bool {
+    // Without a summary the real evaluation already ran against the empty
+    // default, so no rule can owe its match to PII.
+    facts.pii.is_some() && !eval_condition(&rule.condition, facts, None)
 }
 
 fn egress_verdict(policy: &Policy, facts: &Facts) -> Verdict {
@@ -89,7 +141,10 @@ pub fn matches_domain(pattern: &str, domain: &str) -> bool {
 }
 
 /// Evaluate a CEL condition against the facts. Any error → `false` (no match).
-fn eval_condition(condition: &str, facts: &Facts) -> bool {
+///
+/// `pii` is the summary to bind, passed separately from `facts` so attribution
+/// can re-run the same condition with it cleared.
+fn eval_condition(condition: &str, facts: &Facts, pii: Option<&PiiFacts>) -> bool {
     let Ok(program) = Program::compile(condition) else {
         tracing::warn!(%condition, "policy rule condition failed to compile");
         return false;
@@ -113,7 +168,7 @@ fn eval_condition(condition: &str, facts: &Facts) -> bool {
     }
     // Always register `pii` (default = empty) so absence conditions like
     // `pii.count == 0` are expressible, not just `pii.count > 0`.
-    let pii = facts.pii.clone().unwrap_or_default();
+    let pii = pii.cloned().unwrap_or_default();
     if let Ok(value) = cel_interpreter::to_value(&pii) {
         ctx.add_variable_from_value("pii", value);
     }
