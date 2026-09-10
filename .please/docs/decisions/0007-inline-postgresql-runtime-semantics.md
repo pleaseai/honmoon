@@ -109,6 +109,28 @@ that fails to parse: it is refused rather than forwarded blind.
   the hostname into the handshake where the `endpoints` lookup above happens. A client that reads
   neither proxy variable — `psql` among them — reaches nothing under `run` at all, which is
   ADR-0005's fail-closed default rather than a gap in this one.
+- **A local answer is injected in request order, not just on a frame boundary.** Honmoon writes
+  its `ErrorResponse`/`ReadyForQuery` into a stream the upstream→client relay is writing at the
+  same time. Framing that injection is not enough on its own: a client that pipelines
+  `SELECT pg_sleep(1); DROP TABLE users;` would read the refusal for the `DROP` before the
+  `SELECT`'s response and attribute the 42501 to the statement that in fact succeeded — a firewall
+  telling the truth about the wrong query. So the runtime counts **sync points**: the completed
+  startup handshake, then every `Q`, `Sync` and `FunctionCall` it forwards, each of which the
+  database answers with exactly one `ReadyForQuery`. A refusal waits until the relay has delivered
+  that many before it takes the writer lock — and waits *before* taking it, because the relay needs
+  the same lock to deliver the responses being waited for. A refused statement adds no sync point
+  of its own: nothing was forwarded, and honmoon supplies that `ReadyForQuery` itself, so the two
+  counts stay in step. Two consequences follow:
+  - **A refusal is no faster than the statements queued in front of it.** Refusing the second half
+    of a pipelined pair means waiting out the first half's query. That is the point — the client
+    asked in that order — but it makes a denial's latency a property of the client's own pipeline
+    rather than of the policy engine.
+  - **The wait is bounded at 30 seconds, and expiring it degrades to the old ordering.** Two things
+    can make the count wrong in practice: a database that stops answering, and the one frontend
+    message whose sync point the backend legitimately swallows (a `Sync` sent while a `COPY` is in
+    progress). An unbounded wait would cost the client its answer altogether, which is worse than
+    the misattribution this barrier removes — so the runtime warns and injects, landing exactly
+    where it landed before the barrier existed.
 - **A held statement is watched for its client's disconnect.** A `pause` verdict holds the
   statement mid-stream, which parks the client-read side of the session inside the `select!` the
   runtime races against its upstream relay — so a client that leaves completes neither arm and used
