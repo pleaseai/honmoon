@@ -836,18 +836,9 @@ rules:
     verdict: pause
 ";
 
-/// A loopback port nothing is listening on, released before it is handed back
-/// so a client socket can bind it.
-fn free_local_port() -> u16 {
-    StdTcpListener::bind("127.0.0.1:0")
-        .unwrap()
-        .local_addr()
-        .unwrap()
-        .port()
-}
-
 /// Connect to the proxy from a fixed client address, so a later connection can
-/// present the proxy with the same `SocketAddr`.
+/// present the proxy with the same `SocketAddr`. `client_port` 0 lets the kernel
+/// assign one, which `local_addr` then reports.
 ///
 /// `SO_LINGER 0` makes `close` send an RST instead of a FIN: neither end keeps
 /// the 4-tuple in `TIME_WAIT`, so the source port is immediately reusable.
@@ -916,16 +907,18 @@ fn tunnel_authorization_does_not_carry_into_a_connection_reusing_the_address() {
         pause_timeout: Duration::from_secs(10),
         ca: Arc::new(CaMaterial::generate().unwrap()),
         // A raw tunnel: the CONNECT is authorized without TLS termination, which
-        // is all the registry entry ever needed.
+        // is all this test needs — the authorization is recorded either way.
         intercept: InterceptPolicy::None,
         pii_mode: PiiMode::Detect,
         redaction: None,
     };
     let proxy_port = start_proxy(state);
-    let client_port = free_local_port();
 
-    // 1. An approved CONNECT, from a client address we will reuse.
-    let mut tunnel = connect_from(client_port, proxy_port);
+    // 1. An approved CONNECT, from a client address we will reuse. The kernel
+    //    picks the port and the socket holds it for as long as the tunnel
+    //    lives, so nothing else can take it out from under the second bind.
+    let mut tunnel = connect_from(0, proxy_port);
+    let client_port = tunnel.local_addr().unwrap().port();
     tunnel
         .write_all(
             format!("CONNECT localhost:{upstream} HTTP/1.1\r\nHost: localhost:{upstream}\r\n\r\n")
@@ -968,5 +961,51 @@ fn tunnel_authorization_does_not_carry_into_a_connection_reusing_the_address() {
     assert!(
         response.starts_with("HTTP/1.1 403"),
         "a rejected hold must block the request: {response:?}"
+    );
+}
+
+/// The other half of #100's invariant: authorization must still reach the
+/// tunnel's *own* decrypted inner requests.
+///
+/// The tunnel flag is inherited through hudsucker's handler clone lineage
+/// (`InternalProxy::proxy` → `process_connect` → `serve_stream`), which is an
+/// implementation detail rather than a documented contract. Losing it is the
+/// safe direction — the request is simply host-gated again — but it is still a
+/// behavior change, so pin it end to end through a real `hudsucker::Proxy`
+/// rather than only through a hand-built clone chain: the policy pauses on the
+/// connection-level gate, so a second hold here would mean the gate ran twice.
+#[test]
+fn an_inner_request_over_its_own_tunnel_is_not_gated_again() {
+    let request = b"GET /pods HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n".to_vec();
+    let (response_rx, audit, approvals) = start_intercepted_request(
+        PAUSE_HOST_GATE_POLICY,
+        PiiMode::Detect,
+        start_dropping_upstream(),
+        request,
+    );
+
+    // The CONNECT pauses on the host gate; approving it opens the tunnel.
+    let hold = wait_for_hold(&approvals, "the CONNECT");
+    assert!(approvals.resolve(hold, ApprovalDecision::Approve).is_some());
+
+    let response = response_rx
+        .recv_timeout(Duration::from_secs(15))
+        .expect("the inner request completed");
+    assert!(
+        response.starts_with("HTTP/1.1 502"),
+        "an inner request over its own tunnel must be forwarded, not held: {response:?}"
+    );
+    assert!(
+        approvals.pending().is_empty(),
+        "the inner request was gated a second time"
+    );
+    assert_eq!(
+        audit
+            .recent(50)
+            .iter()
+            .filter(|event| event.decision == Decision::Paused)
+            .count(),
+        1,
+        "only the CONNECT should have been held"
     );
 }
