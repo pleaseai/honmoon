@@ -125,16 +125,22 @@ that fails to parse: it is refused rather than forwarded blind.
     of a pipelined pair means waiting out the first half's query. That is the point — the client
     asked in that order — but it makes a denial's latency a property of the client's own pipeline
     rather than of the policy engine.
-  - **What is bounded is the stall, not the wait.** Every response that reaches the client buys
-    another full 30-second window, so a database working steadily through a slow statement is never
-    cut off however long that statement runs. Only a pipeline that stops moving expires — which is
+  - **What is bounded is the stall, not the wait.** Every **backend message** that reaches the
+    client buys another full 30-second window — the rows of a long result set included, not only
+    the `ReadyForQuery` a refusal is actually waiting for. A database working steadily through a
+    slow statement is therefore never cut off however long that statement runs; counting only sync
+    points would have made a query streaming rows for longer than the window indistinguishable from
+    one that had stopped, and injected the refusal into the middle of its result set. Only a pipeline that stops moving expires — which is
     what the two ways the count can go wrong look like from here: a database that stopped
     answering, and a sync point the backend swallowed (PostgreSQL ignores `Sync` while a `COPY` is
     in progress, so the `Sync` honmoon counted is never answered). An unbounded wait would cost the
     client its answer altogether, which is worse than the misattribution this removes, so the
     runtime warns and injects. It also **writes the missing answers off** rather than leaving the
     counters skewed: they are monotonic, so a gap left in place would make every later refusal on
-    that connection pay the bound again for the rest of the session.
+    that connection pay the bound again for the rest of the session. An answer written off and then
+    delivered after all is discarded rather than credited — counting it would push the delivered
+    count past the forwarded one and release the *next* refusal before its own answer, giving up
+    the ordering the write-off exists to keep affordable.
   - **A batch driven by `Flush` is not ordered at all.** `Flush` makes the backend emit what it has
     buffered — `ParseComplete`, `BindComplete`, rows, `CommandComplete` — with no `ReadyForQuery`,
     so it is not a sync point and honmoon counts nothing for it. A client using libpq pipeline mode
@@ -142,7 +148,12 @@ that fails to parse: it is refused rather than forwarded blind.
     before this barrier. The protocol offers no marker for "the backend has finished flushing", so
     counting cannot close this the way it closes `Sync`; it is recorded here rather than implied
     away, and tracked separately.
-  - **A relay that stops releases the wait immediately.** Once the upstream→client task has ended,
+  - **A relay that stops partway through a message writes nothing more.** The client is left
+    holding a frame header whose payload never arrived, so its stream is already desynchronised and
+    it would read an injected `ErrorResponse` as that payload's remainder. The barrier is still
+    released — the session is ending — but the answer is suppressed: a truncated connection is what
+    the corruption already guaranteed, and adding bytes only makes the truncation unreadable.
+  - **A relay that stops on a message boundary releases the wait immediately.** Once the upstream→client task has ended,
     no further `ReadyForQuery` can arrive and there is nothing left to order against. The wait
     therefore ends the moment the relay does, so the refusal is written on a client socket that is
     still healthy — rather than being cancelled unwritten when the relay's exit ends the session,
