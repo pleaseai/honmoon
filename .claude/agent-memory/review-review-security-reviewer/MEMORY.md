@@ -1,3 +1,4 @@
 - [Redaction fail-open design](project-redaction-failopen-design.md) — plugin/hook redaction is best-effort fail-open by design; proxy is the backstop. Don't over-flag documented fail-open; do flag transcript-hygiene gaps the proxy can't cover.
 - [Hook machine-salt security model](hook-salt-security-model.md) — how honmoon-cli's HMAC salt is stored, its 0600 invariant, and the fail-open fallback
 - [Detect-mode PII attribution](detect-mode-pii-attribution.md) — decide_pii_audit_only skip model; the Allow carve-out and Pause-skip invariants to re-check
+- [MITM tunnel authorization model](mitm-tunnel-authorization-model.md) — shape-3 recognition rides the hudsucker handler clone lineage; host+port both load-bearing for h2
