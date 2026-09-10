@@ -89,14 +89,16 @@ enum Command {
         redact_secrets: bool,
         /// What to do with a request whose authentication signature covers its
         /// body (AWS SigV4, RFC 9421 message signatures over a content-digest,
-        /// draft-cavage over a digest) when redaction would rewrite that body.
-        /// Honmoon holds no signing credentials, so it cannot re-sign the
-        /// rewritten payload: block rejects the request locally with 403, so the
-        /// secret is never sent and the failure is explained instead of
-        /// surfacing as an opaque upstream signature error; forward sends the
-        /// original bytes unredacted (fail open) for operators who trust the
-        /// signed upstream. Signed requests with nothing to redact are never
-        /// affected.
+        /// draft-cavage over a digest) when redaction would rewrite that body,
+        /// or covers a header that rewriting the body has to re-frame
+        /// (Content-Length, Content-Encoding, Transfer-Encoding — an AWS SDK
+        /// upload signs content-length even under UNSIGNED-PAYLOAD). Honmoon
+        /// holds no signing credentials, so it cannot re-sign either: block
+        /// rejects the request locally with 403, so the secret is never sent and
+        /// the failure is explained instead of surfacing as an opaque upstream
+        /// signature error; forward sends the original bytes unredacted (fail
+        /// open) for operators who trust the signed upstream. Signed requests
+        /// with nothing to redact are never affected.
         #[arg(
             long,
             value_enum,

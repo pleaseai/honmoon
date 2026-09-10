@@ -56,7 +56,8 @@ use crate::gateway::{
     GatewayState, InterceptPolicy, PiiMode, SignedBodyMode, authority_port, canonical_host,
 };
 use crate::signed_body::{
-    BODY_DIGEST_HEADERS, SignedBodyScheme, authentication_signs_headers, body_signature_scheme,
+    BODY_DIGEST_HEADERS, REWRITTEN_FRAMING_HEADERS, SignedBodyScheme, authentication_signs_headers,
+    body_signature_scheme, signed_headers_among,
 };
 
 /// Names why honmoon itself produced a response, so a client (or an agent
@@ -497,6 +498,52 @@ impl HonmoonHandler {
         let labels = outcome.labels();
         let bytes = hudsucker::hyper::body::Bytes::from(outcome.text);
         let length = bytes.len();
+
+        // SigV4 and its peers sign *headers* even when the payload is out of
+        // the signature (`UNSIGNED-PAYLOAD`), and re-framing the rewritten body
+        // changes headers a `SignedHeaders` list routinely names — an AWS SDK
+        // upload signs `content-length`. Breaking the signature that way earns
+        // the same opaque upstream rejection as rewriting a signed body, so it
+        // takes the same `--signed-body` decision. Only the headers this
+        // rewrite would actually change are asked about: a signed
+        // `Content-Encoding` the request never sent, or a signed
+        // `Content-Length` the redacted body happens to match, survives it.
+        let reframed = reframed_headers(request.headers(), length);
+        let broken = signed_headers_among(request.headers(), request.uri(), &reframed);
+        if !broken.is_empty() {
+            let signed = broken
+                .iter()
+                .map(header::HeaderName::as_str)
+                .collect::<Vec<_>>()
+                .join(", ");
+            return match redaction.signed_body {
+                SignedBodyMode::Forward => {
+                    tracing::warn!(
+                        domain = %host,
+                        headers = %signed,
+                        "wire redaction bypassed for header-signed request (fail open)"
+                    );
+                    request.into()
+                }
+                SignedBodyMode::Block => {
+                    tracing::warn!(
+                        domain = %host,
+                        headers = %signed,
+                        "header-signed request blocked: re-framing the redacted body would \
+                         invalidate its signature"
+                    );
+                    self.state.audit.record(AuditDraft {
+                        decision: Decision::Denied,
+                        verdict: Verdict::Deny,
+                        rule: Some("wire-redaction/signed-headers".to_owned()),
+                        facts: summary.clone(),
+                        approval_id: None,
+                    });
+                    signed_headers_response(&signed)
+                }
+            };
+        }
+
         redaction.mappings.record(outcome.mapping);
         tracing::info!(
             domain = %host,
@@ -1089,6 +1136,70 @@ fn redact_json_with_spans(
     }
 }
 
+/// A `403` explaining that redaction cannot re-frame a request whose signature
+/// covers the framing headers the rewrite has to change — the header-signed
+/// counterpart of [`signed_body_response`].
+fn signed_headers_response(signed: &str) -> RequestOrResponse {
+    let reason = format!(
+        "honmoon: this request's signature covers {signed}, and wire redaction would rewrite \
+         those headers to re-frame the redacted body; the upstream would reject the forwarded \
+         request. Remove the sensitive value, or run the gateway with --signed-body forward to \
+         send it unredacted.\n"
+    );
+    let length = reason.len();
+    Response::builder()
+        .status(StatusCode::FORBIDDEN)
+        .header(header::CONTENT_TYPE, "text/plain; charset=utf-8")
+        .header(header::CONTENT_LENGTH, length.to_string())
+        .header(HONMOON_REASON, "signed-header-redaction")
+        .header(header::CONNECTION, "close")
+        .body(Body::from(Full::new(hudsucker::hyper::body::Bytes::from(
+            reason,
+        ))))
+        .expect("static response is valid")
+        .into()
+}
+
+/// Which of [`REWRITTEN_FRAMING_HEADERS`] replacing the body with `new_length`
+/// bytes of identity-encoded text would actually change on the wire.
+///
+/// `Content-Encoding` and `Transfer-Encoding` are only dropped when the request
+/// carries them, and `Content-Length` is only re-framed when what the rewrite
+/// will send differs from what the client sent — a signature over a header the
+/// rewrite leaves as it found it is not broken by the rewrite.
+fn reframed_headers(headers: &header::HeaderMap, new_length: usize) -> Vec<header::HeaderName> {
+    REWRITTEN_FRAMING_HEADERS
+        .into_iter()
+        .filter(|name| {
+            if *name == header::CONTENT_LENGTH {
+                !content_length_survives_rewrite(headers, new_length)
+            } else {
+                headers.contains_key(name)
+            }
+        })
+        .collect()
+}
+
+/// Whether the `Content-Length` the rewrite inserts is byte-identical to the
+/// one the client sent — the only case where a signature over that header
+/// survives.
+///
+/// The comparison is on the wire bytes, not on a parsed length: the rewrite
+/// writes the canonical `new_length.to_string()`, so a non-canonical `012` or
+/// `+12` that parses to the same number is still a different value than the
+/// one the client signed. Absent, repeated, or non-canonical values all count
+/// as changed, which is the fail-closed reading.
+fn content_length_survives_rewrite(headers: &header::HeaderMap, new_length: usize) -> bool {
+    let mut values = headers.get_all(header::CONTENT_LENGTH).iter();
+    let Some(value) = values.next() else {
+        return false;
+    };
+    if values.next().is_some() {
+        return false;
+    }
+    value.as_bytes() == new_length.to_string().as_bytes()
+}
+
 /// A `403` explaining that redaction cannot rewrite a body-signed request, so
 /// the operator sees an actionable local failure instead of an opaque upstream
 /// signature rejection.
@@ -1247,6 +1358,51 @@ mod tests {
         let (eligible, skipped) = quoted_json_spans(text, &malformed);
         assert!(eligible.is_empty());
         assert_eq!(skipped, 2);
+    }
+
+    /// The rewrite only breaks a signature over a framing header it actually
+    /// changes, so only those may take the `--signed-body` decision.
+    #[test]
+    fn only_the_framing_headers_the_rewrite_changes_are_reframed() {
+        let mut headers = header::HeaderMap::new();
+        headers.insert(header::CONTENT_LENGTH, "12".parse().expect("length"));
+        assert!(
+            reframed_headers(&headers, 12).is_empty(),
+            "a redacted body of the same size re-frames nothing"
+        );
+        assert_eq!(reframed_headers(&headers, 20), [header::CONTENT_LENGTH]);
+
+        headers.insert(header::CONTENT_ENCODING, "gzip".parse().expect("encoding"));
+        assert_eq!(
+            reframed_headers(&headers, 12),
+            [header::CONTENT_ENCODING],
+            "a Content-Encoding the request carries is always dropped"
+        );
+
+        // A chunked request declares no length, so the Content-Length the
+        // rewrite adds is a change from what the client sent.
+        let mut chunked = header::HeaderMap::new();
+        chunked.insert(header::TRANSFER_ENCODING, "chunked".parse().expect("te"));
+        assert_eq!(
+            reframed_headers(&chunked, 12),
+            [header::CONTENT_LENGTH, header::TRANSFER_ENCODING]
+        );
+
+        // The rewrite writes the canonical decimal, so a non-canonical value
+        // that parses to the same number is still replaced on the wire — and a
+        // repeated Content-Length is not a value the rewrite preserves either.
+        let mut non_canonical = header::HeaderMap::new();
+        non_canonical.insert(header::CONTENT_LENGTH, "012".parse().expect("length"));
+        assert_eq!(
+            reframed_headers(&non_canonical, 12),
+            [header::CONTENT_LENGTH],
+            "a leading-zero length the rewrite rewrites to `12` is not preserved"
+        );
+
+        let mut repeated = header::HeaderMap::new();
+        repeated.append(header::CONTENT_LENGTH, "12".parse().expect("length"));
+        repeated.append(header::CONTENT_LENGTH, "12".parse().expect("length"));
+        assert_eq!(reframed_headers(&repeated, 12), [header::CONTENT_LENGTH]);
     }
 
     #[test]

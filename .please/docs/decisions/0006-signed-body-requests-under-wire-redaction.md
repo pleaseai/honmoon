@@ -31,6 +31,15 @@ redaction for nearly all of it — turning a narrow compatibility problem into a
 leak. The same applies to a bare `Digest`/`Content-Digest`/`Content-MD5` with no signature: it is
 a stale validator, already handled by stripping it.
 
+The payload is only half of what redaction changes. Rewriting a body also re-frames the headers
+that *describe* it — `Content-Length` has to match the new bytes, and the replacement is decoded
+UTF-8 text rather than the client's compressed or chunked representation, so `Content-Encoding` and
+`Transfer-Encoding` are dropped. SigV4 signs *headers* even when it does not sign the payload, and
+an AWS SDK upload routinely lists `content-length` in `SignedHeaders`. The review of #80 found
+that the `UNSIGNED-PAYLOAD` exception below therefore only means the body is not signature-bound:
+those uploads still broke on the signature, which is the outcome this decision exists to prevent
+(#83). The Decision covers both halves.
+
 Re-signing is the other direction one could take: give the gateway the client's AWS credentials
 and have it produce a fresh SigV4 signature over the redacted body. That turns the gateway into a
 credential holder for every signed upstream an agent talks to, which is a larger blast radius than
@@ -70,6 +79,27 @@ that divergence should not be reachable by editing one file.
 Everything else — bearer tokens, Basic auth, API keys, bare digest headers — is not body-signed
 and keeps being redacted.
 
+**A signature over a framing header the rewrite changes takes the same decision.**
+`signed_body::signed_headers_among` parses the actually-covered list — a SigV4 `SignedHeaders`
+list (from the `Authorization` credential or a presigned `X-Amz-SignedHeaders` query parameter,
+whose `;` separators are percent-encoded), an RFC 9421 component list under a label `Signature`
+carries, or a draft-cavage `headers="…"` parameter — and asks it about
+`signed_body::REWRITTEN_FRAMING_HEADERS` (`content-length`, `content-encoding`,
+`transfer-encoding`). That constant is read by both the rewrite and the detection, for the reason
+`BODY_DIGEST_HEADERS` is. Only a header the rewrite would *actually* change counts: a
+`Content-Encoding` the request never sent, or a `Content-Length` the redacted body happens to
+match, is left as the client signed it and does not block anything. A request that trips this
+takes the same `--signed-body` decision as a body-signed one, under its own
+`X-Honmoon-Reason: signed-header-redaction`, audit rule `wire-redaction/signed-headers`, and a
+message naming the headers rather than the scheme.
+
+Two coarser rules were rejected. Treating *any* header-signing authentication as body-signed would
+refuse the entire `UNSIGNED-PAYLOAD` upload path — the case the exception exists for — and, under
+`forward`, hand those bodies to the upstream unredacted; over-inclusion here is a leak, not a
+compatibility win. Leaving the behavior documented-but-broken was rejected for the same reason the
+body case was: a signature honmoon breaks itself is an opaque upstream failure at the far end of a
+TLS-terminated tunnel.
+
 **The decision point is after redaction has been computed**, i.e. only when `outcome.redacted` is
 true. A signed request with nothing to redact is forwarded byte-identical and logs nothing, so
 signed traffic that carries no secrets is entirely unaffected.
@@ -100,12 +130,22 @@ enough to unblock the two known shapes (signed uploads vs. bearer-token API traf
   uploads to go through must remove the sensitive value or opt in with `--signed-body forward`.
   This is a behavior change for anyone running `--redact-secrets` against signed upstreams, but
   the previous behavior was an upstream rejection anyway, only less legible.
-- S3 uploads using `UNSIGNED-PAYLOAD` (the common browser/SDK streaming path) stay redactable —
-  the exception is what keeps the default from being disruptive. Their `Accept-Encoding` is
-  preserved, because SigV4 signs headers even when it does not sign the payload. But redaction
-  still rewrites `Content-Length` and drops `Content-Encoding`, so an upload whose `SignedHeaders`
-  names either of those has its signature broken anyway. "Redactable" here means the body is not
-  signature-bound, not that every such upload survives redaction. Tracked in #83.
+- S3 uploads using `UNSIGNED-PAYLOAD` (the common browser/SDK streaming path) stay redactable when
+  their `SignedHeaders` list leaves the framing headers alone — the exception is what keeps the
+  default from being disruptive. Their `Accept-Encoding` is preserved, because SigV4 signs headers
+  even when it does not sign the payload. An upload that *does* sign `content-length` or
+  `content-encoding` — the common AWS SDK shape — is refused (or forwarded intact under `forward`)
+  rather than rewritten into an opaque upstream signature failure: `block` costs those uploads the
+  same visible `403` a body-signed request gets, which is a behavior change from the release that
+  rewrote them and let the upstream reject them (#83).
+- Detection of a covered header is as header-shaped as the body detection: a scheme we do not
+  recognize whose signature covers `Content-Length` still breaks under redaction, exactly as it
+  does for the body.
+- The rewrite also strips the stale body-digest validators, and the decision does **not** yet ask
+  about those: a SigV4 request that declares `UNSIGNED-PAYLOAD` and lists a digest header such as
+  `content-md5` in its `SignedHeaders` has that header stripped without taking this decision, so
+  its signature still breaks. RFC 9421 and draft-cavage signatures over a digest are unaffected —
+  they are body-signed and take the earlier branch. Tracked in #116.
 - `forward` is a genuine fail-open hole and is logged at `warn` on every use, alongside the other
   redaction bypasses.
 - Every body-signed request keeps the client's `Accept-Encoding` — the usual `identity`
