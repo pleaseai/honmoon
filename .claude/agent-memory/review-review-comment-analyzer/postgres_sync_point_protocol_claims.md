@@ -6,7 +6,7 @@ metadata:
 ---
 
 honmoon-proxy's postgres.rs runtime (PR #112, issue #101) added a `ClientLink`
-sync-point counting barrier (`forwarded`/`delivered` + `REFUSAL_ORDER_TIMEOUT`)
+sync-point counting barrier (`forwarded`/`delivered` + `REFUSAL_ORDER_STALL_TIMEOUT`)
 so a locally injected refusal cannot overtake responses to statements the
 client pipelined ahead of it. Core mechanics verified accurate against the
 code (`forwarded_sync_point()` call sites match the StartupMessage/Q/Sync/
@@ -20,9 +20,12 @@ Two prose imprecisions flagged (both moderate confidence, not blocking):
   ack (ParseComplete/BindComplete/CommandComplete, sent before Sync) with the
   deferred ReadyForQuery sync-point. Terminate gets no response at all, ever.
 - The claim that a Sync sent mid-COPY is "the one" message whose sync point
-  the backend "legitimately swallows" is an unverified/likely-inaccurate PG
-  protocol claim (mid-copy Sync is a protocol violation → error, not a
-  silent legitimate swallow), with no test/citation backing it.
+  the backend "legitimately swallows" was flagged here as likely inaccurate.
+  It is in fact correct: the PostgreSQL v3 protocol spec says the backend
+  ignores Flush *and* Sync messages received during copy-in mode
+  (postgresql.org, "Frontend/Backend Protocol" → COPY Operations). No error
+  is raised, so the sync point simply never produces a ReadyForQuery — which
+  is why the barrier needs a stall bound rather than an unbounded wait.
 
 **Why:** these are the kind of assertion the reviewer instructions asked to
 verify against the real PG v3 protocol; worth re-checking if this file's
