@@ -1,0 +1,23 @@
+AGENTS.md
+  s_4d4ce11359883c::t_eb014d79ebb8c7 38
+crates/AGENTS.md
+  s_4d4ce11359883c::t_eb014d79ebb8c7 24
+ARCHITECTURE.md
+  s_4d4ce11359883c::t_eb014d79ebb8c7 60,79
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "bdfbcecb1b3b48e79ff572d71946f3a1f16ccecc",
+  "prompts": {},
+  "sessions": {
+    "s_4d4ce11359883c": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d8cbd35d-8ae4-4ea7-be45-710c9ce6a90b",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
