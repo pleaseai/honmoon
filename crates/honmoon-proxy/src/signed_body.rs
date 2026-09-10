@@ -168,12 +168,22 @@ fn sigv4_signed_header_lists(headers: &HeaderMap, uri: &Uri) -> Vec<String> {
             })
         })
         .collect();
-    if let Some(query) = uri.query() {
-        lists.extend(query.split('&').filter_map(|pair| {
-            let (name, value) = pair.split_once('=').unwrap_or((pair, ""));
-            name.eq_ignore_ascii_case("X-Amz-SignedHeaders")
-                .then(|| decode_percent_separators(value))
-        }));
+    // The query list counts only on a request that actually carries SigV4.
+    // `X-Amz-SignedHeaders` is a bare query parameter any client can append to
+    // any URL, and a covered framing header decides block-or-forward: without
+    // this gate a crafted `?X-Amz-SignedHeaders=content-length` on an ordinary
+    // request would earn a spurious 403 under `block` and, under `forward`,
+    // send its unredacted body upstream. The `Authorization` branch above is
+    // already gated the same way, and `aws_sigv4_authenticates` is the module's
+    // one definition of "this request is SigV4".
+    if aws_sigv4_authenticates(headers, uri) {
+        if let Some(query) = uri.query() {
+            lists.extend(query.split('&').filter_map(|pair| {
+                let (name, value) = pair.split_once('=').unwrap_or((pair, ""));
+                name.eq_ignore_ascii_case("X-Amz-SignedHeaders")
+                    .then(|| decode_percent_separators(value))
+            }));
+        }
     }
     lists
 }
@@ -285,7 +295,7 @@ fn message_signature_present(headers: &HeaderMap) -> bool {
 /// A member is `label=value`, members separated by a top-level comma (see
 /// [`split_top_level_params`]). The label is the token before the member's
 /// first `=`, trimmed of whitespace. Labels are normalized to lowercase for
-/// the comparison in [`message_signature_covers_body_digest`] — dictionary
+/// the comparison in [`message_signature_covers`] — dictionary
 /// keys are case-sensitive tokens per Structured Fields, but signature labels
 /// are lowercase in practice, and both sides of that comparison are
 /// normalized identically, so this cannot turn a mismatch into a false match.
@@ -1176,6 +1186,24 @@ mod tests {
         );
     }
 
+    /// draft-cavage and RFC 9421 both cover `transfer-encoding` like any other
+    /// header the rewrite drops.
+    #[test]
+    fn a_signed_transfer_encoding_is_covered_like_the_other_framing_headers() {
+        let headers = [
+            (
+                "authorization",
+                "AWS4-HMAC-SHA256 Credential=AKIA/20260907/us-east-1/s3/aws4_request, \
+                 SignedHeaders=host;transfer-encoding;x-amz-date, Signature=abc",
+            ),
+            ("x-amz-content-sha256", "UNSIGNED-PAYLOAD"),
+        ];
+        assert_eq!(
+            signed_framing(&headers, "https://s3.amazonaws.com/b/k"),
+            ["transfer-encoding"]
+        );
+    }
+
     /// Bearer-token traffic signs nothing, so redaction re-frames it freely —
     /// the same over-inclusion trap [`body_signature_scheme`] avoids.
     #[test]
@@ -1189,6 +1217,29 @@ mod tests {
                 "https://api.example.com/v1"
             )
             .is_empty()
+        );
+    }
+
+    /// `X-Amz-SignedHeaders` is a bare query parameter, so an unsigned request
+    /// can carry one. Honoring it without SigV4 evidence would earn a spurious
+    /// 403 under `block` and forward the body unredacted under `forward`.
+    #[test]
+    fn signed_headers_query_param_without_sigv4_evidence_signs_nothing() {
+        assert!(
+            signed_framing(
+                &[("authorization", "Bearer sk-live-token")],
+                "https://api.example.com/v1?X-Amz-SignedHeaders=content-length"
+            )
+            .is_empty(),
+            "a query parameter alone is not a signature"
+        );
+        assert!(
+            signed_framing(
+                &[],
+                "https://api.example.com/v1?X-Amz-SignedHeaders=content-length"
+            )
+            .is_empty(),
+            "nor is it one on an unauthenticated request"
         );
     }
 }
