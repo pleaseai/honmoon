@@ -1,0 +1,37 @@
+.please/docs/decisions/0007-inline-postgresql-runtime-semantics.md
+  s_04170a69e09558::t_3a4232456ee3d2 106-111
+.please/docs/tracks/tech-debt-tracker.md
+  s_04170a69e09558::t_10bc2baab5a740 18
+README.md
+  s_04170a69e09558::t_d88e92c597ec63 157-160,184-186,238,244-264,283-286
+docs/roadmap.md
+  s_04170a69e09558::t_79596aea3b3307 76-82,89-92,116-117,130
+wiki/getting-started/quick-start.md
+  s_77fa50133d78ff::t_667657cb04e152 52-53,66,68-74,76-77,80,83-96
+wiki/llms-full.txt
+  s_04170a69e09558::t_2538c3862d2966 2395-2396,2409,2411-2417,2419-2420,2423,2426-2439
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "cf3c67350ca8cf59770b6dc3aeea1a94d2537856",
+  "prompts": {},
+  "sessions": {
+    "s_04170a69e09558": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "16addd4e-5aca-4e97-a602-05d3ea9c9f94",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    },
+    "s_77fa50133d78ff": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "8d332f43-30a7-438d-bd53-412a7eb356d8",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}

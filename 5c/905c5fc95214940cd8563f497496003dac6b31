@@ -1,0 +1,20 @@
+.please/docs/decisions/0008-parse-sql-with-postgresql-grammar.md
+  s_9db9412633686d::t_0dcd354eaf7221 78-81,92
+  s_9db9412633686d::t_7a2c6c4ecc0e2d 93-95
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "5c905c5fc95214940cd8563f497496003dac6b31",
+  "prompts": {},
+  "sessions": {
+    "s_9db9412633686d": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "48cf2c87-6132-47ec-b772-0666fa6084c0",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}

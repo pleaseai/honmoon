@@ -1,0 +1,24 @@
+crates/honmoon-proxy/tests/socks.rs
+  s_9db9412633686d::t_f0fd7ef54399c1 190-202,650-665,667-669
+  s_9db9412633686d::t_5848dcec5c9e36 666
+  s_9db9412633686d::t_30ad7b63446856 670
+crates/honmoon-proxy/src/socks.rs
+  s_9db9412633686d::t_9caccc491b1765 18-22,173-179,186-187,192-198,396-455
+  s_9db9412633686d::t_9c984749792a45 456-457
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "ed3d4ea27f5b2cd905d57da0263b7ce47bbf5515",
+  "prompts": {},
+  "sessions": {
+    "s_9db9412633686d": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "48cf2c87-6132-47ec-b772-0666fa6084c0",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}

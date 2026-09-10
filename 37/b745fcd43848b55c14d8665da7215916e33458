@@ -1,0 +1,30 @@
+crates/honmoon-proxy/src/mitm.rs
+  s_04170a69e09558::t_71e0a53dbc0ebc 56-57
+  s_04170a69e09558::t_34f6498f4bceee 67-69
+  s_04170a69e09558::t_d0a28694262f5c 142-144
+  s_04170a69e09558::t_49f482cdf7747b 310-313,318,327,330,348,357,364,372,381,402-435,462,595,599-611,626,640,664,667-679,981-1004
+crates/honmoon-proxy/src/signed_body.rs
+  s_04170a69e09558::t_10440474ade25f 1-262
+crates/honmoon-proxy/src/gateway.rs
+  s_04170a69e09558::t_dbbfb9dae83b38 63-77,88-89,101,104-109
+crates/honmoon-proxy/src/lib.rs
+  s_04170a69e09558::t_fb4cbffe51f3b2 12
+crates/honmoon-proxy/tests/redaction.rs
+  s_04170a69e09558::t_41d0984b679541 15,20-21,158-164,168,808-901
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "37b745fcd43848b55c14d8665da7215916e33458",
+  "prompts": {},
+  "sessions": {
+    "s_04170a69e09558": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "16addd4e-5aca-4e97-a602-05d3ea9c9f94",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}

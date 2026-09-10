@@ -1,0 +1,21 @@
+.please/docs/tracks/tech-debt-tracker.md
+  s_305b7db7340695::t_7f5b726f10344f 19
+.github/dependabot.yml
+  s_305b7db7340695::t_351fbd1ce6473a 13,15
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "ed65e289e525f60a9886f4cca2865139cfb762b2",
+  "prompts": {},
+  "sessions": {
+    "s_305b7db7340695": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d07e87d8-8e5d-4691-8e52-3b3fe0db5008",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}

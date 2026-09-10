@@ -1,0 +1,19 @@
+crates/honmoon-core/src/lib.rs
+  s_04170a69e09558::t_3ad3b9f479db52 6-7,51-55,60-82,172-174,176-214,264-320
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "64cf475ad780c58933e45025a6cccdce19afe7af",
+  "prompts": {},
+  "sessions": {
+    "s_04170a69e09558": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "16addd4e-5aca-4e97-a602-05d3ea9c9f94",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}

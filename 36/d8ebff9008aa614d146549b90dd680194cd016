@@ -1,0 +1,27 @@
+crates/honmoon-core/Cargo.toml
+  s_9db9412633686d::t_f552e3f112e642 19
+Cargo.toml
+  s_9db9412633686d::t_f552e3f112e642 47-49
+Cargo.lock
+  s_9db9412633686d::t_f1408aac1e1061 117-125,1037,1484-1492,1622-1631,1713-1732,2079-2101
+crates/honmoon-core/src/protocols.rs
+  s_9db9412633686d::t_ef384488a822f1 11-13,47-54,58,60-61,64-195,197-225,230-232,242-248,255,337-344,346-355
+  s_9db9412633686d::t_23fc39919ba644 55-57,59,196,226-229,233-241,787-809
+  s_9db9412633686d::t_723d52c542f7c1 744-747,750-786,810-837,839
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "36d8ebff9008aa614d146549b90dd680194cd016",
+  "prompts": {},
+  "sessions": {
+    "s_9db9412633686d": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "48cf2c87-6132-47ec-b772-0666fa6084c0",
+        "model": "claude-opus-5"
+      },
+      "human_author": null
+    }
+  }
+}

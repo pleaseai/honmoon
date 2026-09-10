@@ -1,0 +1,33 @@
+scripts/bump-version.ts
+  s_a7fb65251c9e5b::t_df3297ca4f81df 93-94,97
+  s_a7fb65251c9e5b::t_cbe0b86f88f0ae 120-122
+  s_a7fb65251c9e5b::t_0995440099c860 70-72
+  s_a7fb65251c9e5b::t_5ce4fbfe5583db 20-34,49-51,56,61-63,69,80-83,89-92,98-101,104,131-132,139-141,155,158-162
+.github/workflows/release.yml
+  s_a7fb65251c9e5b::t_5ce0fe8976a492 46-49,54
+  s_a7fb65251c9e5b::t_0cb7ee6c9f90d8 170-172
+.gitignore
+  s_a7fb65251c9e5b::t_0cb7ee6c9f90d8 20-23
+scripts/bump-version.test.ts
+  s_a7fb65251c9e5b::t_df3297ca4f81df 102-106
+  s_a7fb65251c9e5b::t_a35e5e3afb44ff 53-59,70-84,95-100,107-113,155-161,163
+  s_a7fb65251c9e5b::t_96555e3d3cbd74 101,162
+.worktreeinclude
+  s_a7fb65251c9e5b::t_0cb7ee6c9f90d8 14
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "789e996cf826cd77ab649b722834d483866be5ca",
+  "prompts": {},
+  "sessions": {
+    "s_a7fb65251c9e5b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "93717c04-ce5c-45f2-b917-2065c359cc01",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}

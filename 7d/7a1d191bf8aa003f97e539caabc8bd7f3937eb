@@ -1,0 +1,27 @@
+crates/honmoon-proxy/src/runtime/postgres.rs
+  s_9db9412633686d::t_4f5276d1f4c67a 618-622
+  s_9db9412633686d::t_8eb2885e3198e9 29-31,313-323,369-382,389,604-617,623
+  s_9db9412633686d::t_e0b673fbdf9d50 624
+crates/honmoon-core/src/protocols.rs
+  s_9db9412633686d::t_8aa8b3ff8b01e2 929
+  s_9db9412633686d::t_9eef4826f20701 11-14,140-215,223-225,232,251,255,258,878-928
+crates/honmoon-proxy/tests/socks.rs
+  s_9db9412633686d::t_ba8d7b9bded8e8 449
+  s_9db9412633686d::t_5356396b9ed7ea 450-470
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "7d7a1d191bf8aa003f97e539caabc8bd7f3937eb",
+  "prompts": {},
+  "sessions": {
+    "s_9db9412633686d": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "48cf2c87-6132-47ec-b772-0666fa6084c0",
+        "model": "claude-opus-5"
+      },
+      "human_author": null
+    }
+  }
+}

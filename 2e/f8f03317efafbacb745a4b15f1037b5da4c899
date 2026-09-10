@@ -1,0 +1,45 @@
+packages/claude-plugin/hooks/honmoon.test.ts
+  s_9db9412633686d::t_3339ec5b6526a2 1-433
+packages/claude-plugin/package.json
+  s_9db9412633686d::t_3339ec5b6526a2 5-12
+.claude/agent-memory/github-pr-manager/pr-conventions-honmoon.md
+  s_9db9412633686d::t_3339ec5b6526a2 25-35
+packages/claude-plugin/hooks/claude-code-grep.d.ts
+  s_9db9412633686d::t_3339ec5b6526a2 1-16
+packages/claude-plugin/tsconfig.json
+  s_9db9412633686d::t_3339ec5b6526a2 1-25
+packages/claude-plugin/hooks/hooks.json
+  s_9db9412633686d::t_3339ec5b6526a2 2
+packages/claude-plugin/.claude/types/claude-code.d.ts
+  s_9db9412633686d::t_3339ec5b6526a2 1-5592
+packages/claude-plugin/.claude-plugin/plugin.json
+  s_9db9412633686d::t_3339ec5b6526a2 13-50
+packages/claude-plugin/tsconfig.test.json
+  s_9db9412633686d::t_3339ec5b6526a2 1-14
+packages/claude-plugin/README.md
+  s_9db9412633686d::t_3339ec5b6526a2 62-67,151-242,264-270
+packages/claude-plugin/hooks/honmoon.ts
+  s_9db9412633686d::t_3339ec5b6526a2 1-634
+.please/docs/research/md/001-claude-code-function-hooks-for-honmoon.md
+  s_9db9412633686d::t_3339ec5b6526a2 1-109
+.please/docs/research/index.md
+  s_9db9412633686d::t_3339ec5b6526a2 1-5
+bun.lock
+  s_9db9412633686d::t_fed184e14e4f1f 74-76,1045-1046,1093-1094
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "2ef8f03317efafbacb745a4b15f1037b5da4c899",
+  "prompts": {},
+  "sessions": {
+    "s_9db9412633686d": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "48cf2c87-6132-47ec-b772-0666fa6084c0",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
