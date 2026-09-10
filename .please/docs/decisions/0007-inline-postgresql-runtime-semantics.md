@@ -109,5 +109,33 @@ that fails to parse: it is refused rather than forwarded blind.
   the hostname into the handshake where the `endpoints` lookup above happens. A client that reads
   neither proxy variable — `psql` among them — reaches nothing under `run` at all, which is
   ADR-0005's fail-closed default rather than a gap in this one.
+- **A held statement is watched for its client's disconnect.** A `pause` verdict holds the
+  statement mid-stream, which parks the client-read side of the session inside the `select!` the
+  runtime races against its upstream relay — so a client that leaves completes neither arm and used
+  to go unnoticed until `pause_timeout`, long enough for a human to approve a statement for a client
+  that was already gone. The hold therefore takes an abandonment signal, and the runtime feeds it a
+  read on the client socket. Bytes the client pipelined behind its held statement are buffered and
+  handed back to the message loop rather than consumed. Three consequences follow:
+  - **The watch cannot be flooded into switching itself off.** A client may pipeline up to
+    `MAX_HELD_PIPELINE` (64 KiB) behind its held statement; past that the hold ends and the
+    statement is **refused**. Parking the watch there instead would hand the client the threshold —
+    flood past it, leave, and the hold runs to `pause_timeout` and can still be approved, which is
+    the defect this whole mechanism exists to remove. Refusing rather than closing the socket keeps
+    the session usable, as every other refusal here does. The cap is a sixteenth of the frame cap
+    because every held connection can pin it at once: what has to stay bounded is the aggregate
+    across the connection limit, not what one unusually generous client might pipeline.
+  - **A client's half-close ends its hold.** The watch cannot tell a peer that closed its write half
+    while still reading from one that is gone — both arrive as EOF — and reading EOF as "still
+    waiting" would miss the ordinary disconnect, which is exactly what EOF is. So a client that
+    shuts down its write half while one of its statements is held loses that statement, where an
+    unheld one would still have been answered under the drain. It is told so: the runtime writes the
+    usual `ErrorResponse`/`ReadyForQuery` pair before ending the session, so a client that is still
+    reading gets an explanation rather than a truncated connection. That write is bounded: a client
+    that half-closed and then stopped reading must not be able to pin the session open by refusing
+    to accept its own answer.
+  - **A decision in hand beats a simultaneous disconnect.** The hold polls its decision channel
+    first and, when the abandonment signal wins, checks that channel once more before giving up. A
+    resolution that lands between those two polls is still honoured, so the audit log does not
+    record an abandonment over an approval a human really made.
 - Inspection costs one buffered copy per statement, bounded at 1 MiB. Bulk paths (`COPY`) stay
   zero-copy, which is where the bytes actually are.

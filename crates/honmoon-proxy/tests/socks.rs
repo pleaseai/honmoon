@@ -613,6 +613,51 @@ fn pause_rule_holds_until_approved_then_forwards() {
     assert_eq!(read_until_ready(&mut s)[0].0, b'C');
 }
 
+/// Block until something is held for approval, or fail the test.
+fn wait_for_pending(approvals: &ApprovalRegistry) -> honmoon_proxy::approval::PendingApproval {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while Instant::now() < deadline {
+        if let Some(pending) = approvals.pending().first() {
+            return pending.clone();
+        }
+        thread::sleep(Duration::from_millis(20));
+    }
+    panic!("statement was never held for approval");
+}
+
+#[test]
+fn pause_rule_releases_its_hold_when_the_client_disconnects() {
+    let (upstream, sql) = start_pg_upstream();
+    let (proxy, approvals) = start_socks_proxy(&policy_yaml(upstream));
+
+    let mut s = pg_connect(proxy, upstream);
+    s.write_all(&simple_query("DELETE FROM sessions")).unwrap();
+
+    // The client walks away while a human is still deciding. Holding mid-stream
+    // parks the client-read side of the session inside a `select!` whose other
+    // arm — the upstream relay — is perfectly healthy, so nothing used to
+    // notice, and an approval arriving afterwards still sent the `DELETE` to the
+    // database (#102).
+    let pending = wait_for_pending(&approvals);
+    drop(s);
+
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while Instant::now() < deadline && !approvals.is_empty() {
+        thread::sleep(Duration::from_millis(20));
+    }
+    assert!(
+        approvals.is_empty(),
+        "a client that left must not leave its statement held for approval"
+    );
+    assert!(
+        approvals
+            .resolve(pending.id, ApprovalDecision::Approve)
+            .is_none(),
+        "a human can no longer approve a statement whose client is gone"
+    );
+    assert_upstream_silent(&sql);
+}
+
 #[test]
 fn over_cap_query_frame_is_refused() {
     let (upstream, sql) = start_pg_upstream();

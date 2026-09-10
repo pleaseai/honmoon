@@ -19,6 +19,10 @@
 //! normal permission error and the session stays usable — closing the socket
 //! would surface as an unexplained connection reset.
 //!
+//! A statement held for approval is held *mid-stream*, so the hold also watches
+//! the client socket for the disconnect that would otherwise let a human approve
+//! a statement for a client that had already left. See [`HeldReader`].
+//!
 //! [ADR-0007]: ../../../../.please/docs/decisions/0007-inline-postgresql-runtime-semantics.md
 
 use std::sync::Arc;
@@ -34,7 +38,7 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio::sync::Mutex;
 
-use crate::approval::{HoldOutcome, hold};
+use crate::approval::{HoldOutcome, hold_until};
 use crate::gateway::GatewayState;
 
 /// Largest `Q`/`P` frame honmoon will buffer to inspect. A larger one is
@@ -60,6 +64,30 @@ const SQLSTATE_INSUFFICIENT_PRIVILEGE: &str = "42501";
 
 /// Copy buffer for the pass-through paths.
 const COPY_CHUNK: usize = 16 * 1024;
+
+/// How much traffic a client may pipeline behind a held statement while
+/// [`HeldReader::watch_disconnect`] watches for its disconnect. A client
+/// waiting for the answer to a paused statement sends at most the rest of its
+/// extended-protocol batch (`B`/`D`/`E`/`S`), orders of magnitude below this.
+/// Sized to match [`MAX_BUFFERED_BACKEND_MESSAGE`] rather than the 1 MiB frame
+/// cap: every held connection can pin this much at once, so the bound that
+/// matters is the aggregate across the connection cap, not what one generous
+/// client might send.
+///
+/// Passing it **ends the hold and refuses the statement** rather than parking
+/// the watch. Parking would let the client pick the threshold: flooding past
+/// the cap and then leaving would restore exactly the behaviour #102 is about,
+/// with the hold running to `pause_timeout` and a human approving a statement
+/// for a client already gone. Refusing keeps the session alive, which is what
+/// ADR-0007 asks of every refusal.
+const MAX_HELD_PIPELINE: usize = MAX_BUFFERED_BACKEND_MESSAGE;
+
+/// How long the courtesy answer to an abandoned hold is given to reach the
+/// client. The client is gone or has half-closed, so it may not be reading at
+/// all: an unbounded write would block on a full send buffer — or on the lock
+/// the upstream relay is holding while blocked on the same socket — and pin the
+/// session and its upstream connection open for good.
+const ABANDONED_NOTICE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
 /// How long the upstream→client relay is given to deliver the database's last
 /// response after the client stopped sending. Bounded so a server that never
@@ -200,8 +228,9 @@ async fn upstream_to_client(mut upstream: tokio::net::tcp::OwnedReadHalf, link: 
 /// traffic reached the upstream, so the database may still owe a response and
 /// the caller should drain. Returns `false` when nothing is owed: the session
 /// ended during startup (a relayed `CancelRequest`, an unrecognized packet, or
-/// a client that left before negotiating), or the connection was reset mid-
-/// session, where no one is left to read the last response.
+/// a client that left before negotiating), the connection was reset mid-
+/// session, or the client left while a statement of its was held for approval —
+/// in none of which is anyone left to read the last response.
 async fn client_to_upstream<R, W>(
     state: &GatewayState,
     client: &mut R,
@@ -276,13 +305,146 @@ where
     }
 }
 
+/// The client's read half plus a pushback buffer.
+///
+/// While a statement is held for approval nothing else reads the client socket,
+/// and the hold sits inside the `select!` arm [`run_postgres`] races against a
+/// still-healthy upstream relay — so neither arm completes and a disconnect goes
+/// unnoticed. [`watch_disconnect`](Self::watch_disconnect) closes that window by
+/// reading the socket *during* the hold. Anything the client pipelined behind
+/// its held statement lands in `pending` and is handed back by the next read, so
+/// watching for the disconnect cannot swallow traffic the message loop still
+/// owes the upstream.
+struct HeldReader<R> {
+    inner: R,
+    /// Bytes read while watching, not yet handed back.
+    pending: Vec<u8>,
+    /// How much of `pending` the message loop has already taken.
+    taken: usize,
+}
+
+impl<R: AsyncRead + Unpin> HeldReader<R> {
+    fn new(inner: R) -> Self {
+        Self {
+            inner,
+            pending: Vec::new(),
+            taken: 0,
+        }
+    }
+
+    /// Bytes buffered but not yet handed back.
+    fn buffered(&self) -> usize {
+        debug_assert!(self.taken <= self.pending.len(), "pushback cursor overran");
+        self.pending.len() - self.taken
+    }
+
+    /// Whether the watch ended because the client filled the pipeline budget
+    /// rather than because it left.
+    ///
+    /// [`watch_disconnect`](Self::watch_disconnect) never reads past the budget,
+    /// so it can only leave the buffer exactly full by having stopped on the
+    /// cap — which makes this an unambiguous reading of why it returned.
+    fn pipeline_full(&self) -> bool {
+        self.buffered() >= MAX_HELD_PIPELINE
+    }
+
+    /// Resolve once the client is gone, buffering whatever it pipelines first.
+    ///
+    /// Stays pending while the client is merely quiet — a hold that no client
+    /// abandoned must still run to its own timeout. Resolves early once the
+    /// client has pipelined [`MAX_HELD_PIPELINE`] bytes, so a flood ends the
+    /// hold (fail-closed) instead of growing the buffer without bound or
+    /// switching the watch off; [`pipeline_full`](Self::pipeline_full) tells the
+    /// two endings apart.
+    ///
+    /// Cancel-safe: a read that is dropped before it completes has taken
+    /// nothing off the socket, so the message loop reads the same bytes later.
+    ///
+    /// Holds `pending.len() == buffered()` for as long as it runs, so the budget
+    /// bounds the whole allocation rather than only its unread tail.
+    async fn watch_disconnect(&mut self) {
+        // Drop what the message loop already took. Without this the budget below
+        // would bound only the unread tail, so a client alternating pauses with
+        // partial reads could add a whole budget's worth per hold on top of a
+        // consumed prefix that is never reclaimed, and `pending` would grow
+        // without bound across a session.
+        self.pending.drain(..self.taken);
+        self.taken = 0;
+
+        let mut chunk = vec![0u8; COPY_CHUNK];
+        loop {
+            // Read no further than the budget, so the buffer lands exactly on
+            // the cap rather than one chunk past it.
+            let budget = MAX_HELD_PIPELINE - self.buffered();
+            if budget == 0 {
+                tracing::warn!(
+                    cap = MAX_HELD_PIPELINE,
+                    "client pipelined past the hold watch cap; ending the hold"
+                );
+                return;
+            }
+            let want = budget.min(chunk.len());
+            match self.inner.read(&mut chunk[..want]).await {
+                // A clean end of input: nobody is left to receive the answer to
+                // the held statement.
+                Ok(0) => return,
+                // A reset or an aborted connection. Same conclusion, but say
+                // which error reached us — an operator reconstructing a batch of
+                // abandoned holds has nothing else to go on.
+                Err(e) => {
+                    tracing::debug!(error = %e, "client read failed while held");
+                    return;
+                }
+                Ok(n) => self.pending.extend_from_slice(&chunk[..n]),
+            }
+        }
+    }
+}
+
+impl<R: AsyncRead + Unpin> AsyncRead for HeldReader<R> {
+    fn poll_read(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &mut tokio::io::ReadBuf<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        if self.buffered() > 0 {
+            let me = &mut *self;
+            let n = me.buffered().min(buf.remaining());
+            buf.put_slice(&me.pending[me.taken..me.taken + n]);
+            me.taken += n;
+            if me.taken == me.pending.len() {
+                // Release the capacity, not just the length: this reader lives
+                // for the whole session, so a `clear()` would pin a held
+                // statement's pipeline buffer until the connection closed.
+                me.pending = Vec::new();
+                me.taken = 0;
+            }
+            return std::task::Poll::Ready(Ok(()));
+        }
+        std::pin::Pin::new(&mut self.inner).poll_read(cx, buf)
+    }
+}
+
+/// What the message loop does with a frame the policy has decided.
+enum Disposition {
+    /// Forward it to the database.
+    Forward,
+    /// Refuse it; the client has been answered and the session goes on.
+    Refused,
+    /// The client left while its statement was held for approval. Nothing may
+    /// be forwarded on its behalf and there is nobody to answer, so the session
+    /// ends here.
+    ClientGone,
+}
+
 /// Frame the client's messages and decide the ones that carry SQL.
 ///
 /// Returns `true` only for a *clean* end of input between messages: the client
 /// finished and may still be waiting for the response to its last query. A
-/// reset or aborted connection returns `false` — nothing is waiting for that
-/// response, and draining would pin an upstream connection and a task for the
-/// whole `DRAIN_TIMEOUT`.
+/// reset or aborted connection returns `false`, as does a client that left
+/// while one of its statements was held for approval — nothing is waiting for
+/// that response, and draining would pin an upstream connection and a task for
+/// the whole `DRAIN_TIMEOUT`.
 async fn message_loop<R, W>(
     state: &GatewayState,
     client: &mut R,
@@ -294,10 +456,13 @@ where
     R: AsyncRead + Unpin,
     W: AsyncWrite + Unpin,
 {
+    // From here on the client is read through the pushback buffer an approval
+    // hold fills while it watches for a disconnect.
+    let mut client_reader = HeldReader::new(client);
     loop {
         // Every frontend message after startup is `tag(1) | len(4, self-inclusive)`.
         let mut tag = [0u8; 1];
-        match client.read_exact(&mut tag).await {
+        match client_reader.read_exact(&mut tag).await {
             Ok(_) => {}
             // A clean end of input on a message boundary: the client sent
             // everything it had, and the database may still owe a response.
@@ -309,7 +474,7 @@ where
             Err(_) => return Ok(false),
         }
         let mut len_bytes = [0u8; 4];
-        client.read_exact(&mut len_bytes).await?;
+        client_reader.read_exact(&mut len_bytes).await?;
         let len = u32::from_be_bytes(len_bytes) as usize;
         if len < 4 {
             // A protocol violation, not a clean shutdown: say so rather than
@@ -326,21 +491,21 @@ where
             // Streamed without buffering — `CopyData` can be arbitrarily large.
             upstream.write_all(&tag).await?;
             upstream.write_all(&len_bytes).await?;
-            copy_exact(client, upstream, payload_len).await?;
+            copy_exact(&mut client_reader, upstream, payload_len).await?;
             continue;
         }
 
         if len > MAX_PG_FRAME {
             // Fail closed: discard exactly the declared bytes so the stream
             // stays framed, then refuse.
-            discard_exact(client, payload_len).await?;
+            discard_exact(&mut client_reader, payload_len).await?;
             record(state, facts, None, Decision::Denied, Verdict::Deny);
             refuse(link, "honmoon: query frame exceeds inspection cap").await?;
             continue;
         }
 
         let mut payload = vec![0u8; payload_len];
-        client.read_exact(&mut payload).await?;
+        client_reader.read_exact(&mut payload).await?;
 
         // A simple query may legally carry several statements, but `parse_sql`
         // only ever sees the first verb — `SELECT 1; DROP TABLE users` would be
@@ -376,10 +541,15 @@ where
             continue;
         };
 
-        if decide(state, facts, sql, link).await? {
-            upstream.write_all(&tag).await?;
-            upstream.write_all(&len_bytes).await?;
-            upstream.write_all(&payload).await?;
+        match decide(state, facts, sql, link, &mut client_reader).await? {
+            Disposition::Forward => {
+                upstream.write_all(&tag).await?;
+                upstream.write_all(&len_bytes).await?;
+                upstream.write_all(&payload).await?;
+            }
+            Disposition::Refused => {}
+            // No drain: the client that would have read the answer is gone.
+            Disposition::ClientGone => return Ok(false),
         }
     }
 }
@@ -435,13 +605,22 @@ fn payload_carries_multiple_statements(payload: &[u8]) -> bool {
     frame_query(b'Q', payload).is_some_and(carries_multiple_statements)
 }
 
-/// Apply the policy to one statement. Returns whether the frame may be forwarded.
-async fn decide(
+/// Apply the policy to one statement, telling the caller what to do with its
+/// frame.
+///
+/// `client` is only touched on the `pause` path, where the hold watches it for
+/// the disconnect that would otherwise let an approved statement run for a
+/// client that is already gone.
+async fn decide<R>(
     state: &GatewayState,
     base: &Facts,
     sql: SqlFacts,
     link: &ClientLink,
-) -> std::io::Result<bool> {
+    client: &mut HeldReader<R>,
+) -> std::io::Result<Disposition>
+where
+    R: AsyncRead + Unpin,
+{
     let facts = Facts {
         sql: Some(sql),
         ..base.clone()
@@ -477,17 +656,53 @@ async fn decide(
             let host = facts.domain.clone().unwrap_or_default();
             let summary = FactsSummary::from(&facts);
             let approval = approval_summary(&facts, outcome.rule.as_deref());
-            matches!(
-                hold(state, &host, summary, outcome.rule.clone(), approval).await,
-                HoldOutcome::Approved
+            let held = hold_until(
+                state,
+                &host,
+                summary,
+                outcome.rule.clone(),
+                approval,
+                client.watch_disconnect(),
             )
+            .await;
+            match held {
+                HoldOutcome::Approved => true,
+                // The client flooded the watch budget instead of leaving, so it
+                // may well still be there. Fail closed on the statement, but
+                // keep the session: ADR-0007 asks that a refusal never be
+                // collateral damage for the connection.
+                HoldOutcome::Abandoned if client.pipeline_full() => false,
+                HoldOutcome::Abandoned => {
+                    // The client is gone — or it half-closed and is still
+                    // reading, which arrives as the same EOF and cannot be told
+                    // apart on this socket. Answer before ending the session, so
+                    // a client that is still there learns why its statement
+                    // never ran instead of seeing the connection truncated. One
+                    // that really left just makes this write fail, harmlessly.
+                    // Bounded: a client that half-closed and then stopped
+                    // reading would otherwise block this write — directly, or on
+                    // the writer lock the relay holds while blocked on the same
+                    // socket — and the session would never end at all.
+                    let _ = tokio::time::timeout(
+                        ABANDONED_NOTICE_TIMEOUT,
+                        refuse(
+                            link,
+                            "honmoon: connection ended while the statement was held for approval",
+                        ),
+                    )
+                    .await;
+                    return Ok(Disposition::ClientGone);
+                }
+                HoldOutcome::Rejected | HoldOutcome::QueueFull => false,
+            }
         }
     };
 
     if !allowed {
         refuse(link, &denial_message(outcome.rule.as_deref())).await?;
+        return Ok(Disposition::Refused);
     }
-    Ok(allowed)
+    Ok(Disposition::Forward)
 }
 
 /// Record one decision against the statement's facts.
@@ -595,6 +810,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::approval::ApprovalDecision;
 
     /// A `ClientLink` backed by a real loopback connection: the writer is a
     /// concrete `OwnedWriteHalf`, so it cannot be faked with an in-memory buffer.
@@ -702,6 +918,190 @@ mod tests {
             drain,
             "the startup packet reached the upstream, so its response must still be drained"
         );
+    }
+
+    /// A `Q` frame carrying `sql`, as the client puts it on the wire.
+    fn simple_query(sql: &str) -> Vec<u8> {
+        let mut frame = vec![b'Q'];
+        frame.extend_from_slice(&((5 + sql.len()) as u32).to_be_bytes());
+        frame.extend_from_slice(sql.as_bytes());
+        frame.push(0);
+        frame
+    }
+
+    /// A policy that holds every `DELETE` for a human.
+    fn pause_delete_policy() -> honmoon_core::Policy {
+        honmoon_core::Policy::from_yaml(
+            "egress:\n  default: allow\nrules:\n  - name: review-delete\n    endpoint: '*'\n    condition: \"sql.verb == 'DELETE'\"\n    verdict: pause\n",
+        )
+        .expect("valid policy")
+    }
+
+    #[tokio::test]
+    async fn a_client_that_leaves_mid_hold_cancels_its_approval_and_forwards_nothing() {
+        let state = GatewayState::new(pause_delete_policy());
+        // The client sends a statement the policy pauses, then goes away. The
+        // hold used to sit there until `pause_timeout` regardless — long enough
+        // for a human to approve a statement for a client that no longer
+        // existed (#102). The tie between a decision and a simultaneous
+        // disconnect is a separate question, settled by
+        // `a_decision_already_in_hand_beats_a_simultaneous_abandonment`.
+        let mut client = std::io::Cursor::new(simple_query("DELETE FROM sessions"));
+        let mut upstream: Vec<u8> = Vec::new();
+        let (link, mut peer) = loopback_link().await;
+
+        let drain = message_loop(&state, &mut client, &mut upstream, &link, &Facts::default())
+            .await
+            .unwrap();
+
+        assert!(
+            upstream.is_empty(),
+            "a statement whose client is gone must never reach the database"
+        );
+        assert!(
+            !drain,
+            "nobody is left to read the answer, so nothing is owed"
+        );
+        assert!(
+            state.approvals.is_empty(),
+            "the abandoned hold released its approval slot"
+        );
+        assert!(
+            state
+                .approvals
+                .resolve(1, ApprovalDecision::Approve)
+                .is_none(),
+            "a human can no longer approve the statement after its client left"
+        );
+
+        // A client that half-closed and is still reading writes the same EOF, so
+        // the session is not truncated in silence: whoever is still there is
+        // told why the statement never ran.
+        let mut answer = [0u8; 1];
+        peer.read_exact(&mut answer)
+            .await
+            .expect("an abandoned client is still answered");
+        assert_eq!(answer[0], b'E');
+    }
+
+    #[tokio::test]
+    async fn a_second_watch_does_not_stack_its_budget_on_consumed_bytes() {
+        // A client that alternates paused statements with partial reads keeps a
+        // consumed prefix in the buffer. If the budget were measured against the
+        // unread tail alone, every hold would add another budget's worth on top
+        // of that prefix and the buffer would grow without bound over a session.
+        let mut reader = HeldReader::new(std::io::Cursor::new(vec![b'x'; MAX_HELD_PIPELINE * 3]));
+        reader.watch_disconnect().await;
+        assert!(reader.pipeline_full(), "the first watch fills its budget");
+
+        let mut half = vec![0u8; MAX_HELD_PIPELINE / 2];
+        reader.read_exact(&mut half).await.unwrap();
+        reader.watch_disconnect().await;
+
+        assert_eq!(
+            reader.buffered(),
+            MAX_HELD_PIPELINE,
+            "the second watch refills to the same budget"
+        );
+        assert_eq!(
+            reader.pending.len(),
+            MAX_HELD_PIPELINE,
+            "and holds nothing beyond it — the consumed prefix was reclaimed"
+        );
+    }
+
+    /// Yields `head`, then never resolves again — a client that has sent
+    /// something and is still connected, so the watch must not read it as gone.
+    struct StallAfter {
+        head: std::io::Cursor<Vec<u8>>,
+    }
+
+    impl AsyncRead for StallAfter {
+        fn poll_read(
+            mut self: std::pin::Pin<&mut Self>,
+            cx: &mut std::task::Context<'_>,
+            buf: &mut tokio::io::ReadBuf<'_>,
+        ) -> std::task::Poll<std::io::Result<()>> {
+            if (self.head.position() as usize) < self.head.get_ref().len() {
+                return std::pin::Pin::new(&mut self.head).poll_read(cx, buf);
+            }
+            std::task::Poll::Pending
+        }
+    }
+
+    #[tokio::test]
+    async fn a_client_that_floods_the_watch_budget_is_refused_and_keeps_its_session() {
+        let state = GatewayState::new(pause_delete_policy());
+        // A paused statement followed by more than the watch will buffer. Parking
+        // the watch here instead would hand the client the threshold: it could
+        // flood past the cap, leave, and still have its statement approved and
+        // executed — the very defect #102 is about. So the hold ends and the
+        // statement is refused, and the session survives it (ADR-0007).
+        let mut frames = simple_query("DELETE FROM sessions");
+        // `Sync` frames: well-formed, carry no statement, and are streamed
+        // through untouched — so the only thing the flood can prove is what the
+        // held `DELETE` did.
+        while frames.len() < simple_query("DELETE FROM sessions").len() + MAX_HELD_PIPELINE + 1 {
+            frames.extend_from_slice(&[b'S', 0, 0, 0, 4]);
+        }
+        let mut client = StallAfter {
+            head: std::io::Cursor::new(frames),
+        };
+        let mut upstream: Vec<u8> = Vec::new();
+        let (link, mut peer) = loopback_link().await;
+
+        let facts = Facts::default();
+        let loop_run = message_loop(&state, &mut client, &mut upstream, &link, &facts);
+        let outcome = tokio::time::timeout(std::time::Duration::from_secs(5), loop_run).await;
+
+        assert!(
+            outcome.is_err(),
+            "the session survives the refusal rather than ending with it"
+        );
+        assert!(
+            !upstream
+                .windows(b"DELETE FROM sessions".len())
+                .any(|w| w == b"DELETE FROM sessions"),
+            "a statement whose hold ended without approval must not reach the database"
+        );
+        assert!(
+            state.approvals.is_empty(),
+            "the hold released its approval slot"
+        );
+        assert!(
+            state
+                .approvals
+                .resolve(1, ApprovalDecision::Approve)
+                .is_none(),
+            "flooding cannot leave a statement approvable after the fact"
+        );
+
+        let mut answer = [0u8; 1];
+        tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            peer.read_exact(&mut answer),
+        )
+        .await
+        .expect("the client is answered")
+        .expect("the client is answered");
+        assert_eq!(answer[0], b'E', "the client is told the statement failed");
+    }
+
+    #[tokio::test]
+    async fn bytes_pipelined_behind_a_held_statement_survive_the_disconnect_watch() {
+        // Watching for the disconnect reads the client socket, so whatever the
+        // client pipelined behind its held statement has to come back out of the
+        // pushback buffer rather than being swallowed.
+        let mut reader = HeldReader::new(std::io::Cursor::new(b"SYNC".to_vec()));
+        reader.watch_disconnect().await;
+
+        let mut first = [0u8; 2];
+        reader.read_exact(&mut first).await.unwrap();
+        let mut rest = [0u8; 2];
+        reader.read_exact(&mut rest).await.unwrap();
+        assert_eq!(&first, b"SY");
+        assert_eq!(&rest, b"NC", "a partial take leaves the remainder buffered");
+        assert_eq!(reader.buffered(), 0);
     }
 
     fn parse_payload(name: &str, query: &str) -> Vec<u8> {
