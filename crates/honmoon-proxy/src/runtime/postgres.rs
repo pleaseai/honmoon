@@ -24,7 +24,10 @@
 //! forwards and holds the refusal until the relay has delivered the database's
 //! `ReadyForQuery` for each of them. Without that barrier a refusal for a
 //! pipelined statement would land in front of the response to the statement
-//! before it, and the client would attribute the error to the wrong query.
+//! before it, and the client would attribute the error to the wrong query. What
+//! the barrier cannot order is a batch the client drove with `Flush` instead of
+//! `Sync`: those responses are answered by no `ReadyForQuery`, so there is
+//! nothing to count and nothing to wait for (see [ADR-0007]).
 //!
 //! A statement held for approval is held *mid-stream*, so the hold also watches
 //! the client socket for the disconnect that would otherwise let a human approve
@@ -96,6 +99,18 @@ const MAX_HELD_PIPELINE: usize = MAX_BUFFERED_BACKEND_MESSAGE;
 /// session and its upstream connection open for good.
 const ABANDONED_NOTICE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
+/// The slice of [`ABANDONED_NOTICE_TIMEOUT`] that courtesy answer may spend
+/// being *ordered* rather than written.
+///
+/// [`refuse`] waits for the database's earlier answers before it injects, and
+/// on this path the conditions that produced the abandoned hold are the same
+/// ones that stall that wait — the client half-closed, so the relay may be
+/// blocked writing to a socket nobody is draining. Spending the whole budget
+/// there would lose the notice altogether, which is the truncated connection
+/// this answer exists to prevent. So ordering gets a slice and the write keeps
+/// the rest: a stalled pipeline costs the notice its ordering, never the notice.
+const ABANDONED_NOTICE_ORDER_BUDGET: std::time::Duration = std::time::Duration::from_secs(1);
+
 /// How long the upstream→client relay is given to deliver the database's last
 /// response after the client stopped sending. Bounded so a server that never
 /// closes its half cannot pin the connection open.
@@ -107,18 +122,19 @@ const DRAIN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 /// held in memory whole.
 const MAX_BUFFERED_BACKEND_MESSAGE: usize = 64 * 1024;
 
-/// How long a refusal waits for the relay to deliver the database's answers to
-/// the statements already forwarded before it injects its own answer anyway.
+/// How long the pipeline may go **without delivering anything** before a
+/// waiting refusal gives up on being ordered and injects its answer anyway.
 ///
-/// Every forwarded sync point is answered by exactly one `ReadyForQuery`, so on
-/// a healthy session the wait ends the moment the pipeline drains and this bound
-/// never fires. It exists for the two ways the count can be wrong in practice —
-/// a database that stops answering, and the one frontend message whose sync
-/// point the backend legitimately swallows (a `Sync` sent while a `COPY` is in
-/// progress) — where an unbounded wait would cost the client its answer
-/// entirely. Injecting late and saying so is the lesser failure: it degrades to
-/// exactly the ordering honmoon had before this barrier existed.
-const REFUSAL_ORDER_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+/// This bounds the stall, not the whole wait: every response that reaches the
+/// client buys another full window, so a database working steadily through a
+/// slow statement is never cut off no matter how long the statement runs. Only
+/// a pipeline that stops moving altogether expires — which is what the two ways
+/// the count can be wrong look like from here: a database that stopped
+/// answering, and a sync point the backend swallowed (see
+/// [`ClientLink::forwarded_sync_point`]). An unbounded wait would cost the
+/// client its answer entirely; injecting late and saying so degrades to exactly
+/// the ordering honmoon had before this barrier existed.
+const REFUSAL_ORDER_STALL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 
 /// A client writer shared between the refusal path and the upstream→client copy
 /// task. That task writes one **complete** backend message per lock acquisition,
@@ -142,11 +158,15 @@ struct ClientLink {
     /// Sync points forwarded to the database, each of which it answers with
     /// exactly one `ReadyForQuery`: the `StartupMessage`, then every `Q`,
     /// `Sync` and `FunctionCall`. Written only by the message loop.
+    ///
+    /// Lowered again — only ever to a count the client has provably received —
+    /// when a stalled wait writes an answer off as never coming.
     forwarded: Arc<AtomicU64>,
-    /// How many of those the relay has already written to the client. A watch
-    /// rather than a plain counter so a refusal can wait for it to catch up
-    /// without polling.
-    delivered: Arc<watch::Sender<u64>>,
+    /// How many of those the relay has already written to the client, or `None`
+    /// once the relay has stopped and no further `ReadyForQuery` can arrive. A
+    /// watch rather than a plain counter so a refusal can wait for it to catch
+    /// up without polling.
+    delivered: Arc<watch::Sender<Option<u64>>>,
 }
 
 impl ClientLink {
@@ -155,23 +175,44 @@ impl ClientLink {
             writer: Arc::new(Mutex::new(writer)),
             tx_status: Arc::new(AtomicU8::new(STATUS_IDLE)),
             forwarded: Arc::new(AtomicU64::new(0)),
-            delivered: Arc::new(watch::Sender::new(0)),
+            delivered: Arc::new(watch::Sender::new(Some(0))),
         }
     }
 
     /// Record a frame forwarded to the database that it will answer with a
-    /// `ReadyForQuery`. Overcounting delays a refusal to the bound above;
-    /// undercounting lets one overtake a response, which is the defect this
-    /// exists to prevent — so a message whose sync point is uncertain is
-    /// counted.
+    /// `ReadyForQuery`.
+    ///
+    /// Overcounting only stalls a refusal until
+    /// [`REFUSAL_ORDER_STALL_TIMEOUT`], which then writes the difference off;
+    /// undercounting lets a refusal overtake a response, which is the defect
+    /// this exists to prevent. So a message whose sync point is uncertain is
+    /// counted — `Sync` among them, which PostgreSQL ignores (and therefore
+    /// never answers) while a `COPY` is in progress.
     fn forwarded_sync_point(&self) {
         self.forwarded.fetch_add(1, Ordering::Relaxed);
     }
 
     /// Record a `ReadyForQuery` the relay has written to the client, releasing
-    /// any refusal waiting behind it.
+    /// any refusal waiting behind it. A no-op once the relay has stopped.
     fn delivered_sync_point(&self) {
-        self.delivered.send_modify(|delivered| *delivered += 1);
+        self.delivered.send_modify(|delivered| {
+            if let Some(delivered) = delivered {
+                *delivered += 1;
+            }
+        });
+    }
+
+    /// Record that the relay has stopped, releasing every refusal waiting for a
+    /// `ReadyForQuery` that can no longer arrive.
+    ///
+    /// Without this a refusal parked on the barrier would simply be **cancelled**
+    /// when the relay's exit completes [`run_postgres`]'s `select!`, and a client
+    /// whose own socket is still perfectly healthy would read an unexplained
+    /// close instead of its `42501` — the outcome ADR-0007 wrote this answer to
+    /// prevent. Ordering is meaningless once nothing is left to be ordered
+    /// against, so the wait ends and the answer goes out.
+    fn relay_finished(&self) {
+        self.delivered.send_modify(|delivered| *delivered = None);
     }
 
     /// Wait until the client has received the database's answer to every
@@ -181,25 +222,52 @@ impl ClientLink {
     /// deliberately runs *before* the writer lock is taken: the relay needs that
     /// lock to deliver the very responses being waited for, so holding it here
     /// would deadlock the session instead of ordering it.
+    ///
+    /// Returns immediately when the pipeline is already drained — the common
+    /// case, a client that waits for each answer — and when the relay has
+    /// stopped, since nothing is then left to be ordered against.
     async fn await_forwarded_responses(&self) {
         let expected = self.forwarded.load(Ordering::Relaxed);
         let mut delivered = self.delivered.subscribe();
-        // `wait_for` inspects the current value first, so an already-drained
-        // pipeline — the common case, a client that waits for each answer —
-        // costs one comparison and no wakeup.
-        if tokio::time::timeout(
-            REFUSAL_ORDER_TIMEOUT,
-            delivered.wait_for(|delivered| *delivered >= expected),
-        )
-        .await
-        .is_err()
-        {
-            tracing::warn!(
-                expected,
-                delivered = *self.delivered.borrow(),
-                "timed out waiting for the database's earlier responses; the refusal \
-                 may reach the client out of statement order"
-            );
+        loop {
+            let seen = match *delivered.borrow_and_update() {
+                None => return,
+                Some(seen) if seen >= expected => return,
+                Some(seen) => seen,
+            };
+            match tokio::time::timeout(REFUSAL_ORDER_STALL_TIMEOUT, delivered.changed()).await {
+                // Something arrived. It may not be enough yet, but the pipeline
+                // is moving, so the stall budget starts over.
+                Ok(Ok(())) => {}
+                // Every sender is gone. Unreachable while this `ClientLink` is
+                // alive, since it owns one — but proceeding in silence would
+                // turn a later ownership change into a lost ordering guarantee
+                // with nothing in the log to find it by.
+                Ok(Err(_)) => {
+                    tracing::warn!(
+                        expected,
+                        delivered = seen,
+                        "the delivered-response watch closed while a refusal waited on it"
+                    );
+                    return;
+                }
+                Err(_) => {
+                    // Nothing at all for a whole window: the missing answers are
+                    // not late, they are not coming. Write the gap off so the
+                    // rest of the session is ordered against what actually
+                    // arrives — the counters are monotonic, so leaving the skew
+                    // in place would make every later refusal on this connection
+                    // pay this bound again.
+                    self.forwarded.fetch_sub(expected - seen, Ordering::Relaxed);
+                    tracing::warn!(
+                        expected,
+                        delivered = seen,
+                        "no database response for the whole stall window; the refusal may \
+                         reach the client out of statement order"
+                    );
+                    return;
+                }
+            }
         }
     }
 }
@@ -263,7 +331,19 @@ pub async fn run_postgres(
 /// locked chunks would let an `ErrorResponse` land inside a server frame and
 /// desynchronise the client. Each message is written under a single lock, and
 /// every `ReadyForQuery` publishes its transaction status for [`refuse`].
-async fn upstream_to_client(mut upstream: tokio::net::tcp::OwnedReadHalf, link: ClientLink) {
+async fn upstream_to_client(upstream: tokio::net::tcp::OwnedReadHalf, link: ClientLink) {
+    relay_backend_messages(upstream, &link).await;
+    // Whatever ended the relay — the upstream's EOF, a frame it could no longer
+    // trust, a client socket that stopped accepting writes — no further
+    // `ReadyForQuery` can reach the client now. Say so, so a refusal waiting to
+    // be ordered behind one writes its answer instead of being cancelled
+    // unwritten when this task's exit tears the session down.
+    link.relay_finished();
+}
+
+/// The relay's message loop, split out so every way it can end runs the
+/// [`ClientLink::relay_finished`] above exactly once.
+async fn relay_backend_messages(mut upstream: tokio::net::tcp::OwnedReadHalf, link: &ClientLink) {
     loop {
         // Every backend message is `tag(1) | len(4, self-inclusive) | payload`.
         let mut head = [0u8; 5];
@@ -590,9 +670,11 @@ where
             upstream.write_all(&len_bytes).await?;
             copy_exact(&mut client_reader, upstream, payload_len).await?;
             // `Sync` ends an extended-protocol batch and `FunctionCall` is a
-            // request cycle of its own; each earns one `ReadyForQuery`. The rest
-            // (`Bind`, `Execute`, `CopyData`, `Terminate`, the authentication
-            // messages) are answered inside somebody else's cycle.
+            // request cycle of its own; each earns one `ReadyForQuery`. Nothing
+            // else does. `Bind` and `Execute` are acknowledged immediately
+            // (`BindComplete`, then the rows and `CommandComplete`) but end no
+            // cycle, `Terminate` is answered with nothing at all, and what only
+            // this counter tracks is the cycle-ending `ReadyForQuery`.
             if matches!(tag[0], b'S' | b'F') {
                 link.forwarded_sync_point();
             }
@@ -650,9 +732,10 @@ where
                 upstream.write_all(&tag).await?;
                 upstream.write_all(&len_bytes).await?;
                 upstream.write_all(&payload).await?;
-                // A simple query is its own request cycle; a `Parse` is answered
-                // only when the batch's `Sync` arrives, and that is counted where
-                // the `Sync` is forwarded.
+                // A simple query is its own request cycle. A `Parse` is
+                // acknowledged at once with `ParseComplete`, but its batch does
+                // not end until the client's `Sync` — which is counted where
+                // that `Sync` is forwarded, not here.
                 if tag[0] == b'Q' {
                     link.forwarded_sync_point();
                 }
@@ -792,14 +875,23 @@ where
                     // Bounded: a client that half-closed and then stopped
                     // reading would otherwise block this write — directly, or on
                     // the writer lock the relay holds while blocked on the same
-                    // socket — and the session would never end at all.
-                    let _ = tokio::time::timeout(
-                        ABANDONED_NOTICE_TIMEOUT,
-                        refuse(
+                    // socket — and the session would never end at all. Ordering
+                    // takes only a slice of that budget rather than going
+                    // through `refuse`: the same half-close that ended the hold
+                    // is what stalls the pipeline, so spending the whole budget
+                    // on the wait would leave nothing for the answer itself.
+                    let _ = tokio::time::timeout(ABANDONED_NOTICE_TIMEOUT, async {
+                        let _ = tokio::time::timeout(
+                            ABANDONED_NOTICE_ORDER_BUDGET,
+                            link.await_forwarded_responses(),
+                        )
+                        .await;
+                        write_refusal(
                             link,
                             "honmoon: connection ended while the statement was held for approval",
-                        ),
-                    )
+                        )
+                        .await
+                    })
                     .await;
                     return Ok(Disposition::ClientGone);
                 }
@@ -844,7 +936,16 @@ fn record(
 /// belongs to.
 async fn refuse(link: &ClientLink, message: &str) -> std::io::Result<()> {
     link.await_forwarded_responses().await;
-    // Read after the wait, so the status echoed back is the one from the last
+    write_refusal(link, message).await
+}
+
+/// Write the `ErrorResponse`/`ReadyForQuery` pair, without ordering it.
+///
+/// Split from [`refuse`] for the one caller that has to budget the two phases
+/// separately — see [`ABANDONED_NOTICE_ORDER_BUDGET`]. Every other refusal goes
+/// through [`refuse`] and is ordered.
+async fn write_refusal(link: &ClientLink, message: &str) -> std::io::Result<()> {
+    // Read after any wait, so the status echoed back is the one from the last
     // `ReadyForQuery` the client actually received.
     let status = link.tx_status.load(Ordering::Relaxed);
     let mut writer = link.writer.lock().await;
