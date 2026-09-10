@@ -218,6 +218,10 @@ pub(crate) enum HoldOutcome {
     /// The pending queue was at capacity, so the request was never held
     /// (fail-closed: the caller must block it).
     QueueFull,
+    /// The client that made the request left before a human decided. Nothing
+    /// may be forwarded on its behalf and there is nobody left to answer, so
+    /// the caller should end the session rather than refuse the request.
+    Abandoned,
 }
 
 /// Hold a `pause`d request until a human resolves it (or the hold times out),
@@ -233,6 +237,35 @@ pub(crate) async fn hold(
     summary: FactsSummary,
     rule: Option<String>,
     approval_summary: String,
+) -> HoldOutcome {
+    // No abandonment signal: the caller's own future is dropped when its client
+    // disconnects, and the guard inside `hold_until` frees the slot from there.
+    hold_until(
+        state,
+        host,
+        summary,
+        rule,
+        approval_summary,
+        std::future::pending(),
+    )
+    .await
+}
+
+/// [`hold`], plus an explicit signal that the requesting client has gone away.
+///
+/// A caller whose future keeps being polled while it waits — the PostgreSQL
+/// runtime holds mid-stream inside a `select!` that the upstream relay keeps
+/// alive — never gets dropped on a disconnect, so the drop guard alone cannot
+/// see one. Such a caller passes a future that resolves once its client is
+/// gone, and the hold is abandoned instead of running on to `pause_timeout`
+/// and possibly being approved for a client that no longer exists (#102).
+pub(crate) async fn hold_until(
+    state: &GatewayState,
+    host: &str,
+    summary: FactsSummary,
+    rule: Option<String>,
+    approval_summary: String,
+    abandoned: impl std::future::Future<Output = ()>,
 ) -> HoldOutcome {
     let registration = state.approvals.register(NewApproval {
         domain: Some(host.to_owned()),
@@ -272,7 +305,18 @@ pub(crate) async fn hold(
         summary: Some(summary.clone()),
         armed: true,
     };
-    let decision = match tokio::time::timeout(state.pause_timeout, rx).await {
+    let resolved = tokio::select! {
+        // Biased towards the decision: a resolution already in hand wins a tie
+        // with a client that left at the same moment. Losing that tie would
+        // have the guard audit an abandonment over an approval a human really
+        // did make, and the slot it would "free" is one `resolve` already took.
+        biased;
+        resolved = tokio::time::timeout(state.pause_timeout, rx) => resolved,
+        // The client is gone. Returning here drops the still-armed guard, which
+        // frees the slot and audits the abandonment.
+        () = abandoned => return HoldOutcome::Abandoned,
+    };
+    let decision = match resolved {
         Ok(Ok(d)) => d,
         // Registry dropped (shutdown) — treat as rejection.
         Ok(Err(_)) => ApprovalDecision::Reject,

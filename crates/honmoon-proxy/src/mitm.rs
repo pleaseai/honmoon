@@ -323,7 +323,12 @@ impl HonmoonHandler {
     ) -> Gate {
         match hold(&self.state, host, summary, rule, approval_summary).await {
             HoldOutcome::Approved => Gate::Proceed,
-            HoldOutcome::Rejected => Gate::Block(Box::new(status_response(StatusCode::FORBIDDEN))),
+            // A hold on this path is only ever abandoned by the caller's future
+            // being dropped, which never returns here — but a client that left
+            // gets the same answer a rejection does either way.
+            HoldOutcome::Rejected | HoldOutcome::Abandoned => {
+                Gate::Block(Box::new(status_response(StatusCode::FORBIDDEN)))
+            }
             HoldOutcome::QueueFull => {
                 Gate::Block(Box::new(status_response(StatusCode::SERVICE_UNAVAILABLE)))
             }

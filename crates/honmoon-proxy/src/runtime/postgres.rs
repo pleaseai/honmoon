@@ -19,6 +19,10 @@
 //! normal permission error and the session stays usable — closing the socket
 //! would surface as an unexplained connection reset.
 //!
+//! A statement held for approval is held *mid-stream*, so the hold also watches
+//! the client socket for the disconnect that would otherwise let a human approve
+//! a statement for a client that had already left. See [`HeldReader`].
+//!
 //! [ADR-0007]: ../../../../.please/docs/decisions/0007-inline-postgresql-runtime-semantics.md
 
 use std::sync::Arc;
@@ -34,7 +38,7 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio::sync::Mutex;
 
-use crate::approval::{HoldOutcome, hold};
+use crate::approval::{HoldOutcome, hold_until};
 use crate::gateway::GatewayState;
 
 /// Largest `Q`/`P` frame honmoon will buffer to inspect. A larger one is
@@ -60,6 +64,14 @@ const SQLSTATE_INSUFFICIENT_PRIVILEGE: &str = "42501";
 
 /// Copy buffer for the pass-through paths.
 const COPY_CHUNK: usize = 16 * 1024;
+
+/// How much traffic a client may pipeline behind a held statement before
+/// [`HeldReader::watch_disconnect`] stops watching for its disconnect. A client
+/// waiting for the answer to a paused statement sends at most the rest of its
+/// extended-protocol batch (`B`/`D`/`E`/`S`), far below this; one that floods
+/// past it stops being watched rather than being buffered without bound, and
+/// its hold falls back to the `pause_timeout` it had before.
+const MAX_HELD_PIPELINE: usize = MAX_PG_FRAME;
 
 /// How long the upstream→client relay is given to deliver the database's last
 /// response after the client stopped sending. Bounded so a server that never
@@ -200,8 +212,9 @@ async fn upstream_to_client(mut upstream: tokio::net::tcp::OwnedReadHalf, link: 
 /// traffic reached the upstream, so the database may still owe a response and
 /// the caller should drain. Returns `false` when nothing is owed: the session
 /// ended during startup (a relayed `CancelRequest`, an unrecognized packet, or
-/// a client that left before negotiating), or the connection was reset mid-
-/// session, where no one is left to read the last response.
+/// a client that left before negotiating), the connection was reset mid-
+/// session, or the client left while a statement of its was held for approval —
+/// in none of which is anyone left to read the last response.
 async fn client_to_upstream<R, W>(
     state: &GatewayState,
     client: &mut R,
@@ -276,13 +289,104 @@ where
     }
 }
 
+/// The client's read half plus a pushback buffer.
+///
+/// While a statement is held for approval nothing else reads the client socket,
+/// and the hold sits inside the `select!` arm [`run_postgres`] races against a
+/// still-healthy upstream relay — so neither arm completes and a disconnect goes
+/// unnoticed. [`watch_disconnect`](Self::watch_disconnect) closes that window by
+/// reading the socket *during* the hold. Anything the client pipelined behind
+/// its held statement lands in `pending` and is handed back by the next read, so
+/// watching for the disconnect cannot swallow traffic the message loop still
+/// owes the upstream.
+struct HeldReader<R> {
+    inner: R,
+    /// Bytes read while watching, not yet handed back.
+    pending: Vec<u8>,
+    /// How much of `pending` the message loop has already taken.
+    taken: usize,
+}
+
+impl<R: AsyncRead + Unpin> HeldReader<R> {
+    fn new(inner: R) -> Self {
+        Self {
+            inner,
+            pending: Vec::new(),
+            taken: 0,
+        }
+    }
+
+    /// Bytes buffered but not yet handed back.
+    fn buffered(&self) -> usize {
+        self.pending.len() - self.taken
+    }
+
+    /// Resolve once the client is gone, buffering whatever it pipelines first.
+    ///
+    /// Stays pending while the client is merely quiet — a hold that no client
+    /// abandoned must still run to its own timeout — and stops watching for
+    /// good once [`MAX_HELD_PIPELINE`] bytes are buffered, rather than letting a
+    /// flood grow the buffer without bound.
+    ///
+    /// Cancel-safe: a read that is dropped before it completes has taken
+    /// nothing off the socket, so the message loop reads the same bytes later.
+    async fn watch_disconnect(&mut self) {
+        let mut chunk = vec![0u8; COPY_CHUNK];
+        loop {
+            if self.buffered() >= MAX_HELD_PIPELINE {
+                return std::future::pending().await;
+            }
+            match self.inner.read(&mut chunk).await {
+                // A clean end of input, or a reset: either way nobody is left
+                // to receive the answer to the held statement.
+                Ok(0) | Err(_) => return,
+                Ok(n) => self.pending.extend_from_slice(&chunk[..n]),
+            }
+        }
+    }
+}
+
+impl<R: AsyncRead + Unpin> AsyncRead for HeldReader<R> {
+    fn poll_read(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &mut tokio::io::ReadBuf<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        if self.buffered() > 0 {
+            let me = &mut *self;
+            let n = me.buffered().min(buf.remaining());
+            buf.put_slice(&me.pending[me.taken..me.taken + n]);
+            me.taken += n;
+            if me.taken == me.pending.len() {
+                me.pending.clear();
+                me.taken = 0;
+            }
+            return std::task::Poll::Ready(Ok(()));
+        }
+        std::pin::Pin::new(&mut self.inner).poll_read(cx, buf)
+    }
+}
+
+/// What the message loop does with a frame the policy has decided.
+enum Disposition {
+    /// Forward it to the database.
+    Forward,
+    /// Refuse it; the client has been answered and the session goes on.
+    Refused,
+    /// The client left while its statement was held for approval. Nothing may
+    /// be forwarded on its behalf and there is nobody to answer, so the session
+    /// ends here.
+    ClientGone,
+}
+
 /// Frame the client's messages and decide the ones that carry SQL.
 ///
 /// Returns `true` only for a *clean* end of input between messages: the client
 /// finished and may still be waiting for the response to its last query. A
-/// reset or aborted connection returns `false` — nothing is waiting for that
-/// response, and draining would pin an upstream connection and a task for the
-/// whole `DRAIN_TIMEOUT`.
+/// reset or aborted connection returns `false`, as does a client that left
+/// while one of its statements was held for approval — nothing is waiting for
+/// that response, and draining would pin an upstream connection and a task for
+/// the whole `DRAIN_TIMEOUT`.
 async fn message_loop<R, W>(
     state: &GatewayState,
     client: &mut R,
@@ -294,6 +398,9 @@ where
     R: AsyncRead + Unpin,
     W: AsyncWrite + Unpin,
 {
+    // From here on the client is read through the pushback buffer an approval
+    // hold fills while it watches for a disconnect.
+    let mut client = HeldReader::new(client);
     loop {
         // Every frontend message after startup is `tag(1) | len(4, self-inclusive)`.
         let mut tag = [0u8; 1];
@@ -326,14 +433,14 @@ where
             // Streamed without buffering — `CopyData` can be arbitrarily large.
             upstream.write_all(&tag).await?;
             upstream.write_all(&len_bytes).await?;
-            copy_exact(client, upstream, payload_len).await?;
+            copy_exact(&mut client, upstream, payload_len).await?;
             continue;
         }
 
         if len > MAX_PG_FRAME {
             // Fail closed: discard exactly the declared bytes so the stream
             // stays framed, then refuse.
-            discard_exact(client, payload_len).await?;
+            discard_exact(&mut client, payload_len).await?;
             record(state, facts, None, Decision::Denied, Verdict::Deny);
             refuse(link, "honmoon: query frame exceeds inspection cap").await?;
             continue;
@@ -376,10 +483,15 @@ where
             continue;
         };
 
-        if decide(state, facts, sql, link).await? {
-            upstream.write_all(&tag).await?;
-            upstream.write_all(&len_bytes).await?;
-            upstream.write_all(&payload).await?;
+        match decide(state, facts, sql, link, &mut client).await? {
+            Disposition::Forward => {
+                upstream.write_all(&tag).await?;
+                upstream.write_all(&len_bytes).await?;
+                upstream.write_all(&payload).await?;
+            }
+            Disposition::Refused => {}
+            // No drain: the client that would have read the answer is gone.
+            Disposition::ClientGone => return Ok(false),
         }
     }
 }
@@ -435,13 +547,22 @@ fn payload_carries_multiple_statements(payload: &[u8]) -> bool {
     frame_query(b'Q', payload).is_some_and(carries_multiple_statements)
 }
 
-/// Apply the policy to one statement. Returns whether the frame may be forwarded.
-async fn decide(
+/// Apply the policy to one statement, telling the caller what to do with its
+/// frame.
+///
+/// `client` is only touched on the `pause` path, where the hold watches it for
+/// the disconnect that would otherwise let an approved statement run for a
+/// client that is already gone.
+async fn decide<R>(
     state: &GatewayState,
     base: &Facts,
     sql: SqlFacts,
     link: &ClientLink,
-) -> std::io::Result<bool> {
+    client: &mut HeldReader<R>,
+) -> std::io::Result<Disposition>
+where
+    R: AsyncRead + Unpin,
+{
     let facts = Facts {
         sql: Some(sql),
         ..base.clone()
@@ -477,17 +598,30 @@ async fn decide(
             let host = facts.domain.clone().unwrap_or_default();
             let summary = FactsSummary::from(&facts);
             let approval = approval_summary(&facts, outcome.rule.as_deref());
-            matches!(
-                hold(state, &host, summary, outcome.rule.clone(), approval).await,
-                HoldOutcome::Approved
+            let held = hold_until(
+                state,
+                &host,
+                summary,
+                outcome.rule.clone(),
+                approval,
+                client.watch_disconnect(),
             )
+            .await;
+            match held {
+                HoldOutcome::Approved => true,
+                // The client left mid-hold. Refusing it would be writing to a
+                // socket nobody holds; the session ends instead.
+                HoldOutcome::Abandoned => return Ok(Disposition::ClientGone),
+                HoldOutcome::Rejected | HoldOutcome::QueueFull => false,
+            }
         }
     };
 
     if !allowed {
         refuse(link, &denial_message(outcome.rule.as_deref())).await?;
+        return Ok(Disposition::Refused);
     }
-    Ok(allowed)
+    Ok(Disposition::Forward)
 }
 
 /// Record one decision against the statement's facts.
