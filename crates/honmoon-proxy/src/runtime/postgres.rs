@@ -352,7 +352,18 @@ impl<R: AsyncRead + Unpin> HeldReader<R> {
     ///
     /// Cancel-safe: a read that is dropped before it completes has taken
     /// nothing off the socket, so the message loop reads the same bytes later.
+    ///
+    /// Holds `pending.len() == buffered()` for as long as it runs, so the budget
+    /// bounds the whole allocation rather than only its unread tail.
     async fn watch_disconnect(&mut self) {
+        // Drop what the message loop already took. Without this the budget below
+        // would bound only the unread tail, so a client alternating pauses with
+        // partial reads could add a whole budget's worth per hold on top of a
+        // consumed prefix that is never reclaimed, and `pending` would grow
+        // without bound across a session.
+        self.pending.drain(..self.taken);
+        self.taken = 0;
+
         let mut chunk = vec![0u8; COPY_CHUNK];
         loop {
             // Read no further than the budget, so the buffer lands exactly on
@@ -957,6 +968,32 @@ mod tests {
             .await
             .expect("an abandoned client is still answered");
         assert_eq!(answer[0], b'E');
+    }
+
+    #[tokio::test]
+    async fn a_second_watch_does_not_stack_its_budget_on_consumed_bytes() {
+        // A client that alternates paused statements with partial reads keeps a
+        // consumed prefix in the buffer. If the budget were measured against the
+        // unread tail alone, every hold would add another budget's worth on top
+        // of that prefix and the buffer would grow without bound over a session.
+        let mut reader = HeldReader::new(std::io::Cursor::new(vec![b'x'; MAX_HELD_PIPELINE * 3]));
+        reader.watch_disconnect().await;
+        assert!(reader.pipeline_full(), "the first watch fills its budget");
+
+        let mut half = vec![0u8; MAX_HELD_PIPELINE / 2];
+        reader.read_exact(&mut half).await.unwrap();
+        reader.watch_disconnect().await;
+
+        assert_eq!(
+            reader.buffered(),
+            MAX_HELD_PIPELINE,
+            "the second watch refills to the same budget"
+        );
+        assert_eq!(
+            reader.pending.len(),
+            MAX_HELD_PIPELINE,
+            "and holds nothing beyond it — the consumed prefix was reclaimed"
+        );
     }
 
     /// Yields `head`, then never resolves again — a client that has sent

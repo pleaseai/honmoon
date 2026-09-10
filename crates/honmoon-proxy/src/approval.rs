@@ -315,31 +315,31 @@ pub(crate) async fn hold_until(
         armed: true,
     };
     let mut rx = rx;
-    let resolved = tokio::select! {
-        // Biased towards the decision: a resolution already in hand wins a tie
-        // with a client that left at the same moment. Losing that tie would
-        // have the guard audit an abandonment over an approval a human really
-        // did make, and the slot it would "free" is one `resolve` already took.
+    let timeout = tokio::time::sleep(state.pause_timeout);
+    tokio::pin!(timeout);
+    // Ordered, not merely raced: a decision a human made outranks the client
+    // leaving, and the client leaving outranks the timer. Letting the timer win
+    // a tie with a departed client would answer and then drain a session nobody
+    // is reading, and letting the departure win a tie with a decision would
+    // audit an abandonment over an approval that really happened.
+    let decision = tokio::select! {
         biased;
-        resolved = tokio::time::timeout(state.pause_timeout, &mut rx) => resolved,
+        received = &mut rx => match received {
+            Ok(decision) => decision,
+            // Registry dropped (shutdown) — treat as rejection.
+            Err(_) => ApprovalDecision::Reject,
+        },
         () = abandoned => match rx.try_recv() {
-            // `biased` orders the two arms within one poll; it does not make
-            // them atomic. A decision that landed after this poll read the
-            // channel as empty and before the abandonment arm was reached is
-            // still a decision a human made, so take it rather than auditing an
-            // abandonment over it.
-            Ok(decision) => Ok(Ok(decision)),
+            // `biased` orders the arms within one poll; it does not make them
+            // atomic. A decision that landed after the arm above read the
+            // channel as empty is still a decision a human made.
+            Ok(decision) => decision,
             // Nothing was decided: the request really was abandoned. Returning
             // here drops the still-armed guard, which frees the slot and audits.
             Err(_) => return HoldOutcome::Abandoned,
         },
-    };
-    let decision = match resolved {
-        Ok(Ok(d)) => d,
-        // Registry dropped (shutdown) — treat as rejection.
-        Ok(Err(_)) => ApprovalDecision::Reject,
         // Timed out waiting for a human — drop the slot and reject.
-        Err(_elapsed) => {
+        () = &mut timeout => {
             state.approvals.cancel(pending.id);
             tracing::info!(id = pending.id, "approval timed out");
             ApprovalDecision::Reject
