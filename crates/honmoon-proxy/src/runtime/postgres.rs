@@ -1684,18 +1684,60 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn the_startup_response_is_a_sync_point_a_refusal_waits_behind() {
-        let (link, _peer) = loopback_link().await;
-        let mut client = std::io::Cursor::new(startup_packet(PROTOCOL_V3, b"user\0me\0\0"));
+    async fn a_refusal_waits_for_the_startup_handshake_it_was_pipelined_behind() {
+        let state = GatewayState::new(deny_drop_policy());
+        // A client that puts a statement on the wire behind its startup packet
+        // without waiting to be authenticated. The handshake ends in exactly one
+        // `ReadyForQuery`, so the refusal belongs behind it — injecting first
+        // would answer a statement before the session it runs in exists.
+        let mut frames = startup_packet(PROTOCOL_V3, b"user\0me\0\0");
+        frames.extend_from_slice(&simple_query("DROP TABLE users"));
+        let mut client = std::io::Cursor::new(frames);
         let mut upstream: Vec<u8> = Vec::new();
+        let (link, mut peer) = loopback_link().await;
+        let (mut database, _relay) = loopback_relay(link.clone()).await;
 
-        assert!(startup(&mut client, &mut upstream, &link).await.unwrap());
+        let facts = Facts::default();
+        let session = client_to_upstream(&state, &mut client, &mut upstream, &link, &facts);
+        let client_view = async {
+            let mut early = [0u8; 1];
+            assert!(
+                tokio::time::timeout(
+                    std::time::Duration::from_millis(200),
+                    peer.read_exact(&mut early),
+                )
+                .await
+                .is_err(),
+                "the refusal overtook the handshake it was pipelined behind"
+            );
 
-        assert_eq!(
-            link.forwarded.load(Ordering::Relaxed),
-            1,
-            "the handshake ends in one `ReadyForQuery`, and a statement pipelined \
-             behind the startup packet must not be refused in front of it"
+            // `AuthenticationOk`, then the handshake's `ReadyForQuery`.
+            database
+                .write_all(&[b'R', 0, 0, 0, 8, 0, 0, 0, 0])
+                .await
+                .unwrap();
+            database.write_all(&[b'Z', 0, 0, 0, 5, b'I']).await.unwrap();
+
+            let seen = [
+                read_message_tag(&mut peer).await,
+                read_message_tag(&mut peer).await,
+                read_message_tag(&mut peer).await,
+                read_message_tag(&mut peer).await,
+            ];
+            assert_eq!(seen, [b'R', b'Z', b'E', b'Z']);
+        };
+
+        let (drain, ()) = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            tokio::join!(session, client_view)
+        })
+        .await
+        .expect("the session finished");
+        assert!(drain.unwrap());
+        assert!(
+            !upstream
+                .windows(b"DROP TABLE users".len())
+                .any(|w| w == b"DROP TABLE users"),
+            "the denied statement never reached the database"
         );
     }
 
