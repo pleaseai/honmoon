@@ -1,0 +1,21 @@
+crates/honmoon-proxy/tests/redaction.rs
+  s_ac8e9c2c2a5dd9::t_a1fd07efcfb2fa 29-33,926-928,930,933,938-939,943-983,985-986,988
+  s_ac8e9c2c2a5dd9::t_41e3cbc24d3e34 235-245,257
+  s_ac8e9c2c2a5dd9::t_f6d7be9bc39ff4 234
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "5ffef27626515e6b968cceacfd7564badc49cbb8",
+  "prompts": {},
+  "sessions": {
+    "s_ac8e9c2c2a5dd9": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "c5df1453-9dba-4555-8d69-a50e1fe4d62b",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
