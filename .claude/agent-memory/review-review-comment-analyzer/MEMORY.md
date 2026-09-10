@@ -1,1 +1,0 @@
-- [Honmoon approval hold docs](honmoon-approval-hold-docs.md) — CancelOnDrop-style drop-guard comments in crates/honmoon-proxy/src/approval.rs describe only one trigger path; watch for new call paths reusing the same guard.

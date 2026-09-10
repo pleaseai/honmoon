@@ -121,16 +121,18 @@ that fails to parse: it is refused rather than forwarded blind.
     statement is **refused**. Parking the watch there instead would hand the client the threshold —
     flood past it, leave, and the hold runs to `pause_timeout` and can still be approved, which is
     the defect this whole mechanism exists to remove. Refusing rather than closing the socket keeps
-    the session usable, as every other refusal here does. The cap is two orders of magnitude below
-    the frame cap because every held connection can pin it at once: what has to stay bounded is the
-    aggregate across the connection limit, not what one unusually generous client might pipeline.
+    the session usable, as every other refusal here does. The cap is a sixteenth of the frame cap
+    because every held connection can pin it at once: what has to stay bounded is the aggregate
+    across the connection limit, not what one unusually generous client might pipeline.
   - **A client's half-close ends its hold.** The watch cannot tell a peer that closed its write half
     while still reading from one that is gone — both arrive as EOF — and reading EOF as "still
     waiting" would miss the ordinary disconnect, which is exactly what EOF is. So a client that
     shuts down its write half while one of its statements is held loses that statement, where an
     unheld one would still have been answered under the drain. It is told so: the runtime writes the
     usual `ErrorResponse`/`ReadyForQuery` pair before ending the session, so a client that is still
-    reading gets an explanation rather than a truncated connection.
+    reading gets an explanation rather than a truncated connection. That write is bounded: a client
+    that half-closed and then stopped reading must not be able to pin the session open by refusing
+    to accept its own answer.
   - **A decision in hand beats a simultaneous disconnect.** The hold polls its decision channel
     first and, when the abandonment signal wins, checks that channel once more before giving up. A
     resolution that lands between those two polls is still honoured, so the audit log does not

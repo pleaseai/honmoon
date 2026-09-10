@@ -82,6 +82,13 @@ const COPY_CHUNK: usize = 16 * 1024;
 /// ADR-0007 asks of every refusal.
 const MAX_HELD_PIPELINE: usize = MAX_BUFFERED_BACKEND_MESSAGE;
 
+/// How long the courtesy answer to an abandoned hold is given to reach the
+/// client. The client is gone or has half-closed, so it may not be reading at
+/// all: an unbounded write would block on a full send buffer — or on the lock
+/// the upstream relay is holding while blocked on the same socket — and pin the
+/// session and its upstream connection open for good.
+const ABANDONED_NOTICE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
 /// How long the upstream→client relay is given to deliver the database's last
 /// response after the client stopped sending. Bounded so a server that never
 /// closes its half cannot pin the connection open.
@@ -672,9 +679,16 @@ where
                     // a client that is still there learns why its statement
                     // never ran instead of seeing the connection truncated. One
                     // that really left just makes this write fail, harmlessly.
-                    let _ = refuse(
-                        link,
-                        "honmoon: connection ended while the statement was held for approval",
+                    // Bounded: a client that half-closed and then stopped
+                    // reading would otherwise block this write — directly, or on
+                    // the writer lock the relay holds while blocked on the same
+                    // socket — and the session would never end at all.
+                    let _ = tokio::time::timeout(
+                        ABANDONED_NOTICE_TIMEOUT,
+                        refuse(
+                            link,
+                            "honmoon: connection ended while the statement was held for approval",
+                        ),
                     )
                     .await;
                     return Ok(Disposition::ClientGone);

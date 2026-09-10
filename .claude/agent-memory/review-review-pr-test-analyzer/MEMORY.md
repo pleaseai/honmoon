@@ -1,2 +1,1 @@
 - [mitm-test-harness](mitm_test_harness.md) — honmoon-proxy's tests/mitm.rs upstream always drops the connection, so forwarded-byte content (detect-only invariant) is never test-asserted, only audit-log findings are.
-- [postgres-held-reader-cursor-races](postgres_held_reader_cursor_races.md) — Cursor-backed "client" in postgres.rs hold/disconnect tests can't create a real race (Cursor read is always sync-Ready); real tie-break test lives in approval.rs via Notify.
