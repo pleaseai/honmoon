@@ -1,0 +1,21 @@
+.claude/agent-memory/review-review-documentation-analyzer/MEMORY.md
+  s_4d4ce11359883c::t_7f35ab5ced8a5f 1
+.claude/agent-memory/review-review-documentation-analyzer/honmoon_crate_table_convention.md
+  s_4d4ce11359883c::t_26c5e7f1c34bfc 1-27
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "d89b40d63026bef56fef0d9e4231ab9895f28fc6",
+  "prompts": {},
+  "sessions": {
+    "s_4d4ce11359883c": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d8cbd35d-8ae4-4ea7-be45-710c9ce6a90b",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
