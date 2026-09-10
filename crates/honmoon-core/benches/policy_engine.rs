@@ -7,7 +7,8 @@
 use divan::{Bencher, black_box};
 use honmoon_core::protocols::{parse_k8s_request, parse_postgres_query, parse_sql};
 use honmoon_core::{
-    Facts, HttpFacts, K8sFacts, Policy, SqlFacts, decide, decide_explained, engine,
+    Facts, HttpFacts, K8sFacts, Policy, SqlFacts, decide, decide_explained, decide_pii_audit_only,
+    detect_pii, engine,
 };
 
 fn main() {
@@ -16,6 +17,25 @@ fn main() {
 
 /// The shipped example policy — representative of a real deployment.
 const EXAMPLE_POLICY: &str = include_str!("../../../policies/agent.yaml");
+
+/// A PII-gated deny ahead of an endpoint-bound one. The shipped policy has no
+/// `pii` rules, so detect mode's attribution walk needs its own fixture.
+const PII_ATTRIBUTION_POLICY: &str = "\
+egress:
+  default: allow
+rules:
+  - name: deny-high-severity-pii
+    endpoint: '*'
+    condition: \"pii.count > 0 && pii.max_severity >= 3\"
+    verdict: deny
+  - name: k8s-no-secret-delete
+    endpoint: k8s-prod
+    condition: \"k8s.resource == 'secrets' && k8s.verb == 'delete'\"
+    verdict: deny
+";
+
+/// A checksum-valid RRN — a high-severity finding, as in the `pii` tests.
+const RRN_BODY: &str = r#"{"user":{"rrn":"670125-1230644"}}"#;
 
 // --- Policy parsing --------------------------------------------------------
 
@@ -133,4 +153,24 @@ fn decide_cel_http_rule(bencher: Bencher) {
         ..Default::default()
     };
     bencher.bench(|| decide_explained(black_box(&policy), black_box(&facts)));
+}
+
+/// Detect mode's enforcement pass, which `mitm.rs` runs on every scanned
+/// request whose verdict is not `Allow`: the PII deny is attributed per rule
+/// (re-running its condition against a cleared summary) and held back, then the
+/// endpoint-bound deny below it decides.
+#[divan::bench]
+fn decide_pii_audit_only_attributed_walk(bencher: Bencher) {
+    let policy = Policy::from_yaml(PII_ATTRIBUTION_POLICY).expect("valid policy");
+    let facts = Facts {
+        endpoint: Some("k8s-prod".into()),
+        k8s: Some(K8sFacts {
+            verb: "delete".into(),
+            resource: "secrets".into(),
+            namespace: "prod".into(),
+        }),
+        pii: detect_pii(RRN_BODY),
+        ..Default::default()
+    };
+    bencher.bench(|| decide_pii_audit_only(black_box(&policy), black_box(&facts)));
 }
