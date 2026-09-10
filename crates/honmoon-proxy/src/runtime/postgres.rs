@@ -1677,7 +1677,7 @@ mod tests {
         let answers = async {
             for _ in 0..2 {
                 tokio::time::sleep(step).await;
-                link.delivered_sync_point();
+                link.delivered_message(true);
             }
         };
         tokio::join!(link.await_forwarded_responses(), answers);
@@ -1691,6 +1691,95 @@ mod tests {
             link.forwarded.load(Ordering::Relaxed),
             2,
             "nothing was written off — every answer arrived"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn rows_streaming_out_of_a_slow_query_hold_the_stall_window_open() {
+        // Only `ReadyForQuery` advances what a refusal waits *for*, but every
+        // backend message is progress. A query streaming `DataRow`s for longer
+        // than the window is a database working, not one that stopped — and
+        // treating it as stopped would inject the refusal into the middle of
+        // that result set, which is worse than the misattribution #101 removed.
+        let (link, _peer) = loopback_link().await;
+        link.forwarded_sync_point();
+        let step = REFUSAL_ORDER_STALL_TIMEOUT - std::time::Duration::from_secs(5);
+
+        let started = tokio::time::Instant::now();
+        let answers = async {
+            // Two windows' worth of rows, and only then the sync point.
+            for _ in 0..2 {
+                tokio::time::sleep(step).await;
+                link.delivered_message(false);
+            }
+            tokio::time::sleep(step).await;
+            link.delivered_message(true);
+        };
+        tokio::join!(link.await_forwarded_responses(), answers);
+
+        assert_eq!(started.elapsed(), 3 * step, "rows counted as progress");
+        assert_eq!(
+            link.forwarded.load(Ordering::Relaxed),
+            1,
+            "a working database is never written off"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn an_answer_written_off_and_then_delivered_late_is_not_counted_twice() {
+        // A written-off answer lowers `forwarded` past it. If the answer then
+        // turns up, counting it would push `delivered` above `forwarded` and
+        // release the *next* refusal before its own answer — losing the
+        // ordering the write-off was only meant to make affordable.
+        let (link, _peer) = loopback_link().await;
+        link.forwarded_sync_point();
+        link.await_forwarded_responses().await;
+        assert_eq!(
+            link.forwarded.load(Ordering::Relaxed),
+            0,
+            "the answer that never came was written off"
+        );
+
+        // The database was slow, not silent: the answer arrives after all.
+        link.delivered_message(true);
+        assert_eq!(
+            link.delivered.borrow().sync_points,
+            Some(0),
+            "a late answer to a written-off statement is discarded, not credited"
+        );
+
+        // So the next statement's refusal still waits for its own answer.
+        link.forwarded_sync_point();
+        assert!(
+            tokio::time::timeout(
+                REFUSAL_ORDER_STALL_TIMEOUT / 2,
+                link.await_forwarded_responses(),
+            )
+            .await
+            .is_err(),
+            "the refusal after a write-off is still ordered behind its own answer"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_relay_that_dies_mid_message_suppresses_the_refusal_rather_than_corrupting_it() {
+        // The client holds a frame header whose payload never arrived, so its
+        // stream is already desynchronised: it would read an injected
+        // `ErrorResponse` as that payload's remainder. A truncated connection is
+        // the honest outcome; adding bytes to it makes the truncation unreadable.
+        let (link, mut peer) = loopback_link().await;
+        link.relay_desynchronised();
+
+        write_refusal(&link, "honmoon: denied by policy")
+            .await
+            .unwrap();
+
+        drop(link);
+        let mut trailing = Vec::new();
+        peer.read_to_end(&mut trailing).await.unwrap();
+        assert!(
+            trailing.is_empty(),
+            "nothing may follow a partial frame, got {trailing:?}"
         );
     }
 
