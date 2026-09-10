@@ -1,0 +1,23 @@
+crates/honmoon-proxy/src/signed_body.rs
+  s_ac8e9c2c2a5dd9::t_1ccbf147f90a24 211-235,238-242,244-252,254-263,269-276,282
+  s_ac8e9c2c2a5dd9::t_18ffeb52055ce3 727-728,746-747
+  s_ac8e9c2c2a5dd9::t_cfc58f829cf135 14-18,712-715,717-720,723-724,726,729-745,748-782
+crates/honmoon-proxy/src/mitm.rs
+  s_ac8e9c2c2a5dd9::t_72c6c5a02df6c9 376-386
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "7d333eae4b52bdda760edbc0957d8ed8d7767742",
+  "prompts": {},
+  "sessions": {
+    "s_ac8e9c2c2a5dd9": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "c5df1453-9dba-4555-8d69-a50e1fe4d62b",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
