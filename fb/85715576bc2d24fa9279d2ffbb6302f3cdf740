@@ -1,0 +1,19 @@
+.please/docs/decisions/0007-inline-postgresql-runtime-semantics.md
+  s_4e2aa5e2a3bc91::t_8fa88aa2b4f85e 112-121
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "fb85715576bc2d24fa9279d2ffbb6302f3cdf740",
+  "prompts": {},
+  "sessions": {
+    "s_4e2aa5e2a3bc91": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "706b0600-0545-48ab-adbd-2d6c5ddb7d40",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
