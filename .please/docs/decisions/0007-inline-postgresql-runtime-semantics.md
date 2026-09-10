@@ -115,9 +115,21 @@ that fails to parse: it is refused rather than forwarded blind.
   to go unnoticed until `pause_timeout`, long enough for a human to approve a statement for a client
   that was already gone. The hold therefore takes an abandonment signal, and the runtime feeds it a
   read on the client socket. Bytes the client pipelined behind its held statement are buffered and
-  handed back to the message loop rather than consumed, and a client that pipelines more than
-  `MAX_PG_FRAME` while held stops being watched — its hold falls back to `pause_timeout` — so the
-  watch cannot be turned into unbounded buffering. A decision already in hand beats a simultaneous
-  disconnect, so the audit log never reports an abandonment over an approval a human really made.
+  handed back to the message loop rather than consumed. Three consequences follow:
+  - **The watch cannot be flooded into switching itself off.** A client may pipeline up to
+    `MAX_HELD_PIPELINE` (one whole inspectable frame) behind its held statement; past that the hold
+    ends and the statement is **refused**. Parking the watch there instead would hand the client the
+    threshold — flood past it, leave, and the hold runs to `pause_timeout` and can still be approved,
+    which is the defect this whole mechanism exists to remove. Refusing rather than closing the
+    socket keeps the session usable, as every other refusal here does.
+  - **A client's half-close ends its hold.** The watch cannot tell a peer that closed its write half
+    while still reading from one that is gone — both arrive as EOF — and reading EOF as "still
+    waiting" would miss the ordinary disconnect, which is exactly what EOF is. So a client that
+    shuts down its write half while one of its statements is held loses that statement, where an
+    unheld one would still have been answered under the drain.
+  - **A decision in hand beats a simultaneous disconnect.** The hold polls its decision channel
+    first and, when the abandonment signal wins, checks that channel once more before giving up. A
+    resolution that lands between those two polls is still honoured, so the audit log does not
+    record an abandonment over an approval a human really made.
 - Inspection costs one buffered copy per statement, bounded at 1 MiB. Bulk paths (`COPY`) stay
   zero-copy, which is where the bytes actually are.

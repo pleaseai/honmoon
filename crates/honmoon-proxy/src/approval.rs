@@ -181,9 +181,11 @@ impl ApprovalRegistry {
     }
 }
 
-/// Frees a pending approval slot (and audits the rejection) if the holding
-/// future is dropped before a decision was reached — the caller's future is
-/// dropped when the waiting client disconnects.
+/// Frees a pending approval slot (and audits the rejection) if the guard is
+/// dropped before a decision was reached. Two things drop it: the caller's own
+/// future being dropped from outside (how [`hold`] sees a disconnected HTTP
+/// client), and [`hold_until`] returning early through its `abandoned` arm (how
+/// the PostgreSQL runtime, which is never dropped mid-hold, reports one).
 struct CancelOnDrop {
     state: GatewayState,
     id: u64,
@@ -198,7 +200,13 @@ impl Drop for CancelOnDrop {
             return;
         }
         self.state.approvals.cancel(self.id);
-        tracing::info!(id = self.id, "client gone while held; approval cancelled");
+        // Deliberately not "client gone": the same guard also fires for a hold
+        // the runtime ended for its own reasons, and a log line that named a
+        // cause it cannot observe would be guessing.
+        tracing::info!(
+            id = self.id,
+            "hold ended without a decision; approval cancelled"
+        );
         self.state.audit.record(AuditDraft {
             decision: Decision::Rejected,
             verdict: Verdict::Pause,
@@ -295,9 +303,10 @@ pub(crate) async fn hold_until(
     });
     tracing::info!(id = pending.id, domain = %host, "request held for approval");
 
-    // If the client disconnects mid-hold, the caller's future is dropped and the
-    // code after the `await` never runs — the guard then frees the slot so
-    // abandoned holds can't saturate the approval queue.
+    // Whichever way the hold is abandoned — this future dropped from outside, or
+    // the `abandoned` arm below returning early — the code after the wait never
+    // runs, and the guard frees the slot so abandoned holds can't saturate the
+    // approval queue.
     let mut guard = CancelOnDrop {
         state: state.clone(),
         id: pending.id,
@@ -305,16 +314,25 @@ pub(crate) async fn hold_until(
         summary: Some(summary.clone()),
         armed: true,
     };
+    let mut rx = rx;
     let resolved = tokio::select! {
         // Biased towards the decision: a resolution already in hand wins a tie
         // with a client that left at the same moment. Losing that tie would
         // have the guard audit an abandonment over an approval a human really
         // did make, and the slot it would "free" is one `resolve` already took.
         biased;
-        resolved = tokio::time::timeout(state.pause_timeout, rx) => resolved,
-        // The client is gone. Returning here drops the still-armed guard, which
-        // frees the slot and audits the abandonment.
-        () = abandoned => return HoldOutcome::Abandoned,
+        resolved = tokio::time::timeout(state.pause_timeout, &mut rx) => resolved,
+        () = abandoned => match rx.try_recv() {
+            // `biased` orders the two arms within one poll; it does not make
+            // them atomic. A decision that landed after this poll read the
+            // channel as empty and before the abandonment arm was reached is
+            // still a decision a human made, so take it rather than auditing an
+            // abandonment over it.
+            Ok(decision) => Ok(Ok(decision)),
+            // Nothing was decided: the request really was abandoned. Returning
+            // here drops the still-armed guard, which frees the slot and audits.
+            Err(_) => return HoldOutcome::Abandoned,
+        },
     };
     let decision = match resolved {
         Ok(Ok(d)) => d,
@@ -486,6 +504,45 @@ mod tests {
             Decision::Approved,
             "the approval is audited, not an abandonment"
         );
+    }
+
+    #[tokio::test]
+    async fn a_full_queue_still_fails_closed_and_never_polls_the_abandonment() {
+        let mut state = state();
+        state.approvals = Arc::new(ApprovalRegistry::with_max_pending(1));
+        let _taken = state
+            .approvals
+            .register(NewApproval::default())
+            .expect("the one slot");
+
+        // The queue is full, so the hold returns before its abandonment signal
+        // is ever polled — the caller hands over a future that borrows a live
+        // client socket, and dropping it unpolled must stay a no-op.
+        let polled = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let outcome = {
+            let polled = Arc::clone(&polled);
+            hold_until(
+                &state,
+                "db.internal",
+                summary(),
+                None,
+                "postgres-prod DELETE sessions".into(),
+                async move {
+                    polled.store(true, std::sync::atomic::Ordering::Relaxed);
+                },
+            )
+            .await
+        };
+
+        assert!(
+            matches!(outcome, HoldOutcome::QueueFull),
+            "a full queue still fails closed rather than holding"
+        );
+        assert!(
+            !polled.load(std::sync::atomic::Ordering::Relaxed),
+            "the abandonment signal is dropped unpolled, not run"
+        );
+        assert_eq!(state.audit.recent(1)[0].decision, Decision::Rejected);
     }
 
     #[test]
