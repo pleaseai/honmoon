@@ -11,6 +11,11 @@
 //! bytes, and a bare `Digest`/`Content-Digest`/`Content-MD5` is a stale
 //! validator the rewrite path already strips — treating any of those as
 //! body-signed would strand ordinary API traffic unredacted.
+//!
+//! The same line runs one step further in: a presigned URL proves a *request*
+//! was signed, and an `x-amz-content-sha256` payload hash proves a body was
+//! hashed, without either proving that a signature covers the bytes. Neither
+//! counts alone — see [`aws_sigv4_signs_body`].
 
 use std::collections::HashSet;
 
@@ -203,39 +208,78 @@ fn is_sigv4_authorization(value: &str) -> bool {
         || starts_with_ignore_ascii_case(value, "AWS4-ECDSA-P256-SHA256")
 }
 
-/// SigV4 binds the body through the payload hash, unless the request opted out
-/// of payload signing with `UNSIGNED-PAYLOAD` / `STREAMING-UNSIGNED-PAYLOAD…`.
+/// SigV4 binds the body only when the request carries SigV4 authentication
+/// *and* that signature's canonical request hashed the payload.
+///
+/// The two carriers bind different things, and that difference is the whole of
+/// this predicate:
+///
+/// - A header-signed `Authorization: AWS4-…` always hashes the payload into
+///   its canonical request (for non-S3 services the hash is not even sent as a
+///   header), so it binds the body unless the request opts out with
+///   `UNSIGNED-PAYLOAD` / `STREAMING-UNSIGNED-PAYLOAD…`.
+/// - A presigned `X-Amz-Algorithm=AWS4-…` query parameter authenticates the
+///   *request*, not the upload: a standard S3 presigned URL puts
+///   `UNSIGNED-PAYLOAD` in its canonical request, so nothing binds the bytes
+///   unless the request also declares a signed payload.
+///
+/// Neither a presigned query parameter nor a bare `x-amz-content-sha256`
+/// counts on its own. Both used to: a presigned upload carrying a secret was
+/// refused under the default `block` even though its signature never covered
+/// the body, and a payload hash — an integrity header any client sets freely,
+/// with no AWS authentication anywhere on the request — classified the request
+/// as signed, which under `--signed-body forward` is what *disables* redaction.
+/// Narrowing buys that back at the price of a false negative on a body-signing
+/// scheme whose only trace is a payload hash; such a scheme's signature breaks
+/// under redaction exactly as any scheme this module does not recognize already
+/// does. See ADR-0006.
 fn aws_sigv4_signs_body(headers: &HeaderMap, uri: &Uri) -> bool {
     let payload_hash = header_str(headers, &X_AMZ_CONTENT_SHA256);
-    if let Some(hash) = payload_hash {
-        if hash.eq_ignore_ascii_case("UNSIGNED-PAYLOAD")
-            || starts_with_ignore_ascii_case(hash, "STREAMING-UNSIGNED-PAYLOAD")
-        {
-            return false;
-        }
+    if payload_hash.is_some_and(declares_unsigned_payload) {
+        return false;
     }
-    // A hex payload hash binds the body on its own — the signature that covers
-    // it may live in a scheme we do not otherwise recognize.
-    let hex_payload_hash = payload_hash
-        .is_some_and(|hash| !hash.is_empty() && hash.bytes().all(|b| b.is_ascii_hexdigit()));
+    if header_str(headers, &header::AUTHORIZATION).is_some_and(is_sigv4_authorization) {
+        return true;
+    }
+    sigv4_presigned_query(uri) && payload_hash.is_some_and(declares_signed_payload)
+}
 
-    aws_sigv4_authenticates(headers, uri) || hex_payload_hash
+/// Whether an `x-amz-content-sha256` value declares the payload explicitly out
+/// of the signature.
+fn declares_unsigned_payload(hash: &str) -> bool {
+    hash.eq_ignore_ascii_case("UNSIGNED-PAYLOAD")
+        || starts_with_ignore_ascii_case(hash, "STREAMING-UNSIGNED-PAYLOAD")
+}
+
+/// Whether an `x-amz-content-sha256` value is evidence that the signer hashed
+/// the body: a hex SHA-256 of the payload, or one of the `STREAMING-AWS4-…`
+/// markers that declare per-chunk payload signatures. The length is checked
+/// because this is the presigned path's only evidence of payload signing — a
+/// short hex string is not a SHA-256 — and the `STREAMING-UNSIGNED-PAYLOAD…`
+/// markers never reach here, being rejected by [`declares_unsigned_payload`]
+/// first.
+fn declares_signed_payload(hash: &str) -> bool {
+    let hex_sha256 = hash.len() == 64 && hash.bytes().all(|b| b.is_ascii_hexdigit());
+    hex_sha256 || starts_with_ignore_ascii_case(hash, "STREAMING-AWS4-")
 }
 
 /// Whether the request carries SigV4 authentication at all — header-signed
 /// or presigned — irrespective of whether the payload itself is signed.
 fn aws_sigv4_authenticates(headers: &HeaderMap, uri: &Uri) -> bool {
-    let signed_authorization =
-        header_str(headers, &header::AUTHORIZATION).is_some_and(is_sigv4_authorization);
-    // A presigned URL carries the algorithm in the query string instead.
-    let presigned = uri.query().is_some_and(|query| {
+    header_str(headers, &header::AUTHORIZATION).is_some_and(is_sigv4_authorization)
+        || sigv4_presigned_query(uri)
+}
+
+/// Whether the query string carries a presigned SigV4 `X-Amz-Algorithm`, which
+/// is where a presigned URL names the algorithm instead of `Authorization`.
+fn sigv4_presigned_query(uri: &Uri) -> bool {
+    uri.query().is_some_and(|query| {
         query.split('&').any(|pair| {
             let (name, value) = pair.split_once('=').unwrap_or((pair, ""));
             name.eq_ignore_ascii_case("X-Amz-Algorithm")
                 && starts_with_ignore_ascii_case(value, "AWS4-")
         })
-    });
-    signed_authorization || presigned
+    })
 }
 
 /// RFC 9421: the signature covers the body only when some `Signature-Input`
@@ -665,26 +709,77 @@ mod tests {
         }
     }
 
+    /// A standard S3 presigned URL signs the *request*, not the upload: its
+    /// canonical request uses `UNSIGNED-PAYLOAD`, so the bytes stay redactable.
+    /// The URL is still SigV4-authenticated, so its `SignedHeaders` list keeps
+    /// protecting the headers it names.
     #[test]
-    fn presigned_sigv4_query_signs_the_body() {
-        assert_eq!(
-            scheme(
-                &[],
-                "https://s3.amazonaws.com/b/k?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Expires=60"
-            ),
-            Some(SignedBodyScheme::AwsSigV4)
-        );
+    fn presigned_sigv4_query_alone_leaves_the_body_uncovered() {
+        let uri = "https://s3.amazonaws.com/b/k?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Expires=60";
+        assert_eq!(scheme(&[], uri), None, "body should not be signed");
+        assert!(signs_headers(&[], uri), "headers should still be signed");
     }
 
+    /// A presigned URL that also declares a signed payload — a hex SHA-256, or
+    /// a signed streaming marker — does bind the bytes.
     #[test]
-    fn bare_hex_payload_hash_signs_the_body() {
-        assert_eq!(
-            scheme(
-                &[("x-amz-content-sha256", &"a".repeat(64))],
-                "https://s3.amazonaws.com/b/k"
-            ),
-            Some(SignedBodyScheme::AwsSigV4)
-        );
+    fn presigned_sigv4_with_a_signed_payload_signs_the_body() {
+        let hex_sha256 = "a".repeat(64);
+        for hash in [hex_sha256.as_str(), "STREAMING-AWS4-HMAC-SHA256-PAYLOAD"] {
+            assert_eq!(
+                scheme(
+                    &[("x-amz-content-sha256", hash)],
+                    "https://s3.amazonaws.com/b/k?X-Amz-Algorithm=AWS4-HMAC-SHA256"
+                ),
+                Some(SignedBodyScheme::AwsSigV4),
+                "{hash}"
+            );
+        }
+    }
+
+    /// A payload hash is an integrity header, not a signature: with no SigV4
+    /// authentication anywhere on the request it says nothing about who, if
+    /// anyone, signed those bytes — and trusting a header the client fully
+    /// controls is what would disable redaction under `--signed-body forward`.
+    #[test]
+    fn bare_hex_payload_hash_leaves_the_body_uncovered() {
+        let hex_sha256 = "a".repeat(64);
+        let headers = [("x-amz-content-sha256", hex_sha256.as_str())];
+        let uri = "https://s3.amazonaws.com/b/k";
+        assert_eq!(scheme(&headers, uri), None, "body should not be signed");
+        assert!(!signs_headers(&headers, uri), "nothing signs headers");
+    }
+
+    /// The presigned path's evidence has to look like a payload hash: a short
+    /// hex string, or an opaque value, is not a SHA-256 of the body.
+    #[test]
+    fn presigned_sigv4_needs_a_payload_hash_shaped_value() {
+        for hash in ["abc123", "not-a-hash", ""] {
+            assert_eq!(
+                scheme(
+                    &[("x-amz-content-sha256", hash)],
+                    "https://s3.amazonaws.com/b/k?X-Amz-Algorithm=AWS4-HMAC-SHA256"
+                ),
+                None,
+                "{hash:?}"
+            );
+        }
+    }
+
+    /// A presigned URL that spells out the opt-out is the explicit form of the
+    /// same conclusion.
+    #[test]
+    fn presigned_sigv4_unsigned_payload_leaves_the_body_uncovered() {
+        for marker in ["UNSIGNED-PAYLOAD", "STREAMING-UNSIGNED-PAYLOAD-TRAILER"] {
+            assert_eq!(
+                scheme(
+                    &[("x-amz-content-sha256", marker)],
+                    "https://s3.amazonaws.com/b/k?X-Amz-Algorithm=AWS4-HMAC-SHA256"
+                ),
+                None,
+                "{marker}"
+            );
+        }
     }
 
     #[test]
