@@ -822,3 +822,151 @@ fn block_mode_enforces_an_endpoint_deny_behind_an_allow_clean_rule() {
             && event.facts.endpoint.as_deref() == Some("k8s-prod")
     }));
 }
+
+/// Pauses on the connection-level gate only: `http.method` is empty in the
+/// host facts and set on an inspected request, so the rule fires for a CONNECT
+/// or a forward-proxy request's host gate and never for body inspection.
+const PAUSE_HOST_GATE_POLICY: &str = "\
+egress:
+  default: allow
+rules:
+  - name: review-connection
+    endpoint: '*'
+    condition: \"http.method == ''\"
+    verdict: pause
+";
+
+/// A loopback port nothing is listening on, released before it is handed back
+/// so a client socket can bind it.
+fn free_local_port() -> u16 {
+    StdTcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port()
+}
+
+/// Connect to the proxy from a fixed client address, so a later connection can
+/// present the proxy with the same `SocketAddr`.
+///
+/// `SO_LINGER 0` makes `close` send an RST instead of a FIN: neither end keeps
+/// the 4-tuple in `TIME_WAIT`, so the source port is immediately reusable.
+fn connect_from(client_port: u16, proxy_port: u16) -> std::net::TcpStream {
+    let socket = socket2::Socket::new(
+        socket2::Domain::IPV4,
+        socket2::Type::STREAM,
+        Some(socket2::Protocol::TCP),
+    )
+    .unwrap();
+    socket.set_reuse_address(true).unwrap();
+    socket.set_linger(Some(Duration::ZERO)).unwrap();
+    let client: std::net::SocketAddr = ([127, 0, 0, 1], client_port).into();
+    let proxy: std::net::SocketAddr = ([127, 0, 0, 1], proxy_port).into();
+    socket.bind(&client.into()).unwrap();
+    socket.connect(&proxy.into()).unwrap();
+    let stream: std::net::TcpStream = socket.into();
+    stream
+        .set_read_timeout(Some(Duration::from_secs(10)))
+        .unwrap();
+    stream
+}
+
+/// Wait for the next held request to reach the approval queue.
+fn wait_for_hold(approvals: &ApprovalRegistry, what: &str) -> u64 {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        if let Some(pending) = approvals.pending().first() {
+            return pending.id;
+        }
+        assert!(Instant::now() < deadline, "{what} never reached the hold");
+        thread::sleep(Duration::from_millis(20));
+    }
+}
+
+/// Read an HTTP response head from a blocking socket.
+fn read_head_blocking(stream: &mut std::net::TcpStream) -> String {
+    use std::io::Read;
+    let mut out = Vec::new();
+    let mut byte = [0u8; 1];
+    while stream.read(&mut byte).map(|n| n == 1).unwrap_or(false) {
+        out.push(byte[0]);
+        if out.ends_with(b"\r\n\r\n") {
+            break;
+        }
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+/// Regression for #100: a CONNECT's authorization used to be recorded against
+/// the client `SocketAddr` and never removed, so a later connection that reused
+/// the source port inherited it and skipped the host gate. Authorization is
+/// scoped to the accepted connection now, so the second connection is gated on
+/// its own merits even though it looks identical on the wire.
+#[test]
+fn tunnel_authorization_does_not_carry_into_a_connection_reusing_the_address() {
+    use std::io::Write;
+
+    let upstream = start_dropping_upstream();
+    let audit = Arc::new(AuditLog::new(1024));
+    let approvals = Arc::new(ApprovalRegistry::new());
+    let state = GatewayState {
+        policy: Arc::new(Policy::from_yaml(PAUSE_HOST_GATE_POLICY).unwrap()),
+        audit,
+        approvals: approvals.clone(),
+        pause_timeout: Duration::from_secs(10),
+        ca: Arc::new(CaMaterial::generate().unwrap()),
+        // A raw tunnel: the CONNECT is authorized without TLS termination, which
+        // is all the registry entry ever needed.
+        intercept: InterceptPolicy::None,
+        pii_mode: PiiMode::Detect,
+        redaction: None,
+    };
+    let proxy_port = start_proxy(state);
+    let client_port = free_local_port();
+
+    // 1. An approved CONNECT, from a client address we will reuse.
+    let mut tunnel = connect_from(client_port, proxy_port);
+    tunnel
+        .write_all(
+            format!("CONNECT localhost:{upstream} HTTP/1.1\r\nHost: localhost:{upstream}\r\n\r\n")
+                .as_bytes(),
+        )
+        .unwrap();
+    let hold = wait_for_hold(&approvals, "the CONNECT");
+    assert!(
+        approvals.resolve(hold, ApprovalDecision::Approve).is_some(),
+        "the CONNECT hold should still be waiting"
+    );
+    let established = read_head_blocking(&mut tunnel);
+    assert!(
+        established.starts_with("HTTP/1.1 200"),
+        "tunnel not established: {established:?}"
+    );
+
+    // 2. The tunnel closes (RST), and an unrelated connection reuses the port.
+    //    It sends an absolute-form request naming the very host and port the
+    //    dead tunnel was authorized for — the shape that used to be mistaken
+    //    for a decrypted inner request.
+    drop(tunnel);
+    let mut reused = connect_from(client_port, proxy_port);
+    reused
+        .write_all(
+            format!(
+                "GET https://localhost:{upstream}/ HTTP/1.1\r\n\
+                 Host: localhost:{upstream}\r\nConnection: close\r\n\r\n"
+            )
+            .as_bytes(),
+        )
+        .unwrap();
+
+    let hold = wait_for_hold(&approvals, "the reused-address request");
+    assert!(
+        approvals.resolve(hold, ApprovalDecision::Reject).is_some(),
+        "the second hold should still be waiting"
+    );
+    let response = read_head_blocking(&mut reused);
+    assert!(
+        response.starts_with("HTTP/1.1 403"),
+        "a rejected hold must block the request: {response:?}"
+    );
+}
