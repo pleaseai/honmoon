@@ -19,6 +19,9 @@ http-body-util.workspace = true
 flate2.workspace = true
 
 [dev-dependencies]
+# `start_paused` for the refusal-ordering timeout test: the barrier's bound is
+# 30s, which is a deadline to assert against, not one to wait out.
+tokio = { workspace = true, features = ["test-util"] }
 # TLS client for the MITM loopback test (trusts the local CA).
 tokio-rustls = "0.26"
 rustls-pemfile = "2"

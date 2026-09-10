@@ -942,6 +942,62 @@ mod tests {
         (ClientLink::new(write), accepted.unwrap().0)
     }
 
+    /// Spawn the upstream→client relay over a loopback pair, returning the
+    /// socket that stands in for the database. Writing a backend message to it
+    /// is how a test decides *when* the client is answered.
+    async fn loopback_relay(link: ClientLink) -> (TcpStream, tokio::task::JoinHandle<()>) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let (database, accepted) = tokio::join!(TcpStream::connect(addr), listener.accept());
+        // The relay only ever reads; dropping the write half just half-closes a
+        // direction nothing in these tests uses.
+        let (read, _write) = accepted.unwrap().0.into_split();
+        (
+            database.unwrap(),
+            tokio::spawn(upstream_to_client(read, link)),
+        )
+    }
+
+    /// Read one whole backend message off the client socket, returning its tag.
+    /// Deliberately unbounded: every caller states its own deadline, and an
+    /// inner timer of its own would be the first to fire under a paused clock.
+    async fn read_message_tag(peer: &mut TcpStream) -> u8 {
+        let mut head = [0u8; 5];
+        peer.read_exact(&mut head)
+            .await
+            .expect("the client is answered");
+        let len = u32::from_be_bytes([head[1], head[2], head[3], head[4]]) as usize;
+        let mut payload = vec![0u8; len - 4];
+        peer.read_exact(&mut payload).await.unwrap();
+        head[0]
+    }
+
+    /// A policy that denies every `DROP`.
+    fn deny_drop_policy() -> honmoon_core::Policy {
+        honmoon_core::Policy::from_yaml(
+            "egress:\n  default: allow\nrules:\n  - name: no-drop\n    endpoint: '*'\n    condition: \"sql.verb == 'DROP'\"\n    verdict: deny\n",
+        )
+        .expect("valid policy")
+    }
+
+    /// What a database answers a `Q` with: `CommandComplete` + `ReadyForQuery`.
+    fn query_response() -> Vec<u8> {
+        let tag = b"SELECT 1\0";
+        let mut frames = vec![b'C'];
+        frames.extend_from_slice(&((4 + tag.len()) as u32).to_be_bytes());
+        frames.extend_from_slice(tag);
+        frames.extend_from_slice(&[b'Z', 0, 0, 0, 5, b'I']);
+        frames
+    }
+
+    /// The pipelined pair the client sends in both ordering tests: an allowed
+    /// statement the database is still working on, then a denied one.
+    fn pipelined_select_then_drop() -> Vec<u8> {
+        let mut frames = simple_query("SELECT pg_sleep(1)");
+        frames.extend_from_slice(&simple_query("DROP TABLE users"));
+        frames
+    }
+
     fn startup_packet(code: u32, body: &[u8]) -> Vec<u8> {
         let len = 8 + body.len();
         let mut packet = Vec::with_capacity(len);
@@ -1288,6 +1344,108 @@ mod tests {
         assert!(
             !frame_query(b'P', &parse_payload("", "DROP TABLE users"))
                 .is_some_and(is_uninspectable_statement)
+        );
+    }
+
+    #[tokio::test]
+    async fn a_refusal_waits_for_the_response_to_a_statement_already_forwarded() {
+        let state = GatewayState::new(deny_drop_policy());
+        // The `SELECT` is forwarded and the database is still working on it when
+        // the `DROP` is refused. Injecting straight away would put honmoon's
+        // 42501 in front of the `SELECT`'s response, and the client would
+        // attribute the error to the statement it already had answered (#101).
+        let mut client = std::io::Cursor::new(pipelined_select_then_drop());
+        let mut upstream: Vec<u8> = Vec::new();
+        let (link, mut peer) = loopback_link().await;
+        let (mut database, _relay) = loopback_relay(link.clone()).await;
+
+        let facts = Facts::default();
+        let session = message_loop(&state, &mut client, &mut upstream, &link, &facts);
+        let client_view = async {
+            let mut early = [0u8; 1];
+            assert!(
+                tokio::time::timeout(
+                    std::time::Duration::from_millis(200),
+                    peer.read_exact(&mut early),
+                )
+                .await
+                .is_err(),
+                "the refusal overtook the response to the statement before it"
+            );
+
+            // Only now does the database answer the `SELECT`.
+            database.write_all(&query_response()).await.unwrap();
+
+            let seen = [
+                read_message_tag(&mut peer).await,
+                read_message_tag(&mut peer).await,
+                read_message_tag(&mut peer).await,
+                read_message_tag(&mut peer).await,
+            ];
+            assert_eq!(
+                seen,
+                [b'C', b'Z', b'E', b'Z'],
+                "the client reads the two answers in the order it asked the questions"
+            );
+        };
+
+        let (drain, ()) = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            tokio::join!(session, client_view)
+        })
+        .await
+        .expect("the session finished");
+        assert!(
+            drain.unwrap(),
+            "the client sent everything it had and the session ended cleanly"
+        );
+        assert!(
+            !upstream
+                .windows(b"DROP TABLE users".len())
+                .any(|w| w == b"DROP TABLE users"),
+            "waiting for the earlier response must not forward the denied statement"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_refusal_is_not_wedged_by_a_database_that_never_answers() {
+        let state = GatewayState::new(deny_drop_policy());
+        // Sitting behind an earlier response must not become a way to lose the
+        // refusal altogether. The relay is alive but the database says nothing,
+        // so the `SELECT`'s `ReadyForQuery` never arrives; the barrier gives up
+        // after `REFUSAL_ORDER_TIMEOUT` and answers anyway.
+        let mut client = std::io::Cursor::new(pipelined_select_then_drop());
+        let mut upstream: Vec<u8> = Vec::new();
+        let (link, mut peer) = loopback_link().await;
+        let (_database, _relay) = loopback_relay(link.clone()).await;
+
+        let facts = Facts::default();
+        let session = message_loop(&state, &mut client, &mut upstream, &link, &facts);
+        let client_view = async {
+            assert_eq!(
+                read_message_tag(&mut peer).await,
+                b'E',
+                "a silent database costs the refusal its ordering, never the client its answer"
+            );
+            assert_eq!(read_message_tag(&mut peer).await, b'Z');
+        };
+
+        let (drain, ()) = tokio::join!(session, client_view);
+        assert!(drain.unwrap(), "the session survives the late refusal");
+    }
+
+    #[tokio::test]
+    async fn the_startup_response_is_a_sync_point_a_refusal_waits_behind() {
+        let (link, _peer) = loopback_link().await;
+        let mut client = std::io::Cursor::new(startup_packet(PROTOCOL_V3, b"user\0me\0\0"));
+        let mut upstream: Vec<u8> = Vec::new();
+
+        assert!(startup(&mut client, &mut upstream, &link).await.unwrap());
+
+        assert_eq!(
+            link.forwarded.load(Ordering::Relaxed),
+            1,
+            "the handshake ends in one `ReadyForQuery`, and a statement pipelined \
+             behind the startup packet must not be refused in front of it"
         );
     }
 
