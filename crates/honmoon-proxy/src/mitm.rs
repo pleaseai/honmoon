@@ -1164,15 +1164,15 @@ fn signed_headers_response(signed: &str) -> RequestOrResponse {
 /// bytes of identity-encoded text would actually change on the wire.
 ///
 /// `Content-Encoding` and `Transfer-Encoding` are only dropped when the request
-/// carries them, and `Content-Length` is only re-framed when the redacted body
-/// is a different size — a signature over a header the rewrite leaves as it
-/// found it is not broken by the rewrite.
+/// carries them, and `Content-Length` is only re-framed when what the rewrite
+/// will send differs from what the client sent — a signature over a header the
+/// rewrite leaves as it found it is not broken by the rewrite.
 fn reframed_headers(headers: &header::HeaderMap, new_length: usize) -> Vec<header::HeaderName> {
     REWRITTEN_FRAMING_HEADERS
         .into_iter()
         .filter(|name| {
             if *name == header::CONTENT_LENGTH {
-                declared_content_length(headers) != Some(new_length)
+                !content_length_survives_rewrite(headers, new_length)
             } else {
                 headers.contains_key(name)
             }
@@ -1180,16 +1180,24 @@ fn reframed_headers(headers: &header::HeaderMap, new_length: usize) -> Vec<heade
         .collect()
 }
 
-/// The request's declared `Content-Length`, when it carries exactly one
-/// well-formed value. Anything else counts as "not what the rewrite will
-/// send", which is the fail-closed reading.
-fn declared_content_length(headers: &header::HeaderMap) -> Option<usize> {
+/// Whether the `Content-Length` the rewrite inserts is byte-identical to the
+/// one the client sent — the only case where a signature over that header
+/// survives.
+///
+/// The comparison is on the wire bytes, not on a parsed length: the rewrite
+/// writes the canonical `new_length.to_string()`, so a non-canonical `012` or
+/// `+12` that parses to the same number is still a different value than the
+/// one the client signed. Absent, repeated, or non-canonical values all count
+/// as changed, which is the fail-closed reading.
+fn content_length_survives_rewrite(headers: &header::HeaderMap, new_length: usize) -> bool {
     let mut values = headers.get_all(header::CONTENT_LENGTH).iter();
-    let value = values.next()?;
+    let Some(value) = values.next() else {
+        return false;
+    };
     if values.next().is_some() {
-        return None;
+        return false;
     }
-    value.to_str().ok()?.trim().parse().ok()
+    value.as_bytes() == new_length.to_string().as_bytes()
 }
 
 /// A `403` explaining that redaction cannot rewrite a body-signed request, so
@@ -1379,6 +1387,22 @@ mod tests {
             reframed_headers(&chunked, 12),
             [header::CONTENT_LENGTH, header::TRANSFER_ENCODING]
         );
+
+        // The rewrite writes the canonical decimal, so a non-canonical value
+        // that parses to the same number is still replaced on the wire — and a
+        // repeated Content-Length is not a value the rewrite preserves either.
+        let mut non_canonical = header::HeaderMap::new();
+        non_canonical.insert(header::CONTENT_LENGTH, "012".parse().expect("length"));
+        assert_eq!(
+            reframed_headers(&non_canonical, 12),
+            [header::CONTENT_LENGTH],
+            "a leading-zero length the rewrite rewrites to `12` is not preserved"
+        );
+
+        let mut repeated = header::HeaderMap::new();
+        repeated.append(header::CONTENT_LENGTH, "12".parse().expect("length"));
+        repeated.append(header::CONTENT_LENGTH, "12".parse().expect("length"));
+        assert_eq!(reframed_headers(&repeated, 12), [header::CONTENT_LENGTH]);
     }
 
     #[test]
