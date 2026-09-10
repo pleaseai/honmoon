@@ -141,6 +141,11 @@ enough to unblock the two known shapes (signed uploads vs. bearer-token API traf
 - Detection of a covered header is as header-shaped as the body detection: a scheme we do not
   recognize whose signature covers `Content-Length` still breaks under redaction, exactly as it
   does for the body.
+- The rewrite also strips the stale body-digest validators, and the decision does **not** yet ask
+  about those: a SigV4 request that declares `UNSIGNED-PAYLOAD` and lists a digest header such as
+  `content-md5` in its `SignedHeaders` has that header stripped without taking this decision, so
+  its signature still breaks. RFC 9421 and draft-cavage signatures over a digest are unaffected —
+  they are body-signed and take the earlier branch. Tracked in #116.
 - `forward` is a genuine fail-open hole and is logged at `warn` on every use, alongside the other
   redaction bypasses.
 - Every body-signed request keeps the client's `Accept-Encoding` — the usual `identity`
