@@ -68,8 +68,11 @@ const COPY_CHUNK: usize = 16 * 1024;
 /// How much traffic a client may pipeline behind a held statement while
 /// [`HeldReader::watch_disconnect`] watches for its disconnect. A client
 /// waiting for the answer to a paused statement sends at most the rest of its
-/// extended-protocol batch (`B`/`D`/`E`/`S`), far below this; the bound is one
-/// whole inspectable frame so no realistic client reaches it.
+/// extended-protocol batch (`B`/`D`/`E`/`S`), orders of magnitude below this.
+/// Sized to match [`MAX_BUFFERED_BACKEND_MESSAGE`] rather than the 1 MiB frame
+/// cap: every held connection can pin this much at once, so the bound that
+/// matters is the aggregate across the connection cap, not what one generous
+/// client might send.
 ///
 /// Passing it **ends the hold and refuses the statement** rather than parking
 /// the watch. Parking would let the client pick the threshold: flooding past
@@ -77,7 +80,7 @@ const COPY_CHUNK: usize = 16 * 1024;
 /// with the hold running to `pause_timeout` and a human approving a statement
 /// for a client already gone. Refusing keeps the session alive, which is what
 /// ADR-0007 asks of every refusal.
-const MAX_HELD_PIPELINE: usize = MAX_PG_FRAME;
+const MAX_HELD_PIPELINE: usize = MAX_BUFFERED_BACKEND_MESSAGE;
 
 /// How long the upstream→client relay is given to deliver the database's last
 /// response after the client stopped sending. Bounded so a server that never
@@ -651,9 +654,20 @@ where
                 // keep the session: ADR-0007 asks that a refusal never be
                 // collateral damage for the connection.
                 HoldOutcome::Abandoned if client.pipeline_full() => false,
-                // The client left mid-hold. Refusing it would be writing to a
-                // socket nobody holds; the session ends instead.
-                HoldOutcome::Abandoned => return Ok(Disposition::ClientGone),
+                HoldOutcome::Abandoned => {
+                    // The client is gone — or it half-closed and is still
+                    // reading, which arrives as the same EOF and cannot be told
+                    // apart on this socket. Answer before ending the session, so
+                    // a client that is still there learns why its statement
+                    // never ran instead of seeing the connection truncated. One
+                    // that really left just makes this write fail, harmlessly.
+                    let _ = refuse(
+                        link,
+                        "honmoon: connection ended while the statement was held for approval",
+                    )
+                    .await;
+                    return Ok(Disposition::ClientGone);
+                }
                 HoldOutcome::Rejected | HoldOutcome::QueueFull => false,
             }
         }
@@ -909,7 +923,7 @@ mod tests {
         // `a_decision_already_in_hand_beats_a_simultaneous_abandonment`.
         let mut client = std::io::Cursor::new(simple_query("DELETE FROM sessions"));
         let mut upstream: Vec<u8> = Vec::new();
-        let (link, _peer) = loopback_link().await;
+        let (link, mut peer) = loopback_link().await;
 
         let drain = message_loop(&state, &mut client, &mut upstream, &link, &Facts::default())
             .await
@@ -934,6 +948,15 @@ mod tests {
                 .is_none(),
             "a human can no longer approve the statement after its client left"
         );
+
+        // A client that half-closed and is still reading writes the same EOF, so
+        // the session is not truncated in silence: whoever is still there is
+        // told why the statement never ran.
+        let mut answer = [0u8; 1];
+        peer.read_exact(&mut answer)
+            .await
+            .expect("an abandoned client is still answered");
+        assert_eq!(answer[0], b'E');
     }
 
     /// Yields `head`, then never resolves again — a client that has sent
