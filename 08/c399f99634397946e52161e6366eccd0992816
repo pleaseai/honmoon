@@ -1,0 +1,21 @@
+.claude/agent-memory/review-review-type-design-analyzer/MEMORY.md
+  s_85a852507dfbd0::t_714ac3492d1ee6 1
+.claude/agent-memory/review-review-type-design-analyzer/honmoon_proxy_sync_point_tracking.md
+  s_85a852507dfbd0::t_d96edbc8545ca0 1-35
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "08c399f99634397946e52161e6366eccd0992816",
+  "prompts": {},
+  "sessions": {
+    "s_85a852507dfbd0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "cb4670ad-8046-4aa5-b876-712fecc38af2",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
