@@ -205,9 +205,9 @@ bodies whose declared `Content-Encoding` cannot be decoded, and partial uploads 
 may itself be signed; those responses may arrive compressed and are then left as they are).
 
 **Signed requests are the exception that fails closed when redaction would change what the
-signature covers.** When a request's authentication covers its payload — AWS SigV4 (including
-presigned URLs), RFC 9421 message signatures or draft-cavage signatures over a body digest —
-honmoon holds no signing credentials and cannot re-sign the rewritten body, so the
+signature covers.** When a request's authentication covers its payload — AWS SigV4 whose canonical
+request hashed the payload, RFC 9421 message signatures or draft-cavage signatures over a body
+digest — honmoon holds no signing credentials and cannot re-sign the rewritten body, so the
 upstream would reject it with an opaque signature error. The same applies when the signature
 covers a header that rewriting the body has to re-frame: replacing the payload rewrites
 `Content-Length` and drops `Content-Encoding`/`Transfer-Encoding`, and an AWS SDK upload lists
@@ -228,7 +228,10 @@ honmoon gateway --config policies/agent.yaml --tls-intercept --redact-secrets \
 Bearer tokens, Basic auth, and API keys authenticate the caller rather than the bytes, so requests
 carrying them are redacted normally — as are SigV4 uploads that declare
 `x-amz-content-sha256: UNSIGNED-PAYLOAD` and whose `SignedHeaders` list leaves the framing headers
-alone. The covered list is parsed rather than assumed, and only headers the rewrite would actually
+alone. A presigned URL is in the same group unless it also sends a payload hash: its signature
+covers the request and the headers it names, not the uploaded bytes. So is a bare
+`x-amz-content-sha256` with no AWS authentication on the request — that header is an integrity
+check, not a signature. The covered list is parsed rather than assumed, and only headers the rewrite would actually
 change count. A signed request with nothing to redact is always forwarded untouched. See [ADR-0006](.please/docs/decisions/0006-signed-body-requests-under-wire-redaction.md).
 
 ### What `honmoon run` enforces, and what it costs
