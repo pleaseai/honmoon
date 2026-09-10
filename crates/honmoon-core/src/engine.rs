@@ -2,7 +2,7 @@
 
 use cel_interpreter::{Context, Program, Value};
 
-use crate::{Facts, PiiFacts, Policy, Rule, Verdict};
+use crate::{Facts, PiiFacts, Policy, Verdict};
 
 /// A decision plus the reason it was reached.
 ///
@@ -55,9 +55,19 @@ pub fn decide_explained(policy: &Policy, facts: &Facts) -> Outcome {
 /// reading PII — an `endpoints`-bound deny preceded by `pii.count == 0 -> allow`
 /// is enforced here, because the deny itself never consulted the summary.
 ///
-/// Only non-[`Allow`](Verdict::Allow) verdicts are held back. A PII-caused
-/// *allow* (an exemption for low-severity findings, say) still stands, so
-/// detect mode can never deny something block mode would let through.
+/// An [`Allow`](Verdict::Allow) is held back only once something else already
+/// has been. An exemption the policy really reached — `pii.count > 0 &&
+/// pii.max_severity < 3 -> allow`, say — still stands, so **a request block mode
+/// allows is allowed here too**. Past a held-back verdict the walk is answering
+/// what the policy says with the scanner quiet, and a rule that owes its own
+/// match to PII cannot grant an exemption on that reading: block mode never
+/// reached it either.
+///
+/// That guarantee is about `Allow`, not about severity in general. Skipping a
+/// PII-caused `Pause` can let a later non-PII `Deny` decide, so for the same
+/// facts detect mode can return a *stricter* verdict than block mode. That deny
+/// is the policy's own answer for the facts detect mode acts on, and it is the
+/// answer the pre-attribution implementation gave too.
 pub fn decide_pii_audit_only(policy: &Policy, facts: &Facts) -> Outcome {
     decide_with(policy, facts, PiiWeight::AuditsOnly)
 }
@@ -72,16 +82,30 @@ enum PiiWeight {
 }
 
 fn decide_with(policy: &Policy, facts: &Facts, pii_weight: PiiWeight) -> Outcome {
+    // Set once a verdict has been held back. From there on the walk is asking
+    // what the policy says with the scanner quiet, so a later rule that owes
+    // its own match to PII cannot answer either — an allow included. Honouring
+    // one would grant an exemption the policy never issued (block mode stopped
+    // at the held-back rule above it) and end the walk before the endpoint,
+    // Kubernetes and HTTP-metadata rules below it.
+    let mut held_back = false;
     for rule in &policy.rules {
-        if !endpoint_matches(&rule.endpoint, facts.endpoint.as_deref())
-            || !eval_condition(&rule.condition, facts, facts.pii.as_ref())
-        {
+        if !endpoint_matches(&rule.endpoint, facts.endpoint.as_deref()) {
+            continue;
+        }
+        // Compiled once and reused for the attribution check below, which
+        // re-runs the very same condition.
+        let Some(program) = compile_condition(&rule.condition) else {
+            continue;
+        };
+        if !eval_program(&program, facts, facts.pii.as_ref()) {
             continue;
         }
         if pii_weight == PiiWeight::AuditsOnly
-            && rule.verdict != Verdict::Allow
-            && pii_caused(rule, facts)
+            && (held_back || rule.verdict != Verdict::Allow)
+            && pii_caused(&program, facts)
         {
+            held_back = true;
             continue;
         }
         return Outcome {
@@ -95,13 +119,13 @@ fn decide_with(policy: &Policy, facts: &Facts, pii_weight: PiiWeight) -> Outcome
     }
 }
 
-/// Whether the PII summary is what made `rule` match: it fires on the real
-/// facts (the caller has already checked that) but not on the same facts with
-/// the summary cleared.
-fn pii_caused(rule: &Rule, facts: &Facts) -> bool {
+/// Whether the PII summary is what made the matching rule match: its condition
+/// fires on the real facts (the caller has already checked that) but not on the
+/// same facts with the summary cleared.
+fn pii_caused(program: &Program, facts: &Facts) -> bool {
     // Without a summary the real evaluation already ran against the empty
     // default, so no rule can owe its match to PII.
-    facts.pii.is_some() && !eval_condition(&rule.condition, facts, None)
+    facts.pii.is_some() && !eval_program(program, facts, None)
 }
 
 fn egress_verdict(policy: &Policy, facts: &Facts) -> Verdict {
@@ -140,16 +164,24 @@ pub fn matches_domain(pattern: &str, domain: &str) -> bool {
     }
 }
 
-/// Evaluate a CEL condition against the facts. Any error → `false` (no match).
+/// Compile a rule condition. A condition that does not compile cannot match,
+/// which keeps a malformed rule from turning a deny into an allow.
+fn compile_condition(condition: &str) -> Option<Program> {
+    match Program::compile(condition) {
+        Ok(program) => Some(program),
+        Err(_) => {
+            tracing::warn!(%condition, "policy rule condition failed to compile");
+            None
+        }
+    }
+}
+
+/// Evaluate a compiled condition against the facts. Any error → `false` (no
+/// match).
 ///
 /// `pii` is the summary to bind, passed separately from `facts` so attribution
-/// can re-run the same condition with it cleared.
-fn eval_condition(condition: &str, facts: &Facts, pii: Option<&PiiFacts>) -> bool {
-    let Ok(program) = Program::compile(condition) else {
-        tracing::warn!(%condition, "policy rule condition failed to compile");
-        return false;
-    };
-
+/// can re-run the same program with it cleared.
+fn eval_program(program: &Program, facts: &Facts, pii: Option<&PiiFacts>) -> bool {
     let mut ctx = Context::default();
     if let Some(http) = &facts.http {
         if let Ok(value) = cel_interpreter::to_value(http) {
@@ -173,7 +205,18 @@ fn eval_condition(condition: &str, facts: &Facts, pii: Option<&PiiFacts>) -> boo
         ctx.add_variable_from_value("pii", value);
     }
 
-    matches!(program.execute(&ctx), Ok(Value::Bool(true)))
+    match program.execute(&ctx) {
+        Ok(value) => matches!(value, Value::Bool(true)),
+        // A condition that errors at run time (indexing an empty `pii.types`,
+        // say) is indistinguishable from one that legitimately said `false`,
+        // and attribution reads that `false` as "PII caused this match". Say so
+        // once, or an operator debugging a rule that never fires has nothing to
+        // go on.
+        Err(error) => {
+            tracing::warn!(%error, "policy rule condition failed to evaluate");
+            false
+        }
+    }
 }
 
 #[cfg(test)]

@@ -633,15 +633,18 @@ impl HonmoonHandler {
         let outcome = decide_explained(&self.state.policy, &facts);
         let summary = FactsSummary::from(&facts);
 
-        // Detect mode downgrades only the verdicts PII *caused*, which
+        // Detect mode holds back the verdicts PII *caused*, which
         // `decide_pii_audit_only` attributes per rule: the rule that fired only
         // because of the summary is skipped and the rest of the policy still
         // decides, so an endpoint/Kubernetes or HTTP-metadata deny is enforced
         // in every mode. Detect-only is a promise about the PII scanner, not a
         // bypass for the rest of the policy — including when an earlier
         // `pii.count == 0 -> allow` rule would have matched on a clean body.
-        // A real outcome of `Allow` needs no second pass: the audit-only walk
-        // holds back nothing that an allow-verdict rule (or egress) decided.
+        // Holding a verdict back is not the same as downgrading it: continuing
+        // the walk can reach a stricter rule the first match had shadowed (see
+        // the note on `decide_pii_audit_only`). A real outcome of `Allow` needs
+        // no second pass — the audit-only walk holds nothing back before a rule
+        // (or the egress lists) has decided `Allow`.
         let enforced = match self.state.pii_mode {
             PiiMode::Block => Some(outcome.clone()),
             PiiMode::Detect if outcome.verdict != Verdict::Allow => {
