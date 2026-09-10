@@ -20,7 +20,7 @@ pub use audit::{AuditDraft, AuditEvent, AuditLog, Decision, FactsSummary};
 pub use claude_code_hook::{
     ClaudeCodeHookVerdict, PathResolution, claude_code_hook_verdict, is_sensitive_path,
 };
-pub use engine::{Outcome, decide, decide_explained};
+pub use engine::{Outcome, decide, decide_explained, decide_pii_audit_only};
 pub use pii::{PiiFacts, PiiSpan, detect_pii, detect_spans, summarize_spans};
 pub use redact::{DEFAULT_MIN_PII_SEVERITY, RedactionOutcome, redact, redact_with_spans};
 pub use secret_detect::{SecretFinding, detect_secrets};

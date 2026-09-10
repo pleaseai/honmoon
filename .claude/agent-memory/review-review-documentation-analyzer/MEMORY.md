@@ -1,0 +1,1 @@
+- [Honmoon crate-table convention](honmoon_crate_table_convention.md) — AGENTS.md/ARCHITECTURE.md name honmoon-core's engine functions explicitly; check new decide-family exports against them

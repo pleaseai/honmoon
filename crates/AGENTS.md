@@ -21,7 +21,7 @@ RUST_LOG=honmoon_proxy=debug cargo run -p honmoon-cli -- gateway --config polici
 
 | Crate | Role | I/O? |
 |-------|------|------|
-| `honmoon-core` | Policy model, `decide_explained()` engine (CEL + egress), `audit` log, protocol parsers | **None — pure logic** |
+| `honmoon-core` | Policy model, `decide_explained()` / `decide_pii_audit_only()` engine (CEL + egress), `audit` log, protocol parsers | **None — pure logic** |
 | `honmoon-proxy` | tokio CONNECT egress proxy (`gateway.rs`); builds `Facts`, audits decisions, holds `pause`d requests (`approval.rs`); `GatewayState` shared with the management API | tokio sockets |
 | `honmoon-mgmt` | axum management API (audit query, approval queue, policy) + embedded dashboard (`rust-embed`) | axum + filesystem (embed) |
 | `honmoon-cli` | `honmoon` binary: `run` / `gateway` (proxy + mgmt API) / `join` | process + sockets |

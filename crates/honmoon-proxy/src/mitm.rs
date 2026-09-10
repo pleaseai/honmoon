@@ -42,7 +42,7 @@ use std::sync::{Arc, Mutex};
 use honmoon_core::{
     AuditDraft, DEFAULT_MIN_PII_SEVERITY, Decision, EndpointProtocol, Facts, FactsSummary,
     HttpFacts, Mapping, PiiFacts, PiiSpan, RedactionOutcome, SecretTokenizer, Verdict,
-    decide_explained, detect_secrets, detect_spans, pii::severity_for_label,
+    decide_explained, decide_pii_audit_only, detect_secrets, detect_spans, pii::severity_for_label,
     protocols::parse_k8s_request, redact_with_spans, summarize_spans,
 };
 use http_body_util::{BodyExt, Full};
@@ -633,24 +633,23 @@ impl HonmoonHandler {
         let outcome = decide_explained(&self.state.policy, &facts);
         let summary = FactsSummary::from(&facts);
 
-        // Detect mode downgrades only the verdicts PII *caused*. Re-deciding on
-        // the same facts with `pii` cleared says whether this verdict depends on
-        // content scanning: one that stands without it (an endpoint/Kubernetes
-        // or HTTP-metadata rule) is enforced in every mode, because detect-only
-        // is a promise about the PII scanner, not a bypass for the rest of the
-        // policy. The PII-less outcome is the one enforced — it is what the
-        // policy decides on the facts detect mode is willing to act on.
+        // Detect mode holds back the verdicts PII *caused*, which
+        // `decide_pii_audit_only` attributes per rule: the rule that fired only
+        // because of the summary is skipped and the rest of the policy still
+        // decides, so an endpoint/Kubernetes or HTTP-metadata deny is enforced
+        // in every mode. Detect-only is a promise about the PII scanner, not a
+        // bypass for the rest of the policy — including when an earlier
+        // `pii.count == 0 -> allow` rule would have matched on a clean body.
+        // Holding a verdict back is not the same as downgrading it: continuing
+        // the walk can reach a stricter rule the first match had shadowed (see
+        // the note on `decide_pii_audit_only`). A real outcome of `Allow` needs
+        // no second pass — the audit-only walk holds nothing back before a rule
+        // (or the egress lists) has decided `Allow`.
         let enforced = match self.state.pii_mode {
             PiiMode::Block => Some(outcome.clone()),
             PiiMode::Detect if outcome.verdict != Verdict::Allow => {
-                let without_pii = decide_explained(
-                    &self.state.policy,
-                    &Facts {
-                        pii: None,
-                        ..facts.clone()
-                    },
-                );
-                (without_pii.verdict != Verdict::Allow).then_some(without_pii)
+                let enforceable = decide_pii_audit_only(&self.state.policy, &facts);
+                (enforceable.verdict != Verdict::Allow).then_some(enforceable)
             }
             PiiMode::Detect => None,
         };

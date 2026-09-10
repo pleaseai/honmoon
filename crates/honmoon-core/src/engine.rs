@@ -2,7 +2,7 @@
 
 use cel_interpreter::{Context, Program, Value};
 
-use crate::{Facts, Policy, Verdict};
+use crate::{Facts, PiiFacts, Policy, Verdict};
 
 /// A decision plus the reason it was reached.
 ///
@@ -36,20 +36,96 @@ pub fn decide(policy: &Policy, facts: &Facts) -> Verdict {
 /// facts simply does not match (it cannot turn a deny into an allow), and the
 /// egress default is `deny`.
 pub fn decide_explained(policy: &Policy, facts: &Facts) -> Outcome {
+    decide_with(policy, facts, PiiWeight::Decides)
+}
+
+/// Decide the [`Outcome`] for `facts` with PII findings held back from
+/// enforcement — the decision detect mode acts on.
+///
+/// Detect mode promises that content scanning never blocks; it is not a bypass
+/// for the rest of the policy. So a rule that fires *only because* the request
+/// carried PII is skipped and evaluation continues with the remaining rules,
+/// while a rule that matches on endpoint, Kubernetes, SQL, or HTTP-metadata
+/// facts still decides. The verdict the skipped rule would have produced stays
+/// visible through [`decide_explained`], which callers audit as the would-be.
+///
+/// The attribution is per rule: a rule is PII-caused when it matches the real
+/// facts but would not match with the PII summary cleared. That is what
+/// separates a verdict PII *produced* from one that merely came after a rule
+/// reading PII — an `endpoints`-bound deny preceded by `pii.count == 0 -> allow`
+/// is enforced here, because the deny itself never consulted the summary.
+///
+/// An [`Allow`](Verdict::Allow) is held back only once something else already
+/// has been. An exemption the policy really reached — `pii.count > 0 &&
+/// pii.max_severity < 3 -> allow`, say — still stands, so **a request block mode
+/// allows is allowed here too**. Past a held-back verdict the walk is answering
+/// what the policy says with the scanner quiet, and a rule that owes its own
+/// match to PII cannot grant an exemption on that reading: block mode never
+/// reached it either.
+///
+/// That guarantee is about `Allow`, not about severity in general. Skipping a
+/// PII-caused `Pause` can let a later non-PII `Deny` decide, so for the same
+/// facts detect mode can return a *stricter* verdict than block mode. That deny
+/// is the policy's own answer for the facts detect mode acts on, and it is the
+/// answer the pre-attribution implementation gave too.
+pub fn decide_pii_audit_only(policy: &Policy, facts: &Facts) -> Outcome {
+    decide_with(policy, facts, PiiWeight::AuditsOnly)
+}
+
+/// How much say the PII summary has in the enforced verdict.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PiiWeight {
+    /// PII findings decide like any other fact (block mode).
+    Decides,
+    /// PII findings are recorded, never enforced (detect mode).
+    AuditsOnly,
+}
+
+fn decide_with(policy: &Policy, facts: &Facts, pii_weight: PiiWeight) -> Outcome {
+    // Set once a verdict has been held back. From there on the walk is asking
+    // what the policy says with the scanner quiet, so a later rule that owes
+    // its own match to PII cannot answer either — an allow included. Honouring
+    // one would grant an exemption the policy never issued (block mode stopped
+    // at the held-back rule above it) and end the walk before the endpoint,
+    // Kubernetes and HTTP-metadata rules below it.
+    let mut held_back = false;
     for rule in &policy.rules {
-        if endpoint_matches(&rule.endpoint, facts.endpoint.as_deref())
-            && eval_condition(&rule.condition, facts)
-        {
-            return Outcome {
-                verdict: rule.verdict,
-                rule: Some(rule.name.clone()),
-            };
+        if !endpoint_matches(&rule.endpoint, facts.endpoint.as_deref()) {
+            continue;
         }
+        // Compiled once and reused for the attribution check below, which
+        // re-runs the very same condition.
+        let Some(program) = compile_condition(&rule.condition) else {
+            continue;
+        };
+        if !eval_program(&program, facts, facts.pii.as_ref()) {
+            continue;
+        }
+        if pii_weight == PiiWeight::AuditsOnly
+            && (held_back || rule.verdict != Verdict::Allow)
+            && pii_caused(&program, facts)
+        {
+            held_back = true;
+            continue;
+        }
+        return Outcome {
+            verdict: rule.verdict,
+            rule: Some(rule.name.clone()),
+        };
     }
     Outcome {
         verdict: egress_verdict(policy, facts),
         rule: None,
     }
+}
+
+/// Whether the PII summary is what made the matching rule match: its condition
+/// fires on the real facts (the caller has already checked that) but not on the
+/// same facts with the summary cleared.
+fn pii_caused(program: &Program, facts: &Facts) -> bool {
+    // Without a summary the real evaluation already ran against the empty
+    // default, so no rule can owe its match to PII.
+    facts.pii.is_some() && !eval_program(program, facts, None)
 }
 
 fn egress_verdict(policy: &Policy, facts: &Facts) -> Verdict {
@@ -88,13 +164,24 @@ pub fn matches_domain(pattern: &str, domain: &str) -> bool {
     }
 }
 
-/// Evaluate a CEL condition against the facts. Any error → `false` (no match).
-fn eval_condition(condition: &str, facts: &Facts) -> bool {
-    let Ok(program) = Program::compile(condition) else {
-        tracing::warn!(%condition, "policy rule condition failed to compile");
-        return false;
-    };
+/// Compile a rule condition. A condition that does not compile cannot match,
+/// which keeps a malformed rule from turning a deny into an allow.
+fn compile_condition(condition: &str) -> Option<Program> {
+    match Program::compile(condition) {
+        Ok(program) => Some(program),
+        Err(_) => {
+            tracing::warn!(%condition, "policy rule condition failed to compile");
+            None
+        }
+    }
+}
 
+/// Evaluate a compiled condition against the facts. Any error → `false` (no
+/// match).
+///
+/// `pii` is the summary to bind, passed separately from `facts` so attribution
+/// can re-run the same program with it cleared.
+fn eval_program(program: &Program, facts: &Facts, pii: Option<&PiiFacts>) -> bool {
     let mut ctx = Context::default();
     if let Some(http) = &facts.http {
         if let Ok(value) = cel_interpreter::to_value(http) {
@@ -113,12 +200,25 @@ fn eval_condition(condition: &str, facts: &Facts) -> bool {
     }
     // Always register `pii` (default = empty) so absence conditions like
     // `pii.count == 0` are expressible, not just `pii.count > 0`.
-    let pii = facts.pii.clone().unwrap_or_default();
+    let pii = pii.cloned().unwrap_or_default();
     if let Ok(value) = cel_interpreter::to_value(&pii) {
         ctx.add_variable_from_value("pii", value);
     }
 
-    matches!(program.execute(&ctx), Ok(Value::Bool(true)))
+    match program.execute(&ctx) {
+        Ok(value) => matches!(value, Value::Bool(true)),
+        // A condition that errors at run time (indexing an empty `pii.types`,
+        // say) is indistinguishable from one that legitimately said `false`,
+        // and attribution reads that `false` as "PII caused this match" — so an
+        // operator debugging a rule that never fires needs to see it. `debug`
+        // rather than `warn`: referencing a fact this request does not carry is
+        // an error by design (that is how a `sql` rule declines an HTTP
+        // request), so this fires on ordinary traffic, not only on a bad rule.
+        Err(error) => {
+            tracing::debug!(%error, "policy rule condition failed to evaluate");
+            false
+        }
+    }
 }
 
 #[cfg(test)]
@@ -312,6 +412,255 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(super::decide(&policy, &clean), Verdict::Allow);
+    }
+
+    /// A policy that exempts clean traffic before an `endpoints`-bound deny.
+    /// The deny reads only Kubernetes facts, so detect mode enforces it: the
+    /// allow-clean rule failing to match is not the same as PII causing the
+    /// deny (regression for the residual left by #88).
+    #[test]
+    fn endpoint_deny_after_an_allow_clean_rule_survives_pii_audit_only() {
+        use crate::{K8sFacts, detect_pii};
+
+        let policy = Policy::from_yaml(
+            "egress:\n  default: allow\nrules:\n  \
+             - name: allow-clean\n    endpoint: '*'\n    condition: \"pii.count == 0\"\n    verdict: allow\n  \
+             - name: k8s-no-secret-delete\n    endpoint: k8s-prod\n    condition: \"k8s.resource == 'secrets' && k8s.verb == 'delete'\"\n    verdict: deny\n",
+        )
+        .unwrap();
+
+        let leak = Facts {
+            endpoint: Some("k8s-prod".into()),
+            k8s: Some(K8sFacts {
+                verb: "delete".into(),
+                resource: "secrets".into(),
+                ..Default::default()
+            }),
+            pii: detect_pii(r#"{"user":{"rrn":"670125-1230644"}}"#),
+            ..Default::default()
+        };
+        // With findings the allow-clean rule cannot match, so the deny wins —
+        // and it stands with PII held back, because it never read the summary.
+        assert_eq!(super::decide(&policy, &leak), Verdict::Deny);
+        assert_eq!(
+            super::decide_pii_audit_only(&policy, &leak).verdict,
+            Verdict::Deny
+        );
+
+        // A clean body takes the exemption in both readings.
+        let clean = Facts {
+            pii: None,
+            ..leak.clone()
+        };
+        assert_eq!(super::decide(&policy, &clean), Verdict::Allow);
+        assert_eq!(
+            super::decide_pii_audit_only(&policy, &clean).verdict,
+            Verdict::Allow
+        );
+    }
+
+    /// The other half of the attribution: a verdict the summary *did* cause is
+    /// held back, and the remaining rules still decide rather than the walk
+    /// stopping at the skipped rule.
+    #[test]
+    fn pii_caused_verdict_is_held_back_and_later_rules_decide() {
+        use crate::{K8sFacts, detect_pii};
+
+        let policy = Policy::from_yaml(
+            "egress:\n  default: allow\nrules:\n  \
+             - name: block-pii\n    endpoint: '*'\n    condition: \"pii.count > 0\"\n    verdict: deny\n  \
+             - name: review-prod-delete\n    endpoint: k8s-prod\n    condition: \"k8s.verb == 'delete'\"\n    verdict: pause\n",
+        )
+        .unwrap();
+
+        let leak = Facts {
+            endpoint: Some("k8s-prod".into()),
+            k8s: Some(K8sFacts {
+                verb: "delete".into(),
+                resource: "secrets".into(),
+                ..Default::default()
+            }),
+            pii: detect_pii(r#"{"user":{"rrn":"670125-1230644"}}"#),
+            ..Default::default()
+        };
+        let outcome = super::decide_explained(&policy, &leak);
+        assert_eq!(outcome.verdict, Verdict::Deny);
+        assert_eq!(outcome.rule.as_deref(), Some("block-pii"));
+
+        let enforceable = super::decide_pii_audit_only(&policy, &leak);
+        assert_eq!(enforceable.verdict, Verdict::Pause);
+        assert_eq!(enforceable.rule.as_deref(), Some("review-prod-delete"));
+    }
+
+    /// An allow the policy really reached on the strength of a finding (a
+    /// low-severity exemption) still stands, so a request block mode allows is
+    /// allowed in detect mode too. The carve-out is for that case only — see
+    /// `a_pii_caused_allow_behind_a_held_back_rule_does_not_mask_later_rules`
+    /// for the ordering where an allow *is* held back.
+    #[test]
+    fn pii_caused_allow_is_not_held_back() {
+        use crate::detect_pii;
+
+        let policy = Policy::from_yaml(
+            "egress:\n  default: deny\nrules:\n  \
+             - name: allow-low-severity\n    endpoint: '*'\n    condition: \"pii.count > 0 && pii.max_severity < 3\"\n    verdict: allow\n",
+        )
+        .unwrap();
+
+        let low = Facts {
+            pii: detect_pii(r#"{"ip":"10.0.0.1"}"#),
+            ..Default::default()
+        };
+        assert_eq!(super::decide(&policy, &low), Verdict::Allow);
+        assert_eq!(
+            super::decide_pii_audit_only(&policy, &low).verdict,
+            Verdict::Allow
+        );
+    }
+
+    /// An allow that only became reachable because a PII-caused verdict was
+    /// held back is held back as well. Honouring it would let PII-shaped bytes
+    /// in a request body suppress a deny that never read the summary — the very
+    /// bypass this walk exists to prevent.
+    #[test]
+    fn a_pii_caused_allow_behind_a_held_back_rule_does_not_mask_later_rules() {
+        use crate::{HttpFacts, detect_pii};
+
+        let policy = Policy::from_yaml(
+            "egress:\n  default: allow\nrules:\n  \
+             - name: deny-high-severity-pii\n    endpoint: '*'\n    condition: \"pii.max_severity >= 3\"\n    verdict: deny\n  \
+             - name: allow-any-pii\n    endpoint: '*'\n    condition: \"pii.count > 0\"\n    verdict: allow\n  \
+             - name: deny-admin-api\n    endpoint: '*'\n    condition: \"http.path.startsWith('/admin')\"\n    verdict: deny\n",
+        )
+        .unwrap();
+
+        let leak = Facts {
+            http: Some(HttpFacts {
+                method: "POST".into(),
+                path: "/admin".into(),
+                ..Default::default()
+            }),
+            pii: detect_pii(r#"{"user":{"rrn":"670125-1230644"}}"#),
+            ..Default::default()
+        };
+        // Block mode stops at the PII deny and never reaches the allow.
+        assert_eq!(
+            super::decide_explained(&policy, &leak).rule.as_deref(),
+            Some("deny-high-severity-pii")
+        );
+        // So detect mode must not grant it either: the HTTP deny below decides.
+        let enforceable = super::decide_pii_audit_only(&policy, &leak);
+        assert_eq!(enforceable.verdict, Verdict::Deny);
+        assert_eq!(enforceable.rule.as_deref(), Some("deny-admin-api"));
+    }
+
+    /// Held-back verdicts fall through to the egress lists when no later rule
+    /// matches — the path the `continue` opened up, since the old walk always
+    /// returned at its first match.
+    #[test]
+    fn a_held_back_verdict_falls_through_to_egress() {
+        use crate::detect_pii;
+
+        let rules = "rules:\n  \
+             - name: pause-on-pii\n    endpoint: '*'\n    condition: \"pii.count > 0\"\n    verdict: pause\n";
+        let leak = |domain: &str| Facts {
+            domain: Some(domain.to_string()),
+            pii: detect_pii(r#"{"user":{"rrn":"670125-1230644"}}"#),
+            ..Default::default()
+        };
+
+        // Default deny: the pause is held back, the default still enforces.
+        let closed = Policy::from_yaml(&format!("egress:\n  default: deny\n{rules}")).unwrap();
+        assert_eq!(
+            super::decide_explained(&closed, &leak("api.example.com")).verdict,
+            Verdict::Pause
+        );
+        let enforceable = super::decide_pii_audit_only(&closed, &leak("api.example.com"));
+        assert_eq!(enforceable.verdict, Verdict::Deny);
+        assert_eq!(enforceable.rule, None, "an egress decision names no rule");
+
+        // Allow list: nothing is left to enforce once the pause is held back.
+        let open = Policy::from_yaml(&format!(
+            "egress:\n  default: deny\n  allow:\n    - api.example.com\n  deny:\n    - blocked.example.com\n{rules}"
+        ))
+        .unwrap();
+        assert_eq!(
+            super::decide_pii_audit_only(&open, &leak("api.example.com")).verdict,
+            Verdict::Allow
+        );
+        // Deny list: an egress deny is not a PII verdict, so it is enforced.
+        assert_eq!(
+            super::decide_pii_audit_only(&open, &leak("blocked.example.com")).verdict,
+            Verdict::Deny
+        );
+    }
+
+    /// Attribution re-runs the whole condition, so a rule mixing PII with other
+    /// facts is judged on whether it would still have fired without the summary:
+    /// held back under `&&`, enforced under `||`.
+    #[test]
+    fn attribution_reads_compound_conditions_as_a_whole() {
+        use crate::{K8sFacts, detect_pii};
+
+        let delete_with_pii = |condition: &str| {
+            let policy = Policy::from_yaml(&format!(
+                "egress:\n  default: allow\nrules:\n  - name: guard\n    endpoint: '*'\n    condition: \"{condition}\"\n    verdict: deny\n"
+            ))
+            .unwrap();
+            let facts = Facts {
+                k8s: Some(K8sFacts {
+                    verb: "delete".into(),
+                    resource: "secrets".into(),
+                    ..Default::default()
+                }),
+                pii: detect_pii(r#"{"user":{"rrn":"670125-1230644"}}"#),
+                ..Default::default()
+            };
+            (
+                super::decide(&policy, &facts),
+                super::decide_pii_audit_only(&policy, &facts).verdict,
+            )
+        };
+
+        // The deny needs the summary, so detect mode holds it back.
+        assert_eq!(
+            delete_with_pii("k8s.verb == 'delete' && pii.count > 0"),
+            (Verdict::Deny, Verdict::Allow)
+        );
+        // The `k8s` disjunct fires on its own, so the deny stands.
+        assert_eq!(
+            delete_with_pii("k8s.verb == 'delete' || pii.count > 0"),
+            (Verdict::Deny, Verdict::Deny)
+        );
+    }
+
+    /// A body that was never scanned leaves `pii` unset, and the real walk
+    /// already ran against the empty default — so nothing is attributable to
+    /// PII and a deny is enforced unchanged.
+    #[test]
+    fn an_unscanned_body_attributes_nothing_to_pii() {
+        use crate::K8sFacts;
+
+        let policy = Policy::from_yaml(
+            "egress:\n  default: allow\nrules:\n  \
+             - name: k8s-no-secret-delete\n    endpoint: k8s-prod\n    condition: \"k8s.resource == 'secrets' && k8s.verb == 'delete'\"\n    verdict: deny\n",
+        )
+        .unwrap();
+
+        let unscanned = Facts {
+            endpoint: Some("k8s-prod".into()),
+            k8s: Some(K8sFacts {
+                verb: "delete".into(),
+                resource: "secrets".into(),
+                ..Default::default()
+            }),
+            pii: None, // oversized, non-text, or over-cap-decoded body
+            ..Default::default()
+        };
+        assert_eq!(
+            super::decide_pii_audit_only(&policy, &unscanned).verdict,
+            Verdict::Deny
+        );
     }
 
     /// Guards the shipped example policy against parser/condition drift: the
