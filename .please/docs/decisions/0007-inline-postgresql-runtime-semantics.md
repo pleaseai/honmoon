@@ -109,5 +109,15 @@ that fails to parse: it is refused rather than forwarded blind.
   the hostname into the handshake where the `endpoints` lookup above happens. A client that reads
   neither proxy variable — `psql` among them — reaches nothing under `run` at all, which is
   ADR-0005's fail-closed default rather than a gap in this one.
+- **A held statement is watched for its client's disconnect.** A `pause` verdict holds the
+  statement mid-stream, which parks the client-read side of the session inside the `select!` the
+  runtime races against its upstream relay — so a client that leaves completes neither arm and used
+  to go unnoticed until `pause_timeout`, long enough for a human to approve a statement for a client
+  that was already gone. The hold therefore takes an abandonment signal, and the runtime feeds it a
+  read on the client socket. Bytes the client pipelined behind its held statement are buffered and
+  handed back to the message loop rather than consumed, and a client that pipelines more than
+  `MAX_PG_FRAME` while held stops being watched — its hold falls back to `pause_timeout` — so the
+  watch cannot be turned into unbounded buffering. A decision already in hand beats a simultaneous
+  disconnect, so the audit log never reports an abandonment over an approval a human really made.
 - Inspection costs one buffered copy per statement, bounded at 1 MiB. Bulk paths (`COPY`) stay
   zero-copy, which is where the bytes actually are.
