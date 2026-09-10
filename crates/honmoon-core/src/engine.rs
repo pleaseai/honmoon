@@ -209,11 +209,13 @@ fn eval_program(program: &Program, facts: &Facts, pii: Option<&PiiFacts>) -> boo
         Ok(value) => matches!(value, Value::Bool(true)),
         // A condition that errors at run time (indexing an empty `pii.types`,
         // say) is indistinguishable from one that legitimately said `false`,
-        // and attribution reads that `false` as "PII caused this match". Say so
-        // once, or an operator debugging a rule that never fires has nothing to
-        // go on.
+        // and attribution reads that `false` as "PII caused this match" — so an
+        // operator debugging a rule that never fires needs to see it. `debug`
+        // rather than `warn`: referencing a fact this request does not carry is
+        // an error by design (that is how a `sql` rule declines an HTTP
+        // request), so this fires on ordinary traffic, not only on a bad rule.
         Err(error) => {
-            tracing::warn!(%error, "policy rule condition failed to evaluate");
+            tracing::debug!(%error, "policy rule condition failed to evaluate");
             false
         }
     }
