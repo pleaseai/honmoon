@@ -30,13 +30,13 @@ verified carefully and is sound for the cases explored:
   behavioral divergence from `decide_pii_audit_only` there (no content scanning happens
   outside the MITM HTTP path).
 
-**The one real gap found:** `eval_condition` logs `tracing::warn!` on *compile* failure but
-is completely silent on *execution* errors (`program.execute()` returning `Err`, e.g. index
-out-of-bounds on `pii.types[0]` or division by `pii.count`) — `matches!(.., Ok(Bool(true)))`
-discards the `Err` with zero logging. This was already true pre-PR#108 for the single real
-call, but `pii_caused()`'s second (pii-cleared) call newly makes this consequential: an
-execution error on the *cleared* re-check inverts to `pii_caused() == true`, silently
-folding "condition legitimately needs the real pii value" and "condition has an unrelated
-runtime bug" into the same "skip and audit as would-be" bucket, with no log to tell them
-apart. See the finding filed against PR #108 for detail — worth checking if a future PR
-adds execution-error logging to `eval_condition` (would resolve this).
+**The gap that was found and closed (PR #108):** the evaluator logged `tracing::warn!` on
+*compile* failure but was silent on *execution* errors (`program.execute()` returning `Err`,
+e.g. index out-of-bounds on `pii.types[0]`), and `matches!(.., Ok(Bool(true)))` discarded the
+`Err`. `pii_caused()`'s pii-cleared re-check made that consequential: an execution error on
+the cleared run inverts to `pii_caused() == true`, folding "needs the real pii value" and
+"has an unrelated runtime bug" into the same skip-and-audit bucket. `eval_program` (the
+post-#108 name; `eval_condition` was split into `compile_condition` + `eval_program`) now
+logs it at `tracing::debug!` — deliberately not `warn`, because referencing a fact the
+request does not carry is an error *by design* (that is how a `sql` rule declines an HTTP
+request), so a warn-level line would fire on ordinary traffic.

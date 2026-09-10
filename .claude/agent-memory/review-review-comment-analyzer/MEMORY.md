@@ -1,1 +1,1 @@
-- [engine PII-audit monotonicity gap](engine_pii_audit_monotonicity.md) — honmoon-core decide_pii_audit_only can be stricter than block mode; overclaiming doc comments in PR #108
+- [engine PII-audit monotonicity gap](engine_pii_audit_monotonicity.md) — honmoon-core decide_pii_audit_only can be stricter than block mode (the guarantee is Allow-preservation only); the rustdoc states that caveat since PR #108
