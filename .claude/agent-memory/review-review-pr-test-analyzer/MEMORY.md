@@ -1,1 +1,2 @@
 - [mitm-test-harness](mitm_test_harness.md) — honmoon-proxy's tests/mitm.rs upstream always drops the connection, so forwarded-byte content (detect-only invariant) is never test-asserted, only audit-log findings are.
+- [socks-fake-pg-upstream-swallows-sync](socks_fake_pg_upstream_swallows_sync.md) — tests/socks.rs start_pg_upstream ignores Sync/FunctionCall/Bind/Execute (only replies to Q/P), a latent 30s-timeout trap for future extended-protocol/ordering-barrier integration tests.
