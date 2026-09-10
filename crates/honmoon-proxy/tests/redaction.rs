@@ -26,6 +26,11 @@ const SIGV4_SIGNED_FRAMING: &str = "AWS4-HMAC-SHA256 \
      Credential=AKIA/20260907/us-east-1/s3/aws4_request, \
      SignedHeaders=content-encoding;content-length;host;x-amz-date, Signature=abc";
 
+/// A presigned SigV4 request target: the signature lives in the query string
+/// rather than in an `Authorization` header.
+const PRESIGNED_TARGET: &str = "/submit?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential=AKIA&X-Amz-Expires=60\
+     &X-Amz-SignedHeaders=host&X-Amz-Signature=abc";
+
 const MAX_BODY: usize = 2 * 1024 * 1024;
 
 #[derive(Clone, Debug)]
@@ -227,6 +232,18 @@ fn proxy_request(
     body: &[u8],
     extra_headers: &[(&str, &str)],
 ) -> Vec<u8> {
+    proxy_request_to(proxy_port, upstream_port, "/submit", body, extra_headers)
+}
+
+/// `proxy_request` with control over the request target, for the cases whose
+/// classification lives in the query string (a presigned SigV4 URL).
+fn proxy_request_to(
+    proxy_port: u16,
+    upstream_port: u16,
+    target: &str,
+    body: &[u8],
+    extra_headers: &[(&str, &str)],
+) -> Vec<u8> {
     let mut stream = TcpStream::connect(("127.0.0.1", proxy_port)).unwrap();
     stream
         .set_read_timeout(Some(Duration::from_secs(10)))
@@ -237,7 +254,7 @@ fn proxy_request(
         .collect::<String>();
     write!(
         stream,
-        "POST http://127.0.0.1:{upstream_port}/submit HTTP/1.1\r\nHost: 127.0.0.1:{upstream_port}\r\n{extra}Content-Length: {}\r\nConnection: close\r\n\r\n",
+        "POST http://127.0.0.1:{upstream_port}{target} HTTP/1.1\r\nHost: 127.0.0.1:{upstream_port}\r\n{extra}Content-Length: {}\r\nConnection: close\r\n\r\n",
         body.len()
     )
     .unwrap();
@@ -906,39 +923,69 @@ fn signed_body_request_without_secret_keeps_client_accept_encoding() {
     assert_eq!(mappings.unwrap().len(), 0);
 }
 
-// A bare hex `x-amz-content-sha256` binds the body without any signature we
-// recognize, so we cannot tell whether the scheme that produced it also signs
-// headers. It is body-signed but not header-signed, which is exactly the pair
-// the `Accept-Encoding` guard has to cover with an `is_none()` check as well as
-// an `authentication_signs_headers` one.
+// A bare hex `x-amz-content-sha256` is an integrity header, not a signature:
+// with no SigV4 authentication on the request, nothing says the bytes are
+// signed, so redaction stays on rather than refusing the request (#81).
 #[test]
-fn bare_payload_hash_request_keeps_client_accept_encoding() {
+fn bare_payload_hash_request_is_still_redacted() {
     let (upstream, captured) = start_upstream(ResponseMode::Static(b"ok".to_vec()));
     let (proxy, mappings) = start_proxy(true);
-    let body = b"key=nothing-to-redact";
+    let body = format!("key={SECRET}");
 
     let response = proxy_request(
         proxy,
         upstream,
-        body,
-        &[
-            (
-                "x-amz-content-sha256",
-                // The real SHA-256 of `body` below. Detection accepts any
-                // 64-hex value, but a self-consistent fixture stays correct if
-                // the proxy ever starts validating the payload hash.
-                "7c9d036588e3c9241b4ebd62863710f7860de47535024e01323d8c25bd117bd7",
-            ),
-            ("Accept-Encoding", "gzip"),
-        ],
+        body.as_bytes(),
+        &[("x-amz-content-sha256", &"a".repeat(64))],
     );
     assert!(response.starts_with(b"HTTP/1.1 200"));
     let forwarded = captured.recv_timeout(Duration::from_secs(5)).unwrap();
-    assert_eq!(forwarded.body, body);
-    assert_eq!(
-        header_value(&forwarded.headers, "accept-encoding"),
-        Some("gzip")
+    let text = String::from_utf8(forwarded.body).unwrap();
+    assert!(!text.contains(SECRET));
+    assert!(text.contains("<<hs:"));
+    assert_eq!(mappings.unwrap().len(), 1);
+}
+
+// A standard S3 presigned upload signs the request, not the payload — its
+// canonical request declares `UNSIGNED-PAYLOAD` — so the secret in its body is
+// redacted and the upload goes through instead of earning a `403` (#81).
+#[test]
+fn presigned_sigv4_upload_without_a_payload_hash_is_still_redacted() {
+    let (upstream, captured) = start_upstream(ResponseMode::Static(b"ok".to_vec()));
+    let (proxy, mappings) = start_proxy(true);
+    let body = format!("key={SECRET}");
+
+    let response = proxy_request_to(proxy, upstream, PRESIGNED_TARGET, body.as_bytes(), &[]);
+    assert!(response.starts_with(b"HTTP/1.1 200"));
+    let forwarded = captured.recv_timeout(Duration::from_secs(5)).unwrap();
+    let text = String::from_utf8(forwarded.body).unwrap();
+    assert!(!text.contains(SECRET));
+    assert!(text.contains("<<hs:"));
+    assert_eq!(mappings.unwrap().len(), 1);
+}
+
+// The presigned URL that *does* bind its payload — a hex `x-amz-content-sha256`
+// alongside the query signature — still takes the fail-closed decision.
+#[test]
+fn presigned_sigv4_upload_with_a_payload_hash_is_blocked_by_default() {
+    let (upstream, captured) = start_upstream(ResponseMode::Static(b"ok".to_vec()));
+    let (proxy, mappings) = start_proxy(true);
+    let body = format!("key={SECRET}");
+
+    let response = proxy_request_to(
+        proxy,
+        upstream,
+        PRESIGNED_TARGET,
+        body.as_bytes(),
+        &[("x-amz-content-sha256", &"a".repeat(64))],
     );
+    let headers = response_headers(&response);
+    assert!(response.starts_with(b"HTTP/1.1 403"));
+    assert_eq!(
+        header_value(&headers, "x-honmoon-reason"),
+        Some("signed-body-redaction")
+    );
+    assert!(captured.recv_timeout(Duration::from_millis(250)).is_err());
     assert_eq!(mappings.unwrap().len(), 0);
 }
 
