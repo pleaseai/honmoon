@@ -6,7 +6,7 @@ metadata:
 ---
 
 `ClientLink` (crates/honmoon-proxy/src/runtime/postgres.rs) carries a
-`forwarded: Arc<AtomicU64>` / `delivered: Arc<watch::Sender<u64>>` pair that
+`forwarded: Arc<AtomicU64>` / `delivered: Arc<watch::Sender<Delivered>>` pair that
 implements the barrier ordering an injected refusal behind the database's
 answers to statements already pipelined ahead of it (issue #101, PR #112).
 

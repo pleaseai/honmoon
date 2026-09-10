@@ -1,6 +1,6 @@
 ---
 name: socks-fake-pg-upstream-swallows-sync
-description: crates/honmoon-proxy/tests/socks.rs's start_pg_upstream fake PostgreSQL server silently drops any frontend tag other than Q/P (including Sync/FunctionCall) — relevant when reviewing extended-protocol or sync-point-ordering features tested against it
+description: crates/honmoon-proxy/tests/socks.rs's start_pg_upstream fake PostgreSQL server answers Q, P and Sync; it still drops FunctionCall/Bind/Execute/CopyData — relevant when reviewing extended-protocol or sync-point-ordering features tested against it
 metadata:
   type: project
 ---
@@ -16,7 +16,7 @@ upstream never emits a `ReadyForQuery` for a `Sync`.
 PR #112, the pipelined-refusal-ordering barrier) counts `Sync` and
 `FunctionCall` as sync points a locally injected refusal must wait behind
 (`ClientLink::forwarded_sync_point`, `await_forwarded_responses`, bounded by
-`REFUSAL_ORDER_TIMEOUT` = 30s). Any future `tests/socks.rs` integration test
+`REFUSAL_ORDER_STALL_TIMEOUT` = 30s). Any future `tests/socks.rs` integration test
 that pipelines the extended protocol (Parse/Bind/Execute/Sync) ahead of a
 refused statement will silently eat the full 30s timeout per test run,
 because this fake upstream never answers the `Sync`. It's a latent trap, not
@@ -32,3 +32,9 @@ ordering test as a gap. See [[mitm-test-harness]] for a similar fake-upstream
 fidelity gap in the MITM test harness (different subsystem, same pattern:
 Honmoon's test doubles trading realism for hermeticity in ways that can hide
 regressions in newly-added protocol logic).
+
+**Update (PR #112):** `start_pg_upstream` now answers `Sync` with
+`ReadyForQuery`, so the trap below is closed for `Sync` itself. What remains
+un-replied is `FunctionCall` (`F`), `Bind`, `Execute` and `CopyData` — of which
+only `FunctionCall` is a sync point honmoon counts, so keep the caution scoped
+to that one rather than to `Sync`.
