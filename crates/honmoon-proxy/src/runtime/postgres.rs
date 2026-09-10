@@ -19,6 +19,13 @@
 //! normal permission error and the session stays usable — closing the socket
 //! would surface as an unexplained connection reset.
 //!
+//! That answer is injected into a stream the relay is writing at the same time,
+//! so it is *ordered* as well as framed: honmoon counts the sync points it
+//! forwards and holds the refusal until the relay has delivered the database's
+//! `ReadyForQuery` for each of them. Without that barrier a refusal for a
+//! pipelined statement would land in front of the response to the statement
+//! before it, and the client would attribute the error to the wrong query.
+//!
 //! A statement held for approval is held *mid-stream*, so the hold also watches
 //! the client socket for the disconnect that would otherwise let a human approve
 //! a statement for a client that had already left. See [`HeldReader`].
@@ -26,7 +33,7 @@
 //! [ADR-0007]: ../../../../.please/docs/decisions/0007-inline-postgresql-runtime-semantics.md
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU8, Ordering};
+use std::sync::atomic::{AtomicU8, AtomicU64, Ordering};
 
 use honmoon_core::{
     AuditDraft, Decision, Facts, FactsSummary, SqlFacts, Verdict, decide_explained,
@@ -36,7 +43,7 @@ use honmoon_core::{
 };
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::TcpStream;
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, watch};
 
 use crate::approval::{HoldOutcome, hold_until};
 use crate::gateway::GatewayState;
@@ -100,22 +107,101 @@ const DRAIN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 /// held in memory whole.
 const MAX_BUFFERED_BACKEND_MESSAGE: usize = 64 * 1024;
 
+/// How long a refusal waits for the relay to deliver the database's answers to
+/// the statements already forwarded before it injects its own answer anyway.
+///
+/// Every forwarded sync point is answered by exactly one `ReadyForQuery`, so on
+/// a healthy session the wait ends the moment the pipeline drains and this bound
+/// never fires. It exists for the two ways the count can be wrong in practice —
+/// a database that stops answering, and the one frontend message whose sync
+/// point the backend legitimately swallows (a `Sync` sent while a `COPY` is in
+/// progress) — where an unbounded wait would cost the client its answer
+/// entirely. Injecting late and saying so is the lesser failure: it degrades to
+/// exactly the ordering honmoon had before this barrier existed.
+const REFUSAL_ORDER_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
 /// A client writer shared between the refusal path and the upstream→client copy
 /// task. That task writes one **complete** backend message per lock acquisition,
 /// so an injected `ErrorResponse` can only ever land on a message boundary,
-/// never inside a server frame. It does not order the refusal against responses
-/// the client has not read yet — only framing is guarded here.
+/// never inside a server frame. Ordering the refusal *behind* the responses the
+/// client has not received yet is a separate guarantee, made by
+/// [`ClientLink::await_forwarded_responses`] before this lock is taken.
 type ClientWriter = Arc<Mutex<tokio::net::tcp::OwnedWriteHalf>>;
 
-/// The client-facing side of a session: the shared writer, plus the transaction
+/// The client-facing side of a session: the shared writer, the transaction
 /// status byte (`I`/`T`/`E`) carried by the last `ReadyForQuery` the upstream
-/// sent. A refusal echoes that status instead of always claiming idle — after an
-/// allowed `BEGIN` the upstream really is in a transaction, and a driver told
-/// otherwise makes transaction-bound decisions on a wrong state.
+/// sent, and the sync-point counters an injected refusal waits behind.
+///
+/// A refusal echoes the transaction status instead of always claiming idle —
+/// after an allowed `BEGIN` the upstream really is in a transaction, and a
+/// driver told otherwise makes transaction-bound decisions on a wrong state.
 #[derive(Clone)]
 struct ClientLink {
     writer: ClientWriter,
     tx_status: Arc<AtomicU8>,
+    /// Sync points forwarded to the database, each of which it answers with
+    /// exactly one `ReadyForQuery`: the `StartupMessage`, then every `Q`,
+    /// `Sync` and `FunctionCall`. Written only by the message loop.
+    forwarded: Arc<AtomicU64>,
+    /// How many of those the relay has already written to the client. A watch
+    /// rather than a plain counter so a refusal can wait for it to catch up
+    /// without polling.
+    delivered: Arc<watch::Sender<u64>>,
+}
+
+impl ClientLink {
+    fn new(writer: tokio::net::tcp::OwnedWriteHalf) -> Self {
+        Self {
+            writer: Arc::new(Mutex::new(writer)),
+            tx_status: Arc::new(AtomicU8::new(STATUS_IDLE)),
+            forwarded: Arc::new(AtomicU64::new(0)),
+            delivered: Arc::new(watch::Sender::new(0)),
+        }
+    }
+
+    /// Record a frame forwarded to the database that it will answer with a
+    /// `ReadyForQuery`. Overcounting delays a refusal to the bound above;
+    /// undercounting lets one overtake a response, which is the defect this
+    /// exists to prevent — so a message whose sync point is uncertain is
+    /// counted.
+    fn forwarded_sync_point(&self) {
+        self.forwarded.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Record a `ReadyForQuery` the relay has written to the client, releasing
+    /// any refusal waiting behind it.
+    fn delivered_sync_point(&self) {
+        self.delivered.send_modify(|delivered| *delivered += 1);
+    }
+
+    /// Wait until the client has received the database's answer to every
+    /// statement already forwarded on its behalf.
+    ///
+    /// This is the ordering barrier a locally injected answer sits behind. It
+    /// deliberately runs *before* the writer lock is taken: the relay needs that
+    /// lock to deliver the very responses being waited for, so holding it here
+    /// would deadlock the session instead of ordering it.
+    async fn await_forwarded_responses(&self) {
+        let expected = self.forwarded.load(Ordering::Relaxed);
+        let mut delivered = self.delivered.subscribe();
+        // `wait_for` inspects the current value first, so an already-drained
+        // pipeline — the common case, a client that waits for each answer —
+        // costs one comparison and no wakeup.
+        if tokio::time::timeout(
+            REFUSAL_ORDER_TIMEOUT,
+            delivered.wait_for(|delivered| *delivered >= expected),
+        )
+        .await
+        .is_err()
+        {
+            tracing::warn!(
+                expected,
+                delivered = *self.delivered.borrow(),
+                "timed out waiting for the database's earlier responses; the refusal \
+                 may reach the client out of statement order"
+            );
+        }
+    }
 }
 
 /// Run the PostgreSQL runtime over an established client/upstream pair.
@@ -130,10 +216,7 @@ pub async fn run_postgres(
 ) -> std::io::Result<()> {
     let (mut client_read, client_write) = client.into_split();
     let (upstream_read, mut upstream_write) = upstream.into_split();
-    let link = ClientLink {
-        writer: Arc::new(Mutex::new(client_write)),
-        tx_status: Arc::new(AtomicU8::new(STATUS_IDLE)),
-    };
+    let link = ClientLink::new(client_write);
 
     let mut downstream = tokio::spawn(upstream_to_client(upstream_read, link.clone()));
 
@@ -215,9 +298,18 @@ async fn upstream_to_client(mut upstream: tokio::net::tcp::OwnedReadHalf, link: 
         if head[0] == b'Z' && !payload.is_empty() {
             link.tx_status.store(payload[0], Ordering::Relaxed);
         }
-        let mut writer = link.writer.lock().await;
-        if writer.write_all(&head).await.is_err() || writer.write_all(&payload).await.is_err() {
-            return;
+        {
+            let mut writer = link.writer.lock().await;
+            if writer.write_all(&head).await.is_err() || writer.write_all(&payload).await.is_err() {
+                return;
+            }
+        }
+        // Counted only once the client really has the message: a refusal
+        // released mid-write would overtake the very response it waited for.
+        // `ReadyForQuery` carries a single byte, so it never takes the oversized
+        // path above — that path has no sync point to miss.
+        if head[0] == b'Z' {
+            link.delivered_sync_point();
         }
     }
 }
@@ -286,6 +378,11 @@ where
             PROTOCOL_V3 => {
                 upstream.write_all(&head).await?;
                 copy_exact(client, upstream, remaining).await?;
+                // However many authentication round trips follow, the database
+                // ends the handshake with exactly one `ReadyForQuery`. Counting
+                // it keeps a refusal for a statement the client pipelined behind
+                // its startup packet from overtaking the handshake itself.
+                link.forwarded_sync_point();
                 return Ok(true);
             }
             // A cancel connection carries no queries — relay the packet verbatim
@@ -492,6 +589,13 @@ where
             upstream.write_all(&tag).await?;
             upstream.write_all(&len_bytes).await?;
             copy_exact(&mut client_reader, upstream, payload_len).await?;
+            // `Sync` ends an extended-protocol batch and `FunctionCall` is a
+            // request cycle of its own; each earns one `ReadyForQuery`. The rest
+            // (`Bind`, `Execute`, `CopyData`, `Terminate`, the authentication
+            // messages) are answered inside somebody else's cycle.
+            if matches!(tag[0], b'S' | b'F') {
+                link.forwarded_sync_point();
+            }
             continue;
         }
 
@@ -546,6 +650,12 @@ where
                 upstream.write_all(&tag).await?;
                 upstream.write_all(&len_bytes).await?;
                 upstream.write_all(&payload).await?;
+                // A simple query is its own request cycle; a `Parse` is answered
+                // only when the batch's `Sync` arrives, and that is counted where
+                // the `Sync` is forwarded.
+                if tag[0] == b'Q' {
+                    link.forwarded_sync_point();
+                }
             }
             Disposition::Refused => {}
             // No drain: the client that would have read the answer is gone.
@@ -726,7 +836,16 @@ fn record(
 /// the session open. The `ReadyForQuery` reports the transaction status honmoon
 /// last saw upstream, so a refusal inside an open transaction does not tell the
 /// client it is idle.
+///
+/// The answer is injected in PostgreSQL request order: it waits for the database
+/// to finish answering the statements the client sent before this one, so a
+/// client that pipelined `SELECT pg_sleep(1); DROP TABLE users;` reads the
+/// `SELECT`'s response first and attributes the `42501` to the statement it
+/// belongs to.
 async fn refuse(link: &ClientLink, message: &str) -> std::io::Result<()> {
+    link.await_forwarded_responses().await;
+    // Read after the wait, so the status echoed back is the one from the last
+    // `ReadyForQuery` the client actually received.
     let status = link.tx_status.load(Ordering::Relaxed);
     let mut writer = link.writer.lock().await;
     writer.write_all(&error_response(message)).await?;
@@ -820,11 +939,7 @@ mod tests {
         let addr = listener.local_addr().unwrap();
         let (client, accepted) = tokio::join!(TcpStream::connect(addr), listener.accept());
         let (_read, write) = client.unwrap().into_split();
-        let link = ClientLink {
-            writer: Arc::new(Mutex::new(write)),
-            tx_status: Arc::new(AtomicU8::new(STATUS_IDLE)),
-        };
-        (link, accepted.unwrap().0)
+        (ClientLink::new(write), accepted.unwrap().0)
     }
 
     fn startup_packet(code: u32, body: &[u8]) -> Vec<u8> {
