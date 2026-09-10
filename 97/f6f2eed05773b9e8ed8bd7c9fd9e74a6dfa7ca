@@ -1,0 +1,19 @@
+.please/docs/decisions/0006-signed-body-requests-under-wire-redaction.md
+  s_8efb9d77cfd033::t_c91459e16bb866 144-148
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "97f6f2eed05773b9e8ed8bd7c9fd9e74a6dfa7ca",
+  "prompts": {},
+  "sessions": {
+    "s_8efb9d77cfd033": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "00fb4491-b934-4a52-b94d-2f518705f18f",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
