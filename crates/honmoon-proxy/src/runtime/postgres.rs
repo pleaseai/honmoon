@@ -162,11 +162,28 @@ struct ClientLink {
     /// Lowered again — only ever to a count the client has provably received —
     /// when a stalled wait writes an answer off as never coming.
     forwarded: Arc<AtomicU64>,
-    /// How many of those the relay has already written to the client, or `None`
-    /// once the relay has stopped and no further `ReadyForQuery` can arrive. A
-    /// watch rather than a plain counter so a refusal can wait for it to catch
-    /// up without polling.
-    delivered: Arc<watch::Sender<Option<u64>>>,
+    /// What the relay has written to the client so far. A watch rather than
+    /// plain counters so a refusal can wait on it without polling.
+    delivered: Arc<watch::Sender<Delivered>>,
+    /// Whether the client's byte stream is still framed. Cleared when the relay
+    /// dies partway through writing a backend message, which is the one state in
+    /// which injecting a refusal would corrupt rather than explain.
+    stream_intact: Arc<std::sync::atomic::AtomicBool>,
+}
+
+/// What the relay has delivered to the client.
+#[derive(Clone, Copy)]
+struct Delivered {
+    /// `ReadyForQuery` messages written, or `None` once the relay has stopped
+    /// and no further one can arrive. This is what a refusal waits on.
+    sync_points: Option<u64>,
+    /// Complete backend messages written, of any kind. Never compared against
+    /// anything — only watched for change, so that the rows of a slow query
+    /// count as progress and hold the stall window open. Without it a query
+    /// streaming `DataRow`s for longer than the window would look identical to
+    /// a database that had stopped answering, and the refusal queued behind it
+    /// would be injected into the middle of its result set.
+    messages: u64,
 }
 
 impl ClientLink {
@@ -175,7 +192,11 @@ impl ClientLink {
             writer: Arc::new(Mutex::new(writer)),
             tx_status: Arc::new(AtomicU8::new(STATUS_IDLE)),
             forwarded: Arc::new(AtomicU64::new(0)),
-            delivered: Arc::new(watch::Sender::new(Some(0))),
+            delivered: Arc::new(watch::Sender::new(Delivered {
+                sync_points: Some(0),
+                messages: 0,
+            })),
+            stream_intact: Arc::new(std::sync::atomic::AtomicBool::new(true)),
         }
     }
 
@@ -192,12 +213,30 @@ impl ClientLink {
         self.forwarded.fetch_add(1, Ordering::Relaxed);
     }
 
-    /// Record a `ReadyForQuery` the relay has written to the client, releasing
-    /// any refusal waiting behind it. A no-op once the relay has stopped.
-    fn delivered_sync_point(&self) {
+    /// Record one complete backend message written to the client, saying whether
+    /// it was the `ReadyForQuery` that ends a request cycle.
+    ///
+    /// Every message counts as progress and restarts the stall window; only a
+    /// sync point advances what a refusal is waiting for. Both are published in
+    /// one update so a waiter is woken once.
+    fn delivered_message(&self, sync_point: bool) {
+        let forwarded = self.forwarded.load(Ordering::Relaxed);
         self.delivered.send_modify(|delivered| {
-            if let Some(delivered) = delivered {
-                *delivered += 1;
+            delivered.messages += 1;
+            if !sync_point {
+                return;
+            }
+            if let Some(count) = delivered.sync_points.as_mut() {
+                // Never count past what was forwarded. An answer written off as
+                // never coming and then arriving late would otherwise push this
+                // above `forwarded` — which was lowered past it — and release
+                // later refusals before their own answers, losing exactly the
+                // ordering the write-off was trying to keep affordable. In
+                // ordinary operation this cannot bind: every `ReadyForQuery`
+                // answers a sync point counted before it could be sent.
+                if *count < forwarded {
+                    *count += 1;
+                }
             }
         });
     }
@@ -212,7 +251,30 @@ impl ClientLink {
     /// prevent. Ordering is meaningless once nothing is left to be ordered
     /// against, so the wait ends and the answer goes out.
     fn relay_finished(&self) {
-        self.delivered.send_modify(|delivered| *delivered = None);
+        self.delivered
+            .send_modify(|delivered| delivered.sync_points = None);
+    }
+
+    /// Record that the relay stopped **partway through a backend message**.
+    ///
+    /// The client already holds a frame header whose payload never arrived, so
+    /// its stream is desynchronised and nothing honmoon writes can be read as a
+    /// message any more: an injected `ErrorResponse` would be consumed as the
+    /// rest of that frame. So the barrier is released — the session is ending
+    /// and there is no reason to hold it — but the answer itself is suppressed.
+    /// The client gets a truncated connection, which the corruption already
+    /// guaranteed; adding bytes to it only makes the truncation harder to read.
+    fn relay_desynchronised(&self) {
+        self.stream_intact
+            .store(false, std::sync::atomic::Ordering::Relaxed);
+        self.relay_finished();
+    }
+
+    /// Whether a refusal can still be written as a message the client will
+    /// parse as one.
+    fn can_inject(&self) -> bool {
+        self.stream_intact
+            .load(std::sync::atomic::Ordering::Relaxed)
     }
 
     /// Wait until the client has received the database's answer to every
@@ -230,14 +292,15 @@ impl ClientLink {
         let expected = self.forwarded.load(Ordering::Relaxed);
         let mut delivered = self.delivered.subscribe();
         loop {
-            let seen = match *delivered.borrow_and_update() {
+            let seen = match delivered.borrow_and_update().sync_points {
                 None => return,
                 Some(seen) if seen >= expected => return,
                 Some(seen) => seen,
             };
             match tokio::time::timeout(REFUSAL_ORDER_STALL_TIMEOUT, delivered.changed()).await {
-                // Something arrived. It may not be enough yet, but the pipeline
-                // is moving, so the stall budget starts over.
+                // Something arrived — a row, a `CommandComplete`, the sync point
+                // itself. It may not be enough yet, but the pipeline is moving,
+                // so the stall budget starts over.
                 Ok(Ok(())) => {}
                 // Every sender is gone. Unreachable while this `ClientLink` is
                 // alive, since it owns one — but proceeding in silence would
@@ -252,12 +315,14 @@ impl ClientLink {
                     return;
                 }
                 Err(_) => {
-                    // Nothing at all for a whole window: the missing answers are
-                    // not late, they are not coming. Write the gap off so the
-                    // rest of the session is ordered against what actually
-                    // arrives — the counters are monotonic, so leaving the skew
-                    // in place would make every later refusal on this connection
-                    // pay this bound again.
+                    // Not one byte of any backend message for a whole window:
+                    // the missing answers are not late, they are not coming.
+                    // Write the gap off so the rest of the session is ordered
+                    // against what actually arrives — the counters are
+                    // monotonic, so leaving the skew in place would make every
+                    // later refusal on this connection pay this bound again. A
+                    // written-off answer that turns up after all is discarded by
+                    // the clamp in `delivered_message`.
                     self.forwarded.fetch_sub(expected - seen, Ordering::Relaxed);
                     tracing::warn!(
                         expected,
@@ -341,27 +406,44 @@ pub async fn run_postgres(
 /// desynchronise the client. Each message is written under a single lock, and
 /// every `ReadyForQuery` publishes its transaction status for [`refuse`].
 async fn upstream_to_client(upstream: tokio::net::tcp::OwnedReadHalf, link: ClientLink) {
-    relay_backend_messages(upstream, &link).await;
     // Whatever ended the relay — the upstream's EOF, a frame it could no longer
     // trust, a client socket that stopped accepting writes — no further
     // `ReadyForQuery` can reach the client now. Say so, so a refusal waiting to
     // be ordered behind one writes its answer instead of being cancelled
     // unwritten when this task's exit tears the session down.
-    link.relay_finished();
+    match relay_backend_messages(upstream, &link).await {
+        RelayEnd::BetweenMessages => link.relay_finished(),
+        RelayEnd::MidMessage => link.relay_desynchronised(),
+    }
 }
 
-/// The relay's message loop, split out so every way it can end runs the
-/// [`ClientLink::relay_finished`] above exactly once.
-async fn relay_backend_messages(mut upstream: tokio::net::tcp::OwnedReadHalf, link: &ClientLink) {
+/// Where the relay stopped, which decides whether a refusal released by its
+/// exit can still be written as a message the client will parse as one.
+enum RelayEnd {
+    /// On a message boundary. Everything the client received it received whole.
+    BetweenMessages,
+    /// Partway through writing a backend message, so the client holds a frame
+    /// header whose payload never arrived.
+    MidMessage,
+}
+
+/// The relay's message loop, split out so every way it can end reports where it
+/// stopped to [`upstream_to_client`] above exactly once.
+async fn relay_backend_messages(
+    mut upstream: tokio::net::tcp::OwnedReadHalf,
+    link: &ClientLink,
+) -> RelayEnd {
     loop {
         // Every backend message is `tag(1) | len(4, self-inclusive) | payload`.
         let mut head = [0u8; 5];
         if upstream.read_exact(&mut head).await.is_err() {
-            return;
+            return RelayEnd::BetweenMessages;
         }
         let len = u32::from_be_bytes([head[1], head[2], head[3], head[4]]) as usize;
         if len < 4 {
-            return; // malformed framing; the stream is no longer trustworthy
+            // Malformed framing; the stream is no longer trustworthy. Nothing of
+            // this message reached the client, so what it already has is whole.
+            return RelayEnd::BetweenMessages;
         }
         let payload_len = len - 4;
 
@@ -374,14 +456,21 @@ async fn relay_backend_messages(mut upstream: tokio::net::tcp::OwnedReadHalf, li
                     .await
                     .is_err()
             {
-                return;
+                // The header may already be on the client's socket with only
+                // part of its payload behind it — `write_all` can fail after a
+                // partial write, and the copy fails mid-payload by definition.
+                return RelayEnd::MidMessage;
             }
+            drop(writer);
+            // Oversized by construction, so never a `ReadyForQuery` (six bytes):
+            // progress for the stall window, never a sync point.
+            link.delivered_message(false);
             continue;
         }
 
         let mut payload = vec![0u8; payload_len];
         if upstream.read_exact(&mut payload).await.is_err() {
-            return;
+            return RelayEnd::BetweenMessages;
         }
         // `ReadyForQuery` is the only message that states the transaction status.
         if head[0] == b'Z' && !payload.is_empty() {
@@ -390,16 +479,12 @@ async fn relay_backend_messages(mut upstream: tokio::net::tcp::OwnedReadHalf, li
         {
             let mut writer = link.writer.lock().await;
             if writer.write_all(&head).await.is_err() || writer.write_all(&payload).await.is_err() {
-                return;
+                return RelayEnd::MidMessage;
             }
         }
         // Counted only once the client really has the message: a refusal
         // released mid-write would overtake the very response it waited for.
-        // `ReadyForQuery` carries a single byte, so it never takes the oversized
-        // path above — that path has no sync point to miss.
-        if head[0] == b'Z' {
-            link.delivered_sync_point();
-        }
+        link.delivered_message(head[0] == b'Z');
     }
 }
 
@@ -954,6 +1039,13 @@ async fn refuse(link: &ClientLink, message: &str) -> std::io::Result<()> {
 /// separately — see [`ABANDONED_NOTICE_ORDER_BUDGET`]. Every other refusal goes
 /// through [`refuse`] and is ordered.
 async fn write_refusal(link: &ClientLink, message: &str) -> std::io::Result<()> {
+    if !link.can_inject() {
+        // The relay died partway through a backend message, so the client is
+        // holding a frame header whose payload never came. It would read these
+        // bytes as that payload's remainder, turning a truncated connection into
+        // a corrupted one. Say nothing; the session is ending either way.
+        return Ok(());
+    }
     // Read after any wait, so the status echoed back is the one from the last
     // `ReadyForQuery` the client actually received.
     let status = link.tx_status.load(Ordering::Relaxed);
