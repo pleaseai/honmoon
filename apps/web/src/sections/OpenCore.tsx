@@ -4,17 +4,17 @@ export function OpenCore() {
       <div className="container">
         <div className="lp-mini">
           <p className="eyebrow"><span className="ix">05</span>Open core</p>
-          <h2>Free on a node. Built for a fleet.</h2>
+          <h2>Open source for a single node. Built to scale across a fleet.</h2>
         </div>
         <div className="oc-grid">
           <div className="panel oc core">
             <span className="oc-tag">◆ OSS core · Apache-2.0</span>
-            <div className="price">Free — never locked</div>
+            <div className="price">Free and open source</div>
             <ul>
-              <li>Full proxy, parsers &amp; CEL engine</li>
+              <li>Proxy, protocol parsers &amp; CEL policy engine</li>
               <li>Single-node YAML policy</li>
               <li>Local audit log + dashboard</li>
-              <li>Basic <code className="meta" style={{ color: 'inherit' }}>pause</code> approval</li>
+              <li>Basic approval for <code className="meta" style={{ color: 'inherit' }}>pause</code>d calls</li>
             </ul>
           </div>
           <div className="panel oc paid">

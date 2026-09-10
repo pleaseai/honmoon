@@ -24,11 +24,11 @@ export function Policy() {
         <div className="split">
           <div>
             <p className="eyebrow"><span className="ix">03</span>Policy · CEL</p>
-            <h2>A verdict before it lands.</h2>
+            <h2>A verdict before the call reaches production.</h2>
             <ul className="verdicts">
-              <li><span className="pill allow">allow</span> matches the allowlist — passes untouched</li>
-              <li><span className="pill deny">deny</span> dangerous payloads never reach prod</li>
-              <li><span className="pill pause">pause</span> ambiguous calls wait for a human</li>
+              <li><span className="pill allow">allow</span> matching requests pass unchanged</li>
+              <li><span className="pill deny">deny</span> dangerous payloads never reach production</li>
+              <li><span className="pill pause">pause</span> high-risk actions wait for human approval</li>
             </ul>
           </div>
           <div className="code-card">
