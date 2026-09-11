@@ -128,6 +128,8 @@ describe('renderIndex', () => {
       'a?b.md': 'a%3Fb.md', //        `?` would start a query
       'a%2Fb.md': 'a%252Fb.md', //    an existing `%` must not read as an escape
       'review:notes.md': 'review%3Anotes.md', // `review` would read as a scheme
+      'a\\b.md': 'a%5Cb.md', //        a backslash resolves as a path separator
+      'a&b.md': 'a%26b.md', //         never enumerated; encoded for being unlisted
       'two words.md': 'two%20words.md',
     }
     for (const [file, target] of Object.entries(encoded)) {
@@ -428,11 +430,12 @@ describe('rebuild — the index file itself', () => {
     writeFileSync(target, 'not an index\n')
     symlinkSync(target, join(root, 'some-agent', INDEX_NAME))
 
-    const { written, problems } = rebuild(root)
+    const { written, problems, refusals } = rebuild(root)
 
     expect(readFileSync(target, 'utf8')).toBe('not an index\n')
     expect(written).toEqual([])
-    expect(problems).toEqual([refusal])
+    expect(problems).toEqual([])
+    expect(refusals).toEqual([refusal])
   })
 
   // `existsSync` follows the link and answers false here, so a guard built on it
@@ -441,11 +444,11 @@ describe('rebuild — the index file itself', () => {
     const target = join(root, 'absent.txt')
     symlinkSync(target, join(root, 'some-agent', INDEX_NAME))
 
-    const { written, problems } = rebuild(root)
+    const { written, refusals } = rebuild(root)
 
     expect(existsSync(target)).toBe(false)
     expect(written).toEqual([])
-    expect(problems).toEqual([refusal])
+    expect(refusals).toEqual([refusal])
   })
 
   // Reported even when nothing would be written: a symlinked index is a broken
@@ -455,6 +458,13 @@ describe('rebuild — the index file itself', () => {
     writeFileSync(target, renderIndex(readNotes(join(root, 'some-agent'))))
     symlinkSync(target, join(root, 'some-agent', INDEX_NAME))
 
-    expect(rebuild(root).problems).toEqual([refusal])
+    expect(rebuild(root).refusals).toEqual([refusal])
+  })
+
+  // A refusal means this agent has no index at all, so it cannot come back as
+  // the code a caller is allowed to carry on from.
+  test('exits EXIT_INVARIANT, not EXIT_PROBLEMS, when an index is refused', () => {
+    symlinkSync(join(root, 'elsewhere.txt'), join(root, 'some-agent', INDEX_NAME))
+    expect(main([], root, root)).toBe(EXIT_INVARIANT)
   })
 })

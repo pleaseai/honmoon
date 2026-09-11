@@ -227,25 +227,31 @@ function escapeLabel(text: string): string {
 
 const ENCODER = new TextEncoder()
 
+/** File-name characters a markdown link destination can carry as themselves. */
+const UNRESERVED = /[^\w.~-]/g
+
 /**
  * Render a file name as a markdown link destination.
  *
- * The label is not the only half that can be truncated, and two different
- * layers can break it. `(`, `)`, `<`, `>` and whitespace end the destination in
- * the *markdown* parse; `#`, `?`, `%` and `:` survive that and then carry
- * meaning in the *URL*, where `a#b.md` addresses `a` with a fragment rather
- * than the file, and `review:notes.md` reads `review` as a URI scheme.
- * Percent-encoding covers both, and touches nothing in an ordinary
- * `some_note.md`.
+ * **Everything outside `UNRESERVED` is encoded, rather than a list of the
+ * characters known to break.** That list was tried first and leaked three
+ * times: `(` and whitespace end the destination in the *markdown* parse, then
+ * `#`, `?` and `%` survive that and carry meaning in the *URL*, then `:` makes
+ * `review:notes.md` read as a URI scheme, then `\` resolves as a path
+ * separator. Each was a true finding against an enumeration that could only
+ * ever be as complete as the last person to think about it. Naming the safe
+ * characters instead — and a file name is under no obligation to hold only
+ * those — makes the set closed: an unforeseen character is encoded by default,
+ * which is inert, instead of emitted raw, which is a link to the wrong file.
  *
- * Percent-encoding is defined over UTF-8 *bytes*, and `\s` reaches past ASCII:
- * a non-breaking space is one JS character but two bytes, so encoding the code
- * unit would emit `%A0` where the path needs `%C2%A0`. `TextEncoder` is what
- * makes the two agree. (`encodeURIComponent` would not: it leaves `(` and `)`
- * unescaped, and those are exactly what ends a bare markdown destination.)
+ * Percent-encoding is defined over UTF-8 *bytes*, so the encoder runs over
+ * bytes, not JS characters: a non-breaking space is one character and two
+ * bytes, and `%A0` would not be the path. (`encodeURIComponent` is not this
+ * function: it leaves `(`, `)` and `!*'` unescaped, and the first two are
+ * exactly what ends a bare markdown destination.)
  */
 function linkTarget(file: string): string {
-  return file.replace(/[%#?:()<>\s]/g, character =>
+  return file.replace(UNRESERVED, character =>
     Array.from(ENCODER.encode(character), byte =>
       `%${byte.toString(16).toUpperCase().padStart(2, '0')}`).join(''))
 }
@@ -346,14 +352,24 @@ export function trackedIndexFiles(cwd: string = REPO_ROOT): string[] {
 interface Result {
   /** Indexes whose on-disk content differed from the generated content. */
   written: string[]
-  /** `<agent>/<note>: <problem>` for every defect found. */
+  /** `<agent>/<note>: <problem>` for every note defect found. */
   problems: string[]
+  /**
+   * Reasons an index could not be written at all.
+   *
+   * Kept apart from `problems` because the two mean opposite things to a
+   * caller: a note defect leaves a complete index with one placeholder line in
+   * it, while anything here leaves that agent with no index. Folding them
+   * together is what made `EXIT_PROBLEMS` claim more than it could keep.
+   */
+  refusals: string[]
 }
 
 /** Rebuild (or, with `check`, only inspect) every index under `root`. */
 export function rebuild(root: string, options: { check?: boolean } = {}): Result {
   const written: string[] = []
   const problems: string[] = []
+  const refusals: string[] = []
 
   for (const agent of agentDirs(root)) {
     const dir = join(root, agent)
@@ -375,7 +391,7 @@ export function rebuild(root: string, options: { check?: boolean } = {}): Result
     // dangling one, which is the case that would otherwise be *created* here.
     const link = lstatSync(indexPath, { throwIfNoEntry: false })
     if (link?.isSymbolicLink()) {
-      problems.push(`${agent}/${INDEX_NAME}: is a symlink; an index is generated in place, refusing to write through it`)
+      refusals.push(`${agent}/${INDEX_NAME}: is a symlink; an index is generated in place, refusing to write through it`)
       continue
     }
 
@@ -390,7 +406,7 @@ export function rebuild(root: string, options: { check?: boolean } = {}): Result
     }
   }
 
-  return { written, problems }
+  return { written, problems, refusals }
 }
 
 /**
@@ -406,8 +422,8 @@ export function rebuild(root: string, options: { check?: boolean } = {}): Result
 export const EXIT_PROBLEMS = 2
 
 /**
- * The exit code for a broken repository invariant — today, an index that is
- * tracked by git again.
+ * The exit code for a broken invariant — an index that is tracked by git
+ * again, or one that cannot be written because a symlink stands where it goes.
  *
  * Separate from `EXIT_PROBLEMS` because **nothing was written**: the run stops
  * before rebuilding so the tree is left as found, which means a caller that
@@ -426,8 +442,8 @@ function report(problems: string[], code: number): number {
 
 /**
  * Returns the process exit code: `EXIT_INVARIANT` when an index is tracked
- * again (nothing is written), `EXIT_PROBLEMS` when every index was written but
- * a note cannot supply its line, 0 when clean. `root` and `cwd` are defaulted
+ * again or could not be written, `EXIT_PROBLEMS` when every index was written
+ * but a note cannot supply its line, 0 when clean. `root` and `cwd` are defaulted
  * for the CLI and only passed by the tests, which need a checkout of their own.
  */
 export function main(argv: string[], root: string = MEMORY_DIR, cwd: string = REPO_ROOT): number {
@@ -443,7 +459,14 @@ export function main(argv: string[], root: string = MEMORY_DIR, cwd: string = RE
       + `Run \`git rm --cached ${trackedIndex}\`.`), EXIT_INVARIANT)
   }
 
-  const { written, problems } = rebuild(root, { check })
+  const { written, problems, refusals } = rebuild(root, { check })
+
+  // Refusals first, and at the invariant code: they mean an agent has no index,
+  // which a caller tolerating a malformed note must not be told to carry on
+  // from. Reported together so one run names everything it found.
+  if (refusals.length > 0) {
+    return report([...refusals, ...problems], EXIT_INVARIANT)
+  }
 
   if (problems.length > 0) {
     return report(problems, EXIT_PROBLEMS)
