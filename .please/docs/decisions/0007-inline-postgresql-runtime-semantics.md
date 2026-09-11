@@ -190,6 +190,15 @@ that fails to parse: it is refused rather than forwarded blind.
     observations — one counter would let a sync point's answer settle a flush, and a quiet upstream
     settle a sync point the database is still computing.
 
+    **A sync point settles the flushes that preceded it.** `ReadyForQuery` proves every frame
+    before its `Sync` has been processed and its output emitted, so it subsumes every `Flush`
+    already outstanding and is a stronger settlement than the quiet. It has to be, too: a batch
+    ending `Flush`/`Sync` — what a libpq pipeline does at `PQpipelineSync()`, the commonest
+    pipeline shape there is — comes back as one burst, so the relay sees no quiet before the `Z`
+    and would otherwise leave that flush outstanding for a whole stall window. The count is
+    snapshotted when the sync point is forwarded rather than read when its answer lands, because a
+    `Flush` sent *after* a `Sync` is not answered by that `Sync`'s `ReadyForQuery`.
+
     **One quiet settles one flush, never every flush outstanding.** A quiet cannot say how many
     flushes it drained, and the two readings fail in opposite directions. A client may legitimately
     flush mid-batch (`Parse`/`Bind`/`Flush`/`Execute`/`Flush`, which is what `PQsendFlushRequest`
