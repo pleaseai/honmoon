@@ -1,0 +1,32 @@
+crates/honmoon-proxy/src/mitm.rs
+  s_e38385e01b84cf::t_917684b19a9273 589-590
+.please/docs/decisions/0009-body-only-inspection-contract.md
+  s_e38385e01b84cf::t_3b073203db3df5 60-62,105-109,112-118,132-134,149-153
+  s_e38385e01b84cf::t_c64f39112e179d 148
+  s_e38385e01b84cf::t_e7760020ad9828 73-85
+  s_e38385e01b84cf::t_31a6313c25634b 110-111,135-136,145-147
+  s_e38385e01b84cf::t_f49fba597d66f0 98-102
+.please/docs/review/rejected-findings.jsonl
+  s_e38385e01b84cf::t_73c6526707129e 12
+crates/honmoon-proxy/src/body.rs
+  s_e38385e01b84cf::t_917684b19a9273 177-179
+  s_e38385e01b84cf::t_e7760020ad9828 180-185
+README.md
+  s_e38385e01b84cf::t_917684b19a9273 209-211,215-221
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "c53277881d83aaa6248a9c0f867ebbcf0122ed1d",
+  "prompts": {},
+  "sessions": {
+    "s_e38385e01b84cf": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "678fcee7-0bf2-4f0a-a4b0-121c1a922537",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
