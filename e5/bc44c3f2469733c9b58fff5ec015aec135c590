@@ -1,0 +1,23 @@
+.claude/agent-memory/review-review-documentation-analyzer/pr150_adr0009_body_only_contract.md
+  s_e38385e01b84cf::t_1c4127c3b5b20f 3,10-13
+.please/docs/decisions/0009-body-only-inspection-contract.md
+  s_e38385e01b84cf::t_1c4127c3b5b20f 146-156,160-162
+README.md
+  s_e38385e01b84cf::t_1c4127c3b5b20f 234-236
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "e5bc44c3f2469733c9b58fff5ec015aec135c590",
+  "prompts": {},
+  "sessions": {
+    "s_e38385e01b84cf": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "678fcee7-0bf2-4f0a-a4b0-121c1a922537",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
