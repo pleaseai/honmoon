@@ -176,9 +176,12 @@ const HOOK_SALT_EXPOSED_RULE: &str = "hook-salt-exposed";
 ///
 /// - **The remedies are opposite.** For a file that is loose *now*, tightening
 ///   the mode is the fix, and the loader has already tried it. For one that
-///   *was*, tightening is not — the bytes may already be copied, and only
-///   replacing the salt helps. `rule` is what an operator filters a query on, so
-///   the two dispositions have to be separable without parsing prose.
+///   *was*, tightening is not the fix — the bytes may already be copied, so only
+///   replacing the salt helps. (It can still be *owed*, on the narrow arm where
+///   the mode could not be read back and the correction is therefore
+///   unconfirmed; the `reason` says which arm it is, and the plugin README's
+///   remedy column says so too.) `rule` is what an operator filters a query on,
+///   so the two dispositions have to be separable without parsing prose.
 /// - **The volumes differ by orders of magnitude.** An unrestrictable salt is
 ///   still unrestrictable on the next invocation, so `hook-salt-exposed` repeats
 ///   for as long as the condition lasts. This one fires *once* per loose-find

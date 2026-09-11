@@ -281,7 +281,7 @@ already closed need opposite responses:
 | --- | --- | --- |
 | `hook-salt-fallback` | the key in use is **not** the persisted one; `key_source` says what that cost | fix what stopped the loader reading or writing `~/.honmoon/hook-salt` |
 | `hook-salt-exposed` | the key **is** the persisted one, but its file is readable by other local users and the loader could not restrict it to `0600` | tighten the file — the loader already tried and could not |
-| `hook-salt-was-exposed` | the key **is** the persisted one, and the loader *found* its file readable by other local users, then did not see it that way after restricting it | nothing left to tighten: rotate, per the suspicion rule below |
+| `hook-salt-was-exposed` | the key **is** the persisted one, and the loader *found* its file readable by other local users, then did not see it that way after restricting it | rotate, per the suspicion rule below — the mode is no longer the problem. Where the `reason` says the mode could not be read back, check the file is `0600` first: the correction is unconfirmed there |
 
 On the fallback rule, `key_source` says which guarantee was lost, because they are not
 the same failure:
