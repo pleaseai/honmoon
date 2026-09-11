@@ -1,0 +1,68 @@
+crates/honmoon-cli/src/main.rs
+  s_e38385e01b84cf::t_03f5a6d7968e62 160-171,367-370,416,419
+.claude/agent-memory/review-review-silent-failure-hunter/project_hook_salt_audit_visibility_131.md
+  s_e38385e01b84cf::t_03f5a6d7968e62 1-40
+.claude/agent-memory/review-review-documentation-analyzer/pr147_adr0007_flush_amended.md
+  s_e38385e01b84cf::t_03f5a6d7968e62 1-34
+.claude/agent-memory/review-review-comment-analyzer/postgres_flush_barrier_pr147.md
+  s_e38385e01b84cf::t_03f5a6d7968e62 1-38
+.claude/agent-memory/review-review-security-reviewer/postgres-refusal-ordering-barrier.md
+  s_e38385e01b84cf::t_03f5a6d7968e62 3,31-75
+crates/honmoon-proxy/src/runtime/postgres.rs
+  s_e38385e01b84cf::t_03f5a6d7968e62 170-201,232-237,250-285,332-333,337,339,372-378,382-458,469,475-502,596,599-611,626,656,662-670,672-676,680-681,788-794,796-835,837-844,846-862,893-894,917-925,1212-1218,2494-3198
+  s_e38385e01b84cf::t_3695645defc8d5 3199
+packages/claude-plugin/README.md
+  s_e38385e01b84cf::t_03f5a6d7968e62 272-274,276-285,289,293-337,347-348
+  s_e38385e01b84cf::t_10c0fafc4242ea 349
+.claude/agent-memory/review-review-documentation-analyzer/MEMORY.md
+  s_e38385e01b84cf::t_03f5a6d7968e62 5,7,9
+  s_e38385e01b84cf::t_edb67ed57c3fad 10
+.claude/agent-memory/review-review-documentation-analyzer/pr142_stale_rename_comment.md
+  s_e38385e01b84cf::t_03f5a6d7968e62 1-44
+crates/honmoon-core/src/audit.rs
+  s_e38385e01b84cf::t_03f5a6d7968e62 64,67-74,89-90,103-109
+.claude/agent-memory/review-review-comment-analyzer/MEMORY.md
+  s_e38385e01b84cf::t_03f5a6d7968e62 3
+packages/policy/src/index.ts
+  s_e38385e01b84cf::t_03f5a6d7968e62 76,79-84,91-93,101-104
+.claude/agent-memory/review-review-ocr-reviewer/ocr-scoping-honmoon.md
+  s_e38385e01b84cf::t_03f5a6d7968e62 21-28
+.claude/agent-memory/review-review-code-reviewer/project_hook_salt_fallback_visibility_131.md
+  s_e38385e01b84cf::t_03f5a6d7968e62 1-32
+.claude/agent-memory/review-review-pr-test-analyzer/MEMORY.md
+  s_e38385e01b84cf::t_03f5a6d7968e62 7
+.claude/agent-memory/review-review-security-reviewer/hook-salt-security-model.md
+  s_e38385e01b84cf::t_03f5a6d7968e62 60-86
+.claude/agent-memory/review-review-code-reviewer/MEMORY.md
+  s_e38385e01b84cf::t_03f5a6d7968e62 6
+.claude/agent-memory/review-review-documentation-analyzer/pr137_degraded_decision_variant.md
+  s_e38385e01b84cf::t_03f5a6d7968e62 1-32
+.claude/agent-memory/review-review-silent-failure-hunter/MEMORY.md
+  s_e38385e01b84cf::t_03f5a6d7968e62 5-6
+apps/dashboard/src/format.test.ts
+  s_e38385e01b84cf::t_03f5a6d7968e62 26-45
+.please/docs/decisions/0007-inline-postgresql-runtime-semantics.md
+  s_e38385e01b84cf::t_03f5a6d7968e62 178-261
+.claude/agent-memory/review-review-pr-test-analyzer/main_rs_gateway_untestable.md
+  s_e38385e01b84cf::t_03f5a6d7968e62 1-32
+.claude/agent-memory/review-review-silent-failure-hunter/project_flush_refusal_barrier_pg113.md
+  s_e38385e01b84cf::t_03f5a6d7968e62 1-29
+crates/honmoon-cli/src/hook.rs
+  s_e38385e01b84cf::t_03f5a6d7968e62 37-38,55,155-174,178-180,203,207-276,279,285,294-298,308-310,319,321-327,334,340-350,364,367,369-392,400,425-426,437,471-475,480-483,487,499-503,530-532,593-596,607-612,623,635,678-683,693-698,700,705,724-740,742,746,750-788,791-792,794-796,855-858,906-1173,1250-1255,1265,1372,1375,1378,1381,1414,1416,1419,1444,1449,1457,1460,1478,1490
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "29cf31ca25fee9614bb0834e13d60e9877e11f2a",
+  "prompts": {},
+  "sessions": {
+    "s_e38385e01b84cf": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "678fcee7-0bf2-4f0a-a4b0-121c1a922537",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
