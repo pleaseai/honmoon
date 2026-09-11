@@ -26,3 +26,14 @@ PRs have at least a minor gap ([[honmoon-crate-table-convention]] pattern).
 `/please:plan`, not touched by this diff) still titling ADR-0006 "Body-signed requests under wire
 redaction" even though the ADR body now gives equal weight to header-signed requests — flag at low
 confidence only, since the index is auto-generated and the diff didn't touch it.
+
+**Second clean PR confirmed (#120, issue #81, 2026-09-11):** amended the same ADR again to narrow
+SigV4 body-signature detection (presigned URL / bare `x-amz-content-sha256` no longer count alone
+unless a signed-payload marker or 64-hex hash is present). Verified every ADR/README claim
+line-by-line against `aws_sigv4_signs_body`/`declares_unsigned_payload`/`declares_signed_payload`/
+`sigv4_presigned_query` in `signed_body.rs` and the new `redaction.rs` integration tests — exact
+match, including the "operator wants old strictness → use `egress` policy" remediation the issue
+required. Issue numbering in prose checked out too: "review of #80 (#81)" means PR #80 introduced
+ADR-0006 and its review spawned follow-up issue #81 — not a fabricated cross-reference. This repo's
+signed_body.rs/mitm.rs doc comments and ADR-0006 are a reliable place to expect precise, accurate
+prose; spend review effort on cross-checking numeric/behavioral claims rather than assuming drift.
