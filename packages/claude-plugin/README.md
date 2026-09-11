@@ -282,16 +282,25 @@ host leaves the file untouched: an event appearing there at all is the signal.
 | `fallback` | the constant compiled into the binary | unforgeability, entirely — the key is published in this repository |
 
 **Where each event is visible.** The two transports reach different readers, because
-the gateway's management API serves its own in-process ring rather than the file:
+the gateway's management API (`/api/audit`, which the embedded dashboard polls) serves
+its own in-process ring rather than the file:
 
 | Recorded by | In the JSONL file | `@honmoon/api` (`GET /api/audit?decision=degraded`) | Gateway dashboard |
 | --- | --- | --- | --- |
-| `honmoon hook` (its own process) | yes | yes | **no** |
+| `honmoon hook` (its own process, per invocation) | yes | yes | **no** |
 | `honmoon gateway` (once at startup, covering the HTTP transport and wire redaction) | yes, when `--audit-log` is set | yes | yes — a `Degraded` pill |
 
-So a hook-side degradation is found by querying the log, not by watching the
-dashboard. Pointing both processes at one file is intended: each appends whole
-lines, and the query layer orders by timestamp because ids are process-local.
+So a hook-side degradation is found by querying the log, not by watching the dashboard.
+
+In practice the condition still reaches the dashboard on any host that runs a gateway,
+because the trigger is shared: both processes read the same `~/.honmoon/hook-salt`, so
+whatever makes it unusable for the hook makes it unusable for the gateway, which then
+records its own event into the ring the dashboard polls. What the dashboard cannot show
+is the hook's *own* records — the per-invocation cardinality, and the hook-specific
+reason. A host running no gateway has the log and the query API only.
+
+Pointing both processes at one file is intended: each appends whole lines, and the query
+layer orders by timestamp because ids are process-local.
 
 **Pick a path on a different filesystem from `~/.honmoon` where you can.** The
 conditions that make the salt unwritable — a read-only filesystem, a full disk, an

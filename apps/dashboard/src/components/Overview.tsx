@@ -303,7 +303,7 @@ function DecisionMix({
     { label: 'Allowed + approved', value: allowed, color: 'bg-accent' },
     { label: 'Denied + rejected', value: denied, color: 'bg-deny' },
     { label: 'Paused decisions', value: paused, color: 'bg-warn' },
-    { label: 'Degraded guarantees', value: degraded, color: 'bg-warn' },
+    { label: 'Degraded guarantees', value: degraded, color: 'mix-degraded' },
   ]
   return (
     <div className="px-5 pt-1 pb-5">

@@ -419,22 +419,42 @@ mod tests {
     }
 
     #[test]
-    fn record_durable_reports_a_refused_sink() {
-        // `record` logs and swallows; `record_durable` hands the failure back for
-        // a caller with no subscriber and no ring (issue #131). Make the sink
-        // fail after a successful open by removing the directory underneath it.
+    fn record_durable_reports_a_healthy_sink_and_an_absent_one_as_success() {
+        // The two success arms: a sink that takes the record, and no sink at all
+        // (nothing was refused, so it is not a failure). The refusal arm needs a
+        // sink that fails *after* a successful open, which is below.
         let dir = std::env::temp_dir().join(format!("honmoon-audit-nosink-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let log = AuditLog::with_file(4, dir.join("audit.jsonl")).expect("open sink");
         let (_, written) = log.record_durable(draft(Decision::Denied));
         assert!(written.is_ok(), "a healthy sink takes the record");
 
-        // No sink configured at all is success, not failure: nothing was refused.
         let memory_only = AuditLog::new(4);
         let (event, written) = memory_only.record_durable(draft(Decision::Degraded));
-        assert!(written.is_ok());
+        assert!(written.is_ok(), "no sink is not a refusal");
         assert_eq!(event.decision, Decision::Degraded);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// `/dev/full` accepts an open and fails every write with `ENOSPC`, which is
+    /// the one portable-enough way to get a sink that refuses *after* opening —
+    /// the case `record_durable` exists for (issue #131). Linux-only; macOS has
+    /// no equivalent, so the assertion runs in CI's Linux job.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn record_durable_hands_back_a_sink_that_refuses_the_write() {
+        let log = AuditLog::with_file(4, "/dev/full").expect("/dev/full opens for append");
+        let (event, written) = log.record_durable(draft(Decision::Degraded));
+        assert!(
+            written.is_err(),
+            "a refused write must come back to the caller, not be swallowed"
+        );
+        assert_eq!(
+            log.len(),
+            1,
+            "the ring still holds it — only the durable copy was lost"
+        );
+        assert_eq!(event.decision, Decision::Degraded);
     }
 
     #[test]

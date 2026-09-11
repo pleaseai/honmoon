@@ -13,7 +13,17 @@ describe('describeFacts', () => {
     expect(describeFacts(facts)).toBe('redaction key: fallback (hook) — unwritable HOME')
   })
 
-  test('still prefers request facts when both are somehow present', () => {
+  test('a degradation wins over request facts when both are present', () => {
+    // The precedence the branch order actually implements: a degraded event
+    // describes the engine, so it outranks whatever request facts came along.
+    const both: FactsSummary = {
+      domain: 'evil.com',
+      redaction: { key_source: 'unpersisted', transport: 'gateway', reason: 'lost publish race' },
+    }
+    expect(describeFacts(both)).toBe('redaction key: unpersisted (gateway) — lost publish race')
+  })
+
+  test('falls back to request facts, then to a dash', () => {
     expect(describeFacts({ domain: 'evil.com' })).toBe('evil.com')
     expect(describeFacts({})).toBe('—')
   })
