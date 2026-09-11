@@ -10,7 +10,11 @@ Honmoon's request pipeline scans request **body** bytes. `inspect_body` buffers 
 `decode_strict` decodes a declared `Content-Encoding`, `utf8_prefix` turns the result into text,
 and `detect_spans` produces the `pii.*` facts a policy rule can condition on. Wire redaction
 (`--redact-secrets`) runs `detect_secrets` over the same body text and rewrites those bytes.
-Nothing in the pipeline reads a `HeaderMap`.
+No detector in the pipeline ever runs over a `HeaderMap`. Headers are certainly *read* —
+`inspect_body` takes `Content-Length`, `Content-Type` and `Content-Encoding` off them to decide
+framing and decoding, signature detection reads `Authorization` and its relatives, and the
+redaction rewrite re-frames several — but only ever as protocol metadata. No header or trailer
+*value* is passed to `detect_spans` or `detect_secrets`.
 
 That leaves **request trailers** — the chunked trailer section, `Trailer: X-Note` plus
 `0\r\nX-Note: <secret>\r\n\r\n` — forwarded to the upstream unscanned, unredacted and unaudited.
