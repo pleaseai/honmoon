@@ -1,0 +1,30 @@
+wiki/llms-full.txt
+  s_6eafee1f39ff31::t_eb9078284dc052 1781,1980-1981
+apps/dashboard/src/format.test.ts
+  s_6eafee1f39ff31::t_f6dd3e38af4fd2 16-26
+apps/dashboard/src/components/Overview.tsx
+  s_6eafee1f39ff31::t_7f28da70d12eb0 306
+apps/dashboard/src/index.css
+  s_6eafee1f39ff31::t_7f28da70d12eb0 225-235
+crates/honmoon-core/src/audit.rs
+  s_6eafee1f39ff31::t_f6dd3e38af4fd2 422-425,434,439-457
+  s_6eafee1f39ff31::t_865f46bbe70381 458-459
+packages/claude-plugin/README.md
+  s_6eafee1f39ff31::t_7b1fe91bf93dc5 285-286,290,293-303
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "2f7f6329e63ee845aef30257e42cccd0628c78c8",
+  "prompts": {},
+  "sessions": {
+    "s_6eafee1f39ff31": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "ef7227cc-7b83-4783-b04d-4349ac4c0afc",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
