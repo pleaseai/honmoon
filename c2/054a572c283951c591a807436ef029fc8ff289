@@ -1,0 +1,21 @@
+.claude/agent-memory/review-review-documentation-analyzer/MEMORY.md
+  s_9270e6fe5cfd82::t_1e27d59feb48e5 10
+.claude/agent-memory/review-review-documentation-analyzer/pr170_hook_salt_was_exposed.md
+  s_9270e6fe5cfd82::t_1e27d59feb48e5 3,34-68
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "c2054a572c283951c591a807436ef029fc8ff289",
+  "prompts": {},
+  "sessions": {
+    "s_9270e6fe5cfd82": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "7421a89d-0867-4381-8918-7ae56e76e1b6",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
