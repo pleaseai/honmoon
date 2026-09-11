@@ -19,7 +19,8 @@ use time::format_description::well_known::Rfc3339;
 
 use crate::{Facts, HttpFacts, K8sFacts, PiiFacts, SqlFacts, Verdict};
 
-/// The final disposition of a request, as recorded in the audit log.
+/// What an audit entry records: the disposition of a request, or — for
+/// [`Decision::Degraded`] — a security property the engine is running without.
 ///
 /// A `Pause` verdict produces a `Paused` event when the request is held, then a
 /// second `Approved`/`Rejected` event (sharing the same `approval_id`) once a
@@ -37,6 +38,43 @@ pub enum Decision {
     Approved,
     /// A held request was rejected by a human (or timed out) and blocked.
     Rejected,
+    /// Not a request disposition: the engine is running with a security
+    /// property it normally provides switched off, and said so here.
+    ///
+    /// Honmoon's degradations are deliberately fail-open — a hook that hard-fails
+    /// breaks the agent it runs inside — which makes them invisible from the
+    /// outside: the degraded path produces the same shape of output as the
+    /// working one. This variant is how a fail-open path stops being silent, so
+    /// `?decision=degraded` answers "was this transcript redacted under a real
+    /// key?" from the log rather than from a stderr line nobody read. The
+    /// accompanying `verdict` describes what happened to the traffic (`allow`:
+    /// fail-open let it through), not the degradation itself, and [`FactsSummary`]
+    /// carries the specifics — see [`RedactionFacts`].
+    Degraded,
+}
+
+/// Why placeholder minting is or is not keyed by a private secret, recorded on a
+/// [`Decision::Degraded`] event.
+///
+/// Placeholders are `HMAC(salt, secret)`, and the salt is derived from a machine
+/// key the transports read from disk. When that key cannot be read or created the
+/// transports fall back to a constant compiled into the binary and published in
+/// this repository's source: redaction keeps working and placeholders stay
+/// byte-stable, but anyone can mint the placeholder a guessed secret would produce
+/// and check it against a redacted transcript, so unforgeability is not weakened —
+/// it is gone (issue #131). Nothing about the redacted output distinguishes the
+/// two paths, which is why the provenance is recorded here instead.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RedactionFacts {
+    /// Where the HMAC key came from: `persisted` (the private per-machine
+    /// secret) or `fallback` (the public compiled-in constant).
+    pub key_source: String,
+    /// Which transport derived it: `hook` (the `honmoon hook` subprocess) or
+    /// `gateway` (wire redaction and the management hook endpoint, which read
+    /// the key once at startup).
+    pub transport: String,
+    /// Why the persisted key was unavailable, as the loader reported it.
+    pub reason: String,
 }
 
 /// A compact, serializable snapshot of the [`Facts`] a decision was made on.
@@ -54,6 +92,10 @@ pub struct FactsSummary {
     pub k8s: Option<K8sFacts>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub pii: Option<PiiFacts>,
+    /// Set only on a [`Decision::Degraded`] event; never derived from [`Facts`],
+    /// which describes a request rather than the engine's own posture.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub redaction: Option<RedactionFacts>,
 }
 
 impl From<&Facts> for FactsSummary {
@@ -65,6 +107,7 @@ impl From<&Facts> for FactsSummary {
             sql: f.sql.clone(),
             k8s: f.k8s.clone(),
             pii: f.pii.clone(),
+            redaction: None,
         }
     }
 }
@@ -202,10 +245,16 @@ impl AuditLog {
 }
 
 fn append_jsonl(sink: &Mutex<std::fs::File>, event: &AuditEvent) -> std::io::Result<()> {
-    let line = serde_json::to_string(event)?;
+    // Terminator appended in-buffer so the record leaves as **one** `write` on an
+    // `O_APPEND` file. The sink is no longer single-writer — `honmoon hook` runs
+    // as its own short-lived process and appends its own degradation events to
+    // the same path (issue #131) — and a separate write for the newline would let
+    // a concurrent appender land between an event and its terminator, fusing two
+    // JSON objects onto one line that the reader then drops as malformed.
+    let mut line = serde_json::to_string(event)?;
+    line.push('\n');
     let mut file = sink.lock().expect("audit sink poisoned");
     file.write_all(line.as_bytes())?;
-    file.write_all(b"\n")?;
     file.flush()
 }
 

@@ -152,6 +152,18 @@ enum Command {
         /// and the payload's `session_id` when set.
         #[arg(long, value_name = "CONTEXT")]
         salt_context: Option<String>,
+        /// Append security degradations to this JSONL audit log — the same file
+        /// `honmoon gateway --audit-log` writes and `@honmoon/api` queries.
+        ///
+        /// Only a degradation is recorded here, never a per-invocation verdict:
+        /// today that is a fallback machine key, which leaves placeholders
+        /// forgeable by anyone (issue #131) while looking identical from the
+        /// outside. Unset, that degradation reaches stderr alone — which a
+        /// non-interactive hook process discards. Set it through the
+        /// environment: the plugin's dispatcher runs `honmoon hook` with no
+        /// arguments.
+        #[arg(long, value_name = "FILE", env = "HONMOON_AUDIT_LOG")]
+        audit_log: Option<PathBuf>,
     },
     /// Internal: the in-namespace half of enforced `run` isolation (ADR-0005).
     ///
@@ -213,7 +225,10 @@ fn main() -> Result<()> {
         Command::Join { gateway } => {
             anyhow::bail!("`join` not yet implemented (gateway: {gateway})");
         }
-        Command::Hook { salt_context } => hook::run(salt_context.as_deref()),
+        Command::Hook {
+            salt_context,
+            audit_log,
+        } => hook::run(salt_context.as_deref(), audit_log.as_deref()),
         #[cfg(target_os = "linux")]
         Command::SuperviseSandbox {
             bridge_socket,
@@ -343,8 +358,13 @@ fn gateway(args: GatewayArgs) -> Result<()> {
     // Wire redaction is process-scoped — the proxy sees connections, not agent
     // sessions — so it always keys on the configured context.
     let machine_key = hook::machine_key();
+    // Read once per process and shared by wire redaction and the management hook
+    // endpoint, so one record at startup covers every placeholder this gateway
+    // mints. It goes in before the listeners bind: a gateway that cannot key its
+    // placeholders privately should say so in the log it is about to fill.
+    hook::record_machine_key_source(&audit, hook::GATEWAY_TRANSPORT, &machine_key.source);
     let wire_salt = honmoon_core::derive_hook_salt(
-        &machine_key,
+        &machine_key.bytes,
         hook_salt_context.as_deref().unwrap_or(DEFAULT_SALT_CONTEXT),
     );
     let redaction = redact_secrets
@@ -377,7 +397,7 @@ fn gateway(args: GatewayArgs) -> Result<()> {
     let mgmt_listener = TcpListener::bind(&mgmt_addr)
         .with_context(|| format!("binding management API {mgmt_addr}"))?;
 
-    let hook_salt = hook_salt_for(hook_salt_context.as_deref(), wire_salt, machine_key);
+    let hook_salt = hook_salt_for(hook_salt_context.as_deref(), wire_salt, machine_key.bytes);
     let app_state = AppState::with_hook_config(state.clone(), policy_yaml, hook_salt, hook_token);
 
     let runtime = tokio::runtime::Runtime::new().context("build tokio runtime")?;
