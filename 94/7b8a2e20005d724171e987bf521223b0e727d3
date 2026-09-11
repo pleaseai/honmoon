@@ -1,0 +1,35 @@
+.claude/agent-memory/review-review-pr-test-analyzer/main_rs_gateway_untestable.md
+  s_6eafee1f39ff31::t_85e8d0b5d3d01c 1-27
+.claude/agent-memory/review-review-security-reviewer/hook-salt-security-model.md
+  s_6eafee1f39ff31::t_8da27a27d1ee0e 60-71
+.claude/agent-memory/review-review-code-reviewer/MEMORY.md
+  s_6eafee1f39ff31::t_86e193ad97188a 6
+.claude/agent-memory/review-review-silent-failure-hunter/project_hook_salt_audit_visibility_131.md
+  s_6eafee1f39ff31::t_0d5e00367caf85 1-33
+.claude/agent-memory/review-review-pr-test-analyzer/MEMORY.md
+  s_6eafee1f39ff31::t_c3906d21c65b7e 3
+.claude/agent-memory/review-review-documentation-analyzer/pr137_degraded_decision_variant.md
+  s_6eafee1f39ff31::t_f95d8baf24aee8 1-33
+.claude/agent-memory/review-review-silent-failure-hunter/MEMORY.md
+  s_6eafee1f39ff31::t_e843b8b2c1bf39 4
+.claude/agent-memory/review-review-code-reviewer/project_hook_salt_fallback_visibility_131.md
+  s_6eafee1f39ff31::t_8cffdeadd691ad 1-27
+.claude/agent-memory/review-review-documentation-analyzer/MEMORY.md
+  s_6eafee1f39ff31::t_8fb73ea43650b3 4
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "947b8a2e20005d724171e987bf521223b0e727d3",
+  "prompts": {},
+  "sessions": {
+    "s_6eafee1f39ff31": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "ef7227cc-7b83-4783-b04d-4349ac4c0afc",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
