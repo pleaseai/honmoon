@@ -3,3 +3,4 @@
 - [ADR-0006 signed-header amendment verified](adr_0006_signed_header_amendment.md) — PR #115 clean doc PR; calibration point, only soft spot is auto-maintained decisions/index.md title
 - [PR #122 hook-salt parity](pr122_hook_salt_parity.md) — issue #98 fix; README + rustdoc verified accurate against hook_salt.rs/HookSalt, 0 findings
 - [PR #146 signed-digest README/CLI stale](pr146_signed_digest_readme_cli_stale.md) — issue #116 fix; ADR-0006 updated correctly, but README.md + honmoon-cli --signed-body help still describe framing-headers-only, now stale
+- [PR #150 ADR-0009 body-only contract](pr150_adr0009_body_only_contract.md) — issue #133; ADR/README/index verified fully accurate against mitm.rs/body.rs/signed_body.rs, 0 findings
