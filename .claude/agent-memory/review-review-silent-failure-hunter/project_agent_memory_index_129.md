@@ -23,6 +23,15 @@ The merged version only answers `[]` when git says "not a git repository", and t
 general shape — a comment explaining why a broad swallow is safe, sitting exactly where the
 missing guard is — is the same one recorded in [[framing-deliberate-skips]].
 
+**The same function then failed the same way a second time, for a different reason**, which is
+why it is worth a note rather than a commit message. It read `git ls-files` without `-z`. Git
+C-quotes any path containing a non-ASCII character, a quote or a backslash, so a tracked
+`agent-mémoire/MEMORY.md` came back as `"agent-m\303\251moire/MEMORY.md"` — ending in `"`, not
+in `MEMORY.md`. The `endsWith` filter dropped it and the function returned `[]`: all clear, from
+a path it had in hand and failed to parse. **Any code that filters `git ls-files` output by
+suffix needs `-z`**, and the general rule is that a porcelain-shaped default (quoting, coloring,
+pager) is a display format, not a parse format.
+
 Also worth knowing: the script's tests pin the *positive* case (`trackedIndexFiles` finds a
 committed index in a throwaway `git init` checkout), not just the repository's current all-clear
 state. A guard only exercised against a clean repo would pass identically if it could never find
