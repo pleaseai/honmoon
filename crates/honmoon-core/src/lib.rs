@@ -181,12 +181,15 @@ impl Policy {
     /// Parse a policy from YAML.
     ///
     /// An unusable `endpoints` entry is an error (see
-    /// [`Policy::validate_endpoints`]); an *undefined* endpoint reference is only
-    /// a warning (see [`Policy::warn_undefined_endpoints`]).
+    /// [`Policy::validate_endpoints`]); an *undefined* endpoint reference and an
+    /// unreachable rule are only warnings (see
+    /// [`Policy::warn_undefined_endpoints`] and
+    /// [`Policy::warn_shadowed_rules`]).
     pub fn from_yaml(src: &str) -> Result<Self, Error> {
         let policy: Self = serde_yaml::from_str(src).map_err(Error::Parse)?;
         policy.validate_endpoints()?;
         policy.warn_undefined_endpoints();
+        policy.warn_shadowed_rules();
         Ok(policy)
     }
 
@@ -253,6 +256,77 @@ impl Policy {
             }
         }
     }
+
+    /// Warn about rules an earlier unconditional rule makes unreachable.
+    ///
+    /// The first matching rule wins, so a rule whose condition is always true
+    /// answers every request its endpoint covers and nothing below it on that
+    /// endpoint is ever reached. That is the shape ADR-0007 asks a
+    /// `egress.default: deny` policy to write for a `postgres` endpoint — a
+    /// connection-level `condition: "true"` allow — and putting it above the
+    /// statement rules silently answers every query with `allow`.
+    ///
+    /// A warning, not an error: the ordering is legal, the policy still means
+    /// exactly what it says, and this changes no verdict. It only names the
+    /// pair so the author can see which rule is dead and what killed it.
+    fn warn_shadowed_rules(&self) {
+        for (rule, shadowed_by) in self.shadowed_rules() {
+            tracing::warn!(
+                rule = %rule.name,
+                shadowed_by = %shadowed_by.name,
+                endpoint = %rule.endpoint,
+                "policy rule is unreachable: an earlier unconditional rule always matches first"
+            );
+        }
+    }
+
+    /// Every `(unreachable rule, the earlier rule that shadows it)` pair, in
+    /// rule order.
+    ///
+    /// Quadratic in the rule count, which is a load-time cost over a
+    /// hand-written list; a rule is reported once, against the *first* rule
+    /// that shadows it.
+    fn shadowed_rules(&self) -> Vec<(&Rule, &Rule)> {
+        self.rules
+            .iter()
+            .enumerate()
+            .filter_map(|(index, rule)| {
+                let shadowed_by = self.rules[..index].iter().find(|earlier| {
+                    is_unconditional(&earlier.condition)
+                        && endpoint_covers(&earlier.endpoint, &rule.endpoint)
+                })?;
+                Some((rule, shadowed_by))
+            })
+            .collect()
+    }
+}
+
+/// Whether a condition matches every request the rule's endpoint is consulted
+/// for, so the rule is an unconditional answer rather than a test.
+///
+/// Deliberately syntactic: only the literal `true` that ADR-0007 tells authors
+/// to write for a connection-level allow counts. An expression that merely
+/// *happens* to be always true (`1 == 1`) is left alone — proving a CEL
+/// expression total is not something the loader can do, and a warning that
+/// guessed would teach authors to ignore it.
+///
+/// An **empty** condition is not unconditional either, despite reading like
+/// one: it is not valid CEL, so the rule can never match — and today it does
+/// not even decline cleanly, because `Program::compile("")` panics instead of
+/// returning an error (tracked in #151). Either way it shadows nothing.
+fn is_unconditional(condition: &str) -> bool {
+    condition.trim() == "true"
+}
+
+/// Whether a rule bound to `pattern` is consulted on every request a rule bound
+/// to `other` would be — the ordering half of shadowing.
+///
+/// Mirrors the engine's own endpoint match (`*` matches any endpoint, otherwise
+/// the name must be equal): `*` covers every endpoint, and a name covers only
+/// itself. So an endpoint-specific rule never shadows a later `*` rule, which
+/// stays reachable through every *other* endpoint.
+fn endpoint_covers(pattern: &str, other: &str) -> bool {
+    pattern == "*" || pattern == other
 }
 
 /// Canonicalize an endpoint host for comparison: drop a trailing FQDN dot and
@@ -419,5 +493,201 @@ endpoints:
 
         assert!(policy.endpoint_for("k8s.internal", 443).is_none());
         assert!(policy.endpoint_for("other.internal", 6443).is_none());
+    }
+
+    /// `(unreachable rule, the rule that shadows it)` by name — what
+    /// `warn_shadowed_rules` puts in the log.
+    fn shadowed_names(policy: &Policy) -> Vec<(&str, &str)> {
+        policy
+            .shadowed_rules()
+            .into_iter()
+            .map(|(rule, shadowed_by)| (rule.name.as_str(), shadowed_by.name.as_str()))
+            .collect()
+    }
+
+    /// The defect from the ADR-0007 consequence: the connection-level allow a
+    /// `egress.default: deny` policy needs, written *above* the statement
+    /// rules, answers every query.
+    #[test]
+    fn an_unconditional_rule_shadows_later_rules_on_the_same_endpoint() {
+        let policy = Policy::from_yaml(
+            r#"
+endpoints:
+  postgres-prod: { host: db.internal, port: 5432, protocol: postgres }
+rules:
+  - name: postgres-connect
+    endpoint: postgres-prod
+    condition: "true"
+    verdict: allow
+  - name: sql-no-prod-drop
+    endpoint: postgres-prod
+    condition: "sql.verb == 'DROP'"
+    verdict: deny
+"#,
+        )
+        .expect("valid policy");
+
+        assert_eq!(
+            shadowed_names(&policy),
+            vec![("sql-no-prod-drop", "postgres-connect")]
+        );
+
+        // Diagnostic only: the warning names the dead rule, it does not revive
+        // it. A `DROP` still gets the shadowing rule's `allow`.
+        let facts = Facts {
+            endpoint: Some("postgres-prod".to_string()),
+            sql: Some(SqlFacts {
+                verb: "DROP".to_string(),
+                table: "users".to_string(),
+            }),
+            ..Default::default()
+        };
+        assert_eq!(crate::decide(&policy, &facts), Verdict::Allow);
+    }
+
+    /// The normal connection-allow shape: one unconditional rule with nothing
+    /// below it is exactly what ADR-0007 asks for, and must stay silent.
+    #[test]
+    fn a_lone_unconditional_rule_shadows_nothing() {
+        let policy = Policy::from_yaml(
+            r#"
+rules:
+  - name: postgres-connect
+    endpoint: postgres-prod
+    condition: "true"
+    verdict: allow
+"#,
+        )
+        .expect("valid policy");
+
+        assert!(shadowed_names(&policy).is_empty());
+    }
+
+    /// Shadowing is order-sensitive: the same rules ordered the way ADR-0007
+    /// prescribes — statement denies first, the connection allow last — are all
+    /// reachable.
+    #[test]
+    fn an_unconditional_rule_ordered_last_shadows_nothing() {
+        let policy = Policy::from_yaml(
+            r#"
+rules:
+  - name: sql-no-prod-drop
+    endpoint: postgres-prod
+    condition: "sql.verb == 'DROP'"
+    verdict: deny
+  - name: postgres-connect
+    endpoint: postgres-prod
+    condition: "true"
+    verdict: allow
+"#,
+        )
+        .expect("valid policy");
+
+        assert!(shadowed_names(&policy).is_empty());
+    }
+
+    /// `*` matches any endpoint, so an unconditional `*` rule is reached before
+    /// every later rule whatever endpoint that rule names.
+    #[test]
+    fn an_unconditional_wildcard_rule_shadows_every_later_rule() {
+        let policy = Policy::from_yaml(
+            r#"
+rules:
+  - name: allow-everything
+    endpoint: '*'
+    condition: "true"
+    verdict: allow
+  - name: sql-no-prod-drop
+    endpoint: postgres-prod
+    condition: "sql.verb == 'DROP'"
+    verdict: deny
+  - name: k8s-no-secret-delete
+    endpoint: k8s-prod
+    condition: "k8s.resource == 'secrets'"
+    verdict: deny
+"#,
+        )
+        .expect("valid policy");
+
+        assert_eq!(
+            shadowed_names(&policy),
+            vec![
+                ("sql-no-prod-drop", "allow-everything"),
+                ("k8s-no-secret-delete", "allow-everything"),
+            ]
+        );
+    }
+
+    /// Shadowing is per endpoint. An unconditional rule bound to one endpoint
+    /// leaves another endpoint's rules alone, and leaves a later `*` rule
+    /// reachable — through every endpoint it does not cover.
+    #[test]
+    fn an_unconditional_rule_does_not_shadow_other_endpoints() {
+        let policy = Policy::from_yaml(
+            r#"
+rules:
+  - name: postgres-connect
+    endpoint: postgres-prod
+    condition: "true"
+    verdict: allow
+  - name: k8s-no-secret-delete
+    endpoint: k8s-prod
+    condition: "k8s.resource == 'secrets'"
+    verdict: deny
+  - name: http-block-large-upload
+    endpoint: '*'
+    condition: "http.body_size > 10485760"
+    verdict: deny
+"#,
+        )
+        .expect("valid policy");
+
+        assert!(shadowed_names(&policy).is_empty());
+    }
+
+    /// Only the literal `true` counts. `1 == 1` is always true but the loader
+    /// cannot prove that, and a false positive here would teach authors to
+    /// ignore the warning; `""` reads like "no condition" but is not valid
+    /// CEL, so that rule matches nothing and shadows nothing (#151).
+    #[test]
+    fn only_a_literal_true_condition_counts_as_unconditional() {
+        for condition in ["", "1 == 1", "false", "'true'"] {
+            let policy = Policy::from_yaml(&format!(
+                r#"
+rules:
+  - name: first
+    endpoint: postgres-prod
+    condition: "{condition}"
+    verdict: allow
+  - name: sql-no-prod-drop
+    endpoint: postgres-prod
+    condition: "sql.verb == 'DROP'"
+    verdict: deny
+"#
+            ))
+            .expect("valid policy");
+
+            assert!(
+                shadowed_names(&policy).is_empty(),
+                "condition {condition:?} must not count as unconditional"
+            );
+        }
+
+        // Surrounding whitespace is not a different condition, though.
+        let policy = Policy::from_yaml(
+            r#"
+rules:
+  - name: first
+    endpoint: postgres-prod
+    condition: "  true  "
+    verdict: allow
+  - name: sql-no-prod-drop
+    endpoint: postgres-prod
+    condition: "sql.verb == 'DROP'"
+    verdict: deny
+"#,
+        )
+        .expect("valid policy");
+        assert_eq!(shadowed_names(&policy), vec![("sql-no-prod-drop", "first")]);
     }
 }
