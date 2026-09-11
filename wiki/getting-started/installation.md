@@ -15,7 +15,7 @@ single set of tasks; Rust is driven by the Cargo-canonical `rust-toolchain.toml`
 
 | Tool | Version | Managed by | Source |
 |------|---------|-----------|--------|
-| Rust | stable, edition 2024, `rust-version = 1.85` | `rust-toolchain.toml` (rustup) | [Cargo.toml:9-14](https://github.com/pleaseai/honmoon/blob/main/Cargo.toml#L9-L14) |
+| Rust | stable, edition 2024, `rust-version = 1.86` | `rust-toolchain.toml` (rustup) | [Cargo.toml:9-14](https://github.com/pleaseai/honmoon/blob/main/Cargo.toml#L9-L14) |
 | Node | 24 | mise | [mise.toml:8-10](https://github.com/pleaseai/honmoon/blob/main/mise.toml#L8-L10) |
 | Bun | latest (1.3.x) | mise | [mise.toml:8-10](https://github.com/pleaseai/honmoon/blob/main/mise.toml#L8-L10) |
 | Docker (optional) | 20.10+ / Compose v2 | — (only for the Squid backend) | [README.md:166-169](https://github.com/pleaseai/honmoon/blob/main/README.md#L166-L169) |

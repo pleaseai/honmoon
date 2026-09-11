@@ -1,8 +1,24 @@
 //! Policy decision engine: protocol-aware CEL rules + egress domain lists.
 
-use cel_interpreter::{Context, Program, Value};
+use std::sync::{Arc, OnceLock};
+
+use cel::{Context, Env, Program, Value};
 
 use crate::{Facts, PiiFacts, Policy, Rule, Verdict};
+
+/// The CEL standard-library environment, built once and shared.
+///
+/// [`Context::default`] builds `Arc::new(Env::stdlib())` on every call —
+/// registering the whole standard library — and `eval_program` runs once per
+/// endpoint-matching rule per request, twice for a rule that reaches
+/// [`pii_caused`]. Paying for the stdlib there put ~31µs of setup in front of
+/// ~1µs of evaluation and made the decision path scale with rule count rather
+/// than with work. The environment is immutable and identical for every
+/// evaluation, so it is built once and each context takes an `Arc` clone of it.
+fn stdlib_env() -> Arc<Env> {
+    static ENV: OnceLock<Arc<Env>> = OnceLock::new();
+    ENV.get_or_init(|| Arc::new(Env::stdlib())).clone()
+}
 
 /// A decision plus the reason it was reached.
 ///
@@ -167,22 +183,21 @@ pub fn matches_domain(pattern: &str, domain: &str) -> bool {
 /// Compile a rule condition. A condition that does not compile cannot match,
 /// which keeps a malformed rule from turning a deny into an allow.
 ///
-/// A **blank** condition is declined without reaching the compiler, because
-/// `Program::compile` does not return on one — it panics (#151). Panicking is
-/// the one outcome worse than failing to match, and blank is not the only
-/// condition that causes it (see the gap below); it is the one worth naming
-/// separately, because it is the one an author writes by accident.
-/// [`Policy::from_yaml`](crate::Policy::from_yaml) already refuses to load
-/// such a policy, so this guard is not what an operator meets; it is what
-/// `decide` owes a [`Policy`](crate::Policy) built in code, which the public
-/// API accepts just the same. The two answers differ on purpose: the loader is
-/// reading the author's file and says so loudly, while here the rule declines
-/// like any other condition that cannot compile.
+/// A **blank** condition is declined without reaching the compiler. That guard
+/// began as a panic shield (#151) and is no longer one: on `cel` 0.14 every
+/// input class #151 and #154 measured — blank, a syntax error, a lone
+/// unlexable character ASCII or not, a lone invisible character — returns
+/// `Err` rather than panicking. The test below named for that property pins
+/// it. The guard survives on a smaller claim: blank is the malformed
+/// condition an author writes by accident, and
+/// `"condition is blank"` tells them more than `"failed to compile"` does.
 ///
-/// Blank is the only case it covers. Other malformed conditions panic in
-/// `Program::compile` too — `"&&"`, `")"`, an unterminated string literal, a
-/// comment with no expression after it — and those still reach it, so the
-/// `Err` arm below is not the whole failure mode. That gap is #154.
+/// [`Policy::from_yaml`](crate::Policy::from_yaml) already refuses to load such
+/// a policy, so this guard is not what an operator meets; it is what `decide`
+/// owes a [`Policy`](crate::Policy) built in code, which the public API accepts
+/// just the same. The two answers differ on purpose: the loader is reading the
+/// author's file and says so loudly, while here the rule declines like any
+/// other condition that cannot compile.
 fn compile_condition(rule: &Rule) -> Option<Program> {
     // Both arms name the rule. A policy that reached here was built in code
     // rather than loaded, so there is no file and line to point an operator at,
@@ -216,26 +231,29 @@ fn compile_condition(rule: &Rule) -> Option<Program> {
 /// `pii` is the summary to bind, passed separately from `facts` so attribution
 /// can re-run the same program with it cleared.
 fn eval_program(program: &Program, facts: &Facts, pii: Option<&PiiFacts>) -> bool {
-    let mut ctx = Context::default();
+    // `Context::with_env` rather than `Context::default`: same standard library,
+    // without rebuilding it per evaluation. See [`stdlib_env`].
+    let mut ctx = Context::with_env(stdlib_env());
     if let Some(http) = &facts.http {
-        if let Ok(value) = cel_interpreter::to_value(http) {
+        if let Ok(value) = cel::to_value(http) {
             ctx.add_variable_from_value("http", value);
         }
     }
     if let Some(sql) = &facts.sql {
-        if let Ok(value) = cel_interpreter::to_value(sql) {
+        if let Ok(value) = cel::to_value(sql) {
             ctx.add_variable_from_value("sql", value);
         }
     }
     if let Some(k8s) = &facts.k8s {
-        if let Ok(value) = cel_interpreter::to_value(k8s) {
+        if let Ok(value) = cel::to_value(k8s) {
             ctx.add_variable_from_value("k8s", value);
         }
     }
     // Always register `pii` (default = empty) so absence conditions like
     // `pii.count == 0` are expressible, not just `pii.count > 0`.
-    let pii = pii.cloned().unwrap_or_default();
-    if let Ok(value) = cel_interpreter::to_value(&pii) {
+    let default_pii = PiiFacts::default();
+    let resolved_pii = pii.unwrap_or(&default_pii);
+    if let Ok(value) = cel::to_value(resolved_pii) {
         ctx.add_variable_from_value("pii", value);
     }
 
@@ -347,7 +365,9 @@ mod tests {
     #[test]
     fn a_blank_condition_declines_instead_of_panicking() {
         // Unicode whitespace included: `trim` treats it as blank, so the guard
-        // must too — `Program::compile` panics on it just as it does on `""`.
+        // must too. On `cel` 0.14 `Program::compile` returns `Err` on it just as
+        // it does on `""`, so what the guard buys here is the blank-specific
+        // message, not a crash that would otherwise happen.
         for condition in ["", " ", "\n", "\t\r\n", "\u{00a0}", "\u{3000}"] {
             let policy = Policy {
                 rules: vec![Rule {
@@ -361,6 +381,78 @@ mod tests {
 
             // The rule declines, so the egress default (deny) answers: the
             // blank condition can neither match nor crash.
+            assert_eq!(
+                super::decide(&policy, &Facts::default()),
+                Verdict::Deny,
+                "condition {condition:?}"
+            );
+        }
+    }
+
+    /// #154: the blank condition is one member of a much wider panicking set,
+    /// and the rest never reach the guard above. `Program::compile` must answer
+    /// for all of them the same way — an `Err` the caller can decline on.
+    ///
+    /// The classes are the ones #154 measured. Four of them are invisible in an
+    /// editor and are *not* Unicode `White_Space`, so `is_blank_condition` does
+    /// not — and deliberately should not — catch them: they are unlexable for
+    /// the same reason `@` is, not because they are blank.
+    ///
+    /// Both halves are asserted. `decide` returning `Deny` alone would not
+    /// pin this: `Deny` is also the egress default, so a parser that recovered
+    /// `"&&"` into some non-true value would satisfy it while the property
+    /// this test exists for — `Program::compile` returns, with an `Err` — had
+    /// regressed. The compile assertion is the one that names that property;
+    /// the decision assertion keeps the fail-closed path covered end to end.
+    #[test]
+    fn malformed_conditions_decline_instead_of_panicking() {
+        let conditions = [
+            // Syntax errors: a token sequence the grammar cannot close.
+            "&&",
+            ")",
+            "'abc",
+            "true &&",
+            ".",
+            "()",
+            // A comment with no expression after it.
+            "// nothing",
+            // A lone ASCII character no token can start with.
+            "@",
+            "$",
+            "#",
+            ";",
+            // The same, outside ASCII.
+            "\u{00a7}",
+            "\u{20ac}",
+            "\u{1f600}",
+            "\u{4e2d}",
+            // The same, invisible: zero-width space, BOM, word joiner, soft
+            // hyphen. These render as nothing and pass the blank guard.
+            "\u{200b}",
+            "\u{feff}",
+            "\u{2060}",
+            "\u{00ad}",
+        ];
+
+        for condition in conditions {
+            // The property #154 is closed on: it returns, and it returns `Err`.
+            assert!(
+                super::Program::compile(condition).is_err(),
+                "condition {condition:?} unexpectedly compiled"
+            );
+
+            let policy = Policy {
+                rules: vec![Rule {
+                    name: "malformed".into(),
+                    endpoint: "*".into(),
+                    condition: condition.to_string(),
+                    verdict: Verdict::Allow,
+                }],
+                ..Default::default()
+            };
+
+            // Same contract as the blank case: the rule goes inert, so the
+            // egress default (deny) answers. Failing closed, not crashing.
             assert_eq!(
                 super::decide(&policy, &Facts::default()),
                 Verdict::Deny,
