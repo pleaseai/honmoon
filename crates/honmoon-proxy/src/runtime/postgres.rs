@@ -209,6 +209,15 @@ impl ClientLink {
     /// this exists to prevent. So a message whose sync point is uncertain is
     /// counted — `Sync` among them, which PostgreSQL ignores (and therefore
     /// never answers) while a `COPY` is in progress.
+    ///
+    /// Called *before* the bytes are written upstream, never after. A fast
+    /// database on a multi-threaded runtime can have its `ReadyForQuery` relayed
+    /// to the client before the forwarding task runs its next line, and the
+    /// clamp in [`ClientLink::delivered_message`] would then discard that answer
+    /// as an over-count — leaving the counters skewed by one and making the next
+    /// refusal wait out the whole stall window for a response the client already
+    /// has. Counting first cannot be too early: a sync point recorded for a
+    /// write that then fails costs nothing, because the session ends with it.
     fn forwarded_sync_point(&self) {
         self.forwarded.fetch_add(1, Ordering::Relaxed);
     }
@@ -265,9 +274,21 @@ impl ClientLink {
     /// The client gets a truncated connection, which the corruption already
     /// guaranteed; adding bytes to it only makes the truncation harder to read.
     fn relay_desynchronised(&self) {
+        self.desynchronise();
+        self.relay_finished();
+    }
+
+    /// Mark the client's byte stream unframed, without touching the barrier.
+    ///
+    /// Called by the relay while it still holds the writer lock, so that a
+    /// refusal already queued *at* that lock sees the cleared flag when it gets
+    /// in rather than the value it read on the way past. Checking only on the
+    /// way in would let a refusal that passed [`ClientLink::can_inject`] a
+    /// moment before the relay's write failed acquire the lock afterwards and
+    /// append itself to the partial frame anyway.
+    fn desynchronise(&self) {
         self.stream_intact
             .store(false, std::sync::atomic::Ordering::Relaxed);
-        self.relay_finished();
     }
 
     /// Whether a refusal can still be written as a message the client will
@@ -459,6 +480,9 @@ async fn relay_backend_messages(
                 // The header may already be on the client's socket with only
                 // part of its payload behind it — `write_all` can fail after a
                 // partial write, and the copy fails mid-payload by definition.
+                // Marked while the lock is still held, so a refusal waiting for
+                // it cannot get in before the flag it checks is cleared.
+                link.desynchronise();
                 return RelayEnd::MidMessage;
             }
             drop(writer);
@@ -479,6 +503,8 @@ async fn relay_backend_messages(
         {
             let mut writer = link.writer.lock().await;
             if writer.write_all(&head).await.is_err() || writer.write_all(&payload).await.is_err() {
+                // Still under the lock: see the oversized branch above.
+                link.desynchronise();
                 return RelayEnd::MidMessage;
             }
         }
@@ -550,13 +576,15 @@ where
                 writer.write_all(b"N").await?;
             }
             PROTOCOL_V3 => {
-                upstream.write_all(&head).await?;
-                copy_exact(client, upstream, remaining).await?;
                 // However many authentication round trips follow, the database
                 // ends the handshake with exactly one `ReadyForQuery`. Counting
                 // it keeps a refusal for a statement the client pipelined behind
-                // its startup packet from overtaking the handshake itself.
+                // its startup packet from overtaking the handshake itself —
+                // counted before the packet goes out, since the answer can beat
+                // this task back.
                 link.forwarded_sync_point();
+                upstream.write_all(&head).await?;
+                copy_exact(client, upstream, remaining).await?;
                 return Ok(true);
             }
             // A cancel connection carries no queries — relay the packet verbatim
@@ -760,18 +788,19 @@ where
         if !matches!(tag[0], b'Q' | b'P') {
             // Not a statement-bearing message (`Bind`, `Execute`, `CopyData`, …).
             // Streamed without buffering — `CopyData` can be arbitrarily large.
-            upstream.write_all(&tag).await?;
-            upstream.write_all(&len_bytes).await?;
-            copy_exact(&mut client_reader, upstream, payload_len).await?;
             // `Sync` ends an extended-protocol batch and `FunctionCall` is a
             // request cycle of its own; each earns one `ReadyForQuery`. Nothing
             // else does. `Bind` and `Execute` are acknowledged immediately
             // (`BindComplete`, then the rows and `CommandComplete`) but end no
             // cycle, `Terminate` is answered with nothing at all, and what only
-            // this counter tracks is the cycle-ending `ReadyForQuery`.
+            // this counter tracks is the cycle-ending `ReadyForQuery`. Counted
+            // before the bytes leave, so the answer cannot beat the count.
             if matches!(tag[0], b'S' | b'F') {
                 link.forwarded_sync_point();
             }
+            upstream.write_all(&tag).await?;
+            upstream.write_all(&len_bytes).await?;
+            copy_exact(&mut client_reader, upstream, payload_len).await?;
             continue;
         }
 
@@ -823,16 +852,18 @@ where
 
         match decide(state, facts, sql, link, &mut client_reader).await? {
             Disposition::Forward => {
-                upstream.write_all(&tag).await?;
-                upstream.write_all(&len_bytes).await?;
-                upstream.write_all(&payload).await?;
                 // A simple query is its own request cycle. A `Parse` is
                 // acknowledged at once with `ParseComplete`, but its batch does
                 // not end until the client's `Sync` — which is counted where
-                // that `Sync` is forwarded, not here.
+                // that `Sync` is forwarded, not here. Counted before the write,
+                // so a database that answers immediately cannot have its
+                // `ReadyForQuery` discarded as an over-count.
                 if tag[0] == b'Q' {
                     link.forwarded_sync_point();
                 }
+                upstream.write_all(&tag).await?;
+                upstream.write_all(&len_bytes).await?;
+                upstream.write_all(&payload).await?;
             }
             Disposition::Refused => {}
             // No drain: the client that would have read the answer is gone.
@@ -1039,17 +1070,22 @@ async fn refuse(link: &ClientLink, message: &str) -> std::io::Result<()> {
 /// separately — see [`ABANDONED_NOTICE_ORDER_BUDGET`]. Every other refusal goes
 /// through [`refuse`] and is ordered.
 async fn write_refusal(link: &ClientLink, message: &str) -> std::io::Result<()> {
+    let mut writer = link.writer.lock().await;
     if !link.can_inject() {
         // The relay died partway through a backend message, so the client is
         // holding a frame header whose payload never came. It would read these
         // bytes as that payload's remainder, turning a truncated connection into
         // a corrupted one. Say nothing; the session is ending either way.
+        //
+        // Checked here rather than on the way in: the relay clears the flag
+        // while it still holds this lock, so a refusal that queued behind its
+        // failing write has to see the cleared value, not the one that was true
+        // when it started waiting.
         return Ok(());
     }
-    // Read after any wait, so the status echoed back is the one from the last
-    // `ReadyForQuery` the client actually received.
+    // Read after any wait and under the lock, so the status echoed back is the
+    // one from the last `ReadyForQuery` the client actually received.
     let status = link.tx_status.load(Ordering::Relaxed);
-    let mut writer = link.writer.lock().await;
     writer.write_all(&error_response(message)).await?;
     writer.write_all(&[b'Z', 0, 0, 0, 5, status]).await
 }
