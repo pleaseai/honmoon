@@ -22,6 +22,15 @@ thiserror.workspace = true
 time.workspace = true
 tracing.workspace = true
 
+# Only for the `O_NOFOLLOW`/`O_NONBLOCK` constants `OpenOptionsExt::custom_flags`
+# needs to harden the operator-supplied audit sink open (issue #138); their values
+# differ per target, so they cannot be spelled portably by hand. No syscall is made
+# through `libc` here — the I/O is `std::fs`, as it already was — and the crate is
+# already in this workspace's graph via `honmoon-cli`, pinned centrally with the
+# rest. Mirrors that crate's `cfg(unix)` gate.
+[target.'cfg(unix)'.dependencies]
+libc.workspace = true
+
 [dev-dependencies]
 divan = { version = "5.0.1", package = "codspeed-divan-compat" }
 
