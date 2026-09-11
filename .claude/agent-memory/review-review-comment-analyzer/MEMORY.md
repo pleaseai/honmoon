@@ -1,2 +1,3 @@
 - [engine PII-audit monotonicity gap](engine_pii_audit_monotonicity.md) — honmoon-core decide_pii_audit_only can be stricter than block mode (the guarantee is Allow-preservation only); the rustdoc states that caveat since PR #108
 - [postgres.rs sync-point protocol claims](postgres_sync_point_protocol_claims.md) — PR #112 barrier mechanics verified accurate; one real prose imprecision ("answered" vs sync-point), and the COPY-Sync claim flagged there turned out to be correct per the v3 spec
+- [postgres.rs flush-barrier claims (PR #147)](postgres_flush_barrier_pr147.md) — issue #113 flush counters verified accurate end-to-end; the one gap found (`# Invariant` block not cross-referencing flush_answers<=flushes) was fixed in-PR
