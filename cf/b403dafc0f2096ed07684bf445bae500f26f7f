@@ -1,0 +1,19 @@
+.claude/agent-memory/review-review-security-reviewer/hook-salt-security-model.md
+  s_c4758cf40f67ff::t_f21560e601ceda 46-59
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "cfb403dafc0f2096ed07684bf445bae500f26f7f",
+  "prompts": {},
+  "sessions": {
+    "s_c4758cf40f67ff": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "5eee7cb5-9641-48c8-be75-ad8db0bdac05",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
