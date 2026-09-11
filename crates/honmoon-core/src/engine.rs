@@ -166,7 +166,26 @@ pub fn matches_domain(pattern: &str, domain: &str) -> bool {
 
 /// Compile a rule condition. A condition that does not compile cannot match,
 /// which keeps a malformed rule from turning a deny into an allow.
+///
+/// A **blank** condition is declined without reaching the compiler, because
+/// `Program::compile` does not return on one — it panics (#151), which is the
+/// one way a malformed rule can do worse here than fail to match.
+/// [`Policy::from_yaml`](crate::Policy::from_yaml) already refuses to load
+/// such a policy, so this guard is not what an operator meets; it is what
+/// `decide` owes a [`Policy`](crate::Policy) built in code, which the public
+/// API accepts just the same. The two answers differ on purpose: the loader is
+/// reading the author's file and says so loudly, while here the rule declines
+/// like any other condition that cannot compile.
+///
+/// Blank is the only case it covers. Other malformed conditions panic in
+/// `Program::compile` too — `"&&"`, `")"`, an unterminated string literal, a
+/// comment with no expression after it — and those still reach it, so the
+/// `Err` arm below is not the whole failure mode. That gap is #154.
 fn compile_condition(condition: &str) -> Option<Program> {
+    if crate::is_blank_condition(condition) {
+        tracing::warn!("policy rule condition is blank; the rule cannot match");
+        return None;
+    }
     match Program::compile(condition) {
         Ok(program) => Some(program),
         Err(_) => {
@@ -223,7 +242,7 @@ fn eval_program(program: &Program, facts: &Facts, pii: Option<&PiiFacts>) -> boo
 
 #[cfg(test)]
 mod tests {
-    use crate::{Facts, HttpFacts, Policy, Verdict};
+    use crate::{Facts, HttpFacts, Policy, Rule, Verdict};
 
     fn domain_facts(domain: &str) -> Facts {
         Facts {
@@ -302,6 +321,35 @@ mod tests {
 
         facts.endpoint = Some("postgres-prod".into());
         assert_eq!(super::decide(&policy, &facts), Verdict::Deny);
+    }
+
+    /// #151: a rule carrying a blank condition must decline like any other
+    /// condition that cannot compile, not take the decision path down.
+    ///
+    /// `Policy::from_yaml` refuses to load such a policy at all, so this builds
+    /// the `Policy` in code — the shape `decide` still has to answer for, since
+    /// it accepts any `&Policy`.
+    #[test]
+    fn a_blank_condition_declines_instead_of_panicking() {
+        for condition in ["", " ", "\n", "\t\r\n"] {
+            let policy = Policy {
+                rules: vec![Rule {
+                    name: "blank".into(),
+                    endpoint: "*".into(),
+                    condition: condition.to_string(),
+                    verdict: Verdict::Allow,
+                }],
+                ..Default::default()
+            };
+
+            // The rule declines, so the egress default (deny) answers: the
+            // blank condition can neither match nor crash.
+            assert_eq!(
+                super::decide(&policy, &Facts::default()),
+                Verdict::Deny,
+                "condition {condition:?}"
+            );
+        }
     }
 
     #[test]
