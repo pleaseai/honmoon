@@ -357,27 +357,18 @@ fn gateway(args: GatewayArgs) -> Result<()> {
 
     // Wire redaction is process-scoped — the proxy sees connections, not agent
     // sessions — so it always keys on the configured context.
-    let machine_key = hook::machine_key();
-    // Read once per process and shared by wire redaction and the management hook
-    // endpoint, so one record at startup covers every placeholder this gateway
-    // mints. It goes in before the listeners bind: a gateway that cannot key its
-    // placeholders privately should say so in the log it is about to fill.
-    if let Err(e) = hook::record_machine_key_source(
-        &audit,
-        honmoon_core::RedactionTransport::Gateway,
-        machine_key.source(),
-    ) {
-        tracing::warn!(error = %e, "could not record the fallback redaction key in the audit log");
-    }
+    // Provenance outlives the bytes: the key is consumed into the hook salt
+    // below, but where it came from is recorded only once startup has succeeded.
+    let (machine_key, key_source) = hook::machine_key().into_parts();
     let wire_salt = honmoon_core::derive_hook_salt(
-        machine_key.as_slice(),
+        &machine_key,
         hook_salt_context.as_deref().unwrap_or(DEFAULT_SALT_CONTEXT),
     );
     let redaction = redact_secrets
         .then(|| RedactionState::new(wire_salt.clone()).with_signed_body(signed_body.into()));
     let state = GatewayState {
         policy: Arc::new(policy),
-        audit,
+        audit: Arc::clone(&audit),
         approvals: Arc::new(honmoon_proxy::approval::ApprovalRegistry::new()),
         pause_timeout: DEFAULT_PAUSE_TIMEOUT,
         ca: Arc::new(ca),
@@ -403,14 +394,24 @@ fn gateway(args: GatewayArgs) -> Result<()> {
     let mgmt_listener = TcpListener::bind(&mgmt_addr)
         .with_context(|| format!("binding management API {mgmt_addr}"))?;
 
-    let hook_salt = hook_salt_for(
-        hook_salt_context.as_deref(),
-        wire_salt,
-        machine_key.into_bytes(),
-    );
+    let hook_salt = hook_salt_for(hook_salt_context.as_deref(), wire_salt, machine_key);
     let app_state = AppState::with_hook_config(state.clone(), policy_yaml, hook_salt, hook_token);
 
     let runtime = tokio::runtime::Runtime::new().context("build tokio runtime")?;
+
+    // Recorded here, not at the key read: every listener is bound and the runtime
+    // exists, so this gateway is going to serve. Recording earlier would leave a
+    // durable "this process minted degraded placeholders" event behind a startup
+    // that died on a taken port having minted nothing at all. The key is read once
+    // per process and shared by wire redaction and the management hook endpoint,
+    // so this single record covers every placeholder the process goes on to mint.
+    if let Err(e) = hook::record_machine_key_source(
+        &audit,
+        honmoon_core::RedactionTransport::Gateway,
+        &key_source,
+    ) {
+        tracing::warn!(error = %e, "could not record the degraded redaction key in the audit log");
+    }
     runtime.block_on(async move {
         // Run both servers and surface unexpected proxy termination — otherwise
         // the process would keep serving the management API while egress

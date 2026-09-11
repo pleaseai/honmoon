@@ -273,6 +273,14 @@ key source, the transport, and why the persisted key was unavailable. Only
 degradations are written from the hook, never per-invocation verdicts, so a healthy
 host leaves the file untouched: an event appearing there at all is the signal.
 
+`key_source` says which guarantee was lost, because they are not the same failure:
+
+| `key_source` | Key | What is lost |
+| --- | --- | --- |
+| `persisted` | the random secret at `~/.honmoon/hook-salt` | nothing — not recorded |
+| `unpersisted` | random and private, but never reached disk | byte-stable placeholders across turns and transports (#20, #98). Still unforgeable |
+| `fallback` | the constant compiled into the binary | unforgeability, entirely — the key is published in this repository |
+
 **Where each event is visible.** The two transports reach different readers, because
 the gateway's management API serves its own in-process ring rather than the file:
 

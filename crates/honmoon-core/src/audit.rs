@@ -93,7 +93,13 @@ pub struct RedactionFacts {
 pub enum RedactionKeySource {
     /// The private random secret persisted at `~/.honmoon/hook-salt`.
     Persisted,
-    /// The public constant compiled into the binary.
+    /// A private random secret that never reached disk, so it is unforgeable
+    /// but lives and dies with one process: placeholders stop being stable
+    /// across turns and across transports (the property issue #20 exists for),
+    /// and no other process can reproduce them.
+    Unpersisted,
+    /// The public constant compiled into the binary. Unforgeability is not
+    /// weakened here but absent — see [`Decision::Degraded`].
     Fallback,
 }
 

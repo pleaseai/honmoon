@@ -156,6 +156,18 @@ const FALLBACK_MACHINE_KEY: &[u8] = b"honmoon-hook-v1-fallback-key";
 pub enum MachineKeySource {
     /// The private random secret persisted at `~/.honmoon/hook-salt`.
     Persisted,
+    /// A private random secret that could not be persisted, so it is this
+    /// process's alone. `reason` is why it did not reach disk.
+    ///
+    /// Unforgeability survives — the bytes are random and secret — but
+    /// byte-stability does not: the next invocation derives a different salt,
+    /// so one secret mints a different placeholder each turn and the prompt
+    /// cache prefix breaks (issue #20), while the other transport disagrees
+    /// outright (#98). Distinguished from [`Self::Fallback`] because the two
+    /// lose different guarantees, and from [`Self::Persisted`] because
+    /// labelling it that would be false — the whole point of recording
+    /// provenance is that the label is true.
+    Unpersisted { reason: String },
     /// [`FALLBACK_MACHINE_KEY`], because the persisted secret could not be read
     /// or created. `reason` is the loader's error chain.
     ///
@@ -188,15 +200,11 @@ impl MachineKey {
         &self.bytes
     }
 
-    /// Consume the key for a caller that must own the bytes (the gateway hands
-    /// them to the management endpoint, which derives per request).
-    pub fn into_bytes(self) -> Vec<u8> {
-        self.bytes
-    }
-
-    /// Where these bytes came from.
-    pub fn source(&self) -> &MachineKeySource {
-        &self.source
+    /// Split the key into its bytes and its provenance, for a caller that must
+    /// own both — the gateway hands the bytes to the management endpoint, which
+    /// derives per request, and keeps the provenance to record after startup.
+    pub fn into_parts(self) -> (Vec<u8>, MachineKeySource) {
+        (self.bytes, self.source)
     }
 }
 
@@ -216,9 +224,12 @@ pub fn machine_key() -> MachineKey {
 /// reachable from a test without touching `HOME`.
 fn machine_key_in(dir: &Path) -> MachineKey {
     match load_or_create_machine_salt(dir) {
-        Ok(bytes) => MachineKey {
+        Ok(LoadedSalt { bytes, unpersisted }) => MachineKey {
             bytes,
-            source: MachineKeySource::Persisted,
+            source: match unpersisted {
+                Some(reason) => MachineKeySource::Unpersisted { reason },
+                None => MachineKeySource::Persisted,
+            },
         },
         Err(e) => {
             eprintln!("honmoon hook: using fallback salt ({e:#})");
@@ -232,8 +243,11 @@ fn machine_key_in(dir: &Path) -> MachineKey {
     }
 }
 
-/// Record a fallback machine key in the audit log; a [`MachineKeySource::Persisted`]
-/// key records nothing, so presence in the log is itself the signal.
+/// Record a machine key that is not the persisted one; a
+/// [`MachineKeySource::Persisted`] key records nothing, so presence in the log
+/// is itself the signal. `key_source` says which guarantee was lost —
+/// unforgeability under [`MachineKeySource::Fallback`], byte-stability under
+/// [`MachineKeySource::Unpersisted`].
 ///
 /// The audit log is the one channel in this system a human reviews after the
 /// fact — a JSONL file the query API and the dashboard read — which is what the
@@ -252,8 +266,14 @@ pub fn record_machine_key_source(
     transport: honmoon_core::RedactionTransport,
     source: &MachineKeySource,
 ) -> std::io::Result<()> {
-    let MachineKeySource::Fallback { reason } = source else {
-        return Ok(());
+    let (key_source, reason) = match source {
+        MachineKeySource::Persisted => return Ok(()),
+        MachineKeySource::Unpersisted { reason } => {
+            (honmoon_core::RedactionKeySource::Unpersisted, reason)
+        }
+        MachineKeySource::Fallback { reason } => {
+            (honmoon_core::RedactionKeySource::Fallback, reason)
+        }
     };
     let (_, written) = audit.record_durable(honmoon_core::AuditDraft {
         decision: honmoon_core::Decision::Degraded,
@@ -264,7 +284,7 @@ pub fn record_machine_key_source(
         rule: Some("hook-salt-fallback".to_string()),
         facts: honmoon_core::FactsSummary {
             redaction: Some(honmoon_core::RedactionFacts {
-                key_source: honmoon_core::RedactionKeySource::Fallback,
+                key_source,
                 transport,
                 reason: reason.clone(),
             }),
@@ -275,7 +295,7 @@ pub fn record_machine_key_source(
     written
 }
 
-/// Report a fallback machine key to `audit_log`, the hook transport's only
+/// Report a degraded machine key to `audit_log`, the hook transport's only
 /// durable channel — it is a fresh process per invocation, so it holds no
 /// in-memory ring anyone could query.
 ///
@@ -302,7 +322,7 @@ fn audit_machine_key_source(audit_log: Option<&Path>, source: &MachineKeySource)
     });
     if let Err(e) = recorded {
         eprintln!(
-            "honmoon hook: could not record the fallback salt in {} ({e}) — reported to stderr only",
+            "honmoon hook: could not record the degraded salt in {} ({e}) — reported to stderr only",
             path.display()
         );
     }
@@ -324,7 +344,27 @@ fn audit_machine_key_source(audit_log: Option<&Path>, source: &MachineKeySource)
 /// (issue #20), with no empty-file window and no read-retry loop. A short/corrupt
 /// file or an unexpected read error is logged before regenerating; a
 /// genuinely-absent file (first run) is silent.
-fn load_or_create_machine_salt(dir: &Path) -> Result<Vec<u8>> {
+struct LoadedSalt {
+    bytes: Vec<u8>,
+    /// `Some(reason)` when these bytes never reached disk, so the next
+    /// invocation will derive a different salt. The loader reports it rather
+    /// than returning a bare success, because "we produced a key" and "the key
+    /// is the one every other process will read" are different facts and only
+    /// the second one keeps placeholders stable (issues #20, #98).
+    unpersisted: Option<String>,
+}
+
+impl LoadedSalt {
+    /// A salt that is on disk and will be read back by every other process.
+    fn persisted(bytes: Vec<u8>) -> Self {
+        Self {
+            bytes,
+            unpersisted: None,
+        }
+    }
+}
+
+fn load_or_create_machine_salt(dir: &Path) -> Result<LoadedSalt> {
     let path = dir.join("hook-salt");
     // `true` means the file exists but is unusable (must be force-overwritten);
     // `false` means it is absent (first run — create atomically to avoid a race).
@@ -333,7 +373,7 @@ fn load_or_create_machine_salt(dir: &Path) -> Result<Vec<u8>> {
             // Valid: adopt it, but correct its permissions in case an external
             // actor (backup restore, older build) left it looser than 0600.
             set_permissions_0600(&path);
-            return Ok(bytes);
+            return Ok(LoadedSalt::persisted(bytes));
         }
         Ok(bytes) => {
             eprintln!(
@@ -361,7 +401,7 @@ fn load_or_create_machine_salt(dir: &Path) -> Result<Vec<u8>> {
         // overwrite it. (A concurrent second corrupt-recovery is negligible — the
         // damaged state is already anomalous.)
         write_secret_file(&path, &salt).with_context(|| format!("writing {}", path.display()))?;
-        return Ok(salt);
+        return Ok(LoadedSalt::persisted(salt));
     }
 
     // First use: publish atomically so a concurrent first-run process cannot
@@ -390,7 +430,7 @@ fn load_or_create_machine_salt(dir: &Path) -> Result<Vec<u8>> {
 ///
 /// Falls back to the caller's own (unpersisted) `salt` only if the post-link read
 /// genuinely fails; the next invocation self-heals via the short-file path.
-fn publish_secret_atomically(dir: &Path, path: &Path, salt: &[u8]) -> Result<Vec<u8>> {
+fn publish_secret_atomically(dir: &Path, path: &Path, salt: &[u8]) -> Result<LoadedSalt> {
     // Unpredictable temp name (16 random bytes), created exclusively below: an
     // attacker cannot pre-plant a file/symlink at a path they cannot guess, and no
     // two racers (processes or threads) collide on it.
@@ -422,7 +462,7 @@ fn publish_secret_atomically(dir: &Path, path: &Path, salt: &[u8]) -> Result<Vec
     }
 
     match linked {
-        Ok(()) => Ok(salt.to_vec()),
+        Ok(()) => Ok(LoadedSalt::persisted(salt.to_vec())),
         Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
             // Lost the race: the target is already a complete salt (a publisher
             // links only after a full write), so a single read suffices. The two
@@ -433,21 +473,29 @@ fn publish_secret_atomically(dir: &Path, path: &Path, salt: &[u8]) -> Result<Vec
             // the top-level path, so without a diagnostic a transient recurrence
             // would leave no trace at all.
             match std::fs::read(path) {
-                Ok(bytes) if bytes.len() >= 16 => Ok(bytes),
+                Ok(bytes) if bytes.len() >= 16 => Ok(LoadedSalt::persisted(bytes)),
                 Ok(bytes) => {
-                    eprintln!(
-                        "honmoon hook: winner salt file {} is short/corrupt ({} bytes) after a lost publish race — using our own salt for this invocation",
+                    let reason = format!(
+                        "winner salt file {} is short/corrupt ({} bytes) after a lost publish race",
                         path.display(),
                         bytes.len()
                     );
-                    Ok(salt.to_vec())
+                    eprintln!("honmoon hook: {reason} — using our own salt for this invocation");
+                    Ok(LoadedSalt {
+                        bytes: salt.to_vec(),
+                        unpersisted: Some(reason),
+                    })
                 }
                 Err(e) => {
-                    eprintln!(
-                        "honmoon hook: unexpected error reading salt file {} after a lost publish race ({e}) — using our own salt for this invocation",
+                    let reason = format!(
+                        "unexpected error reading salt file {} after a lost publish race ({e})",
                         path.display()
                     );
-                    Ok(salt.to_vec())
+                    eprintln!("honmoon hook: {reason} — using our own salt for this invocation");
+                    Ok(LoadedSalt {
+                        bytes: salt.to_vec(),
+                        unpersisted: Some(reason),
+                    })
                 }
             }
         }
@@ -572,9 +620,17 @@ mod tests {
     fn machine_salt_persists_and_is_stable() {
         let tmp = TempDir::new("persist");
         let first = load_or_create_machine_salt(tmp.path()).expect("first load");
-        assert_eq!(first.len(), 32, "a freshly generated salt is 32 bytes");
+        assert_eq!(
+            first.bytes.len(),
+            32,
+            "a freshly generated salt is 32 bytes"
+        );
+        assert!(first.unpersisted.is_none(), "it reached disk");
         let second = load_or_create_machine_salt(tmp.path()).expect("second load");
-        assert_eq!(first, second, "second call reuses the persisted salt");
+        assert_eq!(
+            first.bytes, second.bytes,
+            "second call reuses the persisted salt"
+        );
     }
 
     #[test]
@@ -583,14 +639,17 @@ mod tests {
         std::fs::write(tmp.path().join("hook-salt"), b"tooshort").expect("seed corrupt file");
         let salt = load_or_create_machine_salt(tmp.path()).expect("regenerate");
         assert!(
-            salt.len() >= 16,
+            salt.bytes.len() >= 16,
             "a short file is discarded and regenerated"
         );
-        assert_ne!(salt, b"tooshort".to_vec(), "not the corrupt bytes");
+        assert_ne!(salt.bytes, b"tooshort".to_vec(), "not the corrupt bytes");
+        assert!(salt.unpersisted.is_none(), "the rewrite reached disk");
         // The regenerated salt is itself persisted and stable thereafter.
         assert_eq!(
-            salt,
-            load_or_create_machine_salt(tmp.path()).expect("reload")
+            salt.bytes,
+            load_or_create_machine_salt(tmp.path())
+                .expect("reload")
+                .bytes
         );
     }
 
@@ -619,7 +678,7 @@ mod tests {
             .expect("loosen perms");
         let salt = load_or_create_machine_salt(tmp.path()).expect("load");
         assert_eq!(
-            salt,
+            salt.bytes,
             vec![7u8; 32],
             "a valid existing salt is adopted as-is"
         );
@@ -649,8 +708,12 @@ mod tests {
         let adopted =
             publish_secret_atomically(tmp.path(), &path, &ours).expect("publish loses the race");
         assert_eq!(
-            adopted, winner,
+            adopted.bytes, winner,
             "loser adopts the winner's bytes, not its own"
+        );
+        assert!(
+            adopted.unpersisted.is_none(),
+            "the winner's bytes are on disk, so they are the persisted key"
         );
         assert_eq!(
             std::fs::read(&path).unwrap(),
@@ -675,8 +738,55 @@ mod tests {
         let adopted =
             publish_secret_atomically(tmp.path(), &path, &ours).expect("publish falls back");
         assert_eq!(
-            adopted, ours,
+            adopted.bytes, ours,
             "a short winner file forces fallback to our own salt"
+        );
+        // The bytes are random and secret, so they are unforgeable — but they are
+        // nobody else's, and reporting them as the persisted key would be a lie in
+        // the one field that exists to be trusted.
+        assert!(
+            adopted.unpersisted.is_some(),
+            "an unpersisted salt must not be reported as the persisted one"
+        );
+    }
+
+    #[test]
+    fn an_unpersisted_salt_is_audited_as_degraded_but_not_as_forgeable() {
+        // The loser-with-a-short-winner arm hands back a salt that never reached
+        // disk. It is random, so unforgeability holds; it is this process's alone,
+        // so byte-stability across turns (#20) and across transports (#98) does
+        // not. Both facts have to survive into the record: labelling it
+        // `persisted` would hide a real degradation, and labelling it `fallback`
+        // would claim placeholders are forgeable when they are not.
+        let tmp = TempDir::new("unpersisted");
+        std::fs::write(tmp.path().join("hook-salt"), b"tooshort").expect("seed short file");
+        // A short *existing* file takes the overwrite path, which does persist —
+        // so drive the lost-race arm directly, as its sibling test does.
+        let loaded =
+            publish_secret_atomically(tmp.path(), &tmp.path().join("hook-salt"), &[3u8; 32])
+                .expect("publish loses to a short winner");
+        let key = MachineKey {
+            bytes: loaded.bytes,
+            source: match loaded.unpersisted {
+                Some(reason) => MachineKeySource::Unpersisted { reason },
+                None => panic!("this arm must report the salt as unpersisted"),
+            },
+        };
+        assert_ne!(
+            key.as_slice(),
+            FALLBACK_MACHINE_KEY,
+            "it is a random secret, not the published constant"
+        );
+
+        let audit = honmoon_core::AuditLog::new(2);
+        record_machine_key_source(&audit, honmoon_core::RedactionTransport::Hook, &key.source)
+            .expect("an in-memory log has no sink to fail");
+        let event = audit.recent(1).remove(0);
+        assert_eq!(event.decision, honmoon_core::Decision::Degraded);
+        assert_eq!(
+            event.facts.redaction.expect("redaction facts").key_source,
+            honmoon_core::RedactionKeySource::Unpersisted,
+            "distinct from both persisted and fallback"
         );
     }
 
@@ -692,7 +802,14 @@ mod tests {
         let handles: Vec<_> = (0..THREADS)
             .map(|_| {
                 let dir = dir.clone();
-                std::thread::spawn(move || load_or_create_machine_salt(&dir).expect("load salt"))
+                std::thread::spawn(move || {
+                    let loaded = load_or_create_machine_salt(&dir).expect("load salt");
+                    assert!(
+                        loaded.unpersisted.is_none(),
+                        "the hard_link publish leaves every racer holding the persisted key"
+                    );
+                    loaded.bytes
+                })
             })
             .collect();
         let salts: Vec<Vec<u8>> = handles

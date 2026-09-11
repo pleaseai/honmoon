@@ -82,8 +82,13 @@ export interface K8sFacts {
  * produce and check it against a redacted transcript.
  */
 export interface RedactionFacts {
-  /** Whether placeholder minting was keyed by a private secret. */
-  key_source: 'persisted' | 'fallback'
+  /**
+   * Where the HMAC key came from. `unpersisted` is still private and therefore
+   * unforgeable, but never reached disk, so placeholders stop being stable
+   * across turns; `fallback` is the public compiled-in constant, where
+   * unforgeability is gone rather than weakened.
+   */
+  key_source: 'persisted' | 'unpersisted' | 'fallback'
   /**
    * `hook` is the `honmoon hook` subprocess; `gateway` covers wire redaction
    * and the management hook endpoint, which share one key read at startup.
