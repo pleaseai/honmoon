@@ -269,17 +269,48 @@ export HONMOON_AUDIT_LOG=honmoon-audit.jsonl   # the file `honmoon gateway --aud
 ```
 
 Each degraded derivation then appends one `"decision":"degraded"` event naming the
-key source, the transport, and why the persisted key was unavailable. Only
-degradations are written from the hook, never per-invocation verdicts, so a healthy
-host leaves the file untouched: an event appearing there at all is the signal.
+transport and what the loader observed. Only degradations are written from the hook,
+never per-invocation verdicts, so a healthy host leaves the file untouched: an event
+appearing there at all is the signal.
 
-`key_source` says which guarantee was lost, because they are not the same failure:
+Two independent things can be wrong with the key, so `rule` says which one this event
+is about:
+
+| `rule` | What went wrong |
+| --- | --- |
+| `hook-salt-fallback` | the key in use is **not** the persisted one; `key_source` says what that cost |
+| `hook-salt-exposed` | the key **is** the persisted one, but its file is readable by other local users and the loader could not restrict it to `0600` |
+
+On the fallback rule, `key_source` says which guarantee was lost, because they are not
+the same failure:
 
 | `key_source` | Key | What is lost |
 | --- | --- | --- |
-| `persisted` | the random secret at `~/.honmoon/hook-salt` | nothing — not recorded |
+| `persisted` | the random secret at `~/.honmoon/hook-salt` | nothing about the key's provenance — this value appears only under `hook-salt-exposed` |
 | `unpersisted` | random and private, but never reached disk | byte-stable placeholders across turns and transports (#20, #98). Still unforgeable |
 | `fallback` | the constant compiled into the binary | unforgeability, entirely — the key is published in this repository |
+
+**A salt anyone can read is a published key.** `~/.honmoon/hook-salt` is created `0600`,
+and the loader re-tightens it on every read in case a backup restore or an older build
+left it looser. Where that `chmod` cannot be applied — a root-owned `0644` file, a
+read-only mount — the salt is adopted anyway, because refusing to redact is worse; any
+local user who can read it can then mint the placeholder a guessed secret would produce
+in a given session and check it against a redacted transcript, exactly as under a
+`fallback` key. `hook-salt-exposed` is what makes that visible, and its `reason` names
+the mode observed:
+
+```
+salt file /home/a/.honmoon/hook-salt is readable beyond its owner (mode 0644) and could not be restricted to 0600
+```
+
+Note what that event does and does not attest. It is raised on the **mode read back
+after** the attempt, not on the `chmod` returning an error — a read-only mount fails the
+call on a file that is already `0600`, and a degraded event there would be a false alarm
+about a correctly-permissioned key. By the same token, its *absence* means the file was
+owner-only when the loader looked, not that it was never readable by anyone else: a
+`chmod` that succeeds closes the window going forward and says nothing about the one
+before it. If you find this event, rotate the salt — delete the file once its
+permissions can be fixed and let the next invocation mint a new one.
 
 **Where each event is visible.** The two transports reach different readers, because
 the gateway's management API (`/api/audit`, which the embedded dashboard polls) serves
@@ -289,6 +320,9 @@ its own in-process ring rather than the file:
 | --- | --- | --- | --- |
 | `honmoon hook` (its own process, per invocation) | yes | yes | **no** |
 | `honmoon gateway` (once at startup, covering the HTTP transport and wire redaction) | yes, when `--audit-log` is set | yes | yes — a `Degraded` pill |
+
+That table holds for both rules: each process records what its own key read observed, so
+an unrestrictable salt reaches the same surfaces a fallback key does.
 
 So a hook-side degradation is found by querying the log, not by watching the dashboard.
 

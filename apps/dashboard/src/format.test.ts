@@ -23,6 +23,22 @@ describe('describeFacts', () => {
     expect(describeFacts(both)).toBe('redaction key: unpersisted (gateway) — lost publish race')
   })
 
+  test('an exposed salt renders its reason, not just a healthy-looking key source', () => {
+    // `hook-salt-exposed` keeps `key_source: 'persisted'` — the bytes really did
+    // come from the salt file — so the line's first half reads healthy on its
+    // own and the reason is the only part carrying the bad news. It has to
+    // survive into what the operator sees (issue #141).
+    const exposed: FactsSummary = {
+      redaction: {
+        key_source: 'persisted',
+        transport: 'hook',
+        reason: 'salt file /home/a/.honmoon/hook-salt is readable beyond its owner (mode 0644) and could not be restricted to 0600',
+      },
+    }
+    expect(describeFacts(exposed)).toContain('mode 0644')
+    expect(describeFacts(exposed)).toContain('could not be restricted')
+  })
+
   test('falls back to request facts, then to a dash', () => {
     expect(describeFacts({ domain: 'evil.com' })).toBe('evil.com')
     expect(describeFacts({})).toBe('—')

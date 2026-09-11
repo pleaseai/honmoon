@@ -61,8 +61,16 @@ pub enum Decision {
     Degraded,
 }
 
-/// Why placeholder minting is or is not keyed by a private secret, recorded on a
+/// What the engine knows about the key behind placeholder minting, recorded on a
 /// [`Decision::Degraded`] event.
+///
+/// Two independent things can be wrong with that key, and the event's `rule`
+/// says which: `hook-salt-fallback` for a key that is not the persisted one
+/// (`key_source` then names what was lost), `hook-salt-exposed` for a key that
+/// *is* the persisted one but whose file is readable beyond its owner. The
+/// second keeps `key_source` at [`RedactionKeySource::Persisted`] deliberately —
+/// exposure and provenance are different axes, and the bytes really did come
+/// from `~/.honmoon/hook-salt` (issue #141).
 ///
 /// Placeholders are `HMAC(salt, secret)`, and the salt is derived from a machine
 /// key the transports read from disk. When that key cannot be read or created the
@@ -78,7 +86,8 @@ pub struct RedactionFacts {
     pub key_source: RedactionKeySource,
     /// Which transport derived it.
     pub transport: RedactionTransport,
-    /// Why the persisted key was unavailable, as the loader reported it.
+    /// What the loader observed, in its own words: why the persisted key was
+    /// unavailable, or the mode a salt file it could not restrict was left with.
     pub reason: String,
 }
 
@@ -91,9 +100,13 @@ pub struct RedactionFacts {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum RedactionKeySource {
-    /// The random secret persisted at `~/.honmoon/hook-salt`. Says where the
-    /// bytes came from, not whether the file is readable by anyone else
-    /// (issue #141).
+    /// The random secret persisted at `~/.honmoon/hook-salt`.
+    ///
+    /// Says where the bytes came from, not who else can read them — that is the
+    /// event's `rule`, which is `hook-salt-exposed` when the loader found the
+    /// file readable beyond its owner and could not restrict it. So this value
+    /// does appear on a degraded event, and an event carrying it is about the
+    /// file's permissions rather than the key's provenance.
     Persisted,
     /// A private random secret that never reached disk, so it is unforgeable
     /// but lives and dies with one process: placeholders stop being stable
