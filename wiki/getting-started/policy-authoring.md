@@ -84,7 +84,7 @@ case-insensitive on both sides ([engine.rs:56-64](https://github.com/pleaseai/ho
 The `*.suffix` form matches the bare `suffix` **and** any `*.suffix` subdomain
 ([engine.rs:59-60](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/engine.rs#L59-L60)).
 Within the egress block, **deny wins over allow**, and an unmatched domain falls through to
-`egress.default` ([engine.rs:30-45](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/engine.rs#L30-L45)):
+`egress.default` ([engine.rs:46-61](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/engine.rs#L46-L61)):
 
 ```mermaid
 flowchart TD
@@ -178,7 +178,7 @@ error** — the policy is rejected outright
 
 Each rule binds a [CEL](https://github.com/google/cel-spec) condition to a named `endpoint`.
 Rules are evaluated **in order**; the first rule whose endpoint matches and whose condition
-evaluates to `true` wins ([engine.rs:19-28](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/engine.rs#L19-L28)).
+evaluates to `true` wins ([engine.rs:35-44](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/engine.rs#L35-L44)).
 If no rule matches, the egress block decides.
 
 | Rule field | Meaning | Example | Source |
@@ -327,7 +327,7 @@ sequenceDiagram
 
 This behavior is locked by tests: `unknown_fact_reference_does_not_match` proves a condition
 referencing an unpopulated `sql` fact falls through to the egress default
-([engine.rs:372-380](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/engine.rs#L372-L380)).
+([engine.rs:464-472](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/engine.rs#L464-L472)).
 
 ## Validating a policy
 
