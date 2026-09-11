@@ -2,4 +2,4 @@
 - [engine.rs PII attribution](project_engine_pii_attribution.md) — decide_pii_audit_only design verified sound; only gap is eval_condition's unlogged execution errors.
 - [signed_body.rs SigV4 narrowing](project_signed_body_narrowing.md) — PR #120's aws_sigv4_signs_body narrowing reviewed clean; branch matrix to recheck if touched again.
 - [Trailer preservation body.rs](project_trailer_preservation_body_rs.md) — PR #130: dead-code frame-kind drop + HeaderMap::extend overwrite-not-merge edge case, both low risk today.
-- [hook salt audit visibility #131](project_hook_salt_audit_visibility_131.md) — new Degraded audit path is sound at open-failure; post-open sink-write failure still silent via ERROR-filtered tracing::warn! to discarded hook stderr.
+- [hook salt audit visibility #131](project_hook_salt_audit_visibility_131.md) — new Degraded audit path is sound at open-failure; the post-open sink-write silence was fixed before merge by record_durable — tracing::warn! is not a reporting channel in a short-lived subprocess.

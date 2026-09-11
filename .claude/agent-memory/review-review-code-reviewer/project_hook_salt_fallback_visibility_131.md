@@ -1,6 +1,6 @@
 ---
 name: project-hook-salt-fallback-visibility-131
-description: PR #137 (issue #131) — reviewed clean; documents the Overview.tsx decision-mix gap left by adding Decision::Degraded
+description: PR #137 (issue #131) — reviewed clean; the Overview.tsx decision-mix gap found mid-review was closed before merge
 metadata:
   type: project
 ---
@@ -15,13 +15,18 @@ types (`packages/policy/src/index.ts`, `packages/api/src/audit.ts`) + dashboard 
 packages/api/src/audit.test.ts` — all clean. No compile errors, no logic errors, no guideline
 violations found.
 
-**Gap worth flagging on a future touch (not this PR's scope)**: `apps/dashboard/src/components/
-Overview.tsx`'s `DecisionMix` widget computes `total = allowed + denied + paused` and does not
-include `degraded` in that breakdown (it does show up fine in `LatestDecisions` via
-`DecisionBadge`, and in `?decision=degraded` audit queries). Not a bug — the widget is
-self-consistent — but a degraded event is invisible from the "Decision mix" percentages on the
-Overview page. Flag only if a future PR's stated goal is dashboard-wide degradation visibility;
-this PR's stated scope was "record it in the audit log," which it does.
+**Found mid-review and closed before merge — do not re-report it.** An earlier round of this
+review flagged that `apps/dashboard/src/components/Overview.tsx`'s `DecisionMix` widget computed
+`total = allowed + denied + paused` and omitted `degraded`. The merged PR reconciled it:
+`Overview.tsx:301` now totals `allowed + denied + paused + degraded` and `:306` renders a
+"Degraded guarantees" row. Verify against the file before treating any part of this note as an
+open gap.
+
+**The durable lesson is the reconciliation, not the gap.** Adding a `Decision` variant touches
+more than the badge that renders one event: any widget that sums decisions into a total has to
+take the new variant too, or the percentages silently exclude it while every individual event
+still displays correctly. `DecisionBadge` looked complete on its own, which is exactly why the
+omission survived to review — check the aggregates, not just the per-event rendering.
 
 See also [[project_hook_salt_parity_98]] for the earlier PR #122 that this one builds on
 (`machine_key()` return type changed from `Vec<u8>` to `MachineKey { bytes, source }`).

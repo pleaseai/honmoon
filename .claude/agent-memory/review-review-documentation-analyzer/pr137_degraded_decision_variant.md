@@ -13,14 +13,13 @@ dashboard `DecisionBadge`/`format.ts`/CSS, `packages/api/src/audit.ts` DECISIONS
 timestamp-ordering/process-local-ids claim in `packages/api/src/audit.ts` (pre-existing, still
 correct) — 0 findings across the touched files.
 
-The diff did NOT update two wiki docs that enumerate the `Decision` values or describe
-`--audit-log` semantics, both now stale:
-- `wiki/deep-dive/control-plane.md` — `Decision (allowed/denied/paused/approved/rejected)` type
-  table is missing `degraded`.
-- `wiki/deep-dive/egress-gateway.md` — gateway flag table describes `--audit-log` as "Append
-  every verdict to a JSONL file"; the gateway now also writes non-verdict `Degraded` events to
-  the same file via `hook::record_machine_key_source` at startup.
-- `docs/roadmap.md` line 101 similarly says "Local audit log (every verdict, structured)".
+An earlier round of this review found three docs left stale by the diff. **All three were
+updated before merge — they are correct now, so do not re-report them:**
+- `wiki/deep-dive/control-plane.md:165` — the `Decision` type table now lists `degraded`, and
+  `RedactionFacts` is documented alongside it.
+- `wiki/deep-dive/egress-gateway.md:233` — `--audit-log` now reads "Append every verdict — and
+  any recorded security degradation — to a JSONL file".
+- `docs/roadmap.md:101` — now "every verdict plus recorded security degradations".
 
 **Why:** these are exactly the "Decision::Degraded makes existing docs inaccurate" pattern the
 task brief calls out by name — good calibration example for future PRs touching `Decision`/audit

@@ -1,6 +1,6 @@
 ---
 name: main-rs-gateway-untestable
-description: crates/honmoon-cli/src/main.rs::gateway() binds real sockets and blocks forever, so it has no unit test — wiring calls made directly inside it (e.g. record_machine_key_source with GATEWAY_TRANSPORT) are never exercised even when the helper functions they call are well-tested elsewhere.
+description: crates/honmoon-cli/src/main.rs::gateway() binds real sockets and blocks forever, so it has no unit test — wiring calls made directly inside it (e.g. record_machine_key_source with RedactionTransport::Gateway) are never exercised even when the helper functions they call are well-tested elsewhere.
 metadata:
   type: project
 ---
@@ -14,11 +14,13 @@ then call them from `gateway()`.
 
 When a new call is added directly inside `gateway()` without such an
 extraction — e.g. issue #131's
-`hook::record_machine_key_source(&audit, hook::GATEWAY_TRANSPORT, &machine_key.source)`
-— it is invisible to the test suite: a typo swapping `GATEWAY_TRANSPORT` for
-`HOOK_TRANSPORT` there would not fail anything, even though
+`hook::record_machine_key_source(&audit, honmoon_core::RedactionTransport::Gateway, &key_source)`
+— it is invisible to the test suite: a typo swapping `RedactionTransport::Gateway` for
+`RedactionTransport::Hook` there would not fail anything, even though
 `record_machine_key_source` itself is well-tested (from `hook.rs`, with a
-different transport constant).
+different transport). `key_source` comes from `MachineKey::into_parts()`, which
+returns `(Vec<u8>, MachineKeySource)` — the fields are private, so there is no
+`machine_key.source` to read.
 
 **How to apply:** when reviewing a PR that adds a call inside `gateway()`,
 check whether the call is a bare wiring statement (untestable in place) vs.
