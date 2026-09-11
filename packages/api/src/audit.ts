@@ -20,7 +20,7 @@ export interface AuditQuery {
   domain?: string
 }
 
-const DECISIONS: Decision[] = ['allowed', 'denied', 'paused', 'approved', 'rejected']
+const DECISIONS: Decision[] = ['allowed', 'denied', 'paused', 'approved', 'rejected', 'degraded']
 
 /** Parse a JSONL audit log, skipping blank or malformed lines. */
 export function parseJsonl(text: string): AuditEvent[] {

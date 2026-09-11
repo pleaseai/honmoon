@@ -2,6 +2,12 @@ import type { FactsSummary } from '@honmoon/policy'
 
 /** One-line description of the request a decision was made on. */
 export function describeFacts(f: FactsSummary): string {
+  // A degraded event describes the engine, not a request, so it is checked
+  // first: it has none of the protocol facts the branches below look for and
+  // would otherwise render as an unexplained dash.
+  if (f.redaction) {
+    return `redaction key: ${f.redaction.key_source} (${f.redaction.transport}) — ${f.redaction.reason}`
+  }
   if (f.sql && f.sql.verb) {
     return `SQL ${f.sql.verb} ${f.sql.table ?? ''}`.trim()
   }

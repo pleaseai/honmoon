@@ -215,6 +215,13 @@ body {
     background: var(--deny-soft);
   }
 
+  /* A guarantee the gateway is running without — a warning, not a denial:
+     nothing was blocked, which is exactly what makes it easy to miss. */
+  .verdict-degraded {
+    color: var(--warn-ink);
+    background: var(--warn-soft);
+  }
+
   /* Pill actions. Exactly one `.action-approve` per action group. */
   .action {
     display: inline-flex;

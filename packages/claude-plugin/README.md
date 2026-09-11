@@ -254,8 +254,29 @@ produce in a given session and check it against a redacted transcript, so redact
 stops hiding which secrets a transcript contains. Note the direction — falling back
 *improves* parity rather than breaking it, because two processes that both fail share
 the same public constant and agree, so the parity above holds while the property it
-is meant to protect is gone. Watch for that stderr line; #131 tracks whether failing
-open is the right default here.
+is meant to protect is gone. Failing open here is deliberate — a hook that hard-fails
+breaks the agent it runs inside — and #131 tracks whether that is the right default
+for this key specifically.
+
+**Make that degradation visible.** Do not rely on the stderr line: a hook runs
+non-interactively, so it usually reaches nobody. Point the hooks at the audit log
+instead, by exporting `HONMOON_AUDIT_LOG` in the agent's environment (the plugin's
+dispatcher runs `honmoon hook` with no arguments, so the flag form
+`honmoon hook --audit-log <file>` is only useful when invoking it by hand):
+
+```sh
+export HONMOON_AUDIT_LOG=honmoon-audit.jsonl   # the file `honmoon gateway --audit-log` writes
+```
+
+Each degraded derivation then appends one `"decision":"degraded"` event naming the
+key source, the transport, and why the persisted key was unavailable — queryable as
+`GET /api/audit?decision=degraded` and shown on the dashboard as a `Degraded` pill.
+Only degradations are written from the hook, never per-invocation verdicts, so a
+healthy host leaves the file untouched: an event appearing there at all is the
+signal. The gateway records the same event once at startup when *its* key falls
+back, covering the HTTP transport and wire redaction. Pointing both at one file is
+intended — each process appends whole lines, and the query layer orders by timestamp
+because ids are process-local.
 
 **Getting one key onto both sides.** Co-located processes sharing a `HOME` read one
 file and need nothing. Anywhere else — separate hosts, containers, different users
