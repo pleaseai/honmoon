@@ -231,8 +231,9 @@ issue #135). The same rewrite strips the body-digest headers (`Digest`, `Content
 `Transfer-Encoding`, and carries the client's other headers through — with one exception that is
 not the rewrite's: whenever `--redact-secrets` is on, the proxy replaces `Accept-Encoding` with
 `identity` on every forwarded request, unless the request's authentication signs headers or binds
-the body (the detokenization note above). **None of those cases inspects anything** — which is the
-only part this contract covers.
+the body (the detokenization note above). **None of those cases scans a header or trailer value** —
+which is the only part this contract covers. The rewrite is of course *driven* by body inspection;
+what never happens is a detector running over a header or a trailer.
 
 This whole section is about **intercepted** requests. Traffic that takes the raw tunnel — SOCKS5
 to a non-PostgreSQL destination, or CONNECT without `--tls-intercept` — is gated on `domain` and

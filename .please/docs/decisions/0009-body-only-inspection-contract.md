@@ -143,19 +143,23 @@ trailer — the `warn` is the only thing that marks them.
 
 **Two of the fail-open cases are redaction-only, and those bodies do reach the scanner** — do not
 read the fail-open list as a list of uninspectable requests. A partial upload carrying
-`Content-Range` is scanned and policy-evaluated like any other body: detection and
-`decide_explained` run in `inspect_body` before `forwarded_request` is reached, and the
-`Content-Range` check there skips only the rewrite. An undecodable `Content-Encoding` falls back to
-scanning the raw bytes, deliberately, so a plaintext body cannot evade the scan by claiming to be
-compressed — but that fallback only catches the mislabelled-plaintext case: genuinely compressed
-bytes fail `utf8_prefix` like any other binary body and still yield no finding. Where the scan does
-find something, a `pii.count > 0 -> deny` rule blocks it as usual. What fails open in both is the
-wire rewrite, not the inspection.
+`Content-Range` is not exempt from inspection: `decide_explained` runs on it in `inspect_body`
+before `forwarded_request` is reached, and the `Content-Range` check there skips only the rewrite.
+Detector coverage is then exactly what the three conditions above allow — an over-cap or non-UTF-8
+partial upload yields no findings, like any other body of that shape. An undecodable
+`Content-Encoding` falls back to scanning the raw bytes, deliberately, so a plaintext body cannot
+evade the scan by claiming to be compressed — but that fallback only catches the
+mislabelled-plaintext case: genuinely compressed bytes fail `utf8_prefix` like any other binary
+body and still yield no finding. Where the scan does find something, a `pii.count > 0 -> deny` rule
+acts on it as usual — enforced under `--pii-mode block`, and under the **default** `detect` mode
+recorded as the would-be verdict and forwarded (`decide_pii_audit_only`). What fails open in both
+is the wire rewrite, not the inspection.
 
 **Only the middle column is this ADR's contract.** The right-hand column is transport behaviour that
 varies with the redaction path and the upstream protocol, and it presupposes `--redact-secrets`:
-without it no rewrite happens, so nothing is stripped or re-framed and a trailer rides through on
-every branch. It is recorded so that nobody reads the middle column as a delivery guarantee, which
+without it no rewrite happens, so nothing is stripped or re-framed and a trailer survives every
+branch of `inspect_body` — still subject, as everywhere in the right-hand column, to whether the
+upstream leg's framing carries trailers at all (#136). It is recorded so that nobody reads the middle column as a delivery guarantee, which
 is the error this document kept making about itself.
 
 **And `pii.count == 0` does not mean "no secrets here".** `eval_program` always binds `pii` with

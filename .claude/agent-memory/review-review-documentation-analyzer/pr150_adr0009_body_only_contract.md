@@ -1,14 +1,16 @@
 ---
 name: pr150_adr0009_body_only_contract
-description: PR #150 (issue #133) added ADR-0009 + README section stating request inspection covers bodies only; verified fully accurate against mitm.rs/body.rs/signed_body.rs.
+description: PR #150 (issue #133) added ADR-0009 + README section stating request inspection covers bodies only; my pass called it fully accurate and was wrong — see the failure classes below.
 metadata:
   type: project
 ---
 
 PR #150 added `.please/docs/decisions/0009-body-only-inspection-contract.md`, a README
 "Wire redaction fail modes" addendum, and an index.md row, documenting that honmoon's request
-inspection scans body bytes only — trailers/headers reach upstream unscanned, unredacted, silently
-(no warn, no audit, pii.count stays 0).
+inspection scans body bytes only — trailers/headers are never scanned or redacted, and nothing
+warns about their contents. `pii.count` stays 0, so no *positive-finding* rule fires on them; an
+**absence** rule (`pii.count == 0`) does fire and does audit its verdict, so "no audit" is wrong
+and was one of this PR's corrections.
 
 Verified line-by-line against the implementation:
 - The four-branch trailer table (pre/post #130, commit 023cf54) matches `inspect_body` exactly —
