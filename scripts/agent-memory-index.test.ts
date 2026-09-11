@@ -146,6 +146,17 @@ metadata:
     }
   })
 
+  // YAML 1.1 resolves numbers 1.2's core schema leaves as text: every digit run
+  // admits `_` as a separator, and a colon-separated value is base 60, so a 1.1
+  // reader makes `1_000` the number 1000 and `12:00` the number 720. Reported
+  // for the reason `1e3` is — the two readers disagree about the same bytes.
+  test('reports the YAML 1.1 number spellings 1.2 leaves as text', () => {
+    for (const value of ['1_000', '0xDE_AD', '0b1_01', '01_7', '+1_0', '100_', '1_0.5', '12:00', '190:20:30', '12:00.5', '2026-09-12', '2026-9-1t10:00:00.5-05:00']) {
+      const text = note('n', 'placeholder').replace('description: placeholder', `description: ${value}`)
+      expect(parseFrontmatter(text).problems).toEqual([expect.stringContaining('rather than text')])
+    }
+  })
+
   // Only a whole plain value resolves that way: prose that merely starts with
   // one of those words is text, and a quoted one really is the string.
   // A flow sequence or mapping is valid YAML and is not a summary.

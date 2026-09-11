@@ -172,6 +172,33 @@ function unescapeDoubleQuoted(body: string, onInvalid: (escape: string) => void)
  * has to be quoted to stay valid YAML, so both forms must round-trip.
  */
 /**
+ * YAML 1.1's `int` and `float` resolvers, transcribed from its type registry.
+ *
+ * They are wider than 1.2's core schema in two ways worth naming: every digit
+ * run admits `_` as a separator, and a colon-separated value is base 60. So a
+ * 1.1 reader makes `1_000` the number 1000 and `12:00` the number 720 where a
+ * 1.2 one leaves both as text — the same disagreement `1e3` has, in the other
+ * direction, and the same reason to report rather than pick a side.
+ */
+const YAML_11_INT = String.raw`[-+]?0b[01_]+|[-+]?0[0-7_]+|[-+]?(?:0|[1-9][\d_]*)|[-+]?0x[\da-f_]+|[-+]?[1-9][\d_]*(?::[0-5]?\d)+`
+const YAML_11_FLOAT = String.raw`[-+]?\d[\d_]*\.[\d_]*(?:e[-+]\d+)?|\.\d[\d_]*(?:e[-+]\d+)?|[-+]?\d[\d_]*(?::[0-5]?\d)+\.[\d_]*|[-+]?\.(?:inf|nan)`
+
+/**
+ * YAML 1.1's `timestamp` resolver, which 1.2's core schema does not carry.
+ *
+ * A description that is a bare date is a `Date` to a 1.1 reader and text to a
+ * 1.2 one, so it is ambiguous for the same reason the numbers above are.
+ */
+const YAML_11_TIMESTAMP = String.raw`\d{4}-\d{2}-\d{2}|\d{4}-\d{1,2}-\d{1,2}(?:t|[ \t]+)\d{1,2}:\d{2}:\d{2}(?:\.\d*)?(?:[ \t]*(?:z|[-+]\d{1,2}(?::\d{2})?))?`
+
+/**
+ * The numbers 1.2's core schema resolves and 1.1 does not: an exponent needs
+ * neither a fraction nor a signed power, a leading zero does not mean octal,
+ * and octal is written with an `0o` prefix instead.
+ */
+const YAML_12_NUMBER = String.raw`[-+]?0o[0-7]+|[-+]?\d+(?:\.\d*)?(?:e[-+]?\d+)?|[-+]?\.\d+(?:e[-+]?\d+)?`
+
+/**
  * A plain scalar YAML resolves to something that is not a string.
  *
  * `description: null` is not the word "null", it is the *absence* of a value,
@@ -180,7 +207,13 @@ function unescapeDoubleQuoted(body: string, onInvalid: (escape: string) => void)
  * value matches — a description reading `42 ways to fail` is text and stays
  * text — and only a plain one, since `"null"` is genuinely the string.
  */
-const NON_STRING_SCALAR = /^(?:~|null|true|false|yes|no|on|off|[-+]?\d+(?:e[-+]?\d+)?|0x[\da-f]+|0o[0-7]+|[-+]?(?:\d+\.\d*|\.\d+)(?:e[-+]?\d+)?|[-+]?\.(?:inf|nan))$/i
+const NON_STRING_SCALAR = new RegExp(`^(?:${[
+  String.raw`~|null|true|false|yes|no|on|off`,
+  YAML_11_INT,
+  YAML_11_FLOAT,
+  YAML_12_NUMBER,
+  YAML_11_TIMESTAMP,
+].join('|')})$`, 'i')
 
 /** A leading YAML node indicator, which makes the rest a decoration, not text. */
 const NODE_INDICATOR = /^([&*!])/
