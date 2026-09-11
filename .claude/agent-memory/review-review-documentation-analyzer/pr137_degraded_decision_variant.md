@@ -1,6 +1,6 @@
 ---
 name: pr137_degraded_decision_variant
-description: PR #137 (issue #131) added Decision::Degraded; README/rustdoc/TS types updated correctly but wiki docs describing the Decision enum or "every verdict" audit semantics went stale
+description: PR #137 (issue #131) added Decision::Degraded; README/rustdoc/TS were accurate, and the wiki/roadmap staleness found mid-review was fixed before merge
 metadata:
   type: project
 ---

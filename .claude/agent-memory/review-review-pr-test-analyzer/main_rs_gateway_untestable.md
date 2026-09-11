@@ -16,11 +16,14 @@ When a new call is added directly inside `gateway()` without such an
 extraction — e.g. issue #131's
 `hook::record_machine_key_source(&audit, honmoon_core::RedactionTransport::Gateway, &key_source)`
 — it is invisible to the test suite: a typo swapping `RedactionTransport::Gateway` for
-`RedactionTransport::Hook` there would not fail anything, even though
-`record_machine_key_source` itself is well-tested (from `hook.rs`, with a
-different transport). `key_source` comes from `MachineKey::into_parts()`, which
-returns `(Vec<u8>, MachineKeySource)` — the fields are private, so there is no
-`machine_key.source` to read.
+`RedactionTransport::Hook` there would not fail anything. Note precisely what is
+and is not covered: `record_machine_key_source` is directly tested with *both*
+transports — `the_gateway_transport_is_recorded_distinctly_from_the_hook`
+(`hook.rs:971`) pins the Gateway value itself — but no test reaches the call
+inside `gateway()`, so none of them can catch a wrong argument passed there. The
+gap is the call site, not the helper's transport coverage. `key_source` comes
+from `MachineKey::into_parts()`, which returns `(Vec<u8>, MachineKeySource)` —
+the fields are private, so there is no `machine_key.source` to read.
 
 **How to apply:** when reviewing a PR that adds a call inside `gateway()`,
 check whether the call is a bare wiring statement (untestable in place) vs.
