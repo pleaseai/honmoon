@@ -243,8 +243,17 @@ const NON_STRING_SCALAR = new RegExp(`^(?:${[
 ].join('|')})$`, 'i')
 
 /** A leading YAML node indicator, which makes the rest a decoration, not text. */
-const NODE_INDICATOR = /^([&*!])/
-const INDICATOR_NAMES: Record<string, string> = { '&': 'anchor', '*': 'alias', '!': 'tag' }
+const NODE_INDICATOR = /^([&*!]|[?-](?=[ \t]|$))/
+const INDICATOR_NAMES: Record<string, string> = {
+  '&': 'anchor',
+  '*': 'alias',
+  '!': 'tag',
+  // Only when a space or the line end follows: `-5` is a number and `-summary`
+  // is a word, while `- summary` opens a sequence entry and `? summary` a
+  // mapping key — neither of which a value may be.
+  '?': 'mapping key',
+  '-': 'sequence entry',
+}
 
 /**
  * A whole double- or single-quoted scalar, with the body captured.
@@ -331,6 +340,8 @@ export function parseFrontmatter(text: string): Frontmatter {
   // keep: both readers refuse a block whose lines fall short of it.
   const blockIndent = new Map<string, number>()
   const underIndented = new Set<string>()
+  const tabIndented = new Set<string>()
+  const badHeader = new Set<string>()
   let key: string | null = null
 
   for (const line of block[1].split(/\r?\n/)) {
@@ -359,7 +370,14 @@ export function parseFrontmatter(text: string): Frontmatter {
         // carry, so start empty and let the continuation branch fill it. Both
         // `>` and `|` end up folded onto one line, which is all an index line
         // can be.
+        // `>` and `|` always open a block header, so a value starting with one
+        // that is not a *valid* header carries text where YAML allows only an
+        // indicator or a comment — `> summary` and `>summary` alike are refused
+        // by both readers. Caught here, where whether it parsed is already known.
         const header = BLOCK_SCALAR.exec(value)
+        if (!header && /^[|>]/.test(value)) {
+          badHeader.add(key)
+        }
         if (header) {
           scalars[key] = ''
           blockScalars.add(key)
@@ -382,6 +400,14 @@ export function parseFrontmatter(text: string): Frontmatter {
     // inside a folded scalar it is literal text, and these descriptions are full
     // of issue references that a comment-stripping parser would eat.
     if (key && /^[ \t]/.test(line) && line.trim() !== '') {
+      // A tab cannot provide YAML indentation anywhere — not before a plain
+      // continuation and not inside a block scalar — so a tab-indented line is
+      // a document neither reader will load, and folding it silently published
+      // an index entry for a note nothing can read.
+      if (/^[ \t]*\t/.test(line)) {
+        tabIndented.add(key)
+        continue
+      }
       const required = blockIndent.get(key)
       if (required !== undefined && (/^ */.exec(line)?.[0].length ?? 0) < required) {
         underIndented.add(key)
@@ -427,6 +453,14 @@ export function parseFrontmatter(text: string): Frontmatter {
       continue
     }
     const raw = value.trim()
+
+    if (tabIndented.has(name)) {
+      problems.push(`\`${name}:\` is continued by a tab-indented line, and YAML does not accept a tab as indentation — indent with spaces`)
+    }
+
+    if (badHeader.has(name)) {
+      problems.push(`\`${name}:\` opens a block scalar whose header carries text, where YAML allows only an indentation or chomping indicator and a comment — move the text to the indented line below`)
+    }
 
     if (underIndented.has(name)) {
       problems.push(`\`${name}:\` opens a block scalar with an explicit indentation indicator its content does not meet, which YAML refuses to load — indent the content to match, or drop the indicator`)

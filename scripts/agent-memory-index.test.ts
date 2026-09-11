@@ -235,6 +235,57 @@ metadata:
     expect(parseFrontmatter(text)).toMatchObject({ scalars: { description: 'done' }, problems: [] })
   })
 
+  // A tab cannot provide YAML indentation at all, so a tab-continued scalar is
+  // a document neither reader will load — and this one folded it silently.
+  test('reports a tab used as indentation', () => {
+    const text = `---
+name: a-note
+description: first
+\tsecond
+metadata:
+  type: project
+---
+`
+    expect(parseFrontmatter(text).problems).toEqual([expect.stringContaining('tab')])
+  })
+
+  // `-` and `?` open a sequence entry and a mapping key, and `>`/`|` always
+  // open a block header — none of which may carry text on the same line. Both
+  // readers refuse every one of these.
+  test('reports a plain description opening with a YAML indicator', () => {
+    for (const value of ['- summary', '? summary', '> summary', '| summary', '>summary', '-']) {
+      const text = note('a-note', 'placeholder').replace('description: placeholder', `description: ${value}`)
+      expect(parseFrontmatter(text).problems).not.toEqual([])
+    }
+  })
+
+  // ...and none of these is an indicator: the character is either part of a
+  // number, part of a word, or simply not at the start.
+  test('leaves a lookalike alone', () => {
+    for (const value of ['-summary', 'a - b', 'a > b', '3 > 2 is true']) {
+      const text = note('a-note', 'placeholder').replace('description: placeholder', `description: ${value}`)
+      expect(parseFrontmatter(text).problems).toEqual([])
+    }
+
+    // `-5` is reported, but as the number it is — not as a sequence entry.
+    const negative = note('a-note', 'placeholder').replace('description: placeholder', 'description: -5')
+    expect(parseFrontmatter(negative).problems).toEqual([expect.stringContaining('non-string')])
+  })
+
+  test('still accepts every valid block header', () => {
+    for (const header of ['|', '>', '|2', '>-', '|+', '> # note']) {
+      const text = `---
+name: a-note
+description: ${header}
+  content here
+metadata:
+  type: project
+---
+`
+      expect(parseFrontmatter(text).problems).toEqual([])
+    }
+  })
+
   // A block header may carry an explicit indentation indicator, and then the
   // content must actually meet it: both readers refuse `|2` over a line with
   // one space. The continuation branch accepted any indentation at all.
