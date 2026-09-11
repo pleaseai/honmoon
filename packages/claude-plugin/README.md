@@ -387,18 +387,21 @@ it — reaches the same surfaces a fallback key does.
 
 So a hook-side degradation is found by querying the log, not by watching the dashboard.
 
-For `hook-salt-fallback` and `hook-salt-exposed` the condition still reaches the dashboard
-on any host that runs a gateway, because the trigger is shared and it persists: both
-processes read the same `~/.honmoon/hook-salt`, so a key the hook cannot persist or a mode
-it cannot restrict is still that way when the gateway starts, and the gateway records its
-own event into the ring the dashboard polls.
+Where both processes read the *same* `~/.honmoon/hook-salt` — the co-located deployment,
+not the cases under "different key bytes break parity" above — `hook-salt-fallback` and
+`hook-salt-exposed` do still reach the dashboard on any host that runs a gateway, because
+their triggers persist: a key the hook cannot persist, or a mode it cannot restrict, is
+still that way when the gateway starts, so the gateway records its own event into the ring
+the dashboard polls. Where the two resolve different salt paths there is no shared trigger
+at all — the gateway reads a different key and reports on that one.
 
-**`hook-salt-was-exposed` does not carry that guarantee**, because its trigger is consumed
-by observing it. Both processes run the same loader, and the first of them to reach a loose
-salt tightens it; the other then reads `0600` and records nothing. So if `honmoon hook` ran
-first, the event exists only in the JSONL sink, and a gateway started afterwards shows a
-clean dashboard over a key that was exposed. Query the log for this one — do not wait for a
-pill.
+**`hook-salt-was-exposed` does not carry that guarantee even then**, because its trigger is
+consumed by observing it. Both processes run the same loader, and a correction that
+completes before the other's first `stat` leaves that one reading `0600` and recording
+nothing — so a hook that got there first is the only witness, and the dashboard stays clean
+over a key that was exposed. (Loaders whose reads overlap, both `stat`-ing before either
+`chmod`, both see the loose mode and both record. A pill is possible; it is not something to
+wait for.) Query the log for this one.
 
 What the dashboard cannot show for any of the three is the hook's *own* records — the
 per-invocation cardinality, and the hook-specific reason. A host running no gateway has the
