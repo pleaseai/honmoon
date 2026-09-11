@@ -1,6 +1,6 @@
 ---
 name: postgres-refusal-ordering-barrier
-description: The honmoon postgres runtime's refusal ordering invariant (sync_points <= forwarded), what the barrier does and does not cover, its two live gaps (Flush, and the swallowed COPY-Sync of #128), and the settled rules not to undo.
+description: The honmoon postgres runtime's refusal ordering invariant (sync_points <= forwarded), what the barrier does and does not cover, its live gaps (the per-stall bound, the swallowed COPY-Sync of #128, and the two flush edge cases ADR-0007 records), and the settled rules not to undo.
 metadata:
   type: project
 ---
@@ -28,8 +28,9 @@ query — in the worst reading, a *denied* statement looks like it succeeded.
 Undercounting is the security-relevant direction; overcounting only delays.
 
 **How to apply:** when this file changes, re-read these rather than re-deriving
-them. The first two are live gaps; the rest are settled decisions that look like
-bugs and must not be "fixed" back:
+them. The `Flush` entry below is closed; the per-stall bound and the COPY-Sync of
+#128 are live gaps, as are the two flush edge cases ADR-0007 records. The rest are
+settled decisions that look like bugs and must not be "fixed" back:
 - `Flush` (`H`) produces no `ReadyForQuery`. **Closed by #113/PR #147**: a second
   pair, `ClientLink::flushes` (raised when an `H` is forwarded) and
   `Delivered::flush_answers` (raised by the relay when the head's own `try_read`
@@ -48,6 +49,19 @@ bugs and must not be "fixed" back:
   #101 through the #113 fix. Crediting one is wrong only when two batches
   coalesce into one burst, and that costs a stall window, not ordering. Pinned by
   `one_quiet_upstream_settles_one_flush_and_not_the_ones_behind_it`.
+
+  **A written-off flush carries its own debt** (`Delivered::flush_debt`), separate
+  from the sync `debt`. Codex caught the miss: after a write-off the client can
+  send another flushed batch, and the *first* batch's late output then produces a
+  quiet that is recomputed against the raised `flushes` and credited to the new
+  batch — releasing a refusal while it is still computing, #101 by the same route
+  the sync debt already guards. Recomputing the owed count from `flushes` is what
+  makes the debt necessary, not what removes the need for it; the earlier doc
+  comment argued the opposite and was wrong. Keep the two debts separate: crossing
+  them lets a late `Z` discharge a flush's write-off or a quiet discharge a
+  statement's. Pinned by
+  `a_written_off_flush_is_not_settled_again_by_the_next_batch` and the tuple in
+  `a_write_off_settles_both_counters_without_crossing_their_accounting`.
 
   Remaining, both recorded in ADR-0007 rather than open defects: a TCP-split
   burst can leave the socket empty part-way through one batch's output and settle
