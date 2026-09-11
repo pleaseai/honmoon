@@ -37,3 +37,15 @@ required. Issue numbering in prose checked out too: "review of #80 (#81)" means 
 ADR-0006 and its review spawned follow-up issue #81 — not a fabricated cross-reference. This repo's
 signed_body.rs/mitm.rs doc comments and ADR-0006 are a reliable place to expect precise, accurate
 prose; spend review effort on cross-checking numeric/behavioral claims rather than assuming drift.
+
+**Third clean PR confirmed (#130, issue #82, 2026-09-11):** fixed `--signed-body forward` silently
+dropping request trailers (a trailer-carried `Content-Digest` an RFC 9421 signature covers) because
+buffered bodies were rebuilt with `http_body_util::Full`, which carries no trailers. Only
+`crates/honmoon-proxy/{body.rs,mitm.rs}` and its tests changed — no doc files. Checked ADR-0006's
+"`forward` returns the original request untouched — same bytes, same headers", README's "A signed
+request with nothing to redact is always forwarded untouched", and the CLI `--signed-body` help's
+"forward sends the original bytes unredacted": all three already made this exact claim, and were
+technically inaccurate pre-fix for a chunked body with a trailer (which the "untouched" reconstruction
+silently dropped) — but the fix makes them accurate rather than stale, so nothing needed updating.
+Lesson: when a bugfix closes a gap between an existing "untouched"/"byte-identical" doc claim and
+actual behavior, check whether the fix makes the old prose newly true before flagging it as stale.

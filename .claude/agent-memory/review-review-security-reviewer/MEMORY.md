@@ -4,3 +4,4 @@
 - [Postgres refusal ordering barrier](postgres-refusal-ordering-barrier.md) — the sync_points <= forwarded invariant, the two live gaps (Flush, swallowed COPY-Sync/#128), and four settled rules that look like bugs and must not be undone
 - [MITM tunnel authorization model](mitm-tunnel-authorization-model.md) — shape-3 recognition rides the hudsucker handler clone lineage; host+port both load-bearing for h2
 - [Signed-body detection invariants](signed-body-detection-invariants.md) — over-inclusion in signed_body.rs leaks under --signed-body forward; each detector needs real scheme evidence (X-Amz-Algorithm gate)
+- [Request trailer plumbing](request-trailer-plumbing.md) — what bounds the trailer HeaderMap after #82, which paths forward vs drop trailers, and that trailers are never scanned

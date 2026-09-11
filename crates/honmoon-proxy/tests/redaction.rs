@@ -37,6 +37,8 @@ const MAX_BODY: usize = 2 * 1024 * 1024;
 struct CapturedRequest {
     headers: String,
     body: Vec<u8>,
+    /// The chunked trailer section, as received (empty when none was sent).
+    trailers: String,
 }
 
 enum ResponseMode {
@@ -67,6 +69,16 @@ fn read_request(stream: &mut TcpStream) -> CapturedRequest {
     };
     let headers =
         String::from_utf8(received[..header_end].to_vec()).expect("ASCII request headers");
+    if header_value(&headers, "transfer-encoding")
+        .is_some_and(|value| value.to_ascii_lowercase().contains("chunked"))
+    {
+        let (body, trailers) = read_chunked(stream, &mut received, header_end);
+        return CapturedRequest {
+            headers,
+            body,
+            trailers,
+        };
+    }
     let content_length = headers
         .lines()
         .find_map(|line| {
@@ -87,6 +99,67 @@ fn read_request(stream: &mut TcpStream) -> CapturedRequest {
     CapturedRequest {
         headers,
         body: received[header_end..header_end + content_length].to_vec(),
+        trailers: String::new(),
+    }
+}
+
+/// Decode a chunked request body starting at `pos`, returning the body bytes
+/// and the trailer section that followed the terminating zero-length chunk.
+fn read_chunked(
+    stream: &mut TcpStream,
+    received: &mut Vec<u8>,
+    mut pos: usize,
+) -> (Vec<u8>, String) {
+    let mut body = Vec::new();
+    loop {
+        let (size_line, next) = read_line(stream, received, pos);
+        pos = next;
+        let size =
+            usize::from_str_radix(size_line.split(';').next().expect("chunk size").trim(), 16)
+                .expect("hex chunk size");
+        if size == 0 {
+            break;
+        }
+        fill_to(stream, received, pos + size + 2);
+        body.extend_from_slice(&received[pos..pos + size]);
+        pos += size + 2;
+    }
+    let mut trailers = String::new();
+    loop {
+        let (line, next) = read_line(stream, received, pos);
+        pos = next;
+        if line.is_empty() {
+            break;
+        }
+        trailers.push_str(&line);
+        trailers.push_str("\r\n");
+    }
+    (body, trailers)
+}
+
+/// Read one CRLF-terminated line at `pos`, pulling more bytes as needed.
+/// Returns the line without its terminator and the offset just past it.
+fn read_line(stream: &mut TcpStream, received: &mut Vec<u8>, pos: usize) -> (String, usize) {
+    let mut buffer = [0u8; 4096];
+    loop {
+        if let Some(offset) = received[pos..].windows(2).position(|w| w == b"\r\n") {
+            let line =
+                String::from_utf8(received[pos..pos + offset].to_vec()).expect("ASCII chunk line");
+            return (line, pos + offset + 2);
+        }
+        let read = stream.read(&mut buffer).expect("read upstream chunk");
+        assert!(read > 0, "request ended mid-chunk");
+        received.extend_from_slice(&buffer[..read]);
+    }
+}
+
+/// Read until `received` holds at least `want` bytes.
+fn fill_to(stream: &mut TcpStream, received: &mut Vec<u8>, want: usize) {
+    let mut buffer = [0u8; 4096];
+    while received.len() < want {
+        let read = stream.read(&mut buffer).expect("read upstream chunk");
+        assert!(read > 0, "request ended mid-chunk");
+        received.extend_from_slice(&buffer[..read]);
     }
 }
 
@@ -895,6 +968,41 @@ fn signed_body_request_with_secret_is_forwarded_unredacted_in_forward_mode() {
     );
     let bare = captured.recv_timeout(Duration::from_secs(5)).unwrap();
     assert_eq!(header_value(&bare.headers, "accept-encoding"), None);
+    assert_eq!(mappings.unwrap().len(), 0);
+}
+
+// RFC 9421 lets the `Content-Digest` a signature covers ride in a trailer
+// rather than a header. Buffering the body for the PII scan must hand that
+// trailer back, or `forward` mode forwards a request the client never signed
+// and earns the upstream signature rejection the mode exists to avoid (#82).
+#[test]
+fn signed_body_request_keeps_its_digest_trailer_in_forward_mode() {
+    let (upstream, captured) = start_upstream(ResponseMode::Static(b"ok".to_vec()));
+    let (proxy, mappings) = start_proxy_with_signed_body(true, SignedBodyMode::Forward);
+    let body = format!("key={SECRET}");
+    let digest = "sha-256=:ZGlnZXN0LW92ZXItdGhlLXNpZ25lZC1ib2R5:";
+
+    let request = format!(
+        "POST http://127.0.0.1:{upstream}/submit HTTP/1.1\r\n\
+         Host: 127.0.0.1:{upstream}\r\n\
+         Signature-Input: sig1=(\"@method\" \"content-digest\")\r\n\
+         Signature: sig1=:c2lnbmF0dXJl:\r\n\
+         Trailer: Content-Digest\r\n\
+         Transfer-Encoding: chunked\r\n\
+         Connection: close\r\n\r\n\
+         {:x}\r\n{body}\r\n0\r\nContent-Digest: {digest}\r\n\r\n",
+        body.len()
+    );
+    let response = raw_proxy_request(proxy, request.as_bytes());
+    assert!(response.starts_with(b"HTTP/1.1 200"));
+
+    let forwarded = captured.recv_timeout(Duration::from_secs(5)).unwrap();
+    assert_eq!(forwarded.body, body.as_bytes());
+    assert_eq!(
+        header_value(&forwarded.trailers, "content-digest"),
+        Some(digest),
+        "the signed digest trailer must reach the upstream"
+    );
     assert_eq!(mappings.unwrap().len(), 0);
 }
 
