@@ -1,2 +1,3 @@
 - [mitm-test-harness](mitm_test_harness.md) — honmoon-proxy's tests/mitm.rs upstream always drops the connection, so forwarded-byte content (detect-only invariant) is never test-asserted, only audit-log findings are.
 - [signed-body-sigv4-narrowing](signed_body_sigv4_narrowing.md) — issue #81's narrowing makes Some(AwsSigV4) always imply authentication_signs_headers=true, so the deleted bare_payload_hash keeps-Accept-Encoding test tested a now-unreachable state, not a real coverage loss.
+- [main-rs-gateway-untestable](main_rs_gateway_untestable.md) — honmoon-cli main.rs::gateway() blocks forever and is never unit-tested; bare wiring calls added directly inside it (not extracted like hook_salt_for) are invisible coverage gaps.

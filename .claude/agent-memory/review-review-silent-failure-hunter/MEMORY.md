@@ -1,3 +1,4 @@
 - [Framing deliberate skips](feedback_framing_deliberate_skips.md) — a skip marked "do not flag" can still hide a flaggable gap (e.g. missing logging) in a stated sub-guarantee.
 - [engine.rs PII attribution](project_engine_pii_attribution.md) — decide_pii_audit_only design verified sound; only gap is eval_condition's unlogged execution errors.
 - [signed_body.rs SigV4 narrowing](project_signed_body_narrowing.md) — PR #120's aws_sigv4_signs_body narrowing reviewed clean; branch matrix to recheck if touched again.
+- [hook salt audit visibility #131](project_hook_salt_audit_visibility_131.md) — new Degraded audit path is sound at open-failure; post-open sink-write failure still silent via ERROR-filtered tracing::warn! to discarded hook stderr.

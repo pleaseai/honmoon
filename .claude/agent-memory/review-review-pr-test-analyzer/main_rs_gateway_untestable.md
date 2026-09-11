@@ -1,0 +1,27 @@
+---
+name: main-rs-gateway-untestable
+description: crates/honmoon-cli/src/main.rs::gateway() binds real sockets and blocks forever, so it has no unit test — wiring calls made directly inside it (e.g. record_machine_key_source with GATEWAY_TRANSPORT) are never exercised even when the helper functions they call are well-tested elsewhere.
+metadata:
+  type: project
+---
+
+`gateway()` in `crates/honmoon-cli/src/main.rs` binds `TcpListener`s and runs a
+tokio runtime that blocks forever serving traffic, so nothing in the repo calls
+it in a test. The project's existing pattern for this (see `hook_salt_for`,
+tested by `an_unpinned_context_selects_the_per_session_salt`) is to pull
+branch-worthy decisions out into small pure functions that *are* unit tested,
+then call them from `gateway()`.
+
+When a new call is added directly inside `gateway()` without such an
+extraction — e.g. issue #131's
+`hook::record_machine_key_source(&audit, hook::GATEWAY_TRANSPORT, &machine_key.source)`
+— it is invisible to the test suite: a typo swapping `GATEWAY_TRANSPORT` for
+`HOOK_TRANSPORT` there would not fail anything, even though
+`record_machine_key_source` itself is well-tested (from `hook.rs`, with a
+different transport constant).
+
+**How to apply:** when reviewing a PR that adds a call inside `gateway()`,
+check whether the call is a bare wiring statement (untestable in place) vs.
+logic that could be extracted into a pure, named, testable helper the way
+`hook_salt_for` was. Flag the former as a coverage gap rather than assuming
+"it's in `main.rs` so it's exempt."

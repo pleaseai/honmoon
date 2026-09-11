@@ -3,3 +3,4 @@
 - [PII attribution pattern (#99)](feedback_pii_attribution_pattern.md) — decide_pii_audit_only proof sketch + the 3 test cases to require on future changes to it
 - [Signed framing headers (#83/PR #115)](project_signed_body_framing_headers_83.md) — PR reviewed clean; pre-existing SigV4/Content-MD5 gap to watch on future touches
 - [Hook salt parity (#98/PR #122)](project_hook_salt_parity_98.md) — reviewed clean; wire-vs-hook salt now intentionally diverges by default, only hook transports need to agree
+- [Hook salt fallback visibility (#131/PR #137)](project_hook_salt_fallback_visibility_131.md) — reviewed clean; Overview.tsx decision-mix doesn't count `degraded` (out of scope, note for later)
