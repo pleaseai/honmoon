@@ -1,6 +1,6 @@
 ---
 name: pr152-shadowed-rule-warning-empty-condition
-description: PR #152 (issue #95) shadowed-rule wiki section verified against warn_shadowed_rules/is_unconditional/endpoint_covers; found the "empty condition matches nothing" claim contradicts actual panic behavior and the page's own Fail-closed semantics section
+description: policy-authoring.md's empty-CEL-condition claim must be checked against engine.rs::compile_condition, not the YAML loader — an empty condition panics, it does not fail closed (found and fixed in PR #152)
 metadata:
   type: project
 ---
@@ -14,7 +14,7 @@ Verified accurate: `*`-endpoint shadowing-everything claim, endpoint-specific-ru
 -reachable claim, "only literal `true`" claim, the sample `tracing::warn!` field names/order
 (`rule`, `shadowed_by`, `endpoint`), and the citation content itself (the 262-329 range is
 merely off by ~1-2 lines at each edge from the true function block 260-330 — minor, not a
-correctness issue).
+correctness issue; corrected to 260-330 before merge).
 
 **The one real defect**: the wiki claims "an empty condition is not valid CEL, so such a rule
 matches nothing." I confirmed by test (`cel_interpreter::Program::compile("")` under
@@ -38,3 +38,9 @@ string to where it's compiled, not just where it's parsed.
 CEL condition behavior against `engine.rs::compile_condition` (or wherever `Program::compile` is
 actually invoked) rather than the YAML-loading code, since load and evaluation are different
 code paths with different error handling.
+
+**Resolved in PR #152 (commit 952b5fb).** The wiki now carries a danger callout stating that
+`Program::compile("")` panics and linking #151, and the "## Fail-closed semantics" section names
+the empty condition as the one exception to the guarantee it makes. Codex flagged the same
+sentence independently on the PR. The panic itself is still open as #151 — the fix belongs in
+`compile_condition`, plus a `minLength: 1` on `condition` in the JSON Schema.
