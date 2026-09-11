@@ -1,0 +1,34 @@
+packages/claude-plugin/hooks/honmoon.ts
+  s_75dd6aa4195c36::t_a0691f10369840 444,448,456,471,475,485
+  s_75dd6aa4195c36::t_5a335bb5329f59 372,534-535,542,559,676
+  s_75dd6aa4195c36::t_46a619bd293c1b 26-31,423,462
+  s_75dd6aa4195c36::t_d3b06f5a1fdd6a 288-303
+  s_75dd6aa4195c36::t_d72a86cc21328c 15,650-675,677-682,685-687,689-690
+packages/claude-plugin/hooks/honmoon.test.ts
+  s_75dd6aa4195c36::t_7591b3eaf624b1 437-438,444,451,460,467-468,474
+  s_75dd6aa4195c36::t_06cea534c0a386 476,478-517
+  s_75dd6aa4195c36::t_c2043bcf74585c 3,434-436,439-443,445-450,452-459,461-466,469-473,475
+  s_75dd6aa4195c36::t_7bd97e9b7ad59d 477,518
+packages/claude-plugin/README.md
+  s_75dd6aa4195c36::t_e5f8060434aa17 237-247
+  s_75dd6aa4195c36::t_c7aa820228f921 179-180,190-211,224
+  s_75dd6aa4195c36::t_a4279dbe72d4c3 248
+packages/claude-plugin/.claude-plugin/plugin.json
+  s_75dd6aa4195c36::t_42fbc373d2dfc9 5
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "a4e0d32133783b85353846eab4c8d187dee5128d",
+  "prompts": {},
+  "sessions": {
+    "s_75dd6aa4195c36": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "177b1e46-da6c-4dea-b06e-0f286c2a51d6",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
