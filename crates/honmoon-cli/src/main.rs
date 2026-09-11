@@ -155,13 +155,14 @@ enum Command {
         /// Append security degradations to this JSONL audit log — the same file
         /// `honmoon gateway --audit-log` writes and `@honmoon/api` queries.
         ///
-        /// Only a degradation is recorded here, never a per-invocation verdict:
-        /// today that is a fallback machine key, which leaves placeholders
-        /// forgeable by anyone (issue #131) while looking identical from the
-        /// outside. Unset, that degradation reaches stderr alone — which a
-        /// non-interactive hook process discards. Set it through the
-        /// environment: the plugin's dispatcher runs `honmoon hook` with no
-        /// arguments.
+        /// Only a degradation is recorded here, never a per-invocation verdict.
+        /// Today that is a machine key which is not the persisted one, leaving
+        /// placeholders forgeable by anyone (issue #131), or a persisted one
+        /// whose salt file is accessible beyond its owner (issue #141) — the
+        /// event's `rule` says which. Both look identical from the outside.
+        /// Unset, they reach stderr alone — which a non-interactive hook process
+        /// discards. Set it through the environment: the plugin's dispatcher
+        /// runs `honmoon hook` with no arguments.
         #[arg(long, value_name = "FILE", env = "HONMOON_AUDIT_LOG")]
         audit_log: Option<PathBuf>,
     },
