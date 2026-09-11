@@ -181,10 +181,13 @@ const HOOK_SALT_EXPOSED_RULE: &str = "hook-salt-exposed";
 ///   the two dispositions have to be separable without parsing prose.
 /// - **The volumes differ by orders of magnitude.** An unrestrictable salt is
 ///   still unrestrictable on the next invocation, so `hook-salt-exposed` repeats
-///   for as long as the condition lasts. This one fires *once* per loose-find:
-///   the correction took, so the next loader sees `0600` and says nothing.
-///   Folding a fires-once event into a fires-every-invocation rule is how the
-///   rare signal gets lost inside the noisy one.
+///   for as long as the condition lasts. This one fires *once* per loose-find
+///   wherever the correction took — the next loader then sees `0600` and says
+///   nothing — so it repeats only where something keeps re-loosening the file,
+///   or on the narrow arm where the mode could not be read back and the
+///   correction is therefore unconfirmed. Folding a fires-once event into a
+///   fires-every-invocation rule is how the rare signal gets lost inside the
+///   noisy one.
 const HOOK_SALT_WAS_EXPOSED_RULE: &str = "hook-salt-was-exposed";
 
 /// Where the bytes in a [`MachineKey`] came from — one of the two axes worth
@@ -246,9 +249,17 @@ enum SaltExposure {
     /// a degraded event there would be a false alarm about a
     /// correctly-permissioned key (issues #131, #141).
     Open { reason: String },
-    /// The window is closed, but the key may already be out: the loader *found*
-    /// the file readable beyond its owner and the restriction took. `reason`
-    /// names both modes observed.
+    /// The window is not observably open, but the key may already be out: the
+    /// loader *found* the file readable beyond its owner and did not see it that
+    /// way afterwards. `reason` names the modes observed — both of them in the
+    /// ordinary case, and only the one found where the mode could not be read
+    /// back after the correction.
+    ///
+    /// That second case is folded in here rather than dropped because the two
+    /// halves are separate questions: whether the correction took, and whether
+    /// there was a window at all. An unreadable mode leaves the first
+    /// unanswered and the second already answered — and it is the second this
+    /// variant reports.
     ///
     /// Tightening the mode closes the window going forward and says nothing
     /// about the one before it. Any local user the old mode admitted may hold a
@@ -279,28 +290,33 @@ impl MachineKeyStatus {
     /// The key read from `~/.honmoon/hook-salt`, carrying what the loader
     /// observed about who else could read that file.
     ///
-    /// `Some(..)` means the loader saw group/world bits on one of the two
-    /// occasions it looked, and which variant says which:
-    /// [`SaltExposure::Open`] for a file still readable beyond its owner *after*
-    /// the loader tried to restrict it, [`SaltExposure::Closed`] for one it
-    /// *found* that way and successfully tightened. Both claims are narrow, in
-    /// both directions. A `chmod` that fails is not by itself evidence of
-    /// exposure — a read-only mount refuses the call on a file that is already
-    /// `0600`, and recording that would be a false alarm in the one channel that
-    /// must stay worth reading. A `chmod` that succeeds is not evidence of
-    /// safety either, which is exactly what `Closed` exists to say.
+    /// `Some(..)` means the loader saw group/world bits on one of the occasions
+    /// it looked, and which variant says which: [`SaltExposure::Open`] for a file
+    /// still readable beyond its owner *after* the loader tried to restrict it,
+    /// [`SaltExposure::Closed`] for one it *found* that way and did not see that
+    /// way afterwards. Both claims are narrow, in both directions. A `chmod` that
+    /// fails is not by itself evidence of exposure — a read-only mount refuses
+    /// the call on a file that is already `0600`, and recording that would be a
+    /// false alarm in the one channel that must stay worth reading. A `chmod`
+    /// that succeeds is not evidence of safety either, which is exactly what
+    /// `Closed` exists to say.
     ///
-    /// So `None` means only that the loader saw no group/world bits on either
-    /// occasion — because the file carried none when it was read and none after
-    /// the correction, because there was nothing to inspect (a salt it created
-    /// itself at `0600` on a fresh inode), or, in the narrow cases where a mode
-    /// could not be read back at all, because there was nothing to see. It still
-    /// never attests that the key was not exposed *earlier*: the loader learns a
-    /// mode at the two instants it looks, never how long the file carried it, so
-    /// a salt that was `0644` last week and `0600` at both of this invocation's
-    /// observations is indistinguishable here from one that was never loose. Nor
-    /// does it reach past the mode bits: an ACL granting another local user read
-    /// leaves the mode at `0600` and is invisible here.
+    /// `None` is correspondingly weak, because it is the same value whether the
+    /// loader looked twice, once, or not at all. It means only that no
+    /// group/world bits were seen, which happens when the file carried none
+    /// before and after the correction; when only the mode after it is this
+    /// key's to answer for (a fresh secret written into a reused inode — see
+    /// [`SaltProvenance::FreshlyWritten`]); when there was nothing to inspect at
+    /// all (a salt the loader created itself at `0600` on a fresh inode, which
+    /// [`publish_secret_atomically`] reports as `None` without a `stat`); or,
+    /// where a mode could not be read back, because there was nothing to see.
+    ///
+    /// So it never attests that the key was not exposed *earlier*. The loader
+    /// learns a mode at the instants it looks, never how long the file carried
+    /// it, so a salt that was `0644` last week and owner-only at every
+    /// observation this invocation made is indistinguishable here from one that
+    /// was never loose. Nor does it reach past the mode bits: an ACL granting
+    /// another local user read leaves the mode at `0600` and is invisible here.
     fn persisted(exposure: Option<SaltExposure>) -> Self {
         Self {
             source: MachineKeySource::Persisted,
@@ -753,10 +769,21 @@ fn hex_encode(bytes: &[u8]) -> String {
 /// It asks only [`SaltProvenance::FreshlyWritten`], so the answer is never a
 /// [`SaltExposure::Closed`] — the ordering below is what makes that true, and
 /// `a_truncated_salt_is_written_after_the_mode_is_corrected` is what keeps it
-/// true. The prior mode of this inode is the history of the bytes being
-/// *discarded* (a short/corrupt file no loader ever adopted as a key), never of
-/// the ones about to land, so recording it as this key's own past exposure would
-/// be the over-claim this whole path exists to stop.
+/// true. The bytes about to land were never in this inode while it carried its
+/// prior mode, so recording that mode as *this key's* past exposure would be the
+/// over-claim the whole path exists to stop.
+///
+/// That says nothing about the bytes being **discarded**, and the two callers
+/// differ there. Reached from the short/corrupt arm the discarded bytes are
+/// under the loader's 16-byte floor, so no loader ever adopted them as a key and
+/// there is no key history to lose. Reached from the arm whose `read` failed
+/// outright, their length and content are unknown: that inode *could* have held
+/// a valid salt other invocations adopted, and if its mode was loose, that key's
+/// exposure goes unrecorded here. The replaced key is out of scope for #143,
+/// which is about the key in use — #171 carries it, because recording it through
+/// this channel would pair a history claim with a `key_source` describing a
+/// different key, which is a modelling decision of the kind #141 settled
+/// deliberately rather than in passing.
 fn write_secret_file(path: &Path, bytes: &[u8]) -> std::io::Result<Option<SaltExposure>> {
     use std::io::Write as _;
     let mut opts = std::fs::OpenOptions::new();
@@ -817,9 +844,10 @@ enum SaltProvenance {
 }
 
 /// Restrict `path` to `0600`, then report what the loader observed about who
-/// else could read it: `None` for owner-only throughout, [`SaltExposure::Open`]
-/// when it is *still* readable beyond its owner, [`SaltExposure::Closed`] when it
-/// was and the correction took (and `provenance` says that history is this key's).
+/// else could read it: `None` when it saw no access beyond the owner,
+/// [`SaltExposure::Open`] when it is *still* readable beyond its owner,
+/// [`SaltExposure::Closed`] when it was before the correction and not after (and
+/// `provenance` says that history is this key's).
 ///
 /// The modes read around the attempt are the signal, never the call's result.
 /// Three things follow from that, and each is a case this has to get right:
@@ -831,16 +859,21 @@ enum SaltProvenance {
 ///   forward and says nothing about who could read the file before, which is
 ///   what [`SaltExposure::Closed`] now records instead of leaving silent
 ///   (issue #143).
-/// - Neither observation reaches backwards. `None` attests "owner-only at the two
-///   instants the loader looked", never "never exposed": a mode carried last week
-///   leaves no trace a `stat` can find.
+/// - Neither observation reaches backwards. `None` attests only "no access
+///   beyond the owner at the instants this call looked", never "never exposed":
+///   a mode carried last week leaves no trace a `stat` can find.
 ///
-/// A mode that cannot be read back at all is reported as `None` after a stderr
-/// line, for the first reason: an unverifiable mode is not an observed exposure,
-/// and the loader has just read the file's contents, so this is a narrow window.
-/// The pre-correction `stat` is treated the same way — unreadable there means the
-/// history question goes unanswered, not answered "exposed" — but it never
-/// suppresses a present exposure, which is read back independently below.
+/// **How many instants those are depends on `provenance`, and `None` is the same
+/// value for all of them.** Under [`SaltProvenance::FromFile`] it is two, before
+/// and after. Under [`SaltProvenance::FreshlyWritten`] it is one, after — the
+/// mode before belongs to the bytes being discarded, so this call declines to
+/// read it. And either can fall to the one remaining instant when a `stat`
+/// fails, which is reported as unobserved rather than as an exposure, for the
+/// first reason above: an unverifiable mode is not an observed one. Failing the
+/// pre-correction `stat` leaves the history question unanswered and never
+/// suppresses a present exposure, which is read back independently; failing the
+/// post-correction one leaves the present question unanswered and, by the same
+/// logic in the other direction, never suppresses a history already observed.
 #[cfg(unix)]
 fn restrict_to_owner_only(path: &Path, provenance: SaltProvenance) -> Option<SaltExposure> {
     use std::os::unix::fs::PermissionsExt;
@@ -863,10 +896,15 @@ fn restrict_to_owner_only(path: &Path, provenance: SaltProvenance) -> Option<Sal
     }
     let Some(left) = mode_of(path) else {
         eprintln!(
-            "honmoon hook: could not read back the permissions of {} — exposure unverified",
+            "honmoon hook: could not read back the permissions of {} after the correction — present exposure unverified",
             path.display()
         );
-        return None;
+        // An unverifiable mode is not an observed *present* exposure. It does
+        // not un-observe the one already read, though: a mode that was seen
+        // stays seen, and dropping it here would put back exactly the silence
+        // #143 exists to remove, on the arm where the loader already has the
+        // evidence in hand.
+        return found_exposure(path, found, None);
     };
     if left & 0o077 != 0 {
         return Some(SaltExposure::Open {
@@ -877,14 +915,33 @@ fn restrict_to_owner_only(path: &Path, provenance: SaltProvenance) -> Option<Sal
             ),
         });
     }
-    // Owner-only now. Was it when the loader found it?
+    // Not readable beyond its owner now. Was it when the loader found it?
+    found_exposure(path, found, Some(left))
+}
+
+/// [`SaltExposure::Closed`] when `found` — the mode the loader read *before* its
+/// correction — was readable beyond the owner; `None` when it was not, or when
+/// there was no such observation to make.
+///
+/// `left` is the mode read back afterwards, or `None` when that read failed. It
+/// only ever shapes the wording: whether the correction took is a separate
+/// question from whether there was a window, and the second is what this answers.
+#[cfg(unix)]
+fn found_exposure(path: &Path, found: Option<u32>, left: Option<u32>) -> Option<SaltExposure> {
     let found = found?;
     (found & 0o077 != 0).then(|| SaltExposure::Closed {
-        reason: format!(
-            "salt file {} was {} (mode {found:04o}) when the loader read it and is now mode {left:04o}",
-            path.display(),
-            access_beyond_owner(found)
-        ),
+        reason: match left {
+            Some(left) => format!(
+                "salt file {} was {} (mode {found:04o}) when the loader read it and is now mode {left:04o}",
+                path.display(),
+                access_beyond_owner(found)
+            ),
+            None => format!(
+                "salt file {} was {} (mode {found:04o}) when the loader read it; its mode could not be read back after the correction",
+                path.display(),
+                access_beyond_owner(found)
+            ),
+        },
     })
 }
 
@@ -1411,6 +1468,87 @@ mod tests {
         );
     }
 
+    /// The sibling of `an_exposed_salt_is_recorded_against_the_gateway_transport_too`,
+    /// for the same reason it gives: the gateway reads the same
+    /// `~/.honmoon/hook-salt` once at startup, so it observes the same history,
+    /// and its call site is inside `gateway()`, which binds listeners and blocks.
+    /// Without this the new rule's transport would be pinned only by the fallback
+    /// arm, which cannot catch a transport dropped on the exposure arms.
+    #[cfg(unix)]
+    #[test]
+    fn a_previously_exposed_salt_is_recorded_against_the_gateway_transport_too() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let tmp = TempDir::new("was-exposed-gateway");
+        let path = tmp.path().join("hook-salt");
+        std::fs::write(&path, [7u8; 32]).expect("seed valid salt");
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644))
+            .expect("loosen perms");
+
+        let audit = honmoon_core::AuditLog::new(2);
+        record_machine_key_status(
+            &audit,
+            honmoon_core::RedactionTransport::Gateway,
+            &machine_key_in(tmp.path()).status,
+        )
+        .expect("an in-memory log has no sink to fail");
+        let event = audit.recent(1).remove(0);
+        assert_eq!(event.rule.as_deref(), Some(HOOK_SALT_WAS_EXPOSED_RULE));
+        let redaction = event.facts.redaction.expect("redaction facts");
+        assert_eq!(
+            redaction.transport,
+            honmoon_core::RedactionTransport::Gateway,
+            "the gateway's own observation, not one attributed to the hook"
+        );
+        assert_eq!(
+            redaction.key_source,
+            honmoon_core::RedactionKeySource::Persisted
+        );
+    }
+
+    /// A mode the loader cannot read back does not un-observe the one it already
+    /// read. Driving `restrict_to_owner_only` through a whole loader run cannot
+    /// reach this — the post-correction `stat` would have to fail between two
+    /// back-to-back syscalls — so `found_exposure` is exercised directly, which
+    /// is where the decision lives.
+    ///
+    /// The failure this guards is the one two reviewers found on the first cut:
+    /// returning `None` there discarded a *confirmed* loose mode because a second,
+    /// unrelated observation could not be made, putting back the silent-healthy
+    /// report #143 exists to remove.
+    #[cfg(unix)]
+    #[test]
+    fn an_unreadable_mode_does_not_erase_the_exposure_already_observed() {
+        let path = Path::new("/home/a/.honmoon/hook-salt");
+
+        let reason = match found_exposure(path, Some(0o644), None) {
+            Some(SaltExposure::Closed { reason }) => reason,
+            other => panic!("a loose mode that was read stays reported: {other:?}"),
+        };
+        assert!(
+            reason.contains("was readable by other local users (mode 0644)"),
+            "it names what was seen: {reason}"
+        );
+        assert!(
+            !reason.contains("is now"),
+            "and does not claim a mode it could not read back: {reason}"
+        );
+
+        // The two halves stay independent: nothing observed before the
+        // correction is still nothing to report, unreadable read-back or not.
+        assert!(found_exposure(path, None, None).is_none());
+        assert!(found_exposure(path, Some(0o600), None).is_none());
+        // And with a read-back, the ordinary wording names both modes.
+        let reason = match found_exposure(path, Some(0o640), Some(0o600)) {
+            Some(SaltExposure::Closed { reason }) => reason,
+            other => panic!("expected a closed exposure, got {other:?}"),
+        };
+        assert!(
+            reason.contains("(mode 0640)") && reason.contains("is now mode 0600"),
+            "{reason}"
+        );
+    }
+
     /// The top row of #143's table. The noise/signal trade this change makes is
     /// only acceptable while a healthy host stays silent, so that is pinned
     /// rather than assumed: an owner-only salt the loader can tighten must leave
@@ -1465,13 +1603,17 @@ mod tests {
     /// lands in a file that is already `0600` and was never readable by anyone
     /// else while holding these bytes.
     ///
-    /// Two failures are therefore in scope here. Writing before correcting would
-    /// expose the new key for the length of the write, and is caught by the mode
-    /// assertion below being taken *from the bytes' point of view*. Reporting the
-    /// discarded contents' mode as this key's past exposure would raise a
-    /// degraded event about a key that was never exposed — a false alarm in the
-    /// one channel that must stay worth reading (#131), and the reason
-    /// [`SaltProvenance::FreshlyWritten`] declines to read that mode at all.
+    /// Be precise about which half of that this test can hold. It pins the
+    /// **observable** contract: a fresh secret over a loose inode leaves the file
+    /// owner-only and reports no exposure on either axis — so reporting the
+    /// discarded contents' mode as this key's past exposure, a false alarm about
+    /// a key that was never exposed (#131), fails here. It does **not** pin the
+    /// ordering itself: because [`SaltProvenance::FreshlyWritten`] never reads the
+    /// pre-correction mode, swapping `restrict_to_owner_only` and `write_all`
+    /// leaves the same end state, and the window it opens is transient and
+    /// visible only to a concurrent reader. The ordering is held by the comment
+    /// in `write_secret_file` and by nothing here; claiming otherwise would make
+    /// this test the kind of guarantee-in-prose that #150 shipped.
     #[cfg(unix)]
     #[test]
     fn a_truncated_salt_is_written_after_the_mode_is_corrected() {
@@ -1484,6 +1626,15 @@ mod tests {
         std::fs::write(&path, b"tooshort").expect("seed corrupt file");
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o646))
             .expect("and left readable and writable by others");
+        assert_eq!(
+            std::fs::metadata(&path)
+                .expect("stat the seeded file")
+                .permissions()
+                .mode()
+                & 0o777,
+            0o646,
+            "this filesystem did not take the seeded mode — the test would prove nothing"
+        );
 
         let salt =
             load_or_create_machine_salt(tmp.path()).expect("regenerate over the corrupt file");
@@ -1520,6 +1671,17 @@ mod tests {
         assert!(
             exposed.is_none(),
             "a fresh secret written after the correction has no exposure on either axis: {exposed:?}"
+        );
+        // `None` is also what an unreadable mode returns, so confirm the file
+        // independently rather than reading the absence as proof of a correction.
+        assert_eq!(
+            std::fs::metadata(&path)
+                .expect("stat salt file")
+                .permissions()
+                .mode()
+                & 0o777,
+            0o600,
+            "and the correction that makes that answer true actually happened"
         );
     }
 

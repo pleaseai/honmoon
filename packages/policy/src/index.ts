@@ -102,8 +102,10 @@ export interface K8sFacts {
  * that way and the restriction took. Those two are split because their remedies
  * are: a file that is loose now can be tightened, while one that was is a key
  * that may already be copied. So do not read `key_source: 'persisted'` here as
- * healthy — exposure is a different axis from provenance, and on all three of
- * those rules the provenance is genuinely fine.
+ * healthy — exposure is a different axis from provenance, and on *both* of the
+ * exposure rules the provenance is genuinely fine. (Not on `hook-salt-fallback`,
+ * where the provenance is exactly what is broken: `key_source` there is
+ * `unpersisted` or `fallback`, never `persisted`.)
  */
 export interface RedactionFacts {
   /**

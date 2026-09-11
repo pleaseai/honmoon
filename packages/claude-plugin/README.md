@@ -281,7 +281,7 @@ already closed need opposite responses:
 | --- | --- | --- |
 | `hook-salt-fallback` | the key in use is **not** the persisted one; `key_source` says what that cost | fix what stopped the loader reading or writing `~/.honmoon/hook-salt` |
 | `hook-salt-exposed` | the key **is** the persisted one, but its file is readable by other local users and the loader could not restrict it to `0600` | tighten the file — the loader already tried and could not |
-| `hook-salt-was-exposed` | the key **is** the persisted one, and the loader *found* its file readable by other local users before successfully restricting it to `0600` | nothing left to tighten: rotate, per the suspicion rule below |
+| `hook-salt-was-exposed` | the key **is** the persisted one, and the loader *found* its file readable by other local users, then did not see it that way after restricting it | nothing left to tighten: rotate, per the suspicion rule below |
 
 On the fallback rule, `key_source` says which guarantee was lost, because they are not
 the same failure:
@@ -311,6 +311,10 @@ another local user can write is a key they can *replace* with one they chose —
 
 **Tightening the mode does not un-publish the key.** Where the `chmod` *does* take, the
 loader has closed the window going forward and learnt nothing about the one before it.
+(In the narrow case where the mode cannot be read back afterwards, the correction is
+unconfirmed and the `reason` says so — the event is still raised, because whether there
+was a window and whether it is now shut are separate questions, and the first is already
+answered.)
 Whoever the old mode admitted may already hold a copy of those bytes, and that copy still
 mints every placeholder from here on. `hook-salt-was-exposed` is that case, and its
 `reason` names both modes:
