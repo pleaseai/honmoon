@@ -150,11 +150,18 @@ To re-verify against your Claude Code version:
 
 ## Function hooks (early access)
 
-Claude Code 2.1.263 ships a prototype **function hooks** API behind
+Claude Code ships a **function hooks** API behind
 `CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1`: a plugin may name a TypeScript module in
 `hooks/hooks.json` and register hooks that wrap the tool chain in-process. This
-plugin ships one — `hooks/honmoon.ts` — beside the command hooks above. The API
-is pre-release and may change between Claude Code releases.
+plugin ships one — `hooks/honmoon.ts` — beside the command hooks above.
+
+The API is pre-release and may change between Claude Code releases. Anthropic
+has since committed to shipping it (productized as "Claude Mods"), but renames
+do land without a compatibility shim — `$.fs.readFile` became `$.fs.read`
+between 2.1.263 and 2.1.268 — so regenerate the vendored declarations with
+`/plugin-types` after every CLI update and re-run `bun run typecheck`. The
+declarations in `.claude/types/` were written by **2.1.268**; the runtime
+behaviors noted below are dated to the version they were measured on.
 
 ```sh
 CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1 claude --plugin-dir /path/to/honmoon/packages/claude-plugin
@@ -336,9 +343,10 @@ cd packages/claude-plugin
 CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1 claude -p --output-format text "/plugin-types"
 ```
 
-`hooks/claude-code-grep.d.ts` adds `Grep`, which 2.1.263's `/plugin-types` does
-not emit although the tool exists at run time; delete it if a regenerated
-`claude-code.d.ts` declares `Grep` itself. `bun test` and `bun run typecheck`
+`hooks/claude-code-grep.d.ts` adds `Grep`, which `/plugin-types` does not emit
+although the tool exists at run time; delete it if a regenerated
+`claude-code.d.ts` declares `Grep` itself. Still required as of 2.1.268, which
+names `Grep` only in a doc comment and not in `BuiltinToolInputs`. `bun test` and `bun run typecheck`
 cover the module.
 
 ## Known limitation — detector coverage
