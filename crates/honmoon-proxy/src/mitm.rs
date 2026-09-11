@@ -586,8 +586,8 @@ impl HonmoonHandler {
     /// attempted, so there is no fail-open `warn` to log. Do not widen the scan
     /// to header-shaped fields without revisiting
     /// `.please/docs/decisions/0009-body-only-inspection-contract.md` — trailers
-    /// are visible on the buffered branches only, and redacting one would break
-    /// the byte fidelity `--signed-body forward` promises (ADR-0006).
+    /// are visible on the buffered branches only, so such a scan would be
+    /// silently absent on the two over-cap ones.
     ///
     /// `port` is the port the client actually dialed (the tunnel's CONNECT port
     /// for an inner request), which is what an `endpoints` entry matches on.

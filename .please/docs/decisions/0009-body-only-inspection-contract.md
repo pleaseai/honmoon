@@ -57,8 +57,9 @@ It was not, and the difference is material in two ways:
 ## Decision
 
 **The request inspection contract covers request bodies only.** Header and trailer values are
-never scanned for PII or secrets, never redacted, and are forwarded to the upstream verbatim. No
-`warn` is logged for them, because nothing was attempted — they are outside the contract rather
+never scanned for PII or secrets, never redacted, and are passed on unmodified by honmoon (what
+finally crosses is then subject to the upstream leg's own framing rules — see #136). No `warn` is
+logged for them, because nothing was attempted — they are outside the contract rather
 than a failure within it.
 
 This is recorded in three places so it cannot be rediscovered as a surprise:
@@ -69,9 +70,19 @@ This is recorded in three places so it cannot be rediscovered as a surprise:
    the code where trailers are preserved, so the next reader of that code sees the boundary
    without leaving the file.
 3. `trailer_content_is_outside_the_inspection_contract` in `crates/honmoon-proxy/tests/redaction.rs`,
-   which pins the boundary end to end, paired with a control test proving the same rule *does*
-   refuse the same content in the body. The pair makes the boundary executable: widening the scan
-   later fails the test and forces the contract change to be deliberate.
+   which drives the boundary through the full proxy stack, paired with a control test proving the
+   same rule *does* refuse the same content in the body. The pair makes the boundary executable:
+   widening the scan later fails the test and forces the contract change to be deliberate.
+
+   That pair pins **one** of the four branches — the unknown-length within-cap (chunked) one, which
+   is what an HTTP/1 harness can express, since HTTP/1 carries trailers only under chunked framing.
+   The others are argued rather than pinned, and deliberately so: `mitm.rs`'s
+   `forwarded_body_keeps_trailers_on_the_content_length_path` already covers trailer *preservation*
+   on the `Content-Length` branch but pairs it with no `pii.count` rule, and on the two over-cap
+   branches the body itself is not scanned either, so there is no inspection for a trailer to be
+   excluded from. A regression that started scanning trailers on the `Content-Length` branch alone
+   would therefore pass the suite — the narrowest real gap this contract leaves, and the first
+   thing to close if that branch ever grows its own inspection path.
 
 Scanning header-shaped fields remains a **separate, open product decision**, not an implied
 obligation deferred by this ADR.
@@ -84,17 +95,27 @@ enumeration that reads as exhaustive and is not.
 
 **What this does not guarantee.** Nothing about the data plane changed. An agent that puts a secret
 in a trailer — or in a header — still reaches the upstream with it, on every one of the four
-branches above. Operators who need to constrain that surface have the existing levers: keep
-`egress.default: deny` so only allow-listed hosts are reachable at all, and treat header-shaped
-fields as uncontrolled.
+branches above. And there is no *content-level* lever to point operators at: `egress.default: deny`
+narrows which hosts are reachable and is worth keeping, but it scans nothing, so an allow-listed
+destination — the API the agent exists to call, and exactly where an exfiltration attempt would go
+— still receives header and trailer content unexamined. The honest instruction is to treat
+header-shaped fields as uncontrolled, not to present a destination control as if it covered them.
 
 **If scanning is added later**, the contract text and the pinning test are the things to change
-first, deliberately. Two properties must be settled at that point and are not settled here:
-trailers are only *visible* to the scanner on the two buffered branches (the over-cap branches
-never read them), and trailer content cannot be redacted without breaking the byte-fidelity
-`--signed-body forward` promises for a signature covering a `Content-Digest` trailer (ADR-0006).
-A scan that covers two of four paths and cannot redact what it finds is a weaker guarantee than
-the one its presence would imply.
+first, deliberately. The property that must be settled then, and is not settled here, is
+**coverage**: trailers are only *visible* to the scanner on the two buffered branches — the
+over-cap branches never read them — so a scan lands on two of four paths and is silently absent on
+the rest. A guarantee that holds on half the paths is weaker than the one its presence implies.
+
+**Redaction of a found trailer is a smaller obstacle than it first appears**, and that is worth
+stating plainly here because this document is what a future implementer will weigh. On an
+**unsigned** request — the overwhelming majority of agent traffic — a buffered trailer is a plain
+owned `HeaderMap` by that point and could be rewritten exactly like a body value. On a
+**body-signed** request, a trailer rewrite is the same class of change as a body rewrite and falls
+through the gate `forwarded_request` already applies: `SignedBodyMode::Forward` fails open with a
+`warn`, `SignedBodyMode::Block` refuses with a 403 and an audit record (ADR-0006). It needs no new
+mechanism and breaks no promise that body redaction does not already break. Coverage is the
+load-bearing objection; redaction is not.
 
 **Relationship to the open trailer issues.** This ADR constrains none of them, but it does place
 one: #134 (h2 trailer allowlist) becomes the natural home for *controlling* trailer content,
@@ -108,11 +129,11 @@ framing and transport-mapping bugs, independent of whether values are inspected.
 - **Scan trailer values alongside the body before the policy decision.** Rejected. It closes
   nothing against the adversary it would be defending against — that adversary uses the header,
   which is simpler and already unscanned — while implying to the operator that honmoon understands
-  header-shaped fields. It would also be a *partial* scan in two independent ways: only the two
-  buffered branches ever see trailers, and detection without redaction means a finding on a signed
-  request can be reported but not acted on without breaking the signature. A guarantee that holds
-  on half the paths and cannot remediate is worse than a clearly stated absence, because the
-  operator stops looking.
+  header-shaped fields. It would also be a *partial* scan: only the two buffered branches ever see
+  trailers, so the guarantee would hold on half the paths and be silently absent on the rest —
+  worse than a clearly stated absence, because the operator stops looking. Redacting what such a
+  scan found is **not** a second, independent obstacle — see Consequences; the existing
+  `--signed-body` gate already covers that class.
 
 - **Scan request headers as well, for consistency.** Rejected here as out of scope, and noted as a
   real product decision with real cost rather than an oversight. Header content is largely protocol
@@ -121,11 +142,15 @@ framing and transport-mapping bugs, independent of whether values are inspected.
   design belongs in its own issue.
 
 - **Log a `warn` when a forwarded request carries trailers**, making the silent fail-open loud
-  without scanning. Rejected because it inherits the same partial-coverage flaw as a partial scan,
-  inverted: the warn could only be emitted on the two buffered branches, so it would be *absent*
-  exactly on the over-cap paths where trailers also pass through. A signal that is missing where
-  the surface is widest is worse than no signal, because its absence reads as "no trailers". It
-  would also fire on ordinary gRPC traffic, where trailers are protocol machinery.
+  without scanning. Rejected, and the reason matters because the obvious one is wrong. A warn
+  driven by an observed trailer *frame* could only be emitted on the two buffered branches, absent
+  on the over-cap paths where trailers also pass through — but a warn driven by the request's
+  `Trailer:` **declaration header** carries no such limit: headers are fully parsed before the
+  `content_length` match and `parts` survives it, so all four branches could emit one. The real
+  objection is that `Trailer:` is advisory and routinely omitted — HTTP/2 clients generally do not
+  send it — so a declaration-driven warn is trivially switched off by the same adversary it
+  watches for, while still firing on ordinary gRPC traffic where trailers are protocol machinery.
+  A signal the adversary can disable and the honest client cannot is not a control.
 
 - **Leave the behavior undocumented and close #133 as working-as-intended.** Rejected. The
   behavior is intended, but "intended" was not written down anywhere, and the fail-modes section

@@ -174,10 +174,15 @@ pub(crate) enum Buffered {
 /// frame, so they are still unread in `rest`.
 ///
 /// Kept for *forwarding*, not for inspection: the returned `trailers` are
-/// replayed to the upstream verbatim and never scanned. Note the asymmetry that
-/// makes widening the scan here unsound — this branch is the only one that
-/// materializes trailers at all, so a scan added here would cover the buffered
-/// paths and silently miss both over-cap ones (ADR-0009).
+/// handed back to be replayed upstream and never scanned — honmoon modifies
+/// nothing, though what finally crosses is subject to the upstream leg's own
+/// framing rules (#136). Note the asymmetry that
+/// makes widening the scan here unsound — this is one of only two places a
+/// trailer materializes at all (the other is `inspect_body`'s
+/// `Content-Length <= MAX_INSPECT_BODY` branch, which collects them separately),
+/// so a scan added here would cover the unknown-length within-cap path alone and
+/// silently miss both over-cap ones, whose trailers stay unread in `rest`
+/// (ADR-0009).
 pub(crate) async fn buffer_up_to(
     mut body: Body,
     limit: usize,

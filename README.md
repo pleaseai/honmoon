@@ -206,13 +206,19 @@ may itself be signed; those responses may arrive compressed and are then left as
 
 **Those four are the cases where honmoon tries to rewrite and cannot. They are not the only way
 content reaches the upstream unredacted.** Inspection covers request **bodies** only: header and
-trailer values are never scanned for PII or secrets, never redacted, and are forwarded verbatim —
-including a secret placed in a chunked trailer (`Trailer: X-Note` followed by
+trailer values are never scanned for PII or secrets, never redacted, and are passed on unmodified
+by honmoon (what finally reaches the upstream is then subject to that leg's own framing rules — see
+#136) — including a secret placed in a chunked trailer (`Trailer: X-Note` followed by
 `0\r\nX-Note: <secret>`). Unlike the four fail-open cases above, this is silent: no `warn`, no
 audit record, and `pii.count` stays `0`, so no `pii.*` rule can fire on it. Header-shaped fields
 were never in scope, so there is nothing to fail — the scan is not failing open, it never applied.
-Constrain that surface with `egress.default: deny` so only allow-listed hosts are reachable at all.
-See [ADR-0009](.please/docs/decisions/0009-body-only-inspection-contract.md).
+
+**There is no content-level lever for this surface.** `egress.default: deny` narrows *which hosts*
+an agent can reach and is worth keeping, but it scans nothing: an allow-listed destination — the
+API the agent exists to call — still receives header and trailer content unexamined, which is
+where an exfiltration attempt would send it. Treat header-shaped fields as uncontrolled rather
+than as covered by the body scan. See
+[ADR-0009](.please/docs/decisions/0009-body-only-inspection-contract.md).
 
 **Signed requests are the exception that fails closed when redaction would change what the
 signature covers.** When a request's authentication covers its payload — AWS SigV4 whose canonical
