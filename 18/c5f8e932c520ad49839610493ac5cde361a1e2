@@ -1,0 +1,34 @@
+crates/honmoon-cli/src/main.rs
+  s_6eafee1f39ff31::t_026773b493a67c 362,364,371
+  s_6eafee1f39ff31::t_0e38454a2ae6f7 360-361,401-414
+  s_6eafee1f39ff31::t_f73499ca192cdd 397
+packages/policy/src/index.ts
+  s_6eafee1f39ff31::t_3900ee7d32782d 85-91
+crates/honmoon-cli/src/hook.rs
+  s_6eafee1f39ff31::t_71eded15f3d643 805-812
+  s_6eafee1f39ff31::t_d3aebd90f65487 159-170,230-232
+  s_6eafee1f39ff31::t_1ecb8dc1e8f12f 227,229,347-367,376,404,433,465,476,478-479,483-487,490-491,494-498
+  s_6eafee1f39ff31::t_026773b493a67c 203-207
+  s_6eafee1f39ff31::t_26fc10636b0a2a 246-250,269-276,287,298,325
+  s_6eafee1f39ff31::t_f73499ca192cdd 623-628,630-633,642,645-646,649-652,681,711,714-717,741,744-790
+crates/honmoon-core/src/audit.rs
+  s_6eafee1f39ff31::t_d3aebd90f65487 96-102
+packages/claude-plugin/README.md
+  s_6eafee1f39ff31::t_7ff2eb336622cd 276-283
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "18c5f8e932c520ad49839610493ac5cde361a1e2",
+  "prompts": {},
+  "sessions": {
+    "s_6eafee1f39ff31": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "ef7227cc-7b83-4783-b04d-4349ac4c0afc",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
