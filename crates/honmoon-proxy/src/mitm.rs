@@ -1556,4 +1556,43 @@ mod tests {
             "forwarded body must stay encoded"
         );
     }
+
+    /// HTTP/1.1 forbids trailers alongside a declared `Content-Length`, but
+    /// HTTP/2 allows them and hudsucker negotiates h2 over an intercepted
+    /// tunnel — so this arm buffers with `collect()` for real h2 traffic and
+    /// has to hand the trailers back, exactly as the chunked arm does.
+    #[tokio::test]
+    async fn forwarded_body_keeps_trailers_on_the_content_length_path() {
+        let policy =
+            honmoon_core::Policy::from_yaml("egress:\n  default: allow\n").expect("policy");
+        let handler = HonmoonHandler::new(GatewayState::new(policy));
+
+        let payload = hudsucker::hyper::body::Bytes::from_static(b"key=value");
+        let mut sent = hudsucker::hyper::HeaderMap::new();
+        sent.insert(
+            "content-digest",
+            header::HeaderValue::from_static("sha-256=:ZGlnZXN0:"),
+        );
+        let req = Request::builder()
+            .method("POST")
+            .uri("https://localhost/submit")
+            .header(header::CONTENT_LENGTH, payload.len().to_string())
+            .body(buffered_body(payload.clone(), Some(sent.clone())))
+            .expect("build request");
+
+        let RequestOrResponse::Request(forwarded) = handler.inspect_body(req, HTTPS_PORT).await
+        else {
+            panic!("detect-only inspection must forward the request");
+        };
+        let collected = forwarded
+            .into_body()
+            .collect()
+            .await
+            .expect("collect forwarded body");
+        assert_eq!(
+            collected.trailers().cloned().expect("trailers preserved"),
+            sent
+        );
+        assert_eq!(&collected.to_bytes()[..], &payload[..]);
+    }
 }
