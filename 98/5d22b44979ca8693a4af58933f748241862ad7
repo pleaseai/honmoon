@@ -1,0 +1,25 @@
+scripts/agent-memory-index.ts
+  s_23314bc1687b8f::t_19b5429ebb86fe 180-185,188-191
+scripts/agent-memory-index.test.ts
+  s_23314bc1687b8f::t_19b5429ebb86fe 122-128,130-133
+AGENTS.md
+  s_23314bc1687b8f::t_19b5429ebb86fe 65-68
+orca.yaml
+  s_23314bc1687b8f::t_19b5429ebb86fe 14-20
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "985d22b44979ca8693a4af58933f748241862ad7",
+  "prompts": {},
+  "sessions": {
+    "s_23314bc1687b8f": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "6ff32bd2-e0d0-46dd-b1cb-1ffcc5db7869",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
