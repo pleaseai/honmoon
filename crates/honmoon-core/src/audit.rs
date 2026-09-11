@@ -345,8 +345,14 @@ impl AuditLog {
 ///   `honmoon hook` stalls a process the agent will time out — after which the
 ///   invocation proceeds redacted by nothing at all. `O_NONBLOCK` is what stops
 ///   that open from blocking (a FIFO with no reader fails `ENXIO` at once); it
-///   stays set on the descriptor afterwards, which is inert, because regular-file
-///   reads and writes ignore it and a regular file is all this returns.
+///   stays set on the descriptor afterwards, which is inert. POSIX specifies that
+///   for a regular file "the `O_NONBLOCK` flag shall have no effect", and Linux
+///   `write(2)` scopes its `EAGAIN` to a file *other than a socket* — pipes, FIFOs
+///   and devices — so the flag cannot reach a write here, a regular file being all
+///   this function returns. (The one historical exception, Linux mandatory locking
+///   under `mount -o mand`, was removed in 5.15. Were it to fire anyway,
+///   `append_jsonl` hands the error back to `record_durable` rather than losing the
+///   record.)
 ///
 /// **Still accepted, deliberately:**
 /// - A **symlinked parent directory**. `O_NOFOLLOW` constrains the final
