@@ -1,0 +1,52 @@
+crates/honmoon-core/src/lib.rs
+  s_23314bc1687b8f::t_8791a5449e9184 183-185,192,225-254,345-349,354-374,398-401,532-650,862,865
+.claude/agent-memory/review-review-security-reviewer/cel-compile-panic-class.md
+  s_23314bc1687b8f::t_752cc1a4448411 3
+  s_23314bc1687b8f::t_8791a5449e9184 1-2,4-45
+packages/policy/package.json
+  s_23314bc1687b8f::t_8791a5449e9184 17
+crates/honmoon-core/src/engine.rs
+  s_23314bc1687b8f::t_8791a5449e9184 5,98,169-200,203-207,260,341-370
+  s_23314bc1687b8f::t_1df11f831a65e4 371
+packages/policy/src/index.ts
+  s_23314bc1687b8f::t_8791a5449e9184 20-38
+packages/AGENTS.md
+  s_23314bc1687b8f::t_8791a5449e9184 29-33
+packages/policy/src/policy.schema.test.ts
+  s_23314bc1687b8f::t_8791a5449e9184 1-104
+packages/policy/schema/policy.schema.json
+  s_23314bc1687b8f::t_8791a5449e9184 53-58
+packages/policy/tsconfig.json
+  s_23314bc1687b8f::t_8791a5449e9184 8
+wiki/llms-full.txt
+  s_23314bc1687b8f::t_8791a5449e9184 2688,2728,2732,2782,2798-2814,2820,2846-2871,2894
+.claude/agent-memory/review-review-documentation-analyzer/pr152_shadowed_rule_warning_empty_condition.md
+  s_23314bc1687b8f::t_752cc1a4448411 3
+  s_23314bc1687b8f::t_8791a5449e9184 17-18,20-23,44-58
+wiki/getting-started/policy-authoring.md
+  s_23314bc1687b8f::t_8791a5449e9184 126,166,170,220,236-252,258,284-309,332
+.claude/agent-memory/review-review-pr-test-analyzer/blank_condition_unicode_whitespace_and_untested_schema.md
+  s_23314bc1687b8f::t_752cc1a4448411 3
+  s_23314bc1687b8f::t_8791a5449e9184 1-2,4-51
+.claude/agent-memory/review-review-silent-failure-hunter/project_cel_compile_panics_151.md
+  s_23314bc1687b8f::t_8791a5449e9184 1-2,4-55
+  s_23314bc1687b8f::t_752cc1a4448411 3
+bun.lock
+  s_23314bc1687b8f::t_aa2764afdce05b 96,1050-1051,1100-1101
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "023f6c7151b0d3520c562b0dbe9d5fdcbbc0631c",
+  "prompts": {},
+  "sessions": {
+    "s_23314bc1687b8f": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "6ff32bd2-e0d0-46dd-b1cb-1ffcc5db7869",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
