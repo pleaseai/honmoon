@@ -1,2 +1,0 @@
-- [honmoon SQL classification verification](honmoon-postgres-sql-classification.md) — hypothesize sqlparser-accepted-but-unwalked AST shapes, then verify against real Postgres before reporting; local psql/initdb available
-- [ocr scoping on honmoon](ocr-scoping-honmoon.md) — no default ocr flags configured; rules match by extension; lockfiles and docs excluded; use --from/--to on stacked PRs even with a clean tree

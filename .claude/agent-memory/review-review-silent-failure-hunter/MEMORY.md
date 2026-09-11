@@ -1,7 +1,0 @@
-- [Framing deliberate skips](feedback_framing_deliberate_skips.md) — a skip marked "do not flag" can still hide a flaggable gap (e.g. missing logging) in a stated sub-guarantee.
-- [engine.rs PII attribution](project_engine_pii_attribution.md) — decide_pii_audit_only design verified sound; only gap is eval_condition's unlogged execution errors.
-- [signed_body.rs SigV4 narrowing](project_signed_body_narrowing.md) — PR #120's aws_sigv4_signs_body narrowing reviewed clean; branch matrix to recheck if touched again.
-- [Trailer preservation body.rs](project_trailer_preservation_body_rs.md) — PR #130: dead-code frame-kind drop + HeaderMap::extend overwrite-not-merge edge case, both low risk today.
-- [hook salt audit visibility #131](project_hook_salt_audit_visibility_131.md) — new Degraded audit path is sound at open-failure; the post-open sink-write silence was fixed before merge by record_durable — tracing::warn! is not a reporting channel in a short-lived subprocess.
-- [Flush refusal barrier PG#113](project_flush_refusal_barrier_pg113.md) — EOF/error-as-pending peek verified safe via relay_finished; write-off warn! lacks flush-side fields.
-- [ADR-0009 trailer contract](project_adr0009_trailer_contract.md) — PR #150 doc-only PR verified accurate: warn claims, debug-vs-warn split, buffered-vs-overflow trailer visibility all check out.

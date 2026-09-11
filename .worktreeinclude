@@ -13,3 +13,7 @@
 
 # Claude Code local project instructions
 CLAUDE.local.md
+
+# Generated per-agent memory indexes (scripts/agent-memory-index.ts) — carrying
+# them over means a fresh worktree has them before anything regenerates.
+.claude/agent-memory/*/MEMORY.md

@@ -1,1 +1,0 @@
-- [Dashboard fix patterns](project_dashboard_fix_patterns.md) — @honmoon/policy value imports resolve; eslint type-specifier rule; oklch contrast compositing gotchas

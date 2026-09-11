@@ -45,6 +45,24 @@ cargo run -p honmoon-cli -- gateway --config policies/agent.yaml --addr 127.0.0.
 | `policies/` | Example policies. |
 | `wiki/` | Generated VitePress documentation site. |
 | `.please/docs/` | Knowledge docs, ADRs, tech-debt tracker. |
+| `.claude/agent-memory/` | Per-agent review notes (tracked) + a generated `MEMORY.md` index (not tracked). |
+
+## Agent Memory
+
+Agents record findings as one note per file under `.claude/agent-memory/<agent>/`, and those
+notes are committed with the PR that produced them. The `MEMORY.md` beside them is the index
+an agent loads to choose a note; it is **generated and git-ignored**, so never edit or commit
+it — put the one-line summary in the note's own frontmatter `description:`, which is what the
+index line is built from.
+
+```bash
+bun scripts/agent-memory-index.ts            # rebuild (also: mise run agent-memory-index)
+bun scripts/agent-memory-index.ts --check    # CI gate: every note can supply its line
+```
+
+Hand-appending a shared index made every concurrent PR that recorded a memory for the same
+agent collide on one line, and duplicated each claim into a second place that drifted from the
+note (issue #129). A `SessionStart` hook rebuilds the index, so a fresh clone gets one.
 
 ## Code Style
 
