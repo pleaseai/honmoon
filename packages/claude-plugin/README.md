@@ -176,8 +176,8 @@ plugin works unchanged on older Claude Code versions.
 |---|---|---|
 | Prompts | **Blocked** — a command hook cannot rewrite a prompt | **Rewritten**: the redacted prompt is submitted, with a context note telling the model values were replaced. It is dropped only when the engine is unreachable |
 | Prompt PII floor | Severity **3** (high) — `handle_user_prompt_submit` | Severity **2** — the prompt is scanned as tool output, so medium-severity PII (email, phone) is rewritten too |
-| Tool output | `Read`, `Bash`, `Grep` | `Read`, `Bash`, `Grep` **and `WebFetch`** |
-| Engine unreachable | **Fails open** (the tool call proceeds unredacted) | **Fails closed**: the tool result is denied (`honmoon: redaction engine unavailable (…); tool output withheld`) and the prompt is dropped. Set `failMode: "open"` for the old behavior |
+| Tool output | `Read`, `Bash`, `Grep` | `Read`, `Bash`, `Grep`, **`WebFetch` and every MCP tool** (`mcp__<server>__<tool>`) |
+| Engine unreachable | **Fails open** (the tool call proceeds unredacted) | **Fails closed**: the tool result is denied (`honmoon: redaction engine unavailable (…); tool output withheld`) and the prompt is dropped. Set `failMode: "open"` for the old behavior. **MCP tools are exempt** and always fail open — see below |
 | Transport | `honmoon hook` subprocess | `honmoon hook` subprocess, or HTTP to the management API |
 
 Only the `Read` result variants the detectors can read are rewritten: `text` and
@@ -186,6 +186,28 @@ is passed through untouched, as is a denied tool result. An errored result (a
 non-zero Bash exit whose stderr holds a key, say) is scanned too: because a hook
 cannot return its own `isError`, a redacted error goes back as a `deny` carrying
 the redacted text, which the model reads as the tool's error.
+
+### MCP tools
+
+MCP tool calls reach `tool.call` under `mcp__<server>__<tool>`, and the module
+matches them, so their output is redacted like any other tool's. The command
+hooks never covered them, and neither did earlier versions of this module.
+
+They are deliberately exempt from `failMode: "closed"`: an unreachable engine
+leaves an MCP result exactly as it was, rather than denying it. MCP was matched
+to *gain redaction*, not to introduce a new way for a connector to fail, so a
+honmoon outage must not start breaking MCP calls that worked before. Everything
+else still fails closed, and `failMode: "open"` still opens everything.
+
+Two limits worth knowing. The `PreToolUse` credential-file check is `Read`-only,
+so it does not gate what an MCP server reads on its own. And an MCP result is
+a list of content blocks that may include base64 image or audio data; the module
+hands the whole record to the engine, exactly as it already does for `Bash` and
+`WebFetch` output, rather than filtering blocks by kind — the engine only
+rewrites string leaves it matches, but a detector hit inside a base64 blob would
+corrupt it. `Read`'s image and PDF records are skipped for this reason; the
+equivalent per-block skip for MCP is not implemented, and the runtime shape of
+an MCP result has not been verified against a live server.
 
 ### Options
 
@@ -199,7 +221,7 @@ settings — project settings are not read):
 | `honmoonBin` | `honmoon` | The binary the `process` transport runs (command name or absolute path). Note this is a plugin option, not the command hooks' `HONMOON_BIN` env var — set both if honmoon is off `PATH` |
 | `hookUrl` | — | Management-API endpoint, e.g. `http://127.0.0.1:7777/api/hooks/claude-code`. Setting it selects the `http` transport unless `transport` says otherwise |
 | `hookToken` | — | Optional bearer token for `hookUrl` |
-| `failMode` | `closed` | `closed` denies tool output / drops the prompt when the engine is unreachable; `open` passes through |
+| `failMode` | `closed` | `closed` denies tool output / drops the prompt when the engine is unreachable; `open` passes through. MCP tools always behave as `open` |
 
 Each hook phase runs under its own 8 s budget, inside the host's 10 s
 per-hook limit. The host budgets only the hook's own work, not the time the
@@ -211,6 +233,18 @@ closed instead of running past the host and being skipped. Every
 failure path (spawn error, timeout, non-zero exit, unparseable stdout, HTTP
 error, a rejected session lookup, a `transport` of `http` without a
 `hookUrl`) is caught: the hook itself never throws.
+
+That is the module's own discipline, and it does not cover everything. Turning a
+verdict into a result — `sameShape` over a large record, the `JSON.stringify`
+in the redaction note — runs *after* the budget has been released, so a slow
+engine and a large result can still cross the host's limit. Claude Code 2.1.268
+makes the backstop declarable, and both registrations take one: without a
+`.catch` a failed hook is simply absent and the unredacted result reaches the
+model, which is what `failMode: "closed"` promises it will not. The handler
+runs on a small grace budget, so it only decides — `deny` the output (or drop
+the prompt) under `closed`, and stand aside under `open`. A hook that fails
+after the tool has already run is still denied: replaying it would hand back
+the very bytes the redactor never got to read.
 
 ### Both layers run at once
 

@@ -1,6 +1,6 @@
 import type { EngineInterface } from 'claude-code'
 import { describe, expect, test } from 'bun:test'
-import { applyOptions, promptHook, toolHook } from './honmoon'
+import { applyOptions, promptCatch, promptHook, toolCatch, toolHook } from './honmoon'
 
 interface Payload { hook_event_name: string, tool_name?: string, tool_response?: unknown }
 interface Reply { stdout?: string, exitCode?: number, throws?: string }
@@ -429,5 +429,90 @@ describe('prompt.submit', () => {
     const { $ } = engine(() => ({ throws: 'spawn honmoon ENOENT' }))
     const r = await runPrompt($, { text: 'hello', wait: false, origin: 'user' }, async () => ({ text: 'hello' }))
     expect(r.drop).toBe('honmoon: redaction engine unavailable (spawn honmoon ENOENT); prompt not sent')
+  })
+})
+
+describe('.catch — the host\'s backstop when the hook itself fails', () => {
+  /** What the host hands a `.catch` handler: why, and whether it had dispatched. */
+  function failure(kind: 'throw' | 'timeout', message?: string, called = false): unknown {
+    return { error: { kind, message, budget: 1_000 }, called }
+  }
+
+  test('withholds the tool output when the hook overran the host budget', async () => {
+    applyOptions({})
+    const { $ } = engine(() => ({}))
+    const r = await toolCatch($ as never, readEvent as never, failure('timeout') as never)
+    expect(r).toEqual({ deny: 'honmoon: redaction engine unavailable (hook timeout); tool output withheld' })
+  })
+
+  test('withholds the tool output when the hook threw, naming the cause', async () => {
+    applyOptions({})
+    const { $ } = engine(() => ({}))
+    const r = await toolCatch($ as never, readEvent as never, failure('throw', 'boom') as never)
+    expect(r).toEqual({ deny: 'honmoon: redaction engine unavailable (hook throw: boom); tool output withheld' })
+  })
+
+  test('withholds the output even when the hook had already run the tool', async () => {
+    applyOptions({})
+    const { $ } = engine(() => ({}))
+    // `called` means `next(e)` would replay the settled result — the raw bytes
+    // the redactor never got to read. Fail-closed must not hand those back.
+    const r = await toolCatch($ as never, readEvent as never, failure('timeout', undefined, true) as never)
+    expect(r).toEqual({ deny: 'honmoon: redaction engine unavailable (hook timeout); tool output withheld' })
+  })
+
+  test('is absent under failMode open, so the raw result stands', async () => {
+    applyOptions({ failMode: 'open' })
+    const { $ } = engine(() => ({}))
+    expect(await toolCatch($ as never, readEvent as never, failure('throw', 'boom') as never)).toBeUndefined()
+    expect(await promptCatch($ as never, { text: 'hi' } as never, failure('throw', 'boom') as never)).toBeUndefined()
+  })
+
+  test('drops the prompt when the prompt hook itself failed', async () => {
+    applyOptions({})
+    const { $ } = engine(() => ({}))
+    const r = await promptCatch($ as never, { text: 'hi' } as never, failure('timeout') as never)
+    expect(r).toEqual({ drop: 'honmoon: redaction engine unavailable (hook timeout); prompt not sent' })
+  })
+})
+
+describe('MCP tools — matched for redaction, exempt from failMode closed', () => {
+  const mcpEvent = { tool: 'mcp__gmail__create_draft', tool_use_id: 'tu-1' }
+  const mcpResult = { content: [{ type: 'text', text: 'token=sk-live-1' }], isError: false }
+
+  test('redacts MCP output, which the old matcher never saw', async () => {
+    applyOptions({})
+    const clean = { content: [{ type: 'text', text: 'token=<<hs:abc123>>' }], isError: false }
+    const { $, calls } = engine(p => (p.hook_event_name === 'PostToolUse' ? { stdout: redacted(clean) } : {}))
+    const r = await runTool($, mcpEvent, async () => ({ ref: 3, text: 'token=sk-live-1', result: mcpResult }))
+    expect(r.result).toEqual(clean)
+    expect(r.context?.[0]).toContain('1 value(s) redacted')
+    // The engine gates PostToolUse on Read/Bash/Grep, so MCP goes in under Read.
+    expect(calls.at(-1)?.payload.tool_name).toBe('Read')
+  })
+
+  test('passes MCP output through when the engine is unreachable, rather than denying it', async () => {
+    applyOptions({})
+    const { $ } = engine(() => ({ throws: 'spawn honmoon ENOENT' }))
+    const settled = { ref: 3, text: 'token=sk-live-1', result: mcpResult }
+    const r = await runTool($, mcpEvent, async () => settled)
+    expect(r).toBe(settled)
+    expect(r.deny).toBeUndefined()
+  })
+
+  test('still withholds a non-MCP tool under the same unreachable engine', async () => {
+    applyOptions({})
+    const { $ } = engine(() => ({ throws: 'spawn honmoon ENOENT' }))
+    const r = await runTool($, readEvent, async () => readResult)
+    expect(r.deny).toBe('honmoon: redaction engine unavailable (spawn honmoon ENOENT); tool output withheld')
+  })
+
+  test('a failed hook leaves an MCP call alone but withholds a Read', async () => {
+    applyOptions({})
+    const { $ } = engine(() => ({}))
+    const failed = { error: { kind: 'timeout', budget: 1_000 }, called: true }
+    expect(await toolCatch($ as never, mcpEvent as never, failed as never)).toBeUndefined()
+    expect(await toolCatch($ as never, readEvent as never, failed as never))
+      .toEqual({ deny: 'honmoon: redaction engine unavailable (hook timeout); tool output withheld' })
   })
 })
