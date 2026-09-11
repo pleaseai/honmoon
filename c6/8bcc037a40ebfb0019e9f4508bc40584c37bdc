@@ -1,0 +1,21 @@
+crates/honmoon-core/src/lib.rs
+  s_c4758cf40f67ff::t_4360c7d74e31a3 13,25
+crates/honmoon-core/src/hook_salt.rs
+  s_c4758cf40f67ff::t_4360c7d74e31a3 1-97
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "c68bcc037a40ebfb0019e9f4508bc40584c37bdc",
+  "prompts": {},
+  "sessions": {
+    "s_c4758cf40f67ff": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "5eee7cb5-9641-48c8-be75-ad8db0bdac05",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
