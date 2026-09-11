@@ -500,16 +500,16 @@ impl HonmoonHandler {
         let length = bytes.len();
 
         // SigV4 and its peers sign *headers* even when the payload is out of
-        // the signature (`UNSIGNED-PAYLOAD`), and re-framing the rewritten body
-        // changes headers a `SignedHeaders` list routinely names — an AWS SDK
-        // upload signs `content-length`. Breaking the signature that way earns
-        // the same opaque upstream rejection as rewriting a signed body, so it
-        // takes the same `--signed-body` decision. Only the headers this
-        // rewrite would actually change are asked about: a signed
+        // the signature (`UNSIGNED-PAYLOAD`), and the rewrite changes headers a
+        // `SignedHeaders` list routinely names — an AWS SDK upload signs
+        // `content-length`, an S3 upload `content-md5`. Breaking the signature
+        // that way earns the same opaque upstream rejection as rewriting a
+        // signed body, so it takes the same `--signed-body` decision. Only the
+        // headers this rewrite would actually change are asked about: a signed
         // `Content-Encoding` the request never sent, or a signed
         // `Content-Length` the redacted body happens to match, survives it.
-        let reframed = reframed_headers(request.headers(), length);
-        let broken = signed_headers_among(request.headers(), request.uri(), &reframed);
+        let rewritten = rewritten_headers(request.headers(), length);
+        let broken = signed_headers_among(request.headers(), request.uri(), &rewritten);
         if !broken.is_empty() {
             let signed = broken
                 .iter()
@@ -529,8 +529,8 @@ impl HonmoonHandler {
                     tracing::warn!(
                         domain = %host,
                         headers = %signed,
-                        "header-signed request blocked: re-framing the redacted body would \
-                         invalidate its signature"
+                        "header-signed request blocked: replacing the redacted body would \
+                         rewrite or drop those headers and invalidate its signature"
                     );
                     self.state.audit.record(AuditDraft {
                         decision: Decision::Denied,
@@ -1148,15 +1148,15 @@ fn redact_json_with_spans(
     }
 }
 
-/// A `403` explaining that redaction cannot re-frame a request whose signature
-/// covers the framing headers the rewrite has to change — the header-signed
-/// counterpart of [`signed_body_response`].
+/// A `403` explaining that redaction cannot rewrite a request whose signature
+/// covers headers the rewrite has to change — the header-signed counterpart of
+/// [`signed_body_response`].
 fn signed_headers_response(signed: &str) -> RequestOrResponse {
     let reason = format!(
-        "honmoon: this request's signature covers {signed}, and wire redaction would rewrite \
-         those headers to re-frame the redacted body; the upstream would reject the forwarded \
-         request. Remove the sensitive value, or run the gateway with --signed-body forward to \
-         send it unredacted.\n"
+        "honmoon: this request's signature covers {signed}, and wire redaction would rewrite or \
+         drop those headers when it replaces the redacted body; the upstream would reject the \
+         forwarded request. Remove the sensitive value, or run the gateway with --signed-body \
+         forward to send it unredacted.\n"
     );
     let length = reason.len();
     Response::builder()
@@ -1170,6 +1170,26 @@ fn signed_headers_response(signed: &str) -> RequestOrResponse {
         ))))
         .expect("static response is valid")
         .into()
+}
+
+/// Every header replacing the body with `new_length` bytes of redacted text
+/// would change on the wire: the framing headers [`reframed_headers`] re-frames,
+/// plus the [`BODY_DIGEST_HEADERS`] the strip loop removes as stale validators
+/// of the old bytes.
+///
+/// This is the decision input, not the strip list — the two stay deliberately
+/// distinct. The rewrite strips every `BODY_DIGEST_HEADERS` name unconditionally,
+/// because removing one the request never sent costs nothing; asking whether a
+/// *signature* covers an absent header would cost a `403`, since no signature is
+/// broken by stripping a header that was never there.
+fn rewritten_headers(headers: &header::HeaderMap, new_length: usize) -> Vec<header::HeaderName> {
+    let mut rewritten = reframed_headers(headers, new_length);
+    rewritten.extend(
+        BODY_DIGEST_HEADERS
+            .into_iter()
+            .filter(|name| headers.contains_key(name)),
+    );
+    rewritten
 }
 
 /// Which of [`REWRITTEN_FRAMING_HEADERS`] replacing the body with `new_length`
@@ -1415,6 +1435,46 @@ mod tests {
         repeated.append(header::CONTENT_LENGTH, "12".parse().expect("length"));
         repeated.append(header::CONTENT_LENGTH, "12".parse().expect("length"));
         assert_eq!(reframed_headers(&repeated, 12), [header::CONTENT_LENGTH]);
+    }
+
+    /// The rewrite strips the body-digest validators as well as re-framing, so
+    /// they belong in the decision — but only the ones the request carries: a
+    /// signature naming a digest header the client never sent is not broken by
+    /// a strip that removes nothing.
+    #[test]
+    fn carried_body_digest_headers_join_the_reframed_ones() {
+        let mut headers = header::HeaderMap::new();
+        headers.insert(header::CONTENT_LENGTH, "12".parse().expect("length"));
+        assert!(
+            rewritten_headers(&headers, 12).is_empty(),
+            "a same-size redaction with no digest header changes nothing"
+        );
+
+        headers.insert(
+            header::HeaderName::from_static("content-md5"),
+            "stale".parse().expect("digest"),
+        );
+        assert_eq!(
+            rewritten_headers(&headers, 12),
+            [header::HeaderName::from_static("content-md5")],
+            "a carried digest header is stripped even when nothing is re-framed"
+        );
+        assert_eq!(
+            rewritten_headers(&headers, 20),
+            [
+                header::CONTENT_LENGTH,
+                header::HeaderName::from_static("content-md5")
+            ]
+        );
+
+        // Reads from the constant the strip loop itself iterates, so a
+        // validator added there is covered here without editing this test.
+        let mut every = header::HeaderMap::new();
+        every.insert(header::CONTENT_LENGTH, "12".parse().expect("length"));
+        for name in BODY_DIGEST_HEADERS {
+            every.insert(name, "stale".parse().expect("digest"));
+        }
+        assert_eq!(rewritten_headers(&every, 12), BODY_DIGEST_HEADERS);
     }
 
     #[test]

@@ -100,8 +100,9 @@ pub fn authentication_signs_headers(headers: &HeaderMap, uri: &Uri) -> bool {
 /// routinely named in a `SignedHeaders` list (an AWS SDK upload signs
 /// `content-length`), so they need the same one-definition agreement between
 /// rewriting and detection that [`BODY_DIGEST_HEADERS`] has: this is the set
-/// [`mitm`](crate::mitm) rewrites and the set it asks
-/// [`signed_headers_among`] about.
+/// [`mitm`](crate::mitm) re-frames, and it asks [`signed_headers_among`] about
+/// exactly the members that rewrite would change — alongside the
+/// [`BODY_DIGEST_HEADERS`] the same rewrite strips.
 pub const REWRITTEN_FRAMING_HEADERS: [header::HeaderName; 3] = [
     header::CONTENT_LENGTH,
     header::CONTENT_ENCODING,
