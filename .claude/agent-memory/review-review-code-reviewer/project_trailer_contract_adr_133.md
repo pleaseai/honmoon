@@ -6,8 +6,17 @@ metadata:
 ---
 
 Issue #133 / PR #150 landed ADR-0009 declaring honmoon's request inspection covers **body bytes
-only** — header/trailer values are forwarded unscanned, unredacted, by design. No behavior change;
-pure docs + two pinning tests.
+only** — header and trailer values are never scanned for PII or secrets and never redacted, by
+design. No behavior change; docs + pinning tests.
+
+**Inspection is not forwarding — keep the two apart.** Whether a trailer *reaches* the upstream is
+conditional: replayed on the pass-through path, but **dropped** when wire redaction rewrites the
+body, because `forwarded_request` rebuilds it with `Full::new`, which carries no trailer frame
+(`mitm.rs` ~L556-560 says so deliberately). The PR's first draft said "forwarded verbatim" and
+three reviewers independently caught it. Also: `pii.count == 0` still *matches* on trailer-borne
+secrets, because the engine binds `pii` with its empty default so absence conditions work — so a
+`pii.count == 0 -> allow` rule allows such a request, and only *positive-finding* rules fail to
+fire.
 
 Verified against source (`crates/honmoon-proxy/src/mitm.rs::inspect_body`,
 `crates/honmoon-proxy/src/body.rs::buffer_up_to`) and against `git show 023cf54`:

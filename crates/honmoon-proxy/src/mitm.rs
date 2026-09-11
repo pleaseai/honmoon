@@ -578,7 +578,9 @@ impl HonmoonHandler {
     ///
     /// **Bodies only.** Everything the scan sees derives from `scanned`, which
     /// is set exclusively from the collected or buffered body bytes. Header and
-    /// trailer values are never inspected and never redacted (whether a trailer
+    /// trailer values are never scanned for PII or secrets and never redacted
+    /// (headers *are* read, for framing, decoding and signature metadata — what
+    /// never happens is a detector running over them; whether a trailer
     /// is *forwarded* is a separate, conditional matter — `forwarded_request`'s
     /// redaction rewrite drops the frame; see ADR-0009) — `facts.pii` stays
     /// empty for them, so no *positive-finding* rule (`pii.count > 0`, a
