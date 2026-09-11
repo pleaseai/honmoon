@@ -311,8 +311,25 @@ owner-only when the loader looked, not that it was never readable by anyone else
 `chmod` that succeeds closes the window going forward and says nothing about the one
 before it. Nor does it reach past the POSIX mode bits: on macOS an ACL entry
 granting another local user read leaves the mode at `0600`, and this check cannot
-see it. If you find this event, rotate the salt — delete the file once its
-permissions can be fixed and let the next invocation mint a new one.
+see it.
+
+**So honmoon reports currently-observable exposure only, and cannot attest history.**
+A clean log is not a clean bill of health for this key. The loader learns a mode at
+the instant it looks, never how long the file carried it — a `0600` salt today may
+have been `0644` last week, and no number of stats would tell you. That limit is
+worth knowing because the two cases need *different* responses: for a key that is
+exposed **now**, tightening the mode is the fix, which is what the loader already
+tries; for a key that **was** exposed, tightening it is not, because the bytes are
+already out and only regenerating the salt helps. honmoon raises no event for the
+second case today ([#143](https://github.com/pleaseai/honmoon/issues/143) tracks
+whether it should), so if you have reason to think the file was ever readable by
+another local user — a restored backup, a shared home, a permissive umask — rotate
+on that suspicion rather than waiting for a signal that will not come.
+
+To rotate: delete `~/.honmoon/hook-salt` once its permissions can be fixed and let the
+next invocation mint a new one. Placeholders for the same secret change at that point,
+so an in-flight session's transcript stops matching earlier turns — losing the
+byte-stability #20 and #98 are about. Rotate between sessions where you can.
 
 **Where each event is visible.** The two transports reach different readers, because
 the gateway's management API (`/api/audit`, which the embedded dashboard polls) serves
