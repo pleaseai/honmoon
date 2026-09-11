@@ -1,0 +1,20 @@
+.claude/agent-memory/review-review-silent-failure-hunter/project_hook_salt_audit_visibility_131.md
+  s_6eafee1f39ff31::t_57210a13892dd2 27
+  s_6eafee1f39ff31::t_71e4a73f77d3eb 28-29
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "bb6ed0fefdd2ae80b50e1fd0347629d56236deca",
+  "prompts": {},
+  "sessions": {
+    "s_6eafee1f39ff31": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "ef7227cc-7b83-4783-b04d-4349ac4c0afc",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
