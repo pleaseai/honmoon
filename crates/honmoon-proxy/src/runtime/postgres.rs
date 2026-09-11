@@ -159,8 +159,13 @@ struct ClientLink {
     /// exactly one `ReadyForQuery`: the `StartupMessage`, then every `Q`,
     /// `Sync` and `FunctionCall`. Written only by the message loop.
     ///
-    /// Lowered again — only ever to a count the client has provably received —
-    /// when a stalled wait writes an answer off as never coming.
+    /// Only ever raised. A stalled wait closes its gap by crediting
+    /// [`Delivered::sync_points`] instead of lowering this, so that
+    /// `sync_points <= forwarded` holds by construction: the two are mutated
+    /// from different tasks, and lowering this one leaves a window in which an
+    /// answer delivered concurrently is credited against the old, higher value
+    /// and survives the subtraction — inverting the pair and releasing the next
+    /// refusal before its own answer.
     forwarded: Arc<AtomicU64>,
     /// What the relay has written to the client so far. A watch rather than
     /// plain counters so a refusal can wait on it without polling.
@@ -184,6 +189,20 @@ struct Delivered {
     /// a database that had stopped answering, and the refusal queued behind it
     /// would be injected into the middle of its result set.
     messages: u64,
+    /// Answers a stalled wait gave up on, and which must therefore be thrown
+    /// away rather than counted if the database sends them after all.
+    ///
+    /// A write-off credits [`Delivered::sync_points`] for answers the client
+    /// never received, so that later refusals are not made to pay the stall
+    /// bound again. That credit is a fiction, and the database can still
+    /// puncture it: PostgreSQL answers in order, so the next `ReadyForQuery`
+    /// after a write-off belongs to the oldest unanswered statement — one that
+    /// was written off. Counting it would advance `sync_points` into the slot of
+    /// a *later* statement whose answer has not arrived, releasing a refusal
+    /// queued behind that one ahead of its response, which is #101 again.
+    /// Carrying the count here lets each such answer be matched to the write-off
+    /// it belongs to and discarded.
+    debt: u64,
 }
 
 impl ClientLink {
@@ -195,6 +214,7 @@ impl ClientLink {
             delivered: Arc::new(watch::Sender::new(Delivered {
                 sync_points: Some(0),
                 messages: 0,
+                debt: 0,
             })),
             stream_intact: Arc::new(std::sync::atomic::AtomicBool::new(true)),
         }
@@ -227,25 +247,37 @@ impl ClientLink {
     ///
     /// Every message counts as progress and restarts the stall window; only a
     /// sync point advances what a refusal is waiting for. Both are published in
-    /// one update so a waiter is woken once.
+    /// one update so a waiter is woken once — and every read of the counters
+    /// happens inside that update, so nothing here can interleave with the
+    /// write-off in [`ClientLink::await_forwarded_responses`].
     fn delivered_message(&self, sync_point: bool) {
-        let forwarded = self.forwarded.load(Ordering::Relaxed);
+        let forwarded = &self.forwarded;
         self.delivered.send_modify(|delivered| {
             delivered.messages += 1;
             if !sync_point {
                 return;
             }
-            if let Some(count) = delivered.sync_points.as_mut() {
-                // Never count past what was forwarded. An answer written off as
-                // never coming and then arriving late would otherwise push this
-                // above `forwarded` — which was lowered past it — and release
-                // later refusals before their own answers, losing exactly the
-                // ordering the write-off was trying to keep affordable. In
-                // ordinary operation this cannot bind: every `ReadyForQuery`
-                // answers a sync point counted before it could be sent.
-                if *count < forwarded {
-                    *count += 1;
-                }
+            let Some(count) = delivered.sync_points.as_mut() else {
+                return;
+            };
+            if delivered.debt > 0 {
+                // PostgreSQL answers in order, so this is the oldest statement
+                // still unanswered — and a debt means the oldest ones were
+                // written off. Their credit was already taken; taking it twice
+                // would advance the count into a later statement's slot and
+                // release the refusal queued behind *that* one early.
+                delivered.debt -= 1;
+                return;
+            }
+            // Never count past what was forwarded. In ordinary operation this
+            // cannot bind — every `ReadyForQuery` answers a sync point counted
+            // before the frame that earns it goes out — so it stands as a guard
+            // against a backend that sends more of them than it was asked for,
+            // not as part of the arithmetic. Read inside the update rather than
+            // before it, so there is no staleness left for a reader to reason
+            // about.
+            if *count < forwarded.load(Ordering::Relaxed) {
+                *count += 1;
             }
         });
     }
@@ -346,12 +378,33 @@ impl ClientLink {
                     // Not one byte of any backend message for a whole window:
                     // the missing answers are not late, they are not coming.
                     // Write the gap off so the rest of the session is ordered
-                    // against what actually arrives — the counters are
-                    // monotonic, so leaving the skew in place would make every
-                    // later refusal on this connection pay this bound again. A
-                    // written-off answer that turns up after all is discarded by
-                    // the clamp in `delivered_message`.
-                    self.forwarded.fetch_sub(expected - seen, Ordering::Relaxed);
+                    // against what actually arrives — the counters only rise, so
+                    // leaving the skew in place would make every later refusal
+                    // on this connection pay this bound again.
+                    //
+                    // The gap is closed by crediting what was delivered, never
+                    // by lowering what was forwarded: `forwarded` is written by
+                    // this task and read by the relay's, so lowering it leaves a
+                    // window in which an answer delivered concurrently is
+                    // credited against the old, higher value and survives the
+                    // subtraction. Crediting here instead puts both counters
+                    // under the one `send_modify` the relay also writes through,
+                    // which leaves no interleaving to reason about — and the
+                    // count is read from inside that update rather than from the
+                    // `seen` sampled before the wait, so an answer that landed
+                    // while the timeout was resolving is accounted for rather
+                    // than double-counted.
+                    //
+                    // What is credited is owed back: each written-off answer is
+                    // remembered as debt so that, if it turns up after all, it
+                    // is discarded rather than advancing the count into a later
+                    // statement's slot.
+                    self.delivered.send_modify(|delivered| {
+                        if let Some(count) = delivered.sync_points.as_mut() {
+                            delivered.debt += expected.saturating_sub(*count);
+                            *count = (*count).max(expected);
+                        }
+                    });
                     tracing::warn!(
                         expected,
                         delivered = seen,
