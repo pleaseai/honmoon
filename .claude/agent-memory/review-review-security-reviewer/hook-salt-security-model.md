@@ -43,3 +43,17 @@ fallback is unsafe only when its CWD is attacker-writable); the default user-own
 `$HOME/.honmoon` is safe as long as it is not attacker-writable.
 To fully close it for hostile-directory deployments, use fd-based linking (`O_TMPFILE` +
 `linkat`) and `O_NOFOLLOW`/`symlink_metadata` on the reads.
+
+**2026-09 (#98) — derivation is now shared and per-session.** `derive_hook_salt` /
+`hook_salt_context` live in `crates/honmoon-core/src/hook_salt.rs`; `honmoon-mgmt`
+exposes `pub enum HookSalt { Fixed{salt}, PerSession{machine_key} }` on `AppState`
+and derives per request from the **request body's** `session_id`. Two consequences to
+re-check on any future change here:
+- The mgmt process now retains the **master machine key** (not a derived, scoped salt)
+  for its lifetime, reachable through the public `AppState.hook_salt` variant field.
+- `POST /api/hooks/claude-code` (unauthenticated unless `--hook-token`) is a
+  placeholder-minting oracle under a **caller-chosen session salt** — guess-confirmation
+  against another session's placeholders is now possible where it was not before.
+- Empty-key guards moved into `HookSalt::fixed`/`per_session`; `hook::machine_key()`
+  never returns empty (>=16B file, 32B fresh, or the fallback constant), so the asserts
+  are startup-only, not a remote panic.

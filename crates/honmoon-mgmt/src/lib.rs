@@ -15,6 +15,7 @@
 //! `apps/dashboard/dist`; build it (`bun run --filter @honmoon/dashboard build`)
 //! before a release `cargo build`.
 
+use std::borrow::Cow;
 use std::sync::Arc;
 
 use axum::Json;
@@ -25,7 +26,8 @@ use axum::response::{Html, IntoResponse, Response};
 use axum::routing::{get, post};
 use hmac::{Hmac, Mac};
 use honmoon_core::{
-    AuditEvent, MappingStore, PathResolution, Policy, claude_code_hook_verdict, is_sensitive_path,
+    AuditEvent, MappingStore, PathResolution, Policy, claude_code_hook_verdict, derive_hook_salt,
+    hook_salt_context, is_sensitive_path,
 };
 use honmoon_proxy::approval::{ApprovalDecision, PendingApproval};
 use honmoon_proxy::gateway::GatewayState;
@@ -42,14 +44,95 @@ type HmacSha256 = Hmac<Sha256>;
 #[folder = "../../apps/dashboard/dist"]
 struct Assets;
 
+/// How the hook endpoint keys placeholder minting.
+///
+/// The command transport (`honmoon hook`) derives its salt from the payload's
+/// `session_id`, so this endpoint must too — otherwise a session that mixes
+/// transports mints two different placeholders for one secret and the prompt
+/// prefix stops being byte-stable across turns (#98).
+#[derive(Clone)]
+pub enum HookSalt {
+    /// One salt for every request: the operator pinned a salt context
+    /// (`--hook-salt-context`, matching `honmoon hook --salt-context`), or a
+    /// test pinned raw bytes.
+    Fixed(HookKey),
+    /// Derived per request from the payload's `session_id`, keyed by the
+    /// machine salt — byte-identical to what `honmoon hook` derives for the
+    /// same session on the same machine.
+    PerSession(HookKey),
+}
+
+/// Validated HMAC key material held by a [`HookSalt`].
+///
+/// A Rust enum variant's fields are always as public as the enum itself, so
+/// carrying the bytes inline would let any caller write
+/// `HookSalt::Fixed { salt: Arc::new(vec![]) }` and walk straight past the
+/// emptiness check the constructors exist to enforce. The bytes live behind
+/// this newtype's private field instead: outside this module the only way to
+/// obtain one is [`HookSalt::fixed`] or [`HookSalt::per_session`], and pattern
+/// matching a variant yields a `HookKey` whose contents stay unreadable — which
+/// also keeps `PerSession`'s machine secret off the crate's public surface.
+#[derive(Clone)]
+pub struct HookKey(Arc<Vec<u8>>);
+
+impl HookKey {
+    /// **Panics** on empty bytes: an empty HMAC key makes placeholders for
+    /// known secrets precomputable.
+    fn new(bytes: Vec<u8>, what: &str) -> Self {
+        assert!(!bytes.is_empty(), "{what} must not be empty");
+        Self(Arc::new(bytes))
+    }
+
+    fn as_slice(&self) -> &[u8] {
+        self.0.as_slice()
+    }
+}
+
+impl HookSalt {
+    /// Pin one salt for every request.
+    ///
+    /// **Panics** on empty bytes (see [`HookKey`]).
+    pub fn fixed(salt: Vec<u8>) -> Self {
+        Self::Fixed(HookKey::new(salt, "hook salt"))
+    }
+
+    /// Derive each request's salt from its session, keyed by `machine_key` —
+    /// the secret persisted at `~/.honmoon/hook-salt` (see `honmoon-cli`'s
+    /// `hook::machine_key`).
+    ///
+    /// **Panics** on an empty key, for the same reason as [`Self::fixed`].
+    pub fn per_session(machine_key: Vec<u8>) -> Self {
+        Self::PerSession(HookKey::new(machine_key, "hook machine key"))
+    }
+
+    /// The salt this payload's placeholders are minted under.
+    fn for_payload(&self, payload: &serde_json::Value) -> Cow<'_, [u8]> {
+        match self {
+            Self::Fixed(salt) => Cow::Borrowed(salt.as_slice()),
+            Self::PerSession(machine_key) => Cow::Owned(derive_hook_salt(
+                machine_key.as_slice(),
+                hook_salt_context(None, payload),
+            )),
+        }
+    }
+
+    /// The one salt every request uses, when there is one.
+    fn pinned(&self) -> Option<&[u8]> {
+        match self {
+            Self::Fixed(salt) => Some(salt.as_slice()),
+            Self::PerSession(_) => None,
+        }
+    }
+}
+
 /// Shared state for the management API: the gateway runtime state plus the raw
 /// policy source (for the dashboard's read-only policy view/editor).
 #[derive(Clone)]
 pub struct AppState {
     pub gateway: GatewayState,
     pub policy_yaml: Arc<String>,
-    /// Stable HMAC salt used by gateway-direct hook redaction.
-    pub hook_salt: Arc<Vec<u8>>,
+    /// How gateway-direct hook redaction keys its HMAC.
+    pub hook_salt: HookSalt,
     /// Live reverse mappings introduced by hook and proxy-wire redaction.
     ///
     /// When wire redaction is enabled this is the exact store held by the proxy:
@@ -60,27 +143,30 @@ pub struct AppState {
 }
 
 impl AppState {
-    /// Build state with explicit hook salt and optional bearer token.
+    /// Build state with an explicit hook salt source and optional bearer token.
     ///
     /// There is deliberately no salt-less constructor: the hook salt keys the
     /// HMAC that derives redaction placeholders, so baking in a fixed default
     /// would make placeholders for known secrets precomputable. Callers must
-    /// supply a securely sourced salt (see `honmoon-cli`'s `derive_salt_context`).
+    /// supply securely sourced key material (see `honmoon-cli`'s
+    /// `hook::machine_key`).
     pub fn with_hook_config(
         gateway: GatewayState,
         policy_yaml: impl Into<String>,
-        hook_salt: Vec<u8>,
+        hook_salt: HookSalt,
         hook_token: Option<String>,
     ) -> Self {
-        assert!(!hook_salt.is_empty(), "hook salt must not be empty");
-        // Hook and wire redaction share one mapping store, so they must mint the
-        // same placeholder for a given secret — which only holds if they key the
-        // HMAC with the same salt. The CLI upholds this by deriving one salt for
-        // both; enforce it here so a future caller can't silently diverge the two
-        // transports and break cache-stable determinism.
-        if let Some(redaction) = gateway.redaction.as_ref() {
+        // Hook and wire redaction share one mapping store, so where both key on
+        // one pinned salt they must key on the *same* one; enforce it here so a
+        // future caller can't silently diverge them and break cache-stable
+        // determinism. Nothing to enforce for a per-session hook salt: wire
+        // redaction is process-scoped (the proxy sees connections, not
+        // sessions), so it deliberately keys on the gateway's own context while
+        // the hook transports key on the session they share. Detokenization is
+        // a store lookup, so both mintings restore either way.
+        if let (Some(redaction), Some(pinned)) = (gateway.redaction.as_ref(), hook_salt.pinned()) {
             assert!(
-                redaction.salt.as_slice() == hook_salt.as_slice(),
+                redaction.salt.as_slice() == pinned,
                 "hook salt must match the wire redaction salt so both transports mint identical placeholders"
             );
         }
@@ -92,7 +178,7 @@ impl AppState {
         Self {
             gateway,
             policy_yaml: Arc::new(policy_yaml.into()),
-            hook_salt: Arc::new(hook_salt),
+            hook_salt,
             hook_mappings,
             hook_token: hook_token.map(Arc::from),
         }
@@ -133,6 +219,15 @@ async fn healthz() -> Json<serde_json::Value> {
 /// Claude Code HTTP hooks fail open on connection errors, timeouts, and non-2xx
 /// responses: processing continues without applying a verdict. That is why the
 /// plugin defaults to the command transport, which can perform local fallback.
+///
+/// Placeholder minting is deterministic in `(salt, secret)` and the salt follows
+/// the caller's own `session_id`, so anyone who can reach this endpoint can mint
+/// the placeholder a named session would produce for a guessed secret and
+/// compare it against one observed in that session's transcript. That confirms a
+/// guess; it never reveals a secret or the machine key, and the local command
+/// transport has always offered the same confirmation to anyone able to run
+/// `honmoon hook --salt-context`. Keep the listener on loopback (the
+/// `--mgmt-addr` default) and set `--hook-token` before exposing it further.
 async fn claude_code_hook(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -156,7 +251,8 @@ async fn claude_code_hook(
         .and_then(serde_json::Value::as_str);
     let agent_cwd = payload.get("cwd").and_then(serde_json::Value::as_str);
     let resolution = resolve_agent_path(path_to_resolve, agent_cwd).await;
-    let verdict = claude_code_hook_verdict(&payload, &state.hook_salt, resolution);
+    let salt = state.hook_salt.for_payload(&payload);
+    let verdict = claude_code_hook_verdict(&payload, &salt, resolution);
     let (output, mapping) = verdict.into_parts();
     state.hook_mappings.record(mapping);
     (StatusCode::OK, Json(output)).into_response()

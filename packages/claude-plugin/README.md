@@ -215,14 +215,63 @@ given, verbatim. Verified on 2.1.263 — the module's engine call returns an emp
 verdict and the transcript carries one set of placeholders. Drop the `hooks` key
 from `hooks/hooks.json` to run the module alone.
 
-That holds for the `process` transport. With `transport: "http"` the two layers
-key their placeholders differently: `honmoon hook` derives its salt from the
-payload's `session_id`, while the management API uses the gateway's
-`--hook-salt-context`, so one secret can surface as two different `<<hs:…>>`
-tokens in a session (a `Bash` result redacted by the command hook, a `WebFetch`
-result redacted by the module). Until the gateway derives its salt from the
-session as well, run the http transport with the command hooks dropped, or keep
-`transport: "process"`.
+That holds for `transport: "http"` as well **when both transports derive from the
+same machine key** — the per-machine random secret that keys the HMAC behind every
+placeholder, read from `~/.honmoon/hook-salt` whenever that file is usable (see the
+fallback note below for when it is not). What has to match is the key bytes; where they are stored
+only matters in so far as it decides which bytes each process gets. Two processes
+on one host reading one `$HOME/.honmoon/hook-salt` read the same bytes, which is
+how the co-located deployment the `hookUrl` example above describes satisfies it.
+Both transports then derive the salt from the payload's `session_id` under that
+shared key, so one secret mints one `<<hs:…>>` token per session whichever layer
+saw it: a `Bash` result redacted by the command hook and a `WebFetch` result
+redacted by the module carry the identical placeholder (#98). A gateway started
+with `--hook-salt-context` is the exception — that pins the endpoint to the given
+context instead of the session, so either leave it unset or pin the command hooks
+to the same value (`honmoon hook --salt-context`, or `HONMOON_HOOK_SALT_CONTEXT`
+in their environment).
+
+**Known limitation — different key bytes break parity.** Each process reads its own
+`$HOME/.honmoon/hook-salt`, so anything that leaves those two reads holding
+different bytes breaks the parity above. It happens on separate hosts; in a
+container with its own filesystem, where an identical `HOME` path still names a
+different file; under a different user; and for the same user whenever `HOME`
+differs — a service unit with its own `Environment=HOME=`, or a `sudo` that resets
+it. (A process with no `HOME` reads a `.honmoon` relative to its working
+directory.) Those are examples of one condition, not a list to check off: different
+key bytes, so the same `session_id` mints different placeholders. Matching
+`--hook-salt-context` values do **not** close any of them — the context is mixed
+into an HMAC the machine key keys, so mismatched keys stay mismatched.
+
+**When the salt file is unusable, the key is not secret.** The loader only fails
+when it has to mint a new salt and cannot — no readable `/dev/urandom`, or a
+`~/.honmoon` it cannot create or write (read-only filesystem, unwritable `HOME`).
+`honmoon hook` then prints `using fallback salt (…)` to stderr and keys the HMAC
+with a constant compiled into the binary and published in this repository's source.
+Placeholders on that path are still stable and still restore, but they are no longer
+keyed by anything private: anyone can mint the placeholder a guessed secret would
+produce in a given session and check it against a redacted transcript, so redaction
+stops hiding which secrets a transcript contains. Note the direction — falling back
+*improves* parity rather than breaking it, because two processes that both fail share
+the same public constant and agree, so the parity above holds while the property it
+is meant to protect is gone. Watch for that stderr line; #131 tracks whether failing
+open is the right default here.
+
+**Getting one key onto both sides.** Co-located processes sharing a `HOME` read one
+file and need nothing. Anywhere else — separate hosts, containers, different users
+— provision the *same* `hook-salt` to both: the loader adopts any existing file of
+at least 16 bytes verbatim (re-tightening it to `0600`), so identical bytes at each
+process's salt path mint identical placeholders. Cross-host parity is therefore
+achievable; it is just not automatic.
+
+Treat that as copying a secret, because it is. The machine key is what makes a
+placeholder unforgeable, so everyone who holds it can mint the placeholder a given
+session would produce for a guessed secret and check it against a redacted
+transcript — the confirmation oracle tracked in #125. Move it only over a channel
+you would use for any other credential, put it in as few places as the deployment
+needs, and rotate it there if it leaks. It also rests on the salt loader's adoption
+behaviour rather than on a supported setting; #126 tracks making the key an explicit
+input. If none of that is worth it for your deployment, keep `transport: "process"`.
 
 ### Typings
 

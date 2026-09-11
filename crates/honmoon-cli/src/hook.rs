@@ -9,7 +9,7 @@
 //! a no-op — content passes unredacted, since the proxy remains the enforcement
 //! backstop. An unreadable/unwritable salt dir does **not** no-op: it falls back
 //! to a fixed-key salt and still redacts (only placeholder unforgeability is
-//! relaxed — see [`session_salt`]).
+//! relaxed — see [`machine_key`]).
 //!
 //! Handlers by event:
 //! - `PostToolUse` (the plugin matches `Read`, `Bash`, and `Grep` — a secret
@@ -27,11 +27,7 @@ use std::io::Read as _;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
-use hmac::{Hmac, Mac};
 use serde_json::Value;
-use sha2::Sha256;
-
-type HmacSha256 = Hmac<Sha256>;
 
 /// Entry point for `honmoon hook`: read stdin, dispatch, write stdout. Never
 /// fails the process for expected error conditions (see module docs).
@@ -127,35 +123,35 @@ fn honmoon_dir() -> PathBuf {
 /// Derive the per-session HMAC salt. Stable across every `hook` invocation in a
 /// session (so a given secret tokenizes to the identical placeholder each turn
 /// — issue #20), distinct per session, and unforgeable while the persisted
-/// machine salt stays secret. Falls back to a fixed-key derivation if the salt
-/// file can't be read/written, which keeps redaction working and deterministic
-/// (only the unforgeability property is relaxed).
+/// machine salt stays secret.
+///
+/// The context precedence and the derivation itself live in `honmoon-core` so
+/// the management endpoint keys the identical salt for the identical session
+/// (#98): a session that mixes transports must not mint two placeholders for
+/// one secret.
 fn session_salt(payload: &Value, salt_context: Option<&str>) -> Vec<u8> {
     let env_context = std::env::var("HONMOON_HOOK_SALT_CONTEXT").ok();
-    let session_context = salt_context
-        .or(env_context.as_deref())
-        .or_else(|| payload.get("session_id").and_then(Value::as_str))
-        .unwrap_or("");
-    derive_session_salt(session_context)
+    let pinned = salt_context.or(env_context.as_deref());
+    honmoon_core::derive_hook_salt(
+        &machine_key(),
+        honmoon_core::hook_salt_context(pinned, payload),
+    )
 }
 
-/// Derive the same per-session HMAC salt used by the command transport.
-pub fn derive_salt_context(salt_context: &str) -> Vec<u8> {
-    derive_session_salt(salt_context)
-}
-
-fn derive_session_salt(session_context: &str) -> Vec<u8> {
-    let key = match load_or_create_machine_salt(&honmoon_dir()) {
+/// The persisted machine secret that keys every hook salt derivation, for the
+/// gateway to hand to the management endpoint (which derives per request).
+///
+/// Falls back to a fixed key if the salt file can't be read/written, which
+/// keeps redaction working and deterministic — only the unforgeability property
+/// is relaxed, and both transports relax it identically.
+pub fn machine_key() -> Vec<u8> {
+    match load_or_create_machine_salt(&honmoon_dir()) {
         Ok(salt) => salt,
         Err(e) => {
             eprintln!("honmoon hook: using fallback salt ({e:#})");
             b"honmoon-hook-v1-fallback-key".to_vec()
         }
-    };
-    let mut mac =
-        <HmacSha256 as Mac>::new_from_slice(&key).expect("HMAC accepts a key of any length");
-    mac.update(session_context.as_bytes());
-    mac.finalize().into_bytes().to_vec()
+    }
 }
 
 /// Read (or generate on first use) the persisted machine secret used as the

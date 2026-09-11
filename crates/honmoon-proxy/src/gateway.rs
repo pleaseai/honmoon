@@ -79,8 +79,11 @@ pub enum SignedBodyMode {
 /// `--redact-secrets`.
 #[derive(Clone)]
 pub struct RedactionState {
-    /// HMAC salt behind placeholder minting — the same derived salt the
-    /// management hook endpoint uses, so hook and wire tokens match.
+    /// HMAC salt behind placeholder minting. Process-scoped: the proxy sees
+    /// connections, not agent sessions, so this keys on the gateway's own salt
+    /// context. It equals the management hook endpoint's salt — making hook and
+    /// wire tokens match — only when the operator pins that context; unpinned,
+    /// the hook endpoint keys on each payload's session instead (#98).
     pub salt: Arc<Vec<u8>>,
     /// Live placeholder→secret store shared with the management hook endpoint —
     /// one gateway process, one mapping.

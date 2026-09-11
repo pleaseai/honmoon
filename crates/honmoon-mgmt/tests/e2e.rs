@@ -15,7 +15,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use honmoon_core::{AuditLog, Decision, PathResolution, Policy};
-use honmoon_mgmt::AppState;
+use honmoon_mgmt::{AppState, HookSalt};
 use honmoon_proxy::approval::ApprovalRegistry;
 use honmoon_proxy::ca::CaMaterial;
 use honmoon_proxy::gateway::{GatewayState, InterceptPolicy, PiiMode, RedactionState};
@@ -44,12 +44,16 @@ struct Gateway {
 
 /// Start the proxy and the management API on one runtime, sharing state.
 fn start_gateway(policy_yaml: &str) -> Gateway {
-    start_gateway_with_hook(policy_yaml, b"e2e-hook-salt".to_vec(), None)
+    start_gateway_with_hook(
+        policy_yaml,
+        HookSalt::fixed(b"e2e-hook-salt".to_vec()),
+        None,
+    )
 }
 
 fn start_gateway_with_hook(
     policy_yaml: &str,
-    hook_salt: Vec<u8>,
+    hook_salt: HookSalt,
     hook_token: Option<String>,
 ) -> Gateway {
     let policy = Policy::from_yaml(policy_yaml).unwrap();
@@ -289,7 +293,7 @@ fn claude_code_hook_endpoint_redacts_and_requires_configured_bearer() {
     let salt = b"http-hook-parity-salt".to_vec();
     let gw = start_gateway_with_hook(
         "egress:\n  default: deny\n",
-        salt.clone(),
+        HookSalt::fixed(salt.clone()),
         Some("test-hook-token".to_string()),
     );
     let payload = serde_json::json!({
@@ -325,7 +329,11 @@ fn claude_code_hook_endpoint_redacts_and_requires_configured_bearer() {
 
 #[test]
 fn claude_code_hook_resolves_agent_relative_paths_and_denies_unresolved() {
-    let gw = start_gateway_with_hook("egress:\n  default: deny\n", b"cwd-salt".to_vec(), None);
+    let gw = start_gateway_with_hook(
+        "egress:\n  default: deny\n",
+        HookSalt::fixed(b"cwd-salt".to_vec()),
+        None,
+    );
 
     // Agent-side working directory holding an innocuously-named symlink to key
     // material — the issue #55 bypass scenario. The gateway runs in a different
@@ -403,7 +411,12 @@ fn claude_code_hook_endpoint_accumulates_live_mappings() {
     let policy_yaml = "egress:\n  default: deny\n";
     let policy = Policy::from_yaml(policy_yaml).unwrap();
     let state = GatewayState::new(policy);
-    let app = AppState::with_hook_config(state, policy_yaml, b"mapping-store-salt".to_vec(), None);
+    let app = AppState::with_hook_config(
+        state,
+        policy_yaml,
+        HookSalt::fixed(b"mapping-store-salt".to_vec()),
+        None,
+    );
     let mappings = app.hook_mappings.clone();
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port();
@@ -434,16 +447,41 @@ fn claude_code_hook_endpoint_accumulates_live_mappings() {
     assert_eq!(mappings.len(), 2, "both reversible mappings stay live");
 }
 
-#[test]
-fn hook_created_mapping_restores_proxy_response_without_request_remint() {
-    const SECRET: &str = "sk-ant-api03-hook-wire-parity-abcDEF123456";
-    let salt = b"hook-wire-shared-salt".to_vec();
+/// What one secret's trip through the hook endpoint and back over the wire
+/// produced.
+struct WireRoundTrip {
+    /// The placeholder the hook endpoint minted.
+    hook_token: String,
+    /// The request body the upstream actually received.
+    captured_request: String,
+    /// The response body the client got back, after the proxy's restore pass.
+    restored_response: String,
+    /// Live mappings in the store the proxy detokenizes from.
+    mappings: usize,
+}
+
+/// Redact `payload` at the hook endpoint, then have an upstream echo the minted
+/// placeholder back through the proxy, and report what came out.
+///
+/// Shared by the fixed-salt and per-session cases. Restoring is a mapping-store
+/// lookup, so it must not care which salt minted the token — but "must not care"
+/// is the claim, and each variant needs its own proof rather than inheriting the
+/// other's. Both callers drive the same real proxy, real management API, and real
+/// upstream over loopback.
+fn hook_then_wire_round_trip(
+    hook_salt: HookSalt,
+    wire_salt: Vec<u8>,
+    payload: serde_json::Value,
+) -> WireRoundTrip {
     let policy_yaml = "egress:\n  default: allow\n";
     let mut state = GatewayState::new(Policy::from_yaml(policy_yaml).unwrap());
-    state.redaction = Some(RedactionState::new(salt.clone()));
+    state.redaction = Some(RedactionState::new(wire_salt));
     let proxy_mappings = Arc::clone(&state.redaction.as_ref().unwrap().mappings);
-    let app = AppState::with_hook_config(state.clone(), policy_yaml, salt, None);
-    assert!(Arc::ptr_eq(&app.hook_mappings, &proxy_mappings));
+    let app = AppState::with_hook_config(state.clone(), policy_yaml, hook_salt, None);
+    assert!(
+        Arc::ptr_eq(&app.hook_mappings, &proxy_mappings),
+        "the hook endpoint writes into the proxy's own store"
+    );
 
     let proxy_listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let proxy_port = proxy_listener.local_addr().unwrap().port();
@@ -459,11 +497,6 @@ fn hook_created_mapping_restores_proxy_response_without_request_remint() {
     wait_for_port(proxy_port);
     wait_for_port(mgmt_port);
 
-    let payload = serde_json::json!({
-        "hook_event_name": "PostToolUse",
-        "tool_name": "Read",
-        "tool_response": format!("hook sees {SECRET}")
-    });
     let hook_response = http_request_with_body(
         mgmt_port,
         "POST",
@@ -474,8 +507,10 @@ fn hook_created_mapping_restores_proxy_response_without_request_remint() {
     let hook_json: serde_json::Value = serde_json::from_str(http_body(&hook_response)).unwrap();
     let hook_output = hook_json["hookSpecificOutput"]["updatedToolOutput"]
         .as_str()
-        .unwrap();
-    let token_start = hook_output.find("<<hs:").unwrap();
+        .expect("the hook redacted the tool output");
+    let token_start = hook_output
+        .find("<<hs:")
+        .expect("the hook minted a placeholder");
     let token_end = hook_output[token_start..].find(">>").unwrap() + token_start + 2;
     let hook_token = hook_output[token_start..token_end].to_string();
 
@@ -535,19 +570,71 @@ fn hook_created_mapping_restores_proxy_response_without_request_remint() {
     client.read_to_end(&mut response).unwrap();
     assert!(response.starts_with(b"HTTP/1.1 200"));
 
-    let captured =
+    let captured_request =
         String::from_utf8(capture_rx.recv_timeout(Duration::from_secs(5)).unwrap()).unwrap();
-    assert_eq!(captured, wire_body);
-    assert!(!captured.contains(SECRET));
-    assert!(!captured.contains("<<hs:"));
     assert_eq!(
-        proxy_mappings.len(),
-        1,
-        "only the hook-created mapping exists"
+        captured_request, wire_body,
+        "the request leg had nothing to redact"
     );
-    let restored = String::from_utf8(decode_chunked_body(&response)).unwrap();
-    assert_eq!(restored, SECRET);
-    assert!(!restored.contains(&hook_token));
+    WireRoundTrip {
+        hook_token,
+        captured_request,
+        restored_response: String::from_utf8(decode_chunked_body(&response)).unwrap(),
+        mappings: proxy_mappings.len(),
+    }
+}
+
+/// The realistic `--redact-secrets` deployment with no pinned context: wire
+/// redaction is on (process-scoped salt) while the hook endpoint keys on the
+/// session. `with_hook_config` no longer asserts the two salts match in that
+/// combination (#98), so prove the combination actually works end to end —
+/// a session-salted placeholder minted by the hook is still restored by the
+/// proxy, which is the property the dropped assert used to stand in for.
+#[test]
+fn a_per_session_hook_placeholder_is_restored_by_wire_redaction() {
+    const SECRET: &str = "sk-ant-api03-per-session-with-wire-abcDEF123456";
+    let trip = hook_then_wire_round_trip(
+        HookSalt::per_session(b"machine-key-for-per-session".to_vec()),
+        b"process-scoped-wire-salt".to_vec(),
+        serde_json::json!({
+            "hook_event_name": "PostToolUse",
+            "tool_name": "Read",
+            "session_id": "session-with-wire-redaction",
+            "tool_response": format!("key {SECRET}")
+        }),
+    );
+
+    assert!(!trip.captured_request.contains(SECRET));
+    assert_eq!(
+        trip.mappings, 1,
+        "the session-salted mapping is recorded in the proxy's store"
+    );
+    assert_eq!(
+        trip.restored_response, SECRET,
+        "the proxy restores a placeholder its own salt never minted"
+    );
+    assert!(!trip.restored_response.contains(&trip.hook_token));
+}
+
+#[test]
+fn hook_created_mapping_restores_proxy_response_without_request_remint() {
+    const SECRET: &str = "sk-ant-api03-hook-wire-parity-abcDEF123456";
+    let salt = b"hook-wire-shared-salt".to_vec();
+    let trip = hook_then_wire_round_trip(
+        HookSalt::fixed(salt.clone()),
+        salt,
+        serde_json::json!({
+            "hook_event_name": "PostToolUse",
+            "tool_name": "Read",
+            "tool_response": format!("hook sees {SECRET}")
+        }),
+    );
+
+    assert!(!trip.captured_request.contains(SECRET));
+    assert!(!trip.captured_request.contains("<<hs:"));
+    assert_eq!(trip.mappings, 1, "only the hook-created mapping exists");
+    assert_eq!(trip.restored_response, SECRET);
+    assert!(!trip.restored_response.contains(&trip.hook_token));
 }
 
 #[test]
