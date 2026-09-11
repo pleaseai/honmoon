@@ -2373,9 +2373,9 @@ would drop its listener and hand the port back while `run` still reported `Enfor
 loops share one `tokio::select!` and any of them failing takes the whole proxy down
 ([main.rs:420-443](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-cli/src/main.rs#L420-L443)).
 Only hosts your policy allows can be reached; everything else is refused — a `403` on the CONNECT
-path ([mitm.rs:206](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-proxy/src/mitm.rs#L206)),
+path ([mitm.rs:303-312](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-proxy/src/mitm.rs#L303-L312)),
 a `0x02` reply on the SOCKS5 one
-([socks.rs:126-129](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-proxy/src/socks.rs#L126-L129)).
+([socks.rs:182-183](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-proxy/src/socks.rs#L182-L183)).
 
 ```bash
 # Build the binary once
