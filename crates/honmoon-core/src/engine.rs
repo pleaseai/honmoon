@@ -1,8 +1,24 @@
 //! Policy decision engine: protocol-aware CEL rules + egress domain lists.
 
-use cel::{Context, Program, Value};
+use std::sync::{Arc, OnceLock};
+
+use cel::{Context, Env, Program, Value};
 
 use crate::{Facts, PiiFacts, Policy, Rule, Verdict};
+
+/// The CEL standard-library environment, built once and shared.
+///
+/// [`Context::default`] builds `Arc::new(Env::stdlib())` on every call —
+/// registering the whole standard library — and `eval_program` runs once per
+/// endpoint-matching rule per request, twice for a rule that reaches
+/// [`pii_caused`]. Paying for the stdlib there put ~31µs of setup in front of
+/// ~1µs of evaluation and made the decision path scale with rule count rather
+/// than with work. The environment is immutable and identical for every
+/// evaluation, so it is built once and each context takes an `Arc` clone of it.
+fn stdlib_env() -> Arc<Env> {
+    static ENV: OnceLock<Arc<Env>> = OnceLock::new();
+    ENV.get_or_init(|| Arc::new(Env::stdlib())).clone()
+}
 
 /// A decision plus the reason it was reached.
 ///
@@ -215,7 +231,9 @@ fn compile_condition(rule: &Rule) -> Option<Program> {
 /// `pii` is the summary to bind, passed separately from `facts` so attribution
 /// can re-run the same program with it cleared.
 fn eval_program(program: &Program, facts: &Facts, pii: Option<&PiiFacts>) -> bool {
-    let mut ctx = Context::default();
+    // `Context::with_env` rather than `Context::default`: same standard library,
+    // without rebuilding it per evaluation. See [`stdlib_env`].
+    let mut ctx = Context::with_env(stdlib_env());
     if let Some(http) = &facts.http {
         if let Ok(value) = cel::to_value(http) {
             ctx.add_variable_from_value("http", value);
