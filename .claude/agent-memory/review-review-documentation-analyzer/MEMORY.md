@@ -1,4 +1,4 @@
 - [Honmoon crate-table convention](honmoon_crate_table_convention.md) — AGENTS.md/ARCHITECTURE.md name honmoon-core's engine functions explicitly; check new decide-family exports against them
 - [ADR-0006 signed-header amendment verified](adr_0006_signed_header_amendment.md) — PR #115 clean doc PR; calibration point, only soft spot is auto-maintained decisions/index.md title
 - [PR #122 hook-salt parity](pr122_hook_salt_parity.md) — issue #98 fix; README + rustdoc verified accurate against hook_salt.rs/HookSalt, 0 findings
-- [PR #142 stale rename comment](pr142_stale_rename_comment.md) — issue #141; rename left old fn name in an untouched doc comment prose, else clean
+- [PR #142 stale rename comment](pr142_stale_rename_comment.md) — issue #141; a rename left the old fn name in untouched doc prose (since fixed); grep the old name file-wide on any rename
