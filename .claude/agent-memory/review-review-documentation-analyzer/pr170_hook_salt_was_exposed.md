@@ -60,10 +60,10 @@ grep for the rule name misses them. Enumerate the prose that argues from persist
 just the prose that names the thing you changed.
 
 *On when to stop qualifying.* Rounds 2-4 were all defects in prose written to fix the
-previous round, each a real false claim and each found only after the fix shipped. That is
-the [[docs_completeness_claim_unbounded_review]] shape: a sentence asserting a guarantee
-over "any host" invites one valid finding per round, because every unstated deployment
-premise is a counterexample. Adding a fifth qualifier is the wrong move — narrow what the
+previous round, each a real false claim and each found only after the fix shipped. A
+sentence asserting a guarantee over "any host" invites one valid finding per round, because
+every unstated deployment premise is a counterexample and the reviewer needs only to name
+the next one. Adding a fifth qualifier is the wrong move — narrow what the
 sentence claims (name the deployment it holds for and defer to the limitation section)
 instead of enumerating the ways it fails.
 
