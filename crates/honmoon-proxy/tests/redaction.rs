@@ -1079,6 +1079,40 @@ fn the_same_content_in_the_body_is_refused_by_the_same_rule() {
     assert!(captured.recv_timeout(Duration::from_millis(250)).is_err());
 }
 
+// The sharper operator trap behind the same contract: `pii.count` staying 0 is
+// indistinguishable from a genuinely clean body, because `eval_program` binds
+// `pii` with its empty default so absence conditions can be written at all. So a
+// positive-finding rule never fires on a trailer-borne secret (above) while an
+// *absence* rule does, and reads the request as clean. A `pii.count == 0` rule
+// matching here is why the docs tell operators to condition content rules on
+// positive findings rather than on `pii.count == 0`.
+#[test]
+fn an_absence_rule_still_matches_a_request_whose_trailer_carries_a_secret() {
+    let policy = "egress:\n  default: allow\nrules:\n  - name: only-clean-bodies\n    endpoint: '*'\n    condition: \"pii.count == 0\"\n    verdict: deny\n";
+    let (upstream, captured) = start_upstream(ResponseMode::Static(b"ok".to_vec()));
+    let (proxy, _) = start_proxy_with_policy(policy, PiiMode::Block);
+    let body = "clean body";
+    let note = format!("rrn={RRN} key={SECRET}");
+
+    let request = format!(
+        "POST http://127.0.0.1:{upstream}/submit HTTP/1.1\r\n\
+         Host: 127.0.0.1:{upstream}\r\n\
+         Trailer: X-Note\r\n\
+         Transfer-Encoding: chunked\r\n\
+         Connection: close\r\n\r\n\
+         {:x}\r\n{body}\r\n0\r\nX-Note: {note}\r\n\r\n",
+        body.len()
+    );
+    let response = raw_proxy_request(proxy, request.as_bytes());
+
+    assert!(
+        response.starts_with(b"HTTP/1.1 403"),
+        "the engine binds an empty `pii`, so `pii.count == 0` matches a request \
+         whose only secret rides in a trailer"
+    );
+    assert!(captured.recv_timeout(Duration::from_millis(250)).is_err());
+}
+
 // The forwarding half of ADR-0009 is conditional, and this is the condition: a
 // wire-redaction rewrite replaces the body with `Full`, which carries no trailer
 // frame, so the client's trailer is dropped rather than replayed. Deliberate —

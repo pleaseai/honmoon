@@ -53,7 +53,9 @@ a section titled "fail modes" as exhaustive for *how can content reach the upstr
 It was not, and the difference is material in two ways:
 
 - Each listed mode **fails open loudly** (a `warn`). Header-shaped fields fail open **silently** —
-  no warn, no audit record, nothing.
+  no warn, and nothing a positive-finding rule can act on. (Not *nothing at all*: the engine always
+  binds `pii` with its empty default so absence conditions work, so a `pii.count == 0` rule still
+  fires and still audits its verdict — it just reads the request as clean. See Consequences.)
 - Each listed mode is a case where honmoon *tried and could not*. Header-shaped fields were never
   in scope, so there is nothing to fail — which is precisely why no warn exists, and precisely why
   the omission did not occur to anyone.
@@ -111,7 +113,15 @@ enumeration that reads as exhaustive and is not.
 
 **What this does not guarantee.** Nothing about the data plane changed. An agent that puts a secret
 in a trailer — or in a header — still reaches the upstream with it, on every one of the four
-branches above. And there is no *content-level* lever to point operators at: `egress.default: deny`
+branches above.
+
+**And `pii.count == 0` does not mean "no secrets here".** `eval_program` always binds `pii` with
+its empty default so absence conditions can be written at all, so an unscanned trailer leaves the
+facts indistinguishable from a genuinely clean body. A positive-finding rule (`pii.count > 0`, a
+`pii.types` match) simply never fires on trailer content; an **absence** rule fires and reads the
+request as clean, so `pii.count == 0 -> allow` allows a request carrying a secret in a trailer, and
+a matching `deny`/`pause` audits it like any other verdict. Policies meant to act on content should
+condition on positive findings. And there is no *content-level* lever to point operators at: `egress.default: deny`
 narrows which hosts are reachable and is worth keeping, but it scans nothing, so an allow-listed
 destination — the API the agent exists to call, and exactly where an exfiltration attempt would go
 — still receives header and trailer content unexamined. The honest instruction is to treat

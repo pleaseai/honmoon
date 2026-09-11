@@ -581,8 +581,11 @@ impl HonmoonHandler {
     /// trailer values are never inspected and never redacted (whether a trailer
     /// is *forwarded* is a separate, conditional matter — `forwarded_request`'s
     /// redaction rewrite drops the frame; see ADR-0009) — `facts.pii` stays
-    /// empty for them, so no `pii.*` rule can fire
-    /// on a secret placed in a chunked trailer. That is the stated contract, not
+    /// empty for them, so no *positive-finding* rule (`pii.count > 0`, a
+    /// `pii.types` match) fires on a secret placed in a chunked trailer. An
+    /// absence rule still does: the engine binds `pii` with its empty default,
+    /// so `pii.count == 0` reads such a request as clean. That is the stated
+    /// contract, not
     /// an oversight, and it is silent by design: unlike the over-cap, non-UTF-8,
     /// undecodable-encoding and `Content-Range` cases below, nothing was
     /// attempted, so there is no fail-open `warn` to log. Do not widen the scan

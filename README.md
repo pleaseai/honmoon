@@ -208,9 +208,16 @@ may itself be signed; those responses may arrive compressed and are then left as
 content reaches the upstream unredacted.** Inspection covers request **bodies** only: header and
 trailer values are never scanned for PII or secrets and never redacted — including a secret placed
 in a chunked trailer (`Trailer: X-Note` followed by `0\r\nX-Note: <secret>`). Unlike the four
-fail-open cases above, this is silent: no `warn`, no audit record, and `pii.count` stays `0`, so no
-`pii.*` rule can fire on it. Header-shaped fields were never in scope, so there is nothing to fail
-— the scan is not failing open, it never applied.
+fail-open cases above, no `warn` is logged: header-shaped fields were never in scope, so there is
+nothing to fail — the scan is not failing open, it never applied.
+
+**`pii.count` stays `0`, and that cuts both ways.** No rule that requires a *positive* finding can
+fire on trailer content — `pii.count > 0`, or a `pii.types` match — so such a rule never denies,
+pauses, or audits it. But the engine always binds `pii` with its empty default precisely so that
+absence conditions work, so an **absence** rule does fire, and treats the request as clean: a
+`pii.count == 0 -> allow` rule allows a request whose trailer carries a secret, and a matching
+`deny`/`pause` records an audit like any other verdict. Write content rules against positive
+findings, and do not read `pii.count == 0` as "no secrets in this request".
 
 Whether a trailer then *reaches* the upstream is a separate question with a conditional answer: on
 the pass-through path it does, unchanged; when redaction rewrites the body, the replacement carries
