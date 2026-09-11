@@ -136,11 +136,25 @@ that fails to parse: it is refused rather than forwarded blind.
     in progress, so the `Sync` honmoon counted is never answered). An unbounded wait would cost the
     client its answer altogether, which is worse than the misattribution this removes, so the
     runtime warns and injects. It also **writes the missing answers off** rather than leaving the
-    counters skewed: they are monotonic, so a gap left in place would make every later refusal on
-    that connection pay the bound again for the rest of the session. An answer written off and then
-    delivered after all is discarded rather than credited — counting it would push the delivered
-    count past the forwarded one and release the *next* refusal before its own answer, giving up
-    the ordering the write-off exists to keep affordable. For the same reason a sync point is
+    counters skewed: they only rise, so a gap left in place would make every later refusal on that
+    connection pay the bound again for the rest of the session. The write-off closes the gap by
+    crediting the delivered count, never by lowering the forwarded one — the two are written by
+    different tasks, and lowering the forwarded side leaves a window in which an answer delivered
+    concurrently is credited against the old, higher value and survives the subtraction, inverting
+    the pair and releasing the next refusal early. Crediting instead keeps both counters under the
+    single watch update the relay also writes through, so `delivered <= forwarded` holds by
+    construction rather than by timing.
+  - **A written-off answer that arrives after all is discarded, and that has to be tracked rather
+    than inferred.** The credit a write-off takes is a fiction the database can still puncture, and
+    comparing a late answer against the forwarded count does not catch it: any statement forwarded
+    in the meantime has raised that ceiling, so the stale answer fits under it and is credited to a
+    slot it does not own — releasing the refusal queued behind *that* statement before its response
+    exists, which is this defect again by a longer route. So each written-off answer is remembered
+    as **debt**, in the same watched value as the counters. PostgreSQL answers in order, so the next
+    `ReadyForQuery` after a write-off belongs to the oldest unanswered statement — a written-off
+    one — and it pays down a unit of debt instead of advancing the count. Once the debt is clear,
+    answers advance the count again, so a statement forwarded after a write-off is still released by
+    its own answer rather than paying the bound a second time. For the same reason a sync point is
     counted **before** the frame that earns it is forwarded, never after: a fast database can have
     its `ReadyForQuery` relayed to the client before the forwarding task runs its next line, and
     the discard above would then throw away a perfectly good answer as an over-count, leaving the
