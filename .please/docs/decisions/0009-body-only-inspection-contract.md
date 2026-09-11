@@ -114,13 +114,21 @@ obligation deferred by this ADR.
 content reach the upstream unredacted?". The threat model has one stated boundary rather than an
 enumeration that reads as exhaustive and is not.
 
-**What this does not guarantee.** Nothing about the data plane changed. An agent that puts a secret
-in a trailer still reaches the upstream with it on any **pass-through** request — one honmoon does
-not rewrite — across all four branches; when `--redact-secrets` rewrites the body, that trailer is
-dropped instead (the Decision's forwarding note, pinned by
-`a_redacted_body_drops_the_request_trailer`). A secret in a **header** reaches the upstream
-unconditionally: headers survive the rewrite, which re-frames a few of them and strips the stale
-digests but carries the rest through.
+**What this does not guarantee.** Nothing about the data plane changed. What *reaches* the upstream
+turns out to be conditional in enough independent ways that every attempt to state it in one
+sentence has been wrong, so it is enumerated instead:
+
+| Field | Scanned for PII or secrets? | Does it reach the upstream? |
+| --- | --- | --- |
+| Request body | Yes, within the 2 MiB cap and the fail-open cases above | Rewritten when redaction fires |
+| Ordinary header (`X-Note:`) | **Never** | Yes |
+| Body-digest header (`Digest`, `Content-Digest`, `Content-MD5`, `Repr-Digest`) | **Never** | Stripped when the body is redacted |
+| Framing header (`Content-Length`, `Content-Encoding`, `Transfer-Encoding`) | **Never** — read as metadata only | Re-framed when the body is redacted |
+| Request trailer | **Never** | Only on a pass-through request, and only where the upstream leg's framing carries trailers at all (see issue #136) |
+
+**Only the middle column is this ADR's contract.** The right-hand column is transport behaviour that
+varies with the redaction path and the upstream protocol; it is recorded so that nobody reads the
+middle column as a delivery guarantee, which is the error this document kept making about itself.
 
 **And `pii.count == 0` does not mean "no secrets here".** `eval_program` always binds `pii` with
 its empty default so absence conditions can be written at all, so an unscanned trailer leaves the

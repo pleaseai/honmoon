@@ -219,11 +219,15 @@ absence conditions work, so an **absence** rule does fire, and treats the reques
 `deny`/`pause` records an audit like any other verdict. Write content rules against positive
 findings, and do not read `pii.count == 0` as "no secrets in this request".
 
-Whether a trailer then *reaches* the upstream is a separate question with a conditional answer: on
-the pass-through path it does, unchanged; when redaction rewrites the body, the replacement carries
-no trailer frame and the client's trailers are dropped (deliberately — a digest over the original
-bytes is stale either way; the stale `Trailer:` header that drop leaves behind is tracked as
-issue #135). Neither case inspects them.
+Whether a trailer then *reaches* the upstream is a separate question, and not one this contract
+answers. On a pass-through request it is replayed — subject to the upstream leg's framing carrying
+trailers at all (see issue #136). When redaction rewrites the body, the replacement carries no
+trailer frame and the client's trailers are dropped instead (deliberately: a digest over the
+original bytes is stale either way; the stale `Trailer:` header that drop leaves behind is
+issue #135). The same rewrite strips the body-digest headers (`Digest`, `Content-Digest`,
+`Content-MD5`, `Repr-Digest`) and re-frames `Content-Length`/`Content-Encoding`/
+`Transfer-Encoding`, while carrying every other header through. **None of those cases inspects
+anything** — which is the only part this contract covers.
 
 **There is no content-level lever for this surface.** `egress.default: deny` narrows *which hosts*
 an agent can reach and is worth keeping, but it scans nothing: an allow-listed destination — the
