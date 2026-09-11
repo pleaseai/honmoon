@@ -1,2 +1,3 @@
 - [mitm-test-harness](mitm_test_harness.md) — honmoon-proxy's tests/mitm.rs upstream always drops the connection, so forwarded-byte content (detect-only invariant) is never test-asserted, only audit-log findings are.
 - [signed-body-sigv4-narrowing](signed_body_sigv4_narrowing.md) — issue #81's narrowing makes Some(AwsSigV4) always imply authentication_signs_headers=true, so the deleted bare_payload_hash keeps-Accept-Encoding test tested a now-unreachable state, not a real coverage loss.
+- [content-length-trailers-h2](content_length_trailers_h2.md) — inspect_body's Content-Length+trailers branch is h2-reachable, not dead; body.rs's scripted_body helper makes it cheaply unit-testable.
