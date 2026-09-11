@@ -1,0 +1,28 @@
+crates/honmoon-proxy/src/runtime/postgres.rs
+  s_278e684068cde0::t_39fdc36858d11a 2489
+  s_278e684068cde0::t_ac2b5eec71ea30 2491
+  s_278e684068cde0::t_ca47b1dffde812 480,483-490,492-495,544-548
+  s_278e684068cde0::t_fdab4d6d1845b8 170-184,227-243,290,294
+  s_278e684068cde0::t_6041a4a559e4bc 367-369,491,2408,2466
+  s_278e684068cde0::t_8cbb0ad1daad15 331-366,370-371
+  s_278e684068cde0::t_97b9bdb6436785 659-665,668-673,682,688-692,727,752-759,763-781,1065-1071
+  s_278e684068cde0::t_d7f29649d6c50e 666,674-681,683-687,728,751
+  s_278e684068cde0::t_ccde72efefbe16 2347-2407,2409-2465,2467-2474,2518-2549
+  s_278e684068cde0::t_581fdff5f458ff 2475-2488,2490,2492-2517
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "abf120ad08718e779718836c04a13c380de76b16",
+  "prompts": {},
+  "sessions": {
+    "s_278e684068cde0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "f250795b-6e43-4d11-913b-21a295e9f51a",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
