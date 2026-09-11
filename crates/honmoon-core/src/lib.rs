@@ -227,14 +227,17 @@ impl Policy {
     /// A blank condition says nothing, and the two things an author might mean
     /// by it are both unavailable. It is not "always" — that is the literal
     /// `true` (see [`is_unconditional`]). And it is not a rule switched off
-    /// either: a condition that cannot compile normally declines and lets the
-    /// walk continue, but `Program::compile` does not *return* on a blank
-    /// input, it panics (#151), so the rule would take the decision path down
-    /// at the first request that reached it.
+    /// either: switching a rule off is something a policy has no spelling for,
+    /// so a blank condition reads as an authoring slip rather than an
+    /// intention. It carries no expression, so it can never match and the rule
+    /// sits in the policy looking active while doing nothing.
     ///
-    /// So the policy is unevaluable, and like an unusable `endpoints` entry it
-    /// fails the load, where the author sees it — rather than at request time,
-    /// in production, on whichever request first reaches the rule.
+    /// So it fails the load, like an unusable `endpoints` entry, where the
+    /// author sees it — rather than going unnoticed in production because an
+    /// inert rule and a rule that simply did not match look identical.
+    /// (It was originally rejected because `Program::compile` panicked on it
+    /// rather than returning — #151. `cel` 0.14 returns `Err`, and the
+    /// rejection stands on the reason above.)
     ///
     /// The error carries the rule's position as well as its name. `name` is an
     /// ordinary field here, not a map key like an endpoint's: nothing requires
@@ -627,10 +630,11 @@ endpoints:
         );
 
         // `U+FEFF` is *not* whitespace to Rust, so a condition of only that is
-        // not blank and does load. It is still unevaluable — it panics in the
-        // CEL parser like any other lone character the lexer cannot start a
-        // token with (#154) — which is precisely why this check does not claim
-        // to be a validity test, only an emptiness one.
+        // not blank and does load. It is still unevaluable — the CEL compiler
+        // rejects it like any other lone character the lexer cannot start a
+        // token with (#154), so the rule declines at request time — which is
+        // precisely why this check does not claim to be a validity test, only
+        // an emptiness one.
         Policy::from_yaml(
             "rules:\n  - name: bom\n    endpoint: '*'\n    condition: \"\\ufeff\"\n    verdict: allow\n",
         )

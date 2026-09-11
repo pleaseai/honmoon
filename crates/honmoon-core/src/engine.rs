@@ -390,10 +390,17 @@ mod tests {
     /// and the rest never reach the guard above. `Program::compile` must answer
     /// for all of them the same way — an `Err` the caller can decline on.
     ///
-    /// The classes are the ones #154 measured. Three of them are invisible in an
+    /// The classes are the ones #154 measured. Four of them are invisible in an
     /// editor and are *not* Unicode `White_Space`, so `is_blank_condition` does
     /// not — and deliberately should not — catch them: they are unlexable for
     /// the same reason `@` is, not because they are blank.
+    ///
+    /// Both halves are asserted. `decide` returning `Deny` alone would not
+    /// pin this: `Deny` is also the egress default, so a parser that recovered
+    /// `"&&"` into some non-true value would satisfy it while the property
+    /// this test exists for — `Program::compile` returns, with an `Err` — had
+    /// regressed. The compile assertion is the one that names that property;
+    /// the decision assertion keeps the fail-closed path covered end to end.
     #[test]
     fn malformed_conditions_decline_instead_of_panicking() {
         let conditions = [
@@ -425,6 +432,12 @@ mod tests {
         ];
 
         for condition in conditions {
+            // The property #154 is closed on: it returns, and it returns `Err`.
+            assert!(
+                super::Program::compile(condition).is_err(),
+                "condition {condition:?} unexpectedly compiled"
+            );
+
             let policy = Policy {
                 rules: vec![Rule {
                     name: "malformed".into(),

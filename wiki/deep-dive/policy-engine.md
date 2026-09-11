@@ -132,7 +132,7 @@ The test `egress_allow_deny_and_default` locks all four cases, including "deny w
 ## CEL evaluation
 
 A rule's condition is a [CEL](https://github.com/google/cel-spec) expression compiled and
-executed by `cel-interpreter`. `eval_condition` builds a `Context`, injects whichever protocol
+executed by `cel`. `eval_condition` builds a `Context`, injects whichever protocol
 facts are present as variables (`http`, `sql`, `k8s`), and runs the program. **Only `Ok(Bool(true))`
 counts as a match** — every other outcome (compile error, runtime error, non-bool, `false`)
 means "no match" ([engine.rs:66-91](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/engine.rs#L66-L91)).
@@ -142,7 +142,7 @@ sequenceDiagram
   autonumber
   participant D as decide
   participant EC as eval_condition
-  participant CEL as cel_interpreter
+  participant CEL as cel
   D->>EC: condition + facts
   EC->>CEL: Program::compile(condition)
   alt compile error
@@ -156,7 +156,7 @@ sequenceDiagram
 ```
 <!-- Sources: crates/honmoon-core/src/engine.rs:66-91 -->
 
-Each fact sub-struct derives `Serialize`, and `cel_interpreter::to_value` converts it into a CEL
+Each fact sub-struct derives `Serialize`, and `cel::to_value` converts it into a CEL
 value bound under its name — so `http.method`, `sql.verb`, and `k8s.resource` are addressable in
 conditions exactly as written in the YAML ([lib.rs:92-119](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/lib.rs#L92-L119), [engine.rs:73-89](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/engine.rs#L73-L89)).
 

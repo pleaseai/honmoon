@@ -235,11 +235,10 @@ Two details worth knowing when you read (or don't read) that warning:
 
 ::: danger Never leave `condition` blank
 `condition: ""` is not a way to say "always", and it is not a safe no-op either. A blank string
-is not valid CEL, so the rule could never match — and it does not even decline the way
-[Fail-closed semantics](#fail-closed-semantics) below describes, because `Program::compile("")`
-panics instead of returning an error. So Honmoon refuses to load a policy containing one, rather
-than crashing on the first request that reaches the rule
-([#151](https://github.com/pleaseai/honmoon/issues/151)):
+carries no expression, so the rule can never match — it would sit in your policy looking active
+while doing nothing, and an inert rule is indistinguishable from a rule that simply did not match.
+So Honmoon refuses to load a policy containing one, where you see it, rather than letting it go
+unnoticed in production ([#151](https://github.com/pleaseai/honmoon/issues/151)):
 
 ```
 Error: rule `blank` (rules[0]) has a blank `condition`; write `"true"` for a rule that always matches
@@ -247,8 +246,9 @@ Error: rule `blank` (rules[0]) has a blank `condition`; write `"true"` for a rul
 
 Whitespace does not help — `" "`, `"\n"` and a non-breaking or ideographic space are rejected the
 same way. A condition made only of **zero-width** characters is not, though: it looks empty in an
-editor but is not whitespace, so it loads and then crashes like any other unparseable condition
-(see [Fail-closed semantics](#fail-closed-semantics)). Give every rule a real condition; write
+editor but is not whitespace, so it loads, and the CEL compiler then rejects it like any other
+unparseable condition — the rule declines and the egress default answers (see
+[Fail-closed semantics](#fail-closed-semantics)). Give every rule a real condition; write
 `"true"` when you mean always.
 :::
 

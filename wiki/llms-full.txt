@@ -970,7 +970,7 @@ flowchart TB
 
 The critical invariant: **`honmoon-core` is transport-agnostic.** It has no `tokio` or
 networking dependency — its `Cargo.toml` pulls only `serde`, `serde_json`, `serde_yaml`,
-`thiserror`, `time`, `tracing`, and `cel-interpreter`. The proxy feeds it `Facts` and consumes a `Verdict`. This is
+`thiserror`, `time`, `tracing`, and `cel`. The proxy feeds it `Facts` and consumes a `Verdict`. This is
 what lets the entire policy engine be unit-tested with zero I/O
 ([ARCHITECTURE.md:47-48](https://github.com/pleaseai/honmoon/blob/main/ARCHITECTURE.md#L47-L48), [tech-stack.md:18-19](https://github.com/pleaseai/honmoon/blob/main/.please/docs/knowledge/tech-stack.md#L18-L19)).
 
@@ -1266,7 +1266,7 @@ The test `egress_allow_deny_and_default` locks all four cases, including "deny w
 ## CEL evaluation
 
 A rule's condition is a [CEL](https://github.com/google/cel-spec) expression compiled and
-executed by `cel-interpreter`. `eval_condition` builds a `Context`, injects whichever protocol
+executed by `cel`. `eval_condition` builds a `Context`, injects whichever protocol
 facts are present as variables (`http`, `sql`, `k8s`), and runs the program. **Only `Ok(Bool(true))`
 counts as a match** — every other outcome (compile error, runtime error, non-bool, `false`)
 means "no match" ([engine.rs:66-91](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/engine.rs#L66-L91)).
@@ -1276,7 +1276,7 @@ sequenceDiagram
   autonumber
   participant D as decide
   participant EC as eval_condition
-  participant CEL as cel_interpreter
+  participant CEL as cel
   D->>EC: condition + facts
   EC->>CEL: Program::compile(condition)
   alt compile error
@@ -1290,7 +1290,7 @@ sequenceDiagram
 ```
 <!-- Sources: crates/honmoon-core/src/engine.rs:66-91 -->
 
-Each fact sub-struct derives `Serialize`, and `cel_interpreter::to_value` converts it into a CEL
+Each fact sub-struct derives `Serialize`, and `cel::to_value` converts it into a CEL
 value bound under its name — so `http.method`, `sql.verb`, and `k8s.resource` are addressable in
 conditions exactly as written in the YAML ([lib.rs:92-119](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/lib.rs#L92-L119), [engine.rs:73-89](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/engine.rs#L73-L89)).
 
@@ -2188,7 +2188,7 @@ single set of tasks; Rust is driven by the Cargo-canonical `rust-toolchain.toml`
 
 | Tool | Version | Managed by | Source |
 |------|---------|-----------|--------|
-| Rust | stable, edition 2024, `rust-version = 1.85` | `rust-toolchain.toml` (rustup) | [Cargo.toml:9-14](https://github.com/pleaseai/honmoon/blob/main/Cargo.toml#L9-L14) |
+| Rust | stable, edition 2024, `rust-version = 1.86` | `rust-toolchain.toml` (rustup) | [Cargo.toml:9-14](https://github.com/pleaseai/honmoon/blob/main/Cargo.toml#L9-L14) |
 | Node | 24 | mise | [mise.toml:8-10](https://github.com/pleaseai/honmoon/blob/main/mise.toml#L8-L10) |
 | Bun | latest (1.3.x) | mise | [mise.toml:8-10](https://github.com/pleaseai/honmoon/blob/main/mise.toml#L8-L10) |
 | Docker (optional) | 20.10+ / Compose v2 | — (only for the Squid backend) | [README.md:166-169](https://github.com/pleaseai/honmoon/blob/main/README.md#L166-L169) |
@@ -2797,11 +2797,10 @@ Two details worth knowing when you read (or don't read) that warning:
 
 ::: danger Never leave `condition` blank
 `condition: ""` is not a way to say "always", and it is not a safe no-op either. A blank string
-is not valid CEL, so the rule could never match — and it does not even decline the way
-[Fail-closed semantics](#fail-closed-semantics) below describes, because `Program::compile("")`
-panics instead of returning an error. So Honmoon refuses to load a policy containing one, rather
-than crashing on the first request that reaches the rule
-([#151](https://github.com/pleaseai/honmoon/issues/151)):
+carries no expression, so the rule can never match — it would sit in your policy looking active
+while doing nothing, and an inert rule is indistinguishable from a rule that simply did not match.
+So Honmoon refuses to load a policy containing one, where you see it, rather than letting it go
+unnoticed in production ([#151](https://github.com/pleaseai/honmoon/issues/151)):
 
 ```
 Error: rule `blank` (rules[0]) has a blank `condition`; write `"true"` for a rule that always matches
@@ -2809,8 +2808,9 @@ Error: rule `blank` (rules[0]) has a blank `condition`; write `"true"` for a rul
 
 Whitespace does not help — `" "`, `"\n"` and a non-breaking or ideographic space are rejected the
 same way. A condition made only of **zero-width** characters is not, though: it looks empty in an
-editor but is not whitespace, so it loads and then crashes like any other unparseable condition
-(see [Fail-closed semantics](#fail-closed-semantics)). Give every rule a real condition; write
+editor but is not whitespace, so it loads, and the CEL compiler then rejects it like any other
+unparseable condition — the rule declines and the egress default answers (see
+[Fail-closed semantics](#fail-closed-semantics)). Give every rule a real condition; write
 `"true"` when you mean always.
 :::
 

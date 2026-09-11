@@ -16,7 +16,7 @@ Honmoon is a monorepo that separates languages by responsibility.
 ## Rust crates (`crates/`)
 
 - `honmoon-core` — policy model (`Policy`/`Egress`/`Rule`/`Verdict`/`Facts` + `HttpFacts`/`SqlFacts`/`K8sFacts`), YAML parsing, the decision `engine` (`decide()`: CEL + egress matching), `protocols` (PostgreSQL `'Q'` + SQL + Kubernetes API parsers), and `secret_tokenizer` (reversible secret↔placeholder tokenization: HMAC-SHA256 keyed placeholders, aho-corasick leftmost-longest matching, boundary-safe streaming detokenizer). Transport-agnostic.
-  - deps: `serde`, `serde_yaml` (⚠️ deprecated, see TD-002), `thiserror`, `tracing`, `cel-interpreter`, `aho-corasick`, `hmac`, `sha2`
+  - deps: `serde`, `serde_yaml` (⚠️ deprecated, see TD-002), `thiserror`, `tracing`, `cel`, `aho-corasick`, `hmac`, `sha2`
 - `honmoon-proxy` — egress proxy on **hudsucker** (`gateway` + `mitm` handler + `ca`) enforcing the
   host allowlist and, when `--tls-intercept` is set, terminating TLS to scan request bodies.
   `--pii-mode detect` audits body-policy verdicts (default); `--pii-mode block` enforces them inline.
