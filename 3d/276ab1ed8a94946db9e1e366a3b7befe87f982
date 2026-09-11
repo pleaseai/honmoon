@@ -1,0 +1,23 @@
+README.md
+  s_e38385e01b84cf::t_6871687806b1a9 222-223
+.claude/agent-memory/review-review-security-reviewer/request-trailer-plumbing.md
+  s_e38385e01b84cf::t_6871687806b1a9 25-27
+.please/docs/decisions/0009-body-only-inspection-contract.md
+  s_e38385e01b84cf::t_6871687806b1a9 23-26
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "3d276ab1ed8a94946db9e1e366a3b7befe87f982",
+  "prompts": {},
+  "sessions": {
+    "s_e38385e01b84cf": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "678fcee7-0bf2-4f0a-a4b0-121c1a922537",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
