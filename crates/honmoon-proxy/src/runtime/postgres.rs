@@ -282,10 +282,17 @@ impl ClientLink {
     ///
     /// Called by the relay while it still holds the writer lock, so that a
     /// refusal already queued *at* that lock sees the cleared flag when it gets
-    /// in rather than the value it read on the way past. Checking only on the
-    /// way in would let a refusal that passed [`ClientLink::can_inject`] a
-    /// moment before the relay's write failed acquire the lock afterwards and
-    /// append itself to the partial frame anyway.
+    /// in rather than the value it read on the way past.
+    ///
+    /// Both halves of that matter, and neither is sufficient alone. Checking
+    /// [`ClientLink::can_inject`] only on the way in lets a refusal that passed
+    /// it a moment before the relay's write failed acquire the lock afterwards
+    /// and append itself to the partial frame. But *also* checking after the
+    /// lock is not enough while the flag is cleared after the guard is dropped:
+    /// a refusal arriving in that gap acquires the lock cleanly and still reads
+    /// `stream_intact` as true. Only making the state change atomic with the
+    /// lock that guards the stream closes it — which is why there is one check,
+    /// under the lock, and no cheap early bail-out to reinstate.
     fn desynchronise(&self) {
         self.stream_intact
             .store(false, std::sync::atomic::Ordering::Relaxed);
