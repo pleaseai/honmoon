@@ -139,10 +139,15 @@ list (from the `Authorization` credential or a presigned `X-Amz-SignedHeaders` q
 whose `;` separators are percent-encoded), an RFC 9421 component list under a label `Signature`
 carries, or a draft-cavage `headers="…"` parameter — and asks it about
 `signed_body::REWRITTEN_FRAMING_HEADERS` (`content-length`, `content-encoding`,
-`transfer-encoding`). That constant is read by both the rewrite and the detection, for the reason
-`BODY_DIGEST_HEADERS` is. Only a header the rewrite would *actually* change counts: a
-`Content-Encoding` the request never sent, or a `Content-Length` the redacted body happens to
-match, is left as the client signed it and does not block anything. A request that trips this
+`transfer-encoding`) together with the `BODY_DIGEST_HEADERS` the request carries, which the same
+rewrite strips as stale validators. Both constants are read by the rewrite and the detection alike,
+for the reason `BODY_DIGEST_HEADERS` is. Only a header the rewrite would *actually* change counts:
+a `Content-Encoding` the request never sent, a `Content-Length` the redacted body happens to match,
+or a signed `Content-MD5` the client never sent, is left as the client signed it and does not block
+anything. The digest half is what covers a SigV4 request that declares `UNSIGNED-PAYLOAD` and lists
+`content-md5` in its `SignedHeaders` (#116): the body-signed branch correctly does not fire for it,
+but the strip would break its signature all the same. RFC 9421 and draft-cavage signatures over a
+digest never reach here — they are body-signed and take the earlier branch. A request that trips this
 takes the same `--signed-body` decision as a body-signed one, under its own
 `X-Honmoon-Reason: signed-header-redaction`, audit rule `wire-redaction/signed-headers`, and a
 message naming the headers rather than the scheme.
@@ -219,11 +224,6 @@ enough to unblock the two known shapes (signed uploads vs. bearer-token API traf
 - Detection of a covered header is as header-shaped as the body detection: a scheme we do not
   recognize whose signature covers `Content-Length` still breaks under redaction, exactly as it
   does for the body.
-- The rewrite also strips the stale body-digest validators, and the decision does **not** yet ask
-  about those: a SigV4 request that declares `UNSIGNED-PAYLOAD` and lists a digest header such as
-  `content-md5` in its `SignedHeaders` has that header stripped without taking this decision, so
-  its signature still breaks. RFC 9421 and draft-cavage signatures over a digest are unaffected —
-  they are body-signed and take the earlier branch. Tracked in #116.
 - `forward` is a genuine fail-open hole and is logged at `warn` on every use, alongside the other
   redaction bypasses.
 - Every body-signed request keeps the client's `Accept-Encoding` — the usual `identity`

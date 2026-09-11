@@ -26,6 +26,13 @@ const SIGV4_SIGNED_FRAMING: &str = "AWS4-HMAC-SHA256 \
      Credential=AKIA/20260907/us-east-1/s3/aws4_request, \
      SignedHeaders=content-encoding;content-length;host;x-amz-date, Signature=abc";
 
+/// A SigV4 credential whose `SignedHeaders` list covers a body-digest header
+/// the rewrite strips — and none of the framing headers it re-frames — which is
+/// the `Content-MD5` shape of an S3 upload.
+const SIGV4_SIGNED_DIGEST: &str = "AWS4-HMAC-SHA256 \
+     Credential=AKIA/20260907/us-east-1/s3/aws4_request, \
+     SignedHeaders=content-md5;host;x-amz-date, Signature=abc";
+
 /// A presigned SigV4 request target: the signature lives in the query string
 /// rather than in an `Authorization` header.
 const PRESIGNED_TARGET: &str = "/submit?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential=AKIA&X-Amz-Expires=60\
@@ -1263,6 +1270,69 @@ fn unsigned_payload_upload_signing_content_encoding_is_blocked_by_default() {
     assert!(text.contains("content-encoding"));
     assert!(captured.recv_timeout(Duration::from_millis(250)).is_err());
     assert_eq!(mappings.unwrap().len(), 0);
+}
+
+// The rewrite strips the stale body-digest validators as well as re-framing,
+// and `UNSIGNED-PAYLOAD` keeps the body-signed branch from firing — so a SigV4
+// upload that lists `content-md5` in `SignedHeaders` would have that header
+// removed under a signature covering it. Stripping a signed header breaks the
+// signature exactly as re-framing one does, so it takes the same decision.
+#[test]
+fn unsigned_payload_upload_signing_content_md5_is_blocked_by_default() {
+    let (upstream, captured) = start_upstream(ResponseMode::Static(b"ok".to_vec()));
+    let (proxy, mappings) = start_proxy(true);
+    let body = format!("key={SECRET}");
+
+    let response = proxy_request(
+        proxy,
+        upstream,
+        body.as_bytes(),
+        &[
+            ("Authorization", SIGV4_SIGNED_DIGEST),
+            ("x-amz-content-sha256", "UNSIGNED-PAYLOAD"),
+            ("Content-MD5", "Q2hlY2sgSW50ZWdyaXR5IQ=="),
+        ],
+    );
+    let headers = response_headers(&response);
+    assert!(response.starts_with(b"HTTP/1.1 403"));
+    assert_eq!(
+        header_value(&headers, "x-honmoon-reason"),
+        Some("signed-header-redaction")
+    );
+    let reason = String::from_utf8(response_body(&response)).unwrap();
+    assert!(reason.contains("content-md5"), "{reason}");
+    // The credential does not cover `Content-Length`, so the re-framing the
+    // rewrite would do is not what breaks this signature.
+    assert!(!reason.contains("content-length"), "{reason}");
+    assert!(reason.contains("--signed-body forward"));
+    assert!(captured.recv_timeout(Duration::from_millis(250)).is_err());
+    assert_eq!(mappings.unwrap().len(), 0);
+}
+
+// Only the digest headers the request actually carries count. A `SignedHeaders`
+// list may name a header the client never sent, and the rewrite cannot break
+// what it does not strip — refusing on that would cost a `403` for nothing.
+#[test]
+fn a_signed_digest_header_the_request_never_sent_does_not_block() {
+    let (upstream, captured) = start_upstream(ResponseMode::Static(b"ok".to_vec()));
+    let (proxy, mappings) = start_proxy(true);
+    let body = format!("key={SECRET}");
+
+    let response = proxy_request(
+        proxy,
+        upstream,
+        body.as_bytes(),
+        &[
+            ("Authorization", SIGV4_SIGNED_DIGEST),
+            ("x-amz-content-sha256", "UNSIGNED-PAYLOAD"),
+        ],
+    );
+    assert!(response.starts_with(b"HTTP/1.1 200"));
+    let forwarded = captured.recv_timeout(Duration::from_secs(5)).unwrap();
+    let text = String::from_utf8(forwarded.body).unwrap();
+    assert!(!text.contains(SECRET));
+    assert!(text.contains("<<hs:"));
+    assert_eq!(mappings.unwrap().len(), 1);
 }
 
 // `forward` is the same escape hatch it is for a body-signed request: the
