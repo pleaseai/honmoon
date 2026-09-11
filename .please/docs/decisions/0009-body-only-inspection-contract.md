@@ -56,9 +56,10 @@ a section titled "fail modes" as exhaustive for *how can content reach the upstr
 It was not, and the difference is material in two ways:
 
 - Each listed mode **fails open loudly** (a `warn`). Header-shaped fields fail open **silently** —
-  no warn, and nothing a positive-finding rule can act on. (Not *nothing at all*: the engine always
-  binds `pii` with its empty default so absence conditions work, so a `pii.count == 0` rule still
-  fires and still audits its verdict — it just reads the request as clean. See Consequences.)
+  no warn about what they carry, and nothing a positive-finding rule can act on. (Not *nothing at
+  all*: the engine always binds `pii` with its empty default so absence conditions work, so a
+  `pii.count == 0` rule still fires and still audits its verdict — it just reads the request as
+  clean. See Consequences.)
 - Each listed mode is a case where honmoon *tried and could not*. Header-shaped fields were never
   in scope, so there is nothing to fail — which is precisely why no warn exists, and precisely why
   the omission did not occur to anyone.
@@ -66,8 +67,11 @@ It was not, and the difference is material in two ways:
 ## Decision
 
 **The request inspection contract covers request bodies only.** Header and trailer values are
-never scanned for PII or secrets and never redacted. No `warn` is logged for them, because nothing
-was attempted — they are outside the contract rather than a failure within it.
+never scanned for PII or secrets and never redacted. No `warn` is logged about their *contents*,
+because nothing was attempted — they are outside the contract rather than a failure within it. Two
+of the four fail-open warns above are *triggered* by a header — `Content-Range`'s presence, an
+unparseable `Content-Encoding` — but each one reports a skipped *body* rewrite, never a header or
+trailer value that went unscanned.
 
 **That is a statement about inspection, not about forwarding**, and conflating the two would
 overclaim. Whether a trailer *reaches* the upstream has a conditional answer:

@@ -208,8 +208,10 @@ may itself be signed; those responses may arrive compressed and are then left as
 content reaches the upstream unredacted.** Inspection covers request **bodies** only: header and
 trailer values are never scanned for PII or secrets and never redacted — including a secret placed
 in a chunked trailer (`Trailer: X-Note` followed by `0\r\nX-Note: <secret>`). Unlike the four
-fail-open cases above, no `warn` is logged: header-shaped fields were never in scope, so there is
-nothing to fail — the scan is not failing open, it never applied.
+fail-open cases above, no `warn` is logged about their contents: header-shaped fields were never in
+scope, so there is nothing to fail — the scan is not failing open, it never applied. Two of those
+four warns are triggered by a header — `Content-Range`'s presence, an unparseable
+`Content-Encoding` — but each reports a skipped *body* rewrite, not an unscanned header value.
 
 **`pii.count` stays `0`, and that cuts both ways.** No rule that requires a *positive* finding can
 fire on trailer content — `pii.count > 0`, or a `pii.types` match — so such a rule never denies,
