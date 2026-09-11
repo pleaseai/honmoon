@@ -690,8 +690,14 @@ fn write_secret_file(path: &Path, bytes: &[u8]) -> std::io::Result<Option<String
         opts.mode(0o600);
     }
     let mut file = opts.open(path)?;
+    // Tighten *before* the bytes land. The open mode above applies only when
+    // this call creates the file; a pre-existing one is truncated but keeps
+    // whatever mode it had, so writing first would leave a fresh secret sitting
+    // in a group/world-readable file for the length of the write. Truncation has
+    // already emptied it, so there is nothing to expose in this order.
+    let exposed = restrict_to_owner_only(path);
     file.write_all(bytes)?;
-    Ok(restrict_to_owner_only(path))
+    Ok(exposed)
 }
 
 /// Read `n` bytes from the OS CSPRNG. Uses `/dev/urandom` to avoid pulling in an
@@ -753,10 +759,33 @@ fn restrict_to_owner_only(path: &Path) -> Option<String> {
     };
     (mode & 0o077 != 0).then(|| {
         format!(
-            "salt file {} is readable beyond its owner (mode {mode:04o}) and could not be restricted to 0600",
-            path.display()
+            "salt file {} is {} (mode {mode:04o}) and could not be restricted to 0600",
+            path.display(),
+            access_beyond_owner(mode)
         )
     })
+}
+
+/// Name the access `mode` grants beyond the file's owner, for the `reason` on a
+/// [`HOOK_SALT_EXPOSED_RULE`] event.
+///
+/// The predicate is `0o077` — any permission at all beyond the owner, because a
+/// key file should have none — but that is wider than reading, and the record
+/// has to say which it saw rather than assert the worst one. A group-writable
+/// salt is a key another local user can *replace* with one they chose, which is
+/// a different harm from one they can copy, and a group-executable salt is
+/// neither. Calling any of them "readable" would be the record claiming more
+/// than the mode shows, which is the same over-claim this whole path exists to
+/// stop.
+fn access_beyond_owner(mode: u32) -> &'static str {
+    match (mode & 0o044 != 0, mode & 0o022 != 0) {
+        (true, true) => "readable and writable by other local users",
+        (true, false) => "readable by other local users",
+        (false, true) => "writable by other local users",
+        // Only the execute bits are set: it grants nothing on a data file, but
+        // it is still a permission an owner-only secret should not carry.
+        (false, false) => "executable by other local users",
+    }
 }
 
 /// Non-Unix hosts have no mode bits to observe, matching the `#[cfg(unix)]`
@@ -889,12 +918,15 @@ mod tests {
     ///   without privileges, after which `chmod(2)` fails with `EPERM` and the
     ///   mode stays exactly as seeded. [`UnrestrictableSalt`] clears the flag on
     ///   drop, or the temp dir could not be removed.
-    /// - **Linux**: procfs rejects `chmod` outright — for root too, so this is
-    ///   safe under any uid and mutates nothing — which makes a symlink at the
-    ///   salt path pointing into `/proc` genuinely unrestrictable.
-    ///   `/proc/version` is world-readable (`0444`), `/proc/self/auxv`
-    ///   owner-only (`0400`), and both are comfortably over the loader's 16-byte
-    ///   floor.
+    /// - **Linux**: a symlink at the salt path pointing into `/proc/self`.
+    ///   Those entries go through procfs's `proc_setattr`, which refuses a mode
+    ///   change with `EPERM` for **every** uid including root, so the fixture
+    ///   holds on a container that runs its tests as root and mutates nothing
+    ///   outside this process. `/proc/self/cmdline` is world-readable (`0444`),
+    ///   `/proc/self/auxv` owner-only (`0400`), and both are comfortably over
+    ///   the loader's 16-byte floor. A root-level entry like `/proc/version`
+    ///   would *not* do: those use `proc_notify_change`, which lets root change
+    ///   the mode of an entry every process on the host shares.
     ///
     /// The caller says which mode class it needs and this verifies the host
     /// actually delivered it — readable, long enough, `chmod` genuinely refused,
@@ -979,7 +1011,7 @@ mod tests {
     #[cfg(target_os = "linux")]
     fn seed_unrestrictable_salt(path: &Path, exposed: bool) -> UnrestrictableSalt {
         let target = if exposed {
-            "/proc/version"
+            "/proc/self/cmdline"
         } else {
             "/proc/self/auxv"
         };
@@ -1025,6 +1057,10 @@ mod tests {
             exposure.contains(&format!("{mode:04o}")),
             "the reason names the mode observed, not the chmod that failed: {exposure}"
         );
+        assert!(
+            exposure.contains("readable by other local users"),
+            "and names the access that mode actually grants: {exposure}"
+        );
 
         // And it has to reach the durable sink, which is the hook's only channel.
         let log = tmp.path().join("audit.jsonl");
@@ -1048,6 +1084,30 @@ mod tests {
             redaction.reason.contains(&format!("{mode:04o}")),
             "the recorded reason carries the observed mode: {}",
             redaction.reason
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_recorded_access_matches_the_bits_that_are_set() {
+        // The predicate is `0o077` — a key file should carry no permission at all
+        // beyond its owner — but that is wider than reading, and the record says
+        // which access it saw rather than assuming the worst. A group-writable
+        // salt is a key another local user can replace with one they chose;
+        // calling that "readable" would be the record over-claiming, which is
+        // what this whole path exists to stop. Tested directly: a fixture cannot
+        // reach the write-only arms, since a procfs entry's mode is fixed and a
+        // mode a test can choose is a mode it can also chmod away.
+        assert_eq!(access_beyond_owner(0o644), "readable by other local users");
+        assert_eq!(access_beyond_owner(0o604), "readable by other local users");
+        assert_eq!(access_beyond_owner(0o620), "writable by other local users");
+        assert_eq!(
+            access_beyond_owner(0o666),
+            "readable and writable by other local users"
+        );
+        assert_eq!(
+            access_beyond_owner(0o611),
+            "executable by other local users"
         );
     }
 

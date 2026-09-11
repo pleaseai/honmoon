@@ -300,8 +300,12 @@ in a given session and check it against a redacted transcript, exactly as under 
 the mode observed:
 
 ```
-salt file /home/a/.honmoon/hook-salt is readable beyond its owner (mode 0644) and could not be restricted to 0600
+salt file /home/a/.honmoon/hook-salt is readable by other local users (mode 0644) and could not be restricted to 0600
 ```
+
+The event fires on **any** permission beyond the owner, not only a read bit — a salt
+another local user can write is a key they can *replace* with one they chose — and the
+`reason` names which access was observed rather than assuming the worst of them.
 
 Note what that event does and does not attest. It is raised on the **mode read back
 after** the attempt, not on the `chmod` returning an error — a read-only mount fails the
