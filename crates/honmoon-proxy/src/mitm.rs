@@ -49,8 +49,8 @@ use hudsucker::{Body, HttpContext, HttpHandler, RequestOrResponse};
 
 use crate::approval::{HoldOutcome, hold};
 use crate::body::{
-    Buffered, MAX_INSPECT_BODY, StrictDecode, buffer_up_to, decode_strict, detokenizing_body,
-    prefixed_body, utf8_prefix,
+    Buffered, MAX_INSPECT_BODY, StrictDecode, buffer_up_to, buffered_body, decode_strict,
+    detokenizing_body, prefixed_body, utf8_prefix,
 };
 use crate::gateway::{
     GatewayState, InterceptPolicy, PiiMode, SignedBodyMode, authority_port, canonical_host,
@@ -552,6 +552,11 @@ impl HonmoonHandler {
             "request body redacted"
         );
 
+        // `Full` has no trailers, and here that is the point: the rewrite
+        // replaces the payload, so any digest the client computed over the
+        // original bytes is stale whether it rode in a header or a trailer.
+        // Dropping the trailer frame is the same fail-safe choice as stripping
+        // `BODY_DIGEST_HEADERS` below.
         *request.body_mut() = Body::from(Full::new(bytes));
         request.headers_mut().insert(
             header::CONTENT_LENGTH,
@@ -614,21 +619,28 @@ impl HonmoonHandler {
         // `MAX_INSPECT_BODY` through un-inspected so a large upload can't
         // exhaust memory. Unknown-length bodies (e.g. chunked) are buffered up
         // to the same cap — omitting `Content-Length` must not skip the scan.
+        //
+        // Both buffered paths rebuild the body with `buffered_body` rather than
+        // `Full`, which has no trailers: the client's trailer frame has to reach
+        // the upstream leg intact, because a body signature can cover a
+        // `Content-Digest` sent there and `--signed-body forward` promises to
+        // reproduce the request as signed.
         let (new_body, scanned, body_size) = match content_length {
             Some(len) if len <= MAX_INSPECT_BODY => match body.collect().await {
                 Ok(collected) => {
+                    let trailers = collected.trailers().cloned();
                     let bytes = collected.to_bytes();
                     let size = bytes.len() as i64;
-                    (Body::from(Full::new(bytes.clone())), Some(bytes), size)
+                    (buffered_body(bytes.clone(), trailers), Some(bytes), size)
                 }
                 // Failing to read the *client's* body is a client-side error.
                 Err(_) => return status_response(StatusCode::BAD_REQUEST),
             },
             Some(len) => (body, None, len as i64),
             None => match buffer_up_to(body, MAX_INSPECT_BODY).await {
-                Ok(Buffered::Complete(bytes)) => {
+                Ok(Buffered::Complete { bytes, trailers }) => {
                     let size = bytes.len() as i64;
-                    (Body::from(Full::new(bytes.clone())), Some(bytes), size)
+                    (buffered_body(bytes.clone(), trailers), Some(bytes), size)
                 }
                 // Over the cap — forward the buffered prefix plus the rest of
                 // the stream untouched, unscanned (same as an over-cap

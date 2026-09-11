@@ -26,6 +26,7 @@ use honmoon_core::{Mapping, StreamingDetokenizer};
 use http_body_util::BodyExt;
 use http_body_util::combinators::BoxBody;
 use hudsucker::Body;
+use hudsucker::hyper::HeaderMap;
 use hudsucker::hyper::body::{Body as HttpBody, Bytes, Frame, SizeHint};
 
 /// Max request-body bytes buffered in memory (and max inflated output) for PII
@@ -145,9 +146,12 @@ pub(crate) fn utf8_prefix(b: &[u8]) -> Option<&str> {
 
 /// Result of buffering an unknown-length body up to a cap.
 pub(crate) enum Buffered {
-    /// The body ended within the cap — fully buffered (trailers dropped, like
-    /// the `Content-Length` buffered path).
-    Complete(Bytes),
+    /// The body ended within the cap — fully buffered, together with any
+    /// trailers the client sent after the last data frame.
+    Complete {
+        bytes: Bytes,
+        trailers: Option<HeaderMap>,
+    },
     /// The cap was hit: `prefix` holds exactly `limit` bytes, `rest` the
     /// remainder of the stream (including any unread tail of the frame that
     /// crossed the cap).
@@ -158,26 +162,62 @@ pub(crate) enum Buffered {
 /// buffered. Never buffers more than `limit` bytes: a frame that crosses the
 /// cap is split, with the unread tail pushed back into `rest` so forwarding
 /// stays lossless.
+///
+/// Trailer frames are kept rather than skipped: they are part of the request
+/// the client sent, and a signature can cover a `Content-Digest` carried there.
+/// The overflow path needs no such care — trailers arrive after the last data
+/// frame, so they are still unread in `rest`.
 pub(crate) async fn buffer_up_to(
     mut body: Body,
     limit: usize,
 ) -> Result<Buffered, hudsucker::Error> {
     let mut buf: Vec<u8> = Vec::new();
+    let mut trailers: Option<HeaderMap> = None;
     while let Some(frame) = body.frame().await {
-        if let Ok(mut data) = frame?.into_data() {
-            if buf.len() + data.len() > limit {
-                let take = limit - buf.len();
-                buf.extend_from_slice(&data[..take]);
-                let tail = data.split_off(take);
-                return Ok(Buffered::Overflow {
-                    prefix: Bytes::from(buf),
-                    rest: prefixed_body(tail, body),
-                });
+        match frame?.into_data() {
+            Ok(mut data) => {
+                if buf.len() + data.len() > limit {
+                    let take = limit - buf.len();
+                    buf.extend_from_slice(&data[..take]);
+                    let tail = data.split_off(take);
+                    return Ok(Buffered::Overflow {
+                        prefix: Bytes::from(buf),
+                        rest: prefixed_body(tail, body),
+                    });
+                }
+                buf.extend_from_slice(&data);
             }
-            buf.extend_from_slice(&data);
+            Err(frame) => {
+                if let Ok(more) = frame.into_trailers() {
+                    match &mut trailers {
+                        Some(seen) => seen.extend(more),
+                        None => trailers = Some(more),
+                    }
+                }
+            }
         }
     }
-    Ok(Buffered::Complete(Bytes::from(buf)))
+    Ok(Buffered::Complete {
+        bytes: Bytes::from(buf),
+        trailers,
+    })
+}
+
+/// Re-assemble a fully buffered body: the buffered bytes, then the trailers the
+/// client sent after them.
+///
+/// [`Full`](http_body_util::Full) cannot carry trailers, so rebuilding with it
+/// silently drops the client's trailer frame. That breaks the promise
+/// `--signed-body forward` makes — an RFC 9421 or draft-cavage signature may
+/// cover a `Content-Digest` the client sent as a trailer, and a request
+/// forwarded without it earns the upstream signature rejection the mode exists
+/// to avoid.
+pub(crate) fn buffered_body(bytes: Bytes, trailers: Option<HeaderMap>) -> Body {
+    Body::from(BoxBody::new(BufferedBody {
+        // An empty `Bytes` yields no data frame, matching `Full`.
+        data: (!bytes.is_empty()).then_some(bytes),
+        trailers,
+    }))
 }
 
 /// Re-assemble a body from an already-read prefix followed by the unread rest.
@@ -332,6 +372,36 @@ impl HttpBody for DetokenizingBody {
 
     fn size_hint(&self) -> SizeHint {
         SizeHint::default()
+    }
+}
+
+/// An [`HttpBody`] that yields one data frame, then the buffered trailers.
+struct BufferedBody {
+    data: Option<Bytes>,
+    trailers: Option<HeaderMap>,
+}
+
+impl HttpBody for BufferedBody {
+    type Data = Bytes;
+    type Error = hudsucker::Error;
+
+    fn poll_frame(
+        mut self: Pin<&mut Self>,
+        _cx: &mut std::task::Context<'_>,
+    ) -> Poll<Option<Result<Frame<Self::Data>, Self::Error>>> {
+        if let Some(data) = self.data.take() {
+            return Poll::Ready(Some(Ok(Frame::data(data))));
+        }
+        Poll::Ready(self.trailers.take().map(|t| Ok(Frame::trailers(t))))
+    }
+
+    fn is_end_stream(&self) -> bool {
+        self.data.is_none() && self.trailers.is_none()
+    }
+
+    /// Exact, and counting data bytes only — trailers are not body length.
+    fn size_hint(&self) -> SizeHint {
+        SizeHint::with_exact(self.data.as_ref().map_or(0, |data| data.len() as u64))
     }
 }
 
@@ -706,9 +776,52 @@ mod tests {
     async fn unknown_length_body_within_cap_is_fully_buffered() {
         let body = Body::from(b"small body".to_vec());
         match buffer_up_to(body, MAX_INSPECT_BODY).await.expect("read") {
-            Buffered::Complete(bytes) => assert_eq!(&bytes[..], b"small body"),
+            Buffered::Complete { bytes, trailers } => {
+                assert_eq!(&bytes[..], b"small body");
+                assert!(trailers.is_none(), "no trailers were sent");
+            }
             Buffered::Overflow { .. } => panic!("small body must not overflow"),
         }
+    }
+
+    /// A chunked request can carry the `Content-Digest` its signature covers in
+    /// a trailer. Buffering it for the scan must not consume the trailer frame,
+    /// or `--signed-body forward` forwards a request the client never signed.
+    #[tokio::test]
+    async fn unknown_length_body_within_cap_keeps_its_trailers() {
+        let mut sent = HeaderMap::new();
+        sent.insert("content-digest", "sha-256=:ZGlnZXN0:".parse().unwrap());
+        let body = scripted_body(vec![
+            Ok(Frame::data(Bytes::from_static(b"signed body"))),
+            Ok(Frame::trailers(sent.clone())),
+        ]);
+
+        match buffer_up_to(body, MAX_INSPECT_BODY).await.expect("read") {
+            Buffered::Complete { bytes, trailers } => {
+                assert_eq!(&bytes[..], b"signed body");
+                assert_eq!(trailers.expect("trailers buffered"), sent);
+            }
+            Buffered::Overflow { .. } => panic!("small body must not overflow"),
+        }
+    }
+
+    #[tokio::test]
+    async fn rebuilt_buffered_body_replays_data_then_trailers() {
+        let mut sent = HeaderMap::new();
+        sent.insert("content-digest", "sha-256=:ZGlnZXN0:".parse().unwrap());
+        let mut body = buffered_body(Bytes::from_static(b"signed body"), Some(sent.clone()));
+
+        let data = body.frame().await.unwrap().unwrap().into_data().unwrap();
+        assert_eq!(&data[..], b"signed body");
+        let replayed = body
+            .frame()
+            .await
+            .unwrap()
+            .unwrap()
+            .into_trailers()
+            .unwrap();
+        assert_eq!(replayed, sent);
+        assert!(body.frame().await.is_none());
     }
 
     #[tokio::test]
@@ -716,7 +829,7 @@ mod tests {
         let big = vec![b'a'; MAX_INSPECT_BODY + 10];
         let body = Body::from(big.clone());
         match buffer_up_to(body, MAX_INSPECT_BODY).await.expect("read") {
-            Buffered::Complete(_) => panic!("oversized body must overflow"),
+            Buffered::Complete { .. } => panic!("oversized body must overflow"),
             Buffered::Overflow { prefix, rest } => {
                 // The buffered prefix must be bounded at the cap even when a
                 // single frame crosses it (the tail is pushed back into rest).
