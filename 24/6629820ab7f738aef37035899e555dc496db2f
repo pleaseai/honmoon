@@ -1,0 +1,45 @@
+.claude/agent-memory/review-review-security-reviewer/signed-body-detection-invariants.md
+  s_6eafee1f39ff31::t_67f426a29d5b0b 32-39
+.claude/agent-memory/review-review-ocr-reviewer/ocr-scoping-honmoon.md
+  s_6eafee1f39ff31::t_d3d453452002d7 21-28
+.claude/agent-memory/review-review-documentation-analyzer/MEMORY.md
+  s_6eafee1f39ff31::t_67f426a29d5b0b 5
+.claude/agent-memory/review-review-documentation-analyzer/pr146_signed_digest_readme_cli_stale.md
+  s_6eafee1f39ff31::t_67f426a29d5b0b 1-30
+.please/docs/decisions/0006-signed-body-requests-under-wire-redaction.md
+  s_6eafee1f39ff31::t_67f426a29d5b0b 142-150
+crates/honmoon-proxy/src/signed_body.rs
+  s_6eafee1f39ff31::t_67f426a29d5b0b 103-105
+crates/honmoon-proxy/tests/redaction.rs
+  s_6eafee1f39ff31::t_67f426a29d5b0b 29-35,1275-1367
+  s_6eafee1f39ff31::t_c94b2861507aa1 1368
+crates/honmoon-proxy/src/mitm.rs
+  s_6eafee1f39ff31::t_67f426a29d5b0b 503-508,511-512,532-533,1151-1153,1156-1159,1175-1194,1440-1477
+  s_6eafee1f39ff31::t_a964663a1d147e 1478-1479
+.claude/agent-memory/review-review-pr-test-analyzer/MEMORY.md
+  s_6eafee1f39ff31::t_67f426a29d5b0b 5
+crates/honmoon-cli/src/main.rs
+  s_6eafee1f39ff31::t_67f426a29d5b0b 98-102
+.claude/agent-memory/review-review-pr-test-analyzer/rewritten_headers_generic_dispatch.md
+  s_6eafee1f39ff31::t_67f426a29d5b0b 1-32
+README.md
+  s_6eafee1f39ff31::t_67f426a29d5b0b 212-216,231-232
+.claude/agent-memory/review-review-code-reviewer/project_signed_body_framing_headers_83.md
+  s_6eafee1f39ff31::t_67f426a29d5b0b 3,26-38
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "246629820ab7f738aef37035899e555dc496db2f",
+  "prompts": {},
+  "sessions": {
+    "s_6eafee1f39ff31": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "ef7227cc-7b83-4783-b04d-4349ac4c0afc",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
