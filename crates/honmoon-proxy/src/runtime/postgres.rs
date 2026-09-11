@@ -257,13 +257,32 @@ struct Delivered {
     /// `flush_answers <= ClientLink::flushes` holds the same way
     /// `sync_points <= ClientLink::forwarded` does.
     ///
-    /// It needs no counterpart to [`Delivered::debt`]. Debt exists because a
-    /// written-off `ReadyForQuery` can still arrive and be counted a second
-    /// time; nothing arrives late to raise this one. A quiet upstream is
-    /// recomputed from `flushes` each time it is observed, so a write-off is
-    /// simply overtaken by the next genuine observation rather than punctured
-    /// by it.
+    /// Written off by a stalled wait like [`Delivered::sync_points`], and for
+    /// the same reason carrying its own [`Delivered::flush_debt`]. Recomputing
+    /// the owed count from `flushes` at each observation is what makes the debt
+    /// necessary rather than what removes the need for it: the batch the wait
+    /// gave up on can still produce its output afterwards, and by then `flushes`
+    /// may have grown, so the quiet behind that late output would be credited to
+    /// a batch still being computed.
     flush_answers: u64,
+    /// Flush observations a stalled wait gave up on, to be discarded rather than
+    /// counted if the output they belong to arrives after all.
+    ///
+    /// The flush counterpart to [`Delivered::debt`], and the same argument: a
+    /// write-off credits [`Delivered::flush_answers`] for output the client
+    /// never received, and PostgreSQL produces output in order, so the next
+    /// quiet at a message boundary belongs to the oldest flush still
+    /// unanswered — one that was written off. Counting it would advance
+    /// `flush_answers` into the slot of a later `Flush` whose output has not
+    /// been relayed, releasing a refusal queued behind that batch ahead of its
+    /// rows, which is #101 again.
+    ///
+    /// It inherits the sync side's imprecision too: a flush whose output never
+    /// comes leaves the debt standing, and the next genuine quiet pays it down
+    /// instead of crediting itself, so the accounting stays one behind from
+    /// there. That costs a stall window per later refusal and never an ordering
+    /// violation, which is the direction ADR-0007 resolves this ambiguity in.
+    flush_debt: u64,
     /// Answers a stalled wait gave up on, and which must therefore be thrown
     /// away rather than counted if the database sends them after all.
     ///
@@ -317,6 +336,7 @@ impl ClientLink {
                 messages: 0,
                 flush_answers: 0,
                 debt: 0,
+                flush_debt: 0,
             })),
             stream_intact: Arc::new(std::sync::atomic::AtomicBool::new(true)),
         }
@@ -421,6 +441,15 @@ impl ClientLink {
     /// here.
     fn flush_drained(&self, owed: u64) {
         self.delivered.send_modify(|delivered| {
+            if delivered.flush_debt > 0 {
+                // Output in order means this quiet belongs to the oldest flush
+                // still unanswered, and a debt says the oldest ones were written
+                // off. Their credit was already taken; taking it twice would
+                // advance the count into a later batch's slot and release the
+                // refusal queued behind *that* one before its rows exist.
+                delivered.flush_debt -= 1;
+                return;
+            }
             if delivered.flush_answers < owed {
                 delivered.flush_answers += 1;
             }
@@ -611,11 +640,14 @@ impl ClientLink {
                             delivered.debt += expected.saturating_sub(*count);
                             *count = (*count).max(expected);
                         }
-                        // The flush side is written off the same way and for the
-                        // same reason, but carries no debt: nothing arrives late
-                        // to raise it, so there is no second credit to guard
-                        // against. See [`Delivered::flush_answers`].
+                        // The flush side is written off the same way, and owes
+                        // the same back: the batch this wait gave up on can
+                        // still produce its output, and the quiet behind it
+                        // would otherwise be credited to whatever `Flush` the
+                        // client has sent since. See [`Delivered::flush_debt`].
                         drained_flushes = delivered.flush_answers;
+                        delivered.flush_debt +=
+                            expected_flushes.saturating_sub(delivered.flush_answers);
                         delivered.flush_answers = delivered.flush_answers.max(expected_flushes);
                     });
                     // Both sides are reported, because either can be the one
@@ -2678,10 +2710,10 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn a_write_off_settles_both_counters_without_crossing_their_accounting() {
-        // The two counters are written off inside one `send_modify`, and only
-        // the sync side carries debt. A write-off that credited the flush side
-        // into `debt`, or that let a later real `ReadyForQuery` be swallowed by
-        // a flush's credit, would leave the next refusal on the connection
+        // The two counters are written off inside one `send_modify`, and each
+        // records its own debt. A write-off that credited the flush side into
+        // the sync `debt`, or that let a later real `ReadyForQuery` be swallowed
+        // by a flush's credit, would leave the next refusal on the connection
         // paying the stall bound all over again.
         let (link, _peer) = loopback_link().await;
         link.forwarded_sync_point();
@@ -2693,9 +2725,10 @@ mod tests {
                 link.delivered.borrow().sync_points,
                 link.delivered.borrow().flush_answers,
                 link.delivered.borrow().debt,
+                link.delivered.borrow().flush_debt,
             ),
-            (Some(1), 1, 1),
-            "both sides are credited, and only the sync side records what it owes back"
+            (Some(1), 1, 1, 1),
+            "both sides are credited, and each records what it owes back in its own counter"
         );
 
         // The statement's answer turns up late and is discarded against the
@@ -2722,6 +2755,56 @@ mod tests {
             .await
             .is_err(),
             "the write-off left a later refusal released early"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_written_off_flush_is_not_settled_again_by_the_next_batch() {
+        // A written-off flush is not gone: the batch the database gave up
+        // answering can still produce its output afterwards, and the quiet
+        // behind it is recomputed against whatever `flushes` has since become.
+        // If the client sent another flushed batch in between, that quiet
+        // credits *its* slot instead, and the next refusal is released while
+        // the second batch is still computing — #101, reached through the
+        // write-off. The sync side has carried `debt` for exactly this since
+        // #112.
+        let (link, _peer) = loopback_link().await;
+        link.forwarded_flush();
+
+        link.await_forwarded_responses().await;
+        assert_eq!(
+            (
+                link.delivered.borrow().flush_answers,
+                link.delivered.borrow().flush_debt,
+            ),
+            (1, 1),
+            "the write-off credits the flush it gave up on and records that it owes it back"
+        );
+
+        // The client's next batch, allowed and flushed like the first.
+        link.forwarded_flush();
+
+        // Now the *first* batch's output finally arrives, and the relay finds
+        // the socket quiet behind it. That observation belongs to the flush
+        // already written off, not to the one still outstanding.
+        link.flush_drained(link.flushes.load(Ordering::Relaxed));
+        assert_eq!(
+            (
+                link.delivered.borrow().flush_answers,
+                link.delivered.borrow().flush_debt,
+            ),
+            (1, 0),
+            "the late drain paid down the flush debt instead of crediting the new batch"
+        );
+
+        assert!(
+            tokio::time::timeout(
+                REFUSAL_ORDER_STALL_TIMEOUT / 2,
+                link.await_forwarded_responses(),
+            )
+            .await
+            .is_err(),
+            "the write-off let a refusal overtake the batch that followed it"
         );
     }
 

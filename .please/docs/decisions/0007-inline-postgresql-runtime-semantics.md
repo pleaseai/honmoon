@@ -209,6 +209,24 @@ that fails to parse: it is refused rather than forwarded blind.
     write-off. The ambiguity is resolved toward waiting, for the same reason it is everywhere else
     here: the failure is latency, never ordering.
 
+    **A written-off flush is owed back, exactly as a written-off answer is.** The flush counter is
+    written off by a stalled wait like the sync one, and carries its own debt for the same reason.
+    Recomputing what is owed from the flush count at each observation is what makes the debt
+    necessary rather than what removes the need for it: the batch a wait gave up on can still
+    produce its output afterwards, and by then the client may have sent another flushed batch, so
+    the quiet behind that late output fits under the raised ceiling and is credited to a batch the
+    database is still computing — releasing the refusal queued behind *that* one ahead of its rows,
+    which is this defect again by the same longer route the sync side already guards. So each
+    written-off flush is remembered, and the next quiet pays down a unit of debt instead of
+    advancing the count. The two debts are counted separately: crossing them would let a late
+    `ReadyForQuery` discharge a flush's write-off, or a quiet discharge a statement's.
+
+    This inherits the sync side's one-time price too. A flush whose output never comes leaves its
+    debt standing, and the next genuine quiet pays that down rather than crediting itself, so the
+    accounting stays one behind from there and every later refusal on the connection pays a stall
+    window instead of only the first. The two cases are indistinguishable on the wire for the same
+    reason they are on the sync side, and the ambiguity is resolved the same way.
+
     **What it still does not guarantee.** A burst split across TCP segments can leave the socket
     momentarily empty part-way through one batch's output, and a quiet read there settles that
     batch early. A `Flush` that elicits nothing at all — sent with no pending output, or ignored
