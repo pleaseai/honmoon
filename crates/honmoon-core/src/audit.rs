@@ -91,7 +91,9 @@ pub struct RedactionFacts {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum RedactionKeySource {
-    /// The private random secret persisted at `~/.honmoon/hook-salt`.
+    /// The random secret persisted at `~/.honmoon/hook-salt`. Says where the
+    /// bytes came from, not whether the file is readable by anyone else
+    /// (issue #141).
     Persisted,
     /// A private random secret that never reached disk, so it is unforgeable
     /// but lives and dies with one process: placeholders stop being stable

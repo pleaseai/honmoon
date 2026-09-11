@@ -154,7 +154,13 @@ const FALLBACK_MACHINE_KEY: &[u8] = b"honmoon-hook-v1-fallback-key";
 
 /// Where the bytes in a [`MachineKey`] came from.
 pub enum MachineKeySource {
-    /// The private random secret persisted at `~/.honmoon/hook-salt`.
+    /// The random secret persisted at `~/.honmoon/hook-salt`.
+    ///
+    /// Attests where the bytes came from, not who else can read them: the
+    /// loader re-tightens the file to `0600` but only logs a `chmod` it cannot
+    /// apply, so a salt left group/world-readable still arrives here. Recording
+    /// that as its own degradation is issue #141 — it is an orthogonal axis, and
+    /// a persisted key is exactly what this variant says it is.
     Persisted,
     /// A private random secret that could not be persisted, so it is this
     /// process's alone. `reason` is why it did not reach disk.
