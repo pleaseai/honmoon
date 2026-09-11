@@ -1079,6 +1079,43 @@ fn the_same_content_in_the_body_is_refused_by_the_same_rule() {
     assert!(captured.recv_timeout(Duration::from_millis(250)).is_err());
 }
 
+// The forwarding half of ADR-0009 is conditional, and this is the condition: a
+// wire-redaction rewrite replaces the body with `Full`, which carries no trailer
+// frame, so the client's trailer is dropped rather than replayed. Deliberate —
+// a digest computed over the original bytes is stale once they are replaced,
+// whether it rode in a header or a trailer — but it is why the contract states
+// inspection and forwarding separately instead of promising trailers are always
+// passed on untouched. (The stale `Trailer:` header this leaves behind is #135.)
+#[test]
+fn a_redacted_body_drops_the_request_trailer() {
+    let (upstream, captured) = start_upstream(ResponseMode::Static(b"ok".to_vec()));
+    let (proxy, mappings) = start_proxy(true);
+    let body = format!("key={SECRET}");
+
+    let request = format!(
+        "POST http://127.0.0.1:{upstream}/submit HTTP/1.1\r\n\
+         Host: 127.0.0.1:{upstream}\r\n\
+         Trailer: X-Note\r\n\
+         Transfer-Encoding: chunked\r\n\
+         Connection: close\r\n\r\n\
+         {:x}\r\n{body}\r\n0\r\nX-Note: note-value\r\n\r\n",
+        body.len()
+    );
+    let response = raw_proxy_request(proxy, request.as_bytes());
+    assert!(response.starts_with(b"HTTP/1.1 200"));
+
+    let forwarded = captured.recv_timeout(Duration::from_secs(5)).unwrap();
+    let text = String::from_utf8(forwarded.body).unwrap();
+    assert!(!text.contains(SECRET), "the body secret is redacted");
+    assert!(text.contains("<<hs:"));
+    assert_eq!(
+        header_value(&forwarded.trailers, "x-note"),
+        None,
+        "the rewrite replaces the body with `Full`, which carries no trailers"
+    );
+    assert_eq!(mappings.unwrap().len(), 1);
+}
+
 // The `identity` negotiation must not leak onto the common 'signed request,
 // nothing to redact' path either: the client's `Accept-Encoding` may be one of
 // the headers it signed.

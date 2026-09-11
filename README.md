@@ -206,12 +206,17 @@ may itself be signed; those responses may arrive compressed and are then left as
 
 **Those four are the cases where honmoon tries to rewrite and cannot. They are not the only way
 content reaches the upstream unredacted.** Inspection covers request **bodies** only: header and
-trailer values are never scanned for PII or secrets, never redacted, and are passed on unmodified
-by honmoon (what finally reaches the upstream is then subject to that leg's own framing rules — see
-#136) — including a secret placed in a chunked trailer (`Trailer: X-Note` followed by
-`0\r\nX-Note: <secret>`). Unlike the four fail-open cases above, this is silent: no `warn`, no
-audit record, and `pii.count` stays `0`, so no `pii.*` rule can fire on it. Header-shaped fields
-were never in scope, so there is nothing to fail — the scan is not failing open, it never applied.
+trailer values are never scanned for PII or secrets and never redacted — including a secret placed
+in a chunked trailer (`Trailer: X-Note` followed by `0\r\nX-Note: <secret>`). Unlike the four
+fail-open cases above, this is silent: no `warn`, no audit record, and `pii.count` stays `0`, so no
+`pii.*` rule can fire on it. Header-shaped fields were never in scope, so there is nothing to fail
+— the scan is not failing open, it never applied.
+
+Whether a trailer then *reaches* the upstream is a separate question with a conditional answer: on
+the pass-through path it does, unchanged; when redaction rewrites the body, the replacement carries
+no trailer frame and the client's trailers are dropped (deliberately — a digest over the original
+bytes is stale either way; the stale `Trailer:` header that drop leaves behind is tracked as
+issue #135). Neither case inspects them.
 
 **There is no content-level lever for this surface.** `egress.default: deny` narrows *which hosts*
 an agent can reach and is worth keeping, but it scans nothing: an allow-listed destination — the

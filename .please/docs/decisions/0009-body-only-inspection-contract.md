@@ -57,10 +57,22 @@ It was not, and the difference is material in two ways:
 ## Decision
 
 **The request inspection contract covers request bodies only.** Header and trailer values are
-never scanned for PII or secrets, never redacted, and are passed on unmodified by honmoon (what
-finally crosses is then subject to the upstream leg's own framing rules — see #136). No `warn` is
-logged for them, because nothing was attempted — they are outside the contract rather
-than a failure within it.
+never scanned for PII or secrets and never redacted. No `warn` is logged for them, because nothing
+was attempted — they are outside the contract rather than a failure within it.
+
+**That is a statement about inspection, not about forwarding**, and conflating the two would
+overclaim. Whether a trailer *reaches* the upstream has a conditional answer:
+
+- On the **pass-through path** — every request honmoon does not rewrite — the trailer frame is
+  replayed and honmoon changes nothing in it.
+- When `--redact-secrets` **rewrites the body**, `forwarded_request` replaces it with `Full`, which
+  carries no trailer frame, so the client's trailers are **dropped**. That is deliberate and
+  fail-safe: a digest the client computed over the original bytes is stale once those bytes are
+  replaced, whether it rode in a header or a trailer — the same reasoning that strips
+  `BODY_DIGEST_HEADERS`. (The `Trailer:` declaration header left behind by that drop is #135.)
+- What finally crosses is then subject to the upstream leg's own framing rules (#136).
+
+None of that changes the inspection contract: a dropped trailer was not inspected either.
 
 This is recorded in three places so it cannot be rediscovered as a surprise:
 

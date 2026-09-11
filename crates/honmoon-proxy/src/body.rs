@@ -174,9 +174,10 @@ pub(crate) enum Buffered {
 /// frame, so they are still unread in `rest`.
 ///
 /// Kept for *forwarding*, not for inspection: the returned `trailers` are
-/// handed back to be replayed upstream and never scanned — honmoon modifies
-/// nothing, though what finally crosses is subject to the upstream leg's own
-/// framing rules (#136). Note the asymmetry that
+/// handed back to be replayed upstream and never scanned. Replayed on the
+/// pass-through path only — a wire-redaction rewrite replaces the body with
+/// `Full`, which carries no trailer frame, so these are dropped there
+/// (deliberately; see `forwarded_request`). Note the asymmetry that
 /// makes widening the scan here unsound — this is one of only two places a
 /// trailer materializes at all (the other is `inspect_body`'s
 /// `Content-Length <= MAX_INSPECT_BODY` branch, which collects them separately),
