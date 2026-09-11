@@ -66,8 +66,8 @@ metadata:
     }
   })
 
-  test('reads a block scalar whose header carries a comment', () => {
-    for (const header of ['> # summary follows', '|- # summary follows', '>2 # note']) {
+  test('reads a block scalar whose header carries a comment or trailing space', () => {
+    for (const header of ['> # summary follows', '|- # summary follows', '>2 # note', '>  ', '|2-   ']) {
       expect(parseFrontmatter(`---
 name: block
 description: ${header}
@@ -138,7 +138,9 @@ metadata:
   // `description: null` is the absence of a value, not the word — storing the
   // source spelling advertised `null` as a note's summary.
   test('reports a value YAML resolves to something that is not text', () => {
-    for (const value of ['null', '~', 'true', 'no', '42', '3.14', '.inf']) {
+    // `1e3` is a string under YAML 1.1 and the number 1000 under 1.2's core
+    // schema — two readers disagreeing is reason to report, not to pick a side.
+    for (const value of ['null', '~', 'true', 'no', '42', '3.14', '.inf', '1e3', '-1E3']) {
       const text = note('n', 'placeholder').replace('description: placeholder', `description: ${value}`)
       expect(parseFrontmatter(text).problems).toEqual([expect.stringContaining('rather than text')])
     }
@@ -146,6 +148,14 @@ metadata:
 
   // Only a whole plain value resolves that way: prose that merely starts with
   // one of those words is text, and a quoted one really is the string.
+  // A flow sequence or mapping is valid YAML and is not a summary.
+  test('reports a flow collection used as a description', () => {
+    for (const value of ['[summary]', '{summary: text}']) {
+      const text = note('n', 'placeholder').replace('description: placeholder', `description: ${value}`)
+      expect(parseFrontmatter(text).problems).toEqual([expect.stringContaining('not text')])
+    }
+  })
+
   test('leaves text alone even when it opens with such a word', () => {
     for (const value of ['null and more', '42 ways to fail', String.raw`"null"`, String.raw`'42'`]) {
       const text = note('n', 'placeholder').replace('description: placeholder', `description: ${value}`)

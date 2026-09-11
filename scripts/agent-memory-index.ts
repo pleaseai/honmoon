@@ -98,7 +98,7 @@ const TOP_LEVEL_KEY = /^([a-z][\w-]*):[ \t]*(\S.*)?$/i
  * that failing to recognise the header does not fail loudly, it indexes the
  * header text as though the note had written it.
  */
-const BLOCK_SCALAR = /^[|>](?:[1-9][+-]?|[+-][1-9]?)?(?:\s+#.*)?$/
+const BLOCK_SCALAR = /^[|>](?:[1-9][+-]?|[+-][1-9]?)?(?:[ \t]+(?:#.*)?)?$/
 
 /**
  * The YAML double-quoted escapes that stand for one character.
@@ -180,7 +180,7 @@ function unescapeDoubleQuoted(body: string, onInvalid: (escape: string) => void)
  * value matches — a description reading `42 ways to fail` is text and stays
  * text — and only a plain one, since `"null"` is genuinely the string.
  */
-const NON_STRING_SCALAR = /^(?:~|null|true|false|yes|no|on|off|[-+]?\d+|0x[\da-f]+|0o[0-7]+|[-+]?(?:\d+\.\d*|\.\d+)(?:e[-+]?\d+)?|[-+]?\.(?:inf|nan))$/i
+const NON_STRING_SCALAR = /^(?:~|null|true|false|yes|no|on|off|[-+]?\d+(?:e[-+]?\d+)?|0x[\da-f]+|0o[0-7]+|[-+]?(?:\d+\.\d*|\.\d+)(?:e[-+]?\d+)?|[-+]?\.(?:inf|nan))$/i
 
 /** A leading YAML node indicator, which makes the rest a decoration, not text. */
 const NODE_INDICATOR = /^([&*!])/
@@ -327,6 +327,13 @@ export function parseFrontmatter(text: string): Frontmatter {
     const plain = !blockScalars.has(name) && !raw.startsWith('"') && !raw.startsWith('\'')
     if (plain && /[ \t]#/.test(raw)) {
       problems.push(`\`${name}:\` is unquoted and contains \` #\`, which YAML reads as the start of a comment — quote the value so it survives`)
+    }
+
+    // `[summary]` is a sequence and `{summary: text}` a mapping — valid YAML,
+    // and not a summary. Kept with the scalar checks because the failure is the
+    // same one: the index would advertise the source spelling as the text.
+    if (plain && (raw.startsWith('[') || raw.startsWith('{'))) {
+      problems.push(`\`${name}:\` is a flow ${raw.startsWith('[') ? 'sequence' : 'mapping'}, not text — quote it if the brackets are part of the summary`)
     }
 
     if (plain && NON_STRING_SCALAR.test(raw)) {
