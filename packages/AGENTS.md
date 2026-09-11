@@ -26,9 +26,11 @@ bun --filter @honmoon/api dev    # run the API in watch mode
 
 ## Testing
 
-`bun test` runs `@honmoon/api`'s `audit.test.ts` (the repo's first TS suite). CI runs
-lint/typecheck/build but **not** `bun test` yet — run it locally. Add `bun test` coverage for any
-new behavior; keep the pure query functions in `audit.ts` unit-tested.
+`bun test` runs the workspace's TS suites — `@honmoon/api`'s `audit.test.ts` (the repo's first)
+and `@honmoon/policy`'s `policy.schema.test.ts`, which holds the JSON Schema and the Rust loader in
+lockstep on `rule.condition` (TD-001). CI runs it in the `js` job alongside lint/typecheck/build.
+Add `bun test` coverage for any new behavior; keep the pure query functions in `audit.ts`
+unit-tested.
 
 ## Code Style
 

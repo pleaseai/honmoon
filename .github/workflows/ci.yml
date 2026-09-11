@@ -138,9 +138,11 @@ jobs:
       - name: Typecheck
         run: bun run typecheck
 
+      - name: Test
+        run: bun test
+
       - name: Build
         run: bun run build
-        # No JS test suite yet — re-add `bun test` here once packages/* have tests.
 
       # deploy-demo.yml only runs on `main`, so without this step a break in
       # `apps/dashboard/demo/build.ts` (which `tsc -b` also does not cover — the
