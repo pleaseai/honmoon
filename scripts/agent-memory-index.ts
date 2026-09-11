@@ -124,8 +124,18 @@ const DOUBLE_QUOTED_ESCAPES: Record<string, string> = {
   'P': '\u2029',
 }
 
-/** Resolve the escape sequences of a YAML double-quoted scalar's body. */
-function unescapeDoubleQuoted(body: string): string {
+/**
+ * Resolve the escape sequences of a YAML double-quoted scalar's body.
+ *
+ * An escape this cannot resolve is reported through `onInvalid` rather than
+ * quietly kept as its two literal characters. The text is kept either way — a
+ * guess would be worse — but the note has to be flagged, because a description
+ * whose YAML is invalid is one where this reader and the reader that loads the
+ * note into an agent's context can disagree. Two readers disagreeing about one
+ * claim is the drift this index was derived to remove; it cannot be allowed
+ * back in through the parser.
+ */
+function unescapeDoubleQuoted(body: string, onInvalid: (escape: string) => void): string {
   return body.replace(
     /\\(x[0-9A-Fa-f]{2}|u[0-9A-Fa-f]{4}|U[0-9A-Fa-f]{8}|[\s\S])/g,
     (match, escape: string) => {
@@ -135,11 +145,19 @@ function unescapeDoubleQuoted(body: string): string {
         // come back as a reported problem, never as a crash that takes the
         // whole run — and every other note with it — down with it.
         const codePoint = Number.parseInt(escape.slice(1), 16)
-        return codePoint <= 0x10FFFF ? String.fromCodePoint(codePoint) : match
+        if (codePoint > 0x10FFFF) {
+          onInvalid(match)
+          return match
+        }
+        return String.fromCodePoint(codePoint)
       }
-      // An escape YAML does not define is invalid YAML rather than something to
-      // guess at, so it is left exactly as written instead of being swallowed.
-      return DOUBLE_QUOTED_ESCAPES[escape] ?? match
+
+      const resolved = DOUBLE_QUOTED_ESCAPES[escape]
+      if (resolved === undefined) {
+        onInvalid(match)
+        return match
+      }
+      return resolved
     },
   )
 }
@@ -150,14 +168,20 @@ function unescapeDoubleQuoted(body: string): string {
  * The memory tool writes plain scalars, but a `description:` containing `": "`
  * has to be quoted to stay valid YAML, so both forms must round-trip.
  */
-function unquote(value: string): string {
+function unquote(value: string, onInvalid: (escape: string) => void): string {
   if (value.length >= 2 && value.startsWith('"') && value.endsWith('"')) {
-    return unescapeDoubleQuoted(value.slice(1, -1))
+    return unescapeDoubleQuoted(value.slice(1, -1), onInvalid)
   }
   if (value.length >= 2 && value.startsWith('\'') && value.endsWith('\'')) {
     return value.slice(1, -1).replace(/''/g, '\'')
   }
   return value
+}
+
+/** What a note's frontmatter block yields: its scalars, and why any is suspect. */
+export interface Frontmatter {
+  scalars: Record<string, string | undefined>
+  problems: string[]
 }
 
 /**
@@ -169,12 +193,13 @@ function unquote(value: string): string {
  * indented lines as a folded continuation, which is how a long `description:`
  * wraps.
  */
-export function parseFrontmatter(text: string): Record<string, string | undefined> {
+export function parseFrontmatter(text: string): Frontmatter {
   const block = FRONTMATTER.exec(text)
   if (!block) {
-    return {}
+    return { scalars: {}, problems: [] }
   }
 
+  const problems: string[] = []
   const scalars: Record<string, string | undefined> = {}
   let key: string | null = null
 
@@ -207,10 +232,13 @@ export function parseFrontmatter(text: string): Record<string, string | undefine
   // becomes a newline once `unquote` has decoded it. Folding here means no
   // description can split its own list item, whatever notation wrote it.
   for (const [name, value] of Object.entries(scalars)) {
-    scalars[name] = unquote((value ?? '').trim()).replace(/\s+/g, ' ').trim()
+    scalars[name] = unquote((value ?? '').trim(), escape =>
+      problems.push(`\`${name}:\` is double-quoted and holds \`${escape}\`, which YAML does not define — this reader keeps it literally, the reader that loads the note may not`))
+      .replace(/\s+/g, ' ')
+      .trim()
   }
 
-  return scalars
+  return { scalars, problems }
 }
 
 /**
@@ -228,7 +256,7 @@ function escapeLabel(text: string): string {
 const ENCODER = new TextEncoder()
 
 /** File-name characters a markdown link destination can carry as themselves. */
-const UNRESERVED = /[^\w.~-]/g
+const UNRESERVED = /[^\w.~-]/gu
 
 /**
  * Render a file name as a markdown link destination.
@@ -246,7 +274,10 @@ const UNRESERVED = /[^\w.~-]/g
  *
  * Percent-encoding is defined over UTF-8 *bytes*, so the encoder runs over
  * bytes, not JS characters: a non-breaking space is one character and two
- * bytes, and `%A0` would not be the path. (`encodeURIComponent` is not this
+ * bytes, and `%A0` would not be the path. The `u` flag is part of the same
+ * point at the other end of the range — without it the match is per UTF-16
+ * code unit, so an astral name like `a😀b.md` arrives as two lone surrogates
+ * and each encodes to the replacement character rather than to the emoji. (`encodeURIComponent` is not this
  * function: it leaves `(`, `)` and `!*'` unescaped, and the first two are
  * exactly what ends a bare markdown destination.)
  */
@@ -258,8 +289,7 @@ function linkTarget(file: string): string {
 
 /** Reduce one note file to its index entry. */
 export function noteEntry(file: string, text: string): NoteEntry {
-  const scalars = parseFrontmatter(text)
-  const problems: string[] = []
+  const { scalars, problems } = parseFrontmatter(text)
 
   if (!FRONTMATTER.test(text)) {
     problems.push('has no `---` frontmatter block')
@@ -371,6 +401,20 @@ export function rebuild(root: string, options: { check?: boolean } = {}): Result
   const problems: string[] = []
   const refusals: string[] = []
 
+  // Every index path is inspected before any of them is written. Doing it per
+  // agent inside one loop meant an earlier agent's index was already on disk by
+  // the time a later one was refused, so a run that reported "nothing was
+  // written" had written — the same clause-vs-code gap, one scope out.
+  for (const agent of agentDirs(root)) {
+    const indexPath = join(root, agent, INDEX_NAME)
+    if (lstatSync(indexPath, { throwIfNoEntry: false })?.isSymbolicLink()) {
+      refusals.push(`${agent}/${INDEX_NAME}: is a symlink; an index is generated in place, refusing to write through it`)
+    }
+  }
+  if (refusals.length > 0) {
+    return { written, problems, refusals }
+  }
+
   for (const agent of agentDirs(root)) {
     const dir = join(root, agent)
     const notes = readNotes(dir)
@@ -383,19 +427,13 @@ export function rebuild(root: string, options: { check?: boolean } = {}): Result
     const indexPath = join(dir, INDEX_NAME)
     const rendered = renderIndex(notes)
 
-    // Before reading, and before the equality check: an index is a file this
-    // script owns and overwrites unconditionally, so it must not be reachable
-    // through a symlink — `writeFileSync` follows one and would clobber
-    // whatever a branch pointed it at. `lstat` rather than `existsSync`,
-    // because `existsSync` follows the link too and answers false for a
-    // dangling one, which is the case that would otherwise be *created* here.
-    const link = lstatSync(indexPath, { throwIfNoEntry: false })
-    if (link?.isSymbolicLink()) {
-      refusals.push(`${agent}/${INDEX_NAME}: is a symlink; an index is generated in place, refusing to write through it`)
-      continue
-    }
-
-    const current = link ? readFileSync(indexPath, 'utf8') : null
+    // `lstat` rather than `existsSync` throughout: `existsSync` follows a
+    // symlink, so it cannot be used to detect one, and it answers false for a
+    // dangling link — the case where the write would *create* the target. The
+    // refusal pass above has already ruled every index path out or in.
+    const current = lstatSync(indexPath, { throwIfNoEntry: false })
+      ? readFileSync(indexPath, 'utf8')
+      : null
     if (current === rendered) {
       continue
     }

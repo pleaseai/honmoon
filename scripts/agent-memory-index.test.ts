@@ -33,14 +33,14 @@ Body text.
 
 describe('parseFrontmatter', () => {
   test('reads top-level scalars and skips the nested metadata mapping', () => {
-    const scalars = parseFrontmatter(note('a-note', 'what it says'))
+    const { scalars } = parseFrontmatter(note('a-note', 'what it says'))
     expect(scalars.name).toBe('a-note')
     expect(scalars.description).toBe('what it says')
     expect(scalars.type).toBeUndefined()
   })
 
   test('folds a wrapped description onto one line', () => {
-    const scalars = parseFrontmatter(`---
+    const { scalars } = parseFrontmatter(`---
 name: wrapped
 description: first half
   second half
@@ -62,7 +62,7 @@ description: ${header}
 metadata:
   type: project
 ---
-`)).toMatchObject({ name: 'block', description: 'first line second line' })
+`).scalars).toMatchObject({ name: 'block', description: 'first line second line' })
     }
   })
 
@@ -70,15 +70,15 @@ metadata:
     expect(parseFrontmatter(`---
 description: "note: a colon forces quoting"
 ---
-`).description).toBe('note: a colon forces quoting')
+`).scalars.description).toBe('note: a colon forces quoting')
     expect(parseFrontmatter(`---
 description: 'it''s quoted'
 ---
-`).description).toBe('it\'s quoted')
+`).scalars.description).toBe('it\'s quoted')
   })
 
   test('returns nothing for a note with no frontmatter', () => {
-    expect(parseFrontmatter('just a body\n')).toEqual({})
+    expect(parseFrontmatter('just a body\n')).toEqual({ scalars: {}, problems: [] })
   })
 })
 
@@ -130,6 +130,7 @@ describe('renderIndex', () => {
       'review:notes.md': 'review%3Anotes.md', // `review` would read as a scheme
       'a\\b.md': 'a%5Cb.md', //        a backslash resolves as a path separator
       'a&b.md': 'a%26b.md', //         never enumerated; encoded for being unlisted
+      'a😀b.md': 'a%F0%9F%98%80b.md', // one code point, four bytes — not two surrogates
       'two words.md': 'two%20words.md',
     }
     for (const [file, target] of Object.entries(encoded)) {
@@ -363,7 +364,7 @@ describe('parseFrontmatter — quoted scalars', () => {
     )
     // The tab decodes and is then folded with every other whitespace run, which
     // is what keeps an entry to one line; the point here is that it decoded.
-    expect(parseFrontmatter(text).description).toBe('a b: "quoted", café, back\\slash')
+    expect(parseFrontmatter(text).scalars.description).toBe('a b: "quoted", café, back\\slash')
   })
 
   // YAML writes hex escapes in either case; only accepting A-F left `caf\u00e9`
@@ -373,7 +374,7 @@ describe('parseFrontmatter — quoted scalars', () => {
       'description: placeholder',
       String.raw`description: "caf\u00e9 \x0a caf\u00E9"`,
     )
-    expect(parseFrontmatter(text).description).toBe('café café')
+    expect(parseFrontmatter(text).scalars.description).toBe('café café')
   })
 
   // `\U` admits eight digits, so it can name something that is not a code
@@ -384,7 +385,12 @@ describe('parseFrontmatter — quoted scalars', () => {
       String.raw`description: "over \UFFFFFFFF the end"`,
     )
     expect(() => parseFrontmatter(text)).not.toThrow()
-    expect(parseFrontmatter(text).description).toBe(String.raw`over \UFFFFFFFF the end`)
+    const { scalars, problems } = parseFrontmatter(text)
+    // The text is kept — a guess would be worse — but the note is flagged, so
+    // the difference between this reader and the one that loads the note into
+    // an agent's context cannot pass CI unnoticed.
+    expect(scalars.description).toBe(String.raw`over \UFFFFFFFF the end`)
+    expect(problems).toEqual([expect.stringContaining(String.raw`\UFFFFFFFF`)])
   })
 
   // An escape YAML does not define is invalid YAML, not something to guess at.
@@ -393,7 +399,19 @@ describe('parseFrontmatter — quoted scalars', () => {
       'description: placeholder',
       String.raw`description: "a\qb"`,
     )
-    expect(parseFrontmatter(text).description).toBe(String.raw`a\qb`)
+    const { scalars, problems } = parseFrontmatter(text)
+    expect(scalars.description).toBe(String.raw`a\qb`)
+    expect(problems).toEqual([expect.stringContaining(String.raw`\q`)])
+  })
+
+  // A note whose frontmatter this reader and the real one may read differently
+  // has to fail the gate, not list with text neither of them agreed on.
+  test('an undefined escape makes the note fail --check', () => {
+    const text = note('n', 'placeholder').replace(
+      'description: placeholder',
+      String.raw`description: "a\qb"`,
+    )
+    expect(noteEntry('n.md', text).problems).toEqual([expect.stringContaining(String.raw`\q`)])
   })
 })
 
@@ -459,6 +477,20 @@ describe('rebuild — the index file itself', () => {
     symlinkSync(target, join(root, 'some-agent', INDEX_NAME))
 
     expect(rebuild(root).refusals).toEqual([refusal])
+  })
+
+  // "Nothing was written" has to hold across the whole run, not per agent: the
+  // refusal was found on the second agent, and the first must not already be on
+  // disk by then.
+  test('writes no index at all when any agent refuses', () => {
+    mkdirSync(join(root, 'z-agent'))
+    writeFileSync(join(root, 'z-agent', 'n.md'), note('n', 'a note'))
+    symlinkSync(join(root, 'elsewhere.txt'), join(root, 'z-agent', INDEX_NAME))
+
+    const { written } = rebuild(root)
+
+    expect(written).toEqual([])
+    expect(existsSync(join(root, 'some-agent', INDEX_NAME))).toBe(false)
   })
 
   // A refusal means this agent has no index at all, so it cannot come back as
