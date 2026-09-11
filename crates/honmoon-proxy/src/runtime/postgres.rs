@@ -478,9 +478,19 @@ impl ClientLink {
             // the relay would otherwise wait for. Bounded by the snapshot taken
             // when the sync point went out, so a `Flush` sent after it is not
             // credited here.
-            delivered.flush_answers = delivered
-                .flush_answers
-                .max(flushes_covered.load(Ordering::Relaxed));
+            let covered = flushes_covered.load(Ordering::Relaxed);
+            // This answer proves the output of every flush it covers was
+            // emitted, so a write-off debt standing for those flushes is
+            // discharged rather than still owed: it was recorded to absorb the
+            // quiet their late output would produce, and this `ReadyForQuery`
+            // also reset the relay's freshness count, so the next quiet belongs
+            // to a later batch and has to credit *it*. Leaving the debt standing
+            // would make that batch's refusal pay a stall window for output the
+            // client already has.
+            if covered >= delivered.flush_answers {
+                delivered.flush_debt = 0;
+            }
+            delivered.flush_answers = delivered.flush_answers.max(covered);
             let Some(count) = delivered.sync_points.as_mut() else {
                 return;
             };
@@ -781,14 +791,34 @@ async fn relay_backend_messages(
         // settled by that `Q`'s own answer — which is why a delivered sync point
         // resets the count below.
         //
-        // Never armed after a `DataRow` or a `CopyData`. Neither can be the last
-        // message a `Flush` pushes — an `Execute` is terminated by
-        // `CommandComplete`, `EmptyQueryResponse`, `PortalSuspended` or
-        // `ErrorResponse`, and a copy-out by `CopyDone` — so a quiet there means
-        // a backend part-way through a result set, not one that has finished.
+        // Never armed after a message that cannot be the *last* one a `Flush`
+        // pushes, because a quiet there is a backend still working rather than
+        // one that has finished:
+        //
+        // - `DataRow` / `CopyData`: an `Execute` ends on `CommandComplete`,
+        //   `EmptyQueryResponse`, `PortalSuspended` or `ErrorResponse`, and a
+        //   copy-out on `CopyDone`, so a pause here is mid-result-set;
+        // - `NoticeResponse` / `NotificationResponse` / `ParameterStatus`: these
+        //   are asynchronous and can be emitted *during* a statement — a
+        //   function that raises a notice and then computes for a while flushes
+        //   the notice and goes quiet with its `CommandComplete` still to come;
+        // - `ParameterDescription`: a `Describe` of a statement answers with it
+        //   and then `RowDescription` or `NoData`;
+        // - `CopyInResponse` / `CopyOutResponse` / `CopyBothResponse` /
+        //   `CopyDone`: each opens or punctuates a copy whose `CommandComplete`
+        //   has not been sent.
+        //
+        // This is a list of what can never end a batch, not of what always
+        // does: a terminal-looking message can still be mid-batch (two
+        // `Execute`s under one `Flush` both end on `CommandComplete`), which
+        // ADR-0007 records rather than claims to solve. The two ways of being
+        // wrong are not equal, so the list errs toward not settling.
         let owed = link.flushes.load(Ordering::Relaxed);
         let settling = fresh > 0
-            && !matches!(last_tag, b'D' | b'd')
+            && !matches!(
+                last_tag,
+                b'D' | b'd' | b'N' | b'A' | b'S' | b't' | b'G' | b'H' | b'W' | b'c'
+            )
             && link.delivered.borrow().flush_answers < owed;
 
         // Every backend message is `tag(1) | len(4, self-inclusive) | payload`.
@@ -2621,6 +2651,51 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_notice_raised_mid_statement_does_not_settle_the_flush_it_arrived_under() {
+        // `NoticeResponse` is asynchronous: a function that `RAISE NOTICE`s and
+        // then keeps working flushes the notice and goes quiet with its
+        // `CommandComplete` still to come. Reading that quiet as a finished
+        // batch releases the refusal ahead of the allowed statement's own
+        // response, which is #101 — the same shape as the `DataRow` pause, and
+        // why the guard lists what can never end a batch rather than trusting
+        // anything that is not a row.
+        let (link, mut peer) = loopback_link().await;
+        let (mut database, _relay) = loopback_relay(link.clone()).await;
+        link.forwarded_flush();
+
+        let notice = b"SNOTICE\0Mstill working\0\0";
+        let mut partial = vec![b'1', 0, 0, 0, 4, b'2', 0, 0, 0, 4, b'N'];
+        partial.extend_from_slice(&((4 + notice.len()) as u32).to_be_bytes());
+        partial.extend_from_slice(notice);
+        database.write_all(&partial).await.unwrap();
+        for expected in *b"12N" {
+            assert_eq!(read_message_tag(&mut peer).await, expected);
+        }
+        assert!(
+            tokio::time::timeout(
+                std::time::Duration::from_millis(200),
+                link.await_forwarded_responses(),
+            )
+            .await
+            .is_err(),
+            "a notice raised mid-statement settled a batch the database is still computing"
+        );
+
+        // The statement's own completion really does end it.
+        let tag = b"SELECT 1\0";
+        let mut done = vec![b'C'];
+        done.extend_from_slice(&((4 + tag.len()) as u32).to_be_bytes());
+        done.extend_from_slice(tag);
+        database.write_all(&done).await.unwrap();
+        tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            link.await_forwarded_responses(),
+        )
+        .await
+        .expect("the batch ended, so the refusal is released");
+    }
+
+    #[tokio::test]
     async fn one_quiet_upstream_settles_one_flush_and_not_the_ones_behind_it() {
         // A client may flush mid-batch — `Parse`/`Bind`/`Flush`/`Execute`/
         // `Flush`, which is what `PQsendFlushRequest` is for. The backend
@@ -2672,11 +2747,15 @@ mod tests {
 
     #[tokio::test]
     async fn a_database_quiet_between_copy_rows_has_not_finished_the_batch_it_flushed() {
-        // The `CopyData` half of the same rule. A copy-out ends with `CopyDone`,
-        // never with a `CopyData`, so a pause between copy rows is a backend
-        // still streaming — and `CopyData` frames are the ones the relay's own
-        // comments call arbitrarily large, so pausing between them is the
-        // expected shape rather than an unlikely one.
+        // The `CopyData` half of the same rule. A pause between copy rows is a
+        // backend still streaming — and `CopyData` frames are the ones the
+        // relay's own comments call arbitrarily large, so pausing between them
+        // is the expected shape rather than an unlikely one.
+        //
+        // `CopyDone` does not end it either: the backend still owes the COPY's
+        // `CommandComplete`, so a quiet after `CopyDone` is one more message
+        // short of the batch being answered. This test asserted otherwise when
+        // it was written, which was a protocol error on my part.
         let (link, mut peer) = loopback_link().await;
         let (mut database, _relay) = loopback_relay(link.clone()).await;
         link.forwarded_flush();
@@ -2698,8 +2777,25 @@ mod tests {
             "a pause between copy rows settled a copy the database is still streaming"
         );
 
-        // `CopyDone` really does end it.
+        // `CopyDone` closes the data stream but not the statement.
         database.write_all(&[b'c', 0, 0, 0, 4]).await.unwrap();
+        assert_eq!(read_message_tag(&mut peer).await, b'c');
+        assert!(
+            tokio::time::timeout(
+                std::time::Duration::from_millis(200),
+                link.await_forwarded_responses(),
+            )
+            .await
+            .is_err(),
+            "a quiet after `CopyDone` settled a copy whose `CommandComplete` is still owed"
+        );
+
+        // The COPY's own `CommandComplete` really does end it.
+        let tag = b"COPY 1\0";
+        let mut done = vec![b'C'];
+        done.extend_from_slice(&((4 + tag.len()) as u32).to_be_bytes());
+        done.extend_from_slice(tag);
+        database.write_all(&done).await.unwrap();
         tokio::time::timeout(
             std::time::Duration::from_secs(10),
             link.await_forwarded_responses(),
@@ -2806,6 +2902,55 @@ mod tests {
             .is_err(),
             "the write-off let a refusal overtake the batch that followed it"
         );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_sync_point_that_covers_a_written_off_flush_clears_its_debt() {
+        // Debt exists to absorb the quiet that a written-off flush's late
+        // output will produce. A `ReadyForQuery` covering that flush proves the
+        // output was emitted and resets the relay's freshness count, so no such
+        // quiet can still be coming: the next one belongs to a later batch and
+        // must credit it. Leaving the debt standing makes that batch's refusal
+        // pay a stall window for a flush that was answered.
+        let (link, _peer) = loopback_link().await;
+        link.forwarded_flush();
+        link.await_forwarded_responses().await;
+        assert_eq!(
+            link.delivered.borrow().flush_debt,
+            1,
+            "the write-off owes one"
+        );
+
+        // The client's next batch, flushed and then synced, and the database
+        // answers the whole thing as one burst — so the relay never sees a
+        // quiet, and the `Z` is what settles it.
+        link.forwarded_flush();
+        link.forwarded_sync_point();
+        link.delivered_message(true);
+        assert_eq!(
+            (
+                link.delivered.borrow().flush_answers,
+                link.delivered.borrow().flush_debt,
+            ),
+            (2, 0),
+            "the answer covered the written-off flush, so its debt is discharged"
+        );
+
+        // A third batch, settled the ordinary way. Its quiet must credit the
+        // batch it belongs to rather than pay down a debt already discharged.
+        link.forwarded_flush();
+        link.flush_drained(link.flushes.load(Ordering::Relaxed));
+        assert_eq!(
+            link.delivered.borrow().flush_answers,
+            3,
+            "the quiet paid a stale debt instead of settling its own batch"
+        );
+        tokio::time::timeout(
+            REFUSAL_ORDER_STALL_TIMEOUT / 2,
+            link.await_forwarded_responses(),
+        )
+        .await
+        .expect("the batch was answered, so the refusal is released without a stall");
     }
 
     #[tokio::test]

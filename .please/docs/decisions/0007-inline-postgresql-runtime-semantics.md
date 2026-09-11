@@ -186,7 +186,13 @@ that fails to parse: it is refused rather than forwarded blind.
     `Flush` frames are counted in a second counter of their own, and settled from the relay rather
     than by any frontend-predictable marker: a flush is drained once the relay has delivered a
     message the flush could have produced and then finds the upstream socket carrying nothing more
-    at a message boundary. The two counters stay separate because they are settled by different
+    at a message boundary. "Could have produced" is decided by excluding the backend messages that
+    can never be the *last* of a flush's output — rows and copy data, the asynchronous
+    `NoticeResponse`/`NotificationResponse`/`ParameterStatus` that a statement can emit while it is
+    still running, `ParameterDescription`, and the messages that open or punctuate a copy. The list
+    names what cannot end a batch rather than what always does, because the two ways of being wrong
+    are not equal: a message wrongly treated as terminal releases a refusal into the middle of a
+    statement's output, and one wrongly treated as non-terminal costs a stall window. The two counters stay separate because they are settled by different
     observations — one counter would let a sync point's answer settle a flush, and a quiet upstream
     settle a sync point the database is still computing.
 
@@ -198,6 +204,13 @@ that fails to parse: it is refused rather than forwarded blind.
     and would otherwise leave that flush outstanding for a whole stall window. The count is
     snapshotted when the sync point is forwarded rather than read when its answer lands, because a
     `Flush` sent *after* a `Sync` is not answered by that `Sync`'s `ReadyForQuery`.
+
+    Such an answer also discharges any write-off debt standing for the flushes it covers. The debt
+    exists to absorb the quiet a written-off flush's late output would produce, and a
+    `ReadyForQuery` proving that output was emitted also resets the relay's freshness count — so no
+    such quiet can still be coming, and the next one belongs to a later batch and has to credit it.
+    Leaving the debt standing would make that batch pay a stall window for output the client
+    already has.
 
     **One quiet settles one flush, never every flush outstanding.** A quiet cannot say how many
     flushes it drained, and the two readings fail in opposite directions. A client may legitimately
