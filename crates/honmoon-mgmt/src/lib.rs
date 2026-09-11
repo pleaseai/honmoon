@@ -55,23 +55,45 @@ pub enum HookSalt {
     /// One salt for every request: the operator pinned a salt context
     /// (`--hook-salt-context`, matching `honmoon hook --salt-context`), or a
     /// test pinned raw bytes.
-    Fixed { salt: Arc<Vec<u8>> },
+    Fixed(HookKey),
     /// Derived per request from the payload's `session_id`, keyed by the
     /// machine salt — byte-identical to what `honmoon hook` derives for the
     /// same session on the same machine.
-    PerSession { machine_key: Arc<Vec<u8>> },
+    PerSession(HookKey),
+}
+
+/// Validated HMAC key material held by a [`HookSalt`].
+///
+/// A Rust enum variant's fields are always as public as the enum itself, so
+/// carrying the bytes inline would let any caller write
+/// `HookSalt::Fixed { salt: Arc::new(vec![]) }` and walk straight past the
+/// emptiness check the constructors exist to enforce. The bytes live behind
+/// this newtype's private field instead: outside this module the only way to
+/// obtain one is [`HookSalt::fixed`] or [`HookSalt::per_session`], and pattern
+/// matching a variant yields a `HookKey` whose contents stay unreadable — which
+/// also keeps `PerSession`'s machine secret off the crate's public surface.
+#[derive(Clone)]
+pub struct HookKey(Arc<Vec<u8>>);
+
+impl HookKey {
+    /// **Panics** on empty bytes: an empty HMAC key makes placeholders for
+    /// known secrets precomputable.
+    fn new(bytes: Vec<u8>, what: &str) -> Self {
+        assert!(!bytes.is_empty(), "{what} must not be empty");
+        Self(Arc::new(bytes))
+    }
+
+    fn as_slice(&self) -> &[u8] {
+        self.0.as_slice()
+    }
 }
 
 impl HookSalt {
     /// Pin one salt for every request.
     ///
-    /// **Panics** on empty bytes: an empty HMAC key makes placeholders for
-    /// known secrets precomputable.
+    /// **Panics** on empty bytes (see [`HookKey`]).
     pub fn fixed(salt: Vec<u8>) -> Self {
-        assert!(!salt.is_empty(), "hook salt must not be empty");
-        Self::Fixed {
-            salt: Arc::new(salt),
-        }
+        Self::Fixed(HookKey::new(salt, "hook salt"))
     }
 
     /// Derive each request's salt from its session, keyed by `machine_key` —
@@ -80,21 +102,15 @@ impl HookSalt {
     ///
     /// **Panics** on an empty key, for the same reason as [`Self::fixed`].
     pub fn per_session(machine_key: Vec<u8>) -> Self {
-        assert!(
-            !machine_key.is_empty(),
-            "hook machine key must not be empty"
-        );
-        Self::PerSession {
-            machine_key: Arc::new(machine_key),
-        }
+        Self::PerSession(HookKey::new(machine_key, "hook machine key"))
     }
 
     /// The salt this payload's placeholders are minted under.
     fn for_payload(&self, payload: &serde_json::Value) -> Cow<'_, [u8]> {
         match self {
-            Self::Fixed { salt } => Cow::Borrowed(salt.as_slice()),
-            Self::PerSession { machine_key } => Cow::Owned(derive_hook_salt(
-                machine_key,
+            Self::Fixed(salt) => Cow::Borrowed(salt.as_slice()),
+            Self::PerSession(machine_key) => Cow::Owned(derive_hook_salt(
+                machine_key.as_slice(),
                 hook_salt_context(None, payload),
             )),
         }
@@ -103,8 +119,8 @@ impl HookSalt {
     /// The one salt every request uses, when there is one.
     fn pinned(&self) -> Option<&[u8]> {
         match self {
-            Self::Fixed { salt } => Some(salt.as_slice()),
-            Self::PerSession { .. } => None,
+            Self::Fixed(salt) => Some(salt.as_slice()),
+            Self::PerSession(_) => None,
         }
     }
 }
@@ -203,6 +219,15 @@ async fn healthz() -> Json<serde_json::Value> {
 /// Claude Code HTTP hooks fail open on connection errors, timeouts, and non-2xx
 /// responses: processing continues without applying a verdict. That is why the
 /// plugin defaults to the command transport, which can perform local fallback.
+///
+/// Placeholder minting is deterministic in `(salt, secret)` and the salt follows
+/// the caller's own `session_id`, so anyone who can reach this endpoint can mint
+/// the placeholder a named session would produce for a guessed secret and
+/// compare it against one observed in that session's transcript. That confirms a
+/// guess; it never reveals a secret or the machine key, and the local command
+/// transport has always offered the same confirmation to anyone able to run
+/// `honmoon hook --salt-context`. Keep the listener on loopback (the
+/// `--mgmt-addr` default) and set `--hook-token` before exposing it further.
 async fn claude_code_hook(
     State(state): State<AppState>,
     headers: HeaderMap,

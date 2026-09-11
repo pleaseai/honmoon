@@ -41,9 +41,12 @@ pub fn derive_hook_salt(machine_key: &[u8], salt_context: &str) -> Vec<u8> {
 /// operator can deliberately separate (or deliberately join) instances that
 /// share one machine key. Otherwise the payload's `session_id` scopes the salt
 /// to the session, which is what the plugin sends on every event over either
-/// transport. A payload without a `session_id` and no pin falls back to the
-/// empty context rather than to a random one: redaction stays deterministic,
-/// and the machine key still keys the HMAC.
+/// transport. A payload whose `session_id` is absent — or present but not a
+/// JSON string — falls back with no pin to the empty context rather than to a
+/// random one: redaction stays deterministic, both transports degrade
+/// identically, and the machine key still keys the HMAC. Sessions that land
+/// there share one salt, which is what the single fixed salt used to do for
+/// every session.
 pub fn hook_salt_context<'a>(pinned: Option<&'a str>, payload: &'a Value) -> &'a str {
     pinned
         .or_else(|| payload.get("session_id").and_then(Value::as_str))
@@ -92,6 +95,11 @@ mod tests {
             hook_salt_context(None, &serde_json::json!({})),
             "",
             "a payload without a session id falls back to the empty context"
+        );
+        assert_eq!(
+            hook_salt_context(None, &serde_json::json!({ "session_id": 7 })),
+            "",
+            "a non-string session id falls back rather than keying on its rendering"
         );
     }
 }

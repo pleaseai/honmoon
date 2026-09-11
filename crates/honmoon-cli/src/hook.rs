@@ -9,7 +9,7 @@
 //! a no-op — content passes unredacted, since the proxy remains the enforcement
 //! backstop. An unreadable/unwritable salt dir does **not** no-op: it falls back
 //! to a fixed-key salt and still redacts (only placeholder unforgeability is
-//! relaxed — see [`session_salt`]).
+//! relaxed — see [`machine_key`]).
 //!
 //! Handlers by event:
 //! - `PostToolUse` (the plugin matches `Read`, `Bash`, and `Grep` — a secret

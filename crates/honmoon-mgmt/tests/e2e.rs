@@ -447,6 +447,61 @@ fn claude_code_hook_endpoint_accumulates_live_mappings() {
     assert_eq!(mappings.len(), 2, "both reversible mappings stay live");
 }
 
+/// The realistic `--redact-secrets` deployment with no pinned context: wire
+/// redaction is on (process-scoped salt) while the hook endpoint keys on the
+/// session. `with_hook_config` no longer asserts the two salts match in that
+/// combination (#98), so prove it is actually usable — construction must not
+/// panic, the endpoint must still mint, and the mapping must land in the very
+/// store the proxy detokenizes from.
+#[test]
+fn per_session_hook_salt_coexists_with_wire_redaction() {
+    const SECRET: &str = "sk-ant-api03-per-session-with-wire-abcDEF123456";
+    let policy_yaml = "egress:\n  default: deny\n";
+    let mut state = GatewayState::new(Policy::from_yaml(policy_yaml).unwrap());
+    state.redaction = Some(RedactionState::new(b"process-scoped-wire-salt".to_vec()));
+    let proxy_mappings = Arc::clone(&state.redaction.as_ref().unwrap().mappings);
+
+    let app = AppState::with_hook_config(
+        state,
+        policy_yaml,
+        HookSalt::per_session(b"machine-key-for-per-session".to_vec()),
+        None,
+    );
+    assert!(
+        Arc::ptr_eq(&app.hook_mappings, &proxy_mappings),
+        "the hook endpoint keeps writing into the proxy's own store"
+    );
+
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    thread::spawn(move || {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(honmoon_mgmt::serve(app, listener)).unwrap();
+    });
+    wait_for_port(port);
+
+    let payload = serde_json::json!({
+        "hook_event_name": "PostToolUse",
+        "tool_name": "Read",
+        "session_id": "session-with-wire-redaction",
+        "tool_response": format!("key {SECRET}")
+    });
+    let raw = http_request_with_body(
+        port,
+        "POST",
+        "/api/hooks/claude-code",
+        &[],
+        &serde_json::to_string(&payload).unwrap(),
+    );
+    assert!(raw.starts_with("HTTP/1.1 200"), "verdict returned: {raw}");
+    assert!(!raw.contains(SECRET), "the secret never comes back out");
+    assert_eq!(
+        proxy_mappings.len(),
+        1,
+        "the session-salted mapping is recorded for the proxy to detokenize with"
+    );
+}
+
 #[test]
 fn hook_created_mapping_restores_proxy_response_without_request_remint() {
     const SECRET: &str = "sk-ant-api03-hook-wire-parity-abcDEF123456";
