@@ -73,20 +73,24 @@ export interface K8sFacts {
 }
 
 /**
- * Why placeholder minting is or is not keyed by a private secret. Present only
+ * What the engine knows about the key behind placeholder minting. Present only
  * on a `degraded` event.
  *
- * A `fallback` key is the constant compiled into the binary and published in
- * this repository's source: redaction keeps working and placeholders stay
- * byte-stable, but anyone can mint the placeholder a guessed secret would
- * produce and check it against a redacted transcript.
+ * Two independent things can be wrong with that key, and the event's `rule` says
+ * which: `hook-salt-fallback` for a key that is not the persisted one,
+ * `hook-salt-exposed` for a key that *is* the persisted one but whose file was
+ * left readable beyond its owner and could not be restricted to `0600`. So do
+ * not read `key_source: 'persisted'` here as healthy — exposure is a different
+ * axis from provenance, and on that rule the provenance is genuinely fine.
  */
 export interface RedactionFacts {
   /**
    * Where the HMAC key came from. `unpersisted` is still private and therefore
    * unforgeable, but never reached disk, so placeholders stop being stable
    * across turns; `fallback` is the public compiled-in constant, where
-   * unforgeability is gone rather than weakened.
+   * unforgeability is gone rather than weakened. `persisted` appears on the
+   * `hook-salt-exposed` rule, where the bytes came from the salt file as usual
+   * but that file is readable by other local users.
    */
   key_source: 'persisted' | 'unpersisted' | 'fallback'
   /**
@@ -94,7 +98,10 @@ export interface RedactionFacts {
    * and the management hook endpoint, which share one key read at startup.
    */
   transport: 'hook' | 'gateway'
-  /** Why the persisted key was unavailable. */
+  /**
+   * What the loader observed, in its own words: why the persisted key was
+   * unavailable, or the mode a salt file it could not restrict was left with.
+   */
   reason: string
 }
 
