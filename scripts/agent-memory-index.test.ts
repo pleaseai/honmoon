@@ -235,6 +235,34 @@ metadata:
     expect(parseFrontmatter(text)).toMatchObject({ scalars: { description: 'done' }, problems: [] })
   })
 
+  // A column-zero line that is neither a key nor a delimiter is content with no
+  // key, which both readers refuse — and the continuation branch, which only
+  // looks at indented lines, skipped it in silence.
+  test('reports an unkeyed line at column zero', () => {
+    const text = `---
+name: a-note
+description: summary
+stray
+metadata:
+  type: project
+---
+`
+    expect(parseFrontmatter(text).problems).toEqual([expect.stringContaining('not a key')])
+  })
+
+  // A tab in a *plain* scalar is refused by pyyaml wherever it sits, not only
+  // on a continuation line, so the key's own line is reported the same way.
+  // Quoting is the form that carries a tab to every reader.
+  test('reports a tab in a plain scalar on the key line', () => {
+    const text = note('a-note', 'placeholder').replace('description: placeholder', 'description: first\tsecond')
+    expect(parseFrontmatter(text).problems).toEqual([expect.stringContaining('tab')])
+  })
+
+  test('keeps a tab that is quoted', () => {
+    const text = note('a-note', 'placeholder').replace('description: placeholder', 'description: "first\tsecond"')
+    expect(parseFrontmatter(text).problems).toEqual([])
+  })
+
   // A comment line is dropped before it is ever measured: a tab inside one is
   // not indentation, and pyyaml loads this note as `first`.
   test('keeps a tab inside a comment following a plain scalar', () => {
@@ -1010,6 +1038,24 @@ describe('rebuild — the index file itself', () => {
   // `writeFileSync` follows a symlink, so an ordinary rebuild would overwrite
   // whatever a force-added index pointed at — before any other check runs.
   const refusal = `some-agent/${INDEX_NAME}: is a symlink; an index is generated in place, refusing to write through it`
+
+  // The preflight tested only for a symlink, so a directory at an index path
+  // passed it and then threw `EISDIR` mid-run — after an earlier agent's index
+  // had already been written, which is the outcome the preflight exists to
+  // prevent. Ordered so the writable agent sorts first.
+  test('refuses a non-regular index path before writing anything', () => {
+    mkdirSync(join(root, 'a-agent'))
+    writeFileSync(join(root, 'a-agent', 'n.md'), note('a-note', 'a note'))
+    mkdirSync(join(root, 'z-agent'))
+    writeFileSync(join(root, 'z-agent', 'n.md'), note('a-note', 'a note'))
+    mkdirSync(join(root, 'z-agent', INDEX_NAME))
+
+    const { written, refusals } = rebuild(root)
+
+    expect(refusals).toEqual([expect.stringContaining('not a regular file')])
+    expect(written).toEqual([])
+    expect(existsSync(join(root, 'a-agent', INDEX_NAME))).toBe(false)
+  })
 
   test('refuses to write an index through a symlink, leaving the target intact', () => {
     const target = join(root, 'private.txt')

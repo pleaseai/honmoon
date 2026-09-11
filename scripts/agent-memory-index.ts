@@ -352,6 +352,7 @@ export function parseFrontmatter(text: string): Frontmatter {
   const blockIndent = new Map<string, number>()
   const underIndented = new Set<string>()
   const tabIndented = new Set<string>()
+  const tabInPlain = new Set<string>()
   const afterClose = new Set<string>()
   const badHeader = new Set<string>()
   let key: string | null = null
@@ -402,10 +403,25 @@ export function parseFrontmatter(text: string): Frontmatter {
         }
         else {
           scalars[key] = value
+          // pyyaml refuses a tab in a plain scalar wherever it sits, not only
+          // on a continuation line, so the key's own line is held to the same
+          // rule. Quoting is the form that carries a tab to every reader.
+          if (!/^['"]/.test(value) && value.includes('\t')) {
+            tabInPlain.add(key)
+          }
         }
       }
       continue
     }
+    // A column-zero line that is neither a key nor blank nor a comment is
+    // content with no key to hang it on, and both readers refuse the document.
+    // The continuation branch below only looks at indented lines, so this fell
+    // through every check and the note indexed as though it were well formed.
+    if (line.trim() !== '' && !/^[ \t]/.test(line) && !line.trimStart().startsWith('#')) {
+      problems.push(`\`${line.trim()}\` is not a key, and YAML expects one at the start of a line in this mapping — indent it to continue the value above, or give it a key`)
+      continue
+    }
+
     // Only an *indented* line continues the previous non-empty scalar — that is
     // what folding means in YAML, and it is also what keeps a column-0 comment
     // line out of the value above it. An indented `#` is left alone on purpose:
@@ -437,7 +453,7 @@ export function parseFrontmatter(text: string): Frontmatter {
       // folds the tab in — and a value that depends on which reader loads it is
       // exactly the drift this reports.
       if (plainScalar && /\t/.test(line)) {
-        tabIndented.add(key)
+        tabInPlain.add(key)
         continue
       }
 
@@ -493,7 +509,11 @@ export function parseFrontmatter(text: string): Frontmatter {
     const raw = value.trim()
 
     if (tabIndented.has(name)) {
-      problems.push(`\`${name}:\` is continued by a line holding a tab where YAML reads indentation — indent with spaces, and keep tabs out of a plain scalar, which not every reader will load`)
+      problems.push(`\`${name}:\` is continued by a line indented with a tab, which YAML does not accept as indentation — indent with spaces`)
+    }
+
+    if (tabInPlain.has(name)) {
+      problems.push(`\`${name}:\` holds a tab in a plain scalar, which pyyaml refuses to load and Bun.YAML keeps — quote the value so every reader sees the same text`)
     }
 
     if (afterClose.has(name)) {
@@ -730,8 +750,15 @@ export function rebuild(root: string, options: { check?: boolean } = {}): Result
   const refusedAgents = new Set<string>()
   for (const agent of agentDirs(root)) {
     const indexPath = join(root, agent, INDEX_NAME)
-    if (lstatSync(indexPath, { throwIfNoEntry: false })?.isSymbolicLink()) {
-      refusals.push(`${agent}/${INDEX_NAME}: is a symlink; an index is generated in place, refusing to write through it`)
+    // Not just a symlink: a directory at an index path passed a symlink-only
+    // preflight and then threw `EISDIR` on read, once an earlier agent's index
+    // was already on disk — the very outcome this pass exists to prevent. Any
+    // existing path that is not a regular file is refused here instead.
+    const existing = lstatSync(indexPath, { throwIfNoEntry: false })
+    if (existing && !existing.isFile()) {
+      refusals.push(existing.isSymbolicLink()
+        ? `${agent}/${INDEX_NAME}: is a symlink; an index is generated in place, refusing to write through it`
+        : `${agent}/${INDEX_NAME}: is not a regular file; an index is generated in place, refusing to write over it`)
       refusedAgents.add(agent)
     }
   }
