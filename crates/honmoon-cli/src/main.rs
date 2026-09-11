@@ -156,13 +156,17 @@ enum Command {
         /// `honmoon gateway --audit-log` writes and `@honmoon/api` queries.
         ///
         /// Only a degradation is recorded here, never a per-invocation verdict.
-        /// Today that is a machine key which is not the persisted one, leaving
-        /// placeholders forgeable by anyone (issue #131), or a persisted one
-        /// whose salt file is accessible beyond its owner (issue #141) — the
-        /// event's `rule` says which. Both look identical from the outside.
-        /// Unset, they reach stderr alone — which a non-interactive hook process
-        /// discards. Set it through the environment: the plugin's dispatcher
-        /// runs `honmoon hook` with no arguments.
+        /// Today that is one of three, and they lose different guarantees: the
+        /// key is the constant compiled into the binary, so anyone can forge
+        /// placeholders (issue #131); the key is random and private but never
+        /// reached disk, so it stays unforgeable while placeholders stop being
+        /// stable across turns and transports (issues #20, #98); or the key is
+        /// the persisted one and its salt file is accessible beyond its owner
+        /// (issue #141). The event's `rule` and `key_source` say which. All
+        /// three look identical from the outside. Unset, they reach stderr
+        /// alone — which a non-interactive hook process discards. Set it
+        /// through the environment: the plugin's dispatcher runs `honmoon hook`
+        /// with no arguments.
         #[arg(long, value_name = "FILE", env = "HONMOON_AUDIT_LOG")]
         audit_log: Option<PathBuf>,
     },
