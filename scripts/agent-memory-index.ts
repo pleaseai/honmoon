@@ -73,17 +73,35 @@ export interface NoteEntry {
 }
 
 const FRONTMATTER = /^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/
-// Two separate reasons the value group is spelled `(\S.*)?` and not `(.*)`,
-// both load-bearing and neither obvious:
-//   - the `?` is what makes a bare `metadata:` capture `undefined` instead of
-//     `''`, which is how `parseFrontmatter` below tells a nested-mapping opener
-//     apart from a scalar whose value is empty. Verified: with `(.*)` the group
-//     captures `''` for `metadata:` and the distinction is gone.
-//   - `\S` keeps the value class disjoint from the `[ \t]*` before it, so the
-//     two cannot match the same character and the match stays linear
-//     (eslint `regexp/no-super-linear-backtracking`). It does *not* affect what
-//     is captured — `[ \t]*` is greedy, so `(.*)?` captures the same text.
-const TOP_LEVEL_KEY = /^([a-z][\w-]*):[ \t]*(\S.*)?$/i
+// Three parts, each load-bearing and none obvious:
+//   - the leading `([ \t]*)` is the line's own indentation, not padding to
+//     discard: `parseFrontmatter` below compares it against the first key it
+//     saw, so a mapping indented as a whole still reads as the root one while a
+//     deeper `metadata:` member does not.
+//   - the `?` on the value group is what makes a bare `metadata:` capture
+//     `undefined` instead of `''`, which is how `parseFrontmatter` tells a
+//     nested-mapping opener apart from a scalar whose value is empty. Verified:
+//     with `(.*)` the group captures `''` for `metadata:` and the distinction
+//     is gone.
+//   - the value starts at `[^ \t]` rather than `\S` so that the class stays
+//     disjoint from the `[ \t]*` before it — the two cannot match the same
+//     character, so the match stays linear (eslint
+//     `regexp/no-super-linear-backtracking`) — *without* excluding the
+//     characters `\s` holds and YAML does not treat as space. `\S` rejected a
+//     value opening on a no-break space, which dropped the description
+//     entirely. It does not affect what is captured: `[ \t]*` is greedy, so
+//     the group captures the same text `(.*)?` would.
+const TOP_LEVEL_KEY = /^([ \t]*)([a-z][\w-]*):[ \t]*([^ \t].*)?$/i
+
+/**
+ * The separators YAML actually pads a scalar with, for trimming a value's edges.
+ *
+ * `String.prototype.trim` uses JavaScript's whitespace class, which holds the
+ * no-break space: trimming with it ate one off either edge of a description,
+ * and the value is content, not padding. Only a space and a tab separate a
+ * scalar from its key in YAML, so only those come off.
+ */
+const YAML_PADDING = /^[ \t]+|[ \t]+$/g
 
 /**
  * Whether a line could be a mapping key at all — a colon with a space or the
@@ -379,6 +397,11 @@ export function parseFrontmatter(text: string): Frontmatter {
   const tabInPlain = new Set<string>()
   const closedByComment = new Set<string>()
   const brokenByBlank = new Set<string>()
+  // A frontmatter mapping may be indented as a whole; what makes a key a *root*
+  // key is agreeing with the first one, not sitting at column zero. Anything
+  // deeper is nested or a continuation, which is what keeps `metadata:`'s own
+  // lines out of the top level.
+  let rootIndent: number | null = null
   const resumedAfterComment = new Set<string>()
   const afterClose = new Set<string>()
   const badHeader = new Set<string>()
@@ -386,8 +409,9 @@ export function parseFrontmatter(text: string): Frontmatter {
 
   for (const line of block[1].split(/\r?\n/)) {
     const top = TOP_LEVEL_KEY.exec(line)
-    if (top) {
-      const [, name, value] = top
+    if (top && (rootIndent === null || top[1].length === rootIndent)) {
+      const [, indent, name, value] = top
+      rootIndent ??= indent.length
       // `key: # text` is a key with a *comment*, and YAML gives it a null value.
       // Capturing the comment as the value is how `description: # write this
       // later` reached an index as though it were the summary, when what the
@@ -450,14 +474,19 @@ export function parseFrontmatter(text: string): Frontmatter {
     // there, and so does a plain one. Nothing is wrong with the comment itself;
     // what YAML refuses is indented content *after* it, which lands where a key
     // is expected. Recorded here and reported at the continuation below.
-    if (bare.startsWith('#') && !/^[ \t]/.test(line)) {
+    // Only a space and a tab indent in YAML, so the width is measured against
+    // those alone — `trimStart` would count a leading no-break space, which is
+    // the value's own first character.
+    const indent = line.length - line.replace(/^[ \t]+/, '').length
+    const atRoot = indent <= (rootIndent ?? 0)
+    if (bare.startsWith('#') && atRoot) {
       if (key) {
         closedByComment.add(key)
       }
       continue
     }
 
-    if (bare !== '' && !/^[ \t]/.test(line) && !bare.startsWith('#') && bare !== '---' && bare !== '...' && !COULD_BE_KEY.test(line)) {
+    if (bare !== '' && atRoot && !bare.startsWith('#') && bare !== '---' && bare !== '...' && !COULD_BE_KEY.test(line)) {
       problems.push(`\`${bare}\` is not a key, and YAML expects one at the start of a line in this mapping — indent it to continue the value above, or give it a key`)
       key = null
       continue
@@ -467,7 +496,7 @@ export function parseFrontmatter(text: string): Frontmatter {
     // index does not read, `---`, `...`. Leaving the previous key open folded
     // *its* wrapped value onto the one before, so the index rendered text the
     // note never put there.
-    if (bare !== '' && !/^[ \t]/.test(line)) {
+    if (bare !== '' && atRoot) {
       key = null
       continue
     }
@@ -486,13 +515,13 @@ export function parseFrontmatter(text: string): Frontmatter {
     // line out of the value above it. An indented `#` is left alone on purpose:
     // inside a folded scalar it is literal text, and these descriptions are full
     // of issue references that a comment-stripping parser would eat.
-    if (key && /^[ \t]/.test(line) && line.trim() !== '') {
+    if (key && !atRoot && bare !== '') {
       if (closedByComment.has(key)) {
         resumedAfterComment.add(key)
         continue
       }
 
-      const soFarRaw = (scalars[key] ?? '').trim()
+      const soFarRaw = (scalars[key] ?? '').replace(YAML_PADDING, '')
       const quoted = /^['"]/.test(soFarRaw)
       const plainScalar = !blockScalars.has(key) && !quoted
 
@@ -586,7 +615,7 @@ export function parseFrontmatter(text: string): Frontmatter {
     if (value === undefined) {
       continue
     }
-    const raw = value.trim()
+    const raw = value.replace(YAML_PADDING, '')
 
     if (resumedAfterComment.has(name)) {
       problems.push(`\`${name}:\` resumes after a comment at column zero, which ends the value — YAML expects a key on the next unindented line, not more text`)

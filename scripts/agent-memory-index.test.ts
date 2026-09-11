@@ -208,6 +208,31 @@ metadata:
     expect(parseFrontmatter(text)).toMatchObject({ scalars: { description: 'done' }, problems: [] })
   })
 
+  // A no-break space is content wherever it sits. A leading one used to make
+  // the value vanish outright — the key matched with no value at all — so the
+  // note was reported as having no description.
+  test('keeps a literal no-break space at either edge', () => {
+    const nbsp = '\u00A0'
+    expect(parseFrontmatter(noteWith(`${nbsp}text`)).scalars.description).toBe(`${nbsp}text`)
+    expect(parseFrontmatter(noteWith(`text${nbsp}`)).scalars.description).toBe(`text${nbsp}`)
+  })
+
+  // A frontmatter mapping may be indented as a whole, as long as its keys agree.
+  // Matching only at column zero reported both keys missing for a valid note.
+  test('reads a root mapping that is indented as a whole', () => {
+    const text = '---\n  name: a-note\n  description: useful summary\n  metadata:\n    type: project\n---\n'
+    expect(parseFrontmatter(text)).toMatchObject({
+      scalars: { name: 'a-note', description: 'useful summary' },
+      problems: [],
+    })
+  })
+
+  // ...and the nested mapping is still nested, not a second pair of root keys.
+  test('does not mistake a deeper mapping for a root key', () => {
+    const text = '---\n  name: a-note\n  description: useful summary\n  metadata:\n    type: project\n---\n'
+    expect(parseFrontmatter(text).scalars.type).toBeUndefined()
+  })
+
   // Only a double-quoted scalar uses a trailing backslash to escape the break.
   // In a plain or single-quoted one it is literal text, and dropping it edited
   // the summary.
