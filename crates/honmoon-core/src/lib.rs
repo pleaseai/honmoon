@@ -235,11 +235,17 @@ impl Policy {
     /// So the policy is unevaluable, and like an unusable `endpoints` entry it
     /// fails the load, where the author sees it — rather than at request time,
     /// in production, on whichever request first reaches the rule.
+    ///
+    /// The error carries the rule's position as well as its name. `name` is an
+    /// ordinary field here, not a map key like an endpoint's: nothing requires
+    /// it to be unique or even non-empty, so on its own it can name two rules
+    /// or none.
     fn validate_rules(&self) -> Result<(), Error> {
-        for rule in &self.rules {
+        for (index, rule) in self.rules.iter().enumerate() {
             if is_blank_condition(&rule.condition) {
                 return Err(Error::BlankRuleCondition {
-                    rule: rule.name.clone(),
+                    index,
+                    name: rule.name.clone(),
                 });
             }
         }
@@ -352,9 +358,16 @@ fn is_unconditional(condition: &str) -> bool {
 /// load-time rejection and the engine's own guard cannot drift apart: they
 /// must agree on exactly which conditions never reach `Program::compile`.
 ///
-/// Whitespace only, not CEL syntax in general — a comment-only condition
-/// (`// nothing`) and a syntax error (`&&`) are just as unevaluable and panic
-/// just as hard, but telling those from valid CEL means parsing CEL. See #154.
+/// Whitespace as Rust defines it (`char::is_whitespace`, so `\u{00a0}` and
+/// `\u{3000}` count), and nothing else. It is not a general test for "carries
+/// no expression", because no cheap one exists: `Program::compile` panics on
+/// *any* single character it cannot begin a token with, so `"&&"`, `"@"`,
+/// `"§"`, an emoji and a lone `\u{200b}` all panic exactly as `""` did. The
+/// last of those matters most here — a zero-width space is not
+/// `char::is_whitespace`, so a condition made only of them reads as empty in
+/// an editor, is *not* blank by this test, and still panics. Recognising it
+/// would mean drawing a line the compiler does not draw. That whole class is
+/// #154; this function is only the part of it that is cheap to name.
 pub(crate) fn is_blank_condition(condition: &str) -> bool {
     condition.trim().is_empty()
 }
@@ -383,9 +396,9 @@ pub enum Error {
     #[error("endpoint `{name}` has port 0; valid ports are 1-65535")]
     EndpointPortZero { name: String },
     #[error(
-        "rule `{rule}` has a blank `condition`; write `\"true\"` for a rule that always matches"
+        "rule `{name}` (rules[{index}]) has a blank `condition`; write `\"true\"` for a rule that always matches"
     )]
-    BlankRuleCondition { rule: String },
+    BlankRuleCondition { index: usize, name: String },
     #[error(
         "endpoints `{first}` and `{second}` both target {host}:{port}; each target must have one name"
     )]
@@ -557,17 +570,38 @@ endpoints:
     /// engine degrades on, so the policy is unevaluable and must not load.
     #[test]
     fn rejects_a_rule_with_a_blank_condition() {
-        for condition in ["\"\"", "\" \"", "\"\\n\"", "\"\\t\\r\\n\""] {
+        // `"\u00a0"` and `"\u3000"` are whitespace to `char::is_whitespace` but
+        // not to an ASCII test, and they panic in `Program::compile` exactly as
+        // `""` does — so a narrowing of `is_blank_condition` to ASCII would put
+        // the #151 panic back for a condition an author cannot see.
+        for condition in [
+            "\"\"",
+            "\" \"",
+            "\"\\n\"",
+            "\"\\t\\r\\n\"",
+            "\"\\u00a0\"",
+            "\"\\u3000\"",
+        ] {
             let error = Policy::from_yaml(&format!(
                 "rules:\n  - name: blank\n    endpoint: '*'\n    condition: {condition}\n    verdict: allow\n"
             ))
             .expect_err("a blank condition is not evaluable");
 
             assert!(
-                matches!(&error, Error::BlankRuleCondition { rule } if rule == "blank"),
+                matches!(&error, Error::BlankRuleCondition { index, name } if *index == 0 && name == "blank"),
                 "condition {condition}: unexpected error: {error}"
             );
         }
+
+        // The reported position is the rule's own, not the first rule's.
+        let error = Policy::from_yaml(
+            "rules:\n  - name: ok\n    endpoint: '*'\n    condition: \"true\"\n    verdict: allow\n  - name: blank\n    endpoint: '*'\n    condition: \"\"\n    verdict: allow\n",
+        )
+        .expect_err("a blank condition is not evaluable");
+        assert!(
+            matches!(&error, Error::BlankRuleCondition { index, name } if *index == 1 && name == "blank"),
+            "unexpected error: {error}"
+        );
     }
 
     /// The load-time check is about a condition with nothing in it, not about
