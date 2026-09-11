@@ -252,8 +252,8 @@ fn eval_program(program: &Program, facts: &Facts, pii: Option<&PiiFacts>) -> boo
     // Always register `pii` (default = empty) so absence conditions like
     // `pii.count == 0` are expressible, not just `pii.count > 0`.
     let default_pii = PiiFacts::default();
-    let pii = pii.unwrap_or(&default_pii);
-    if let Ok(value) = cel::to_value(pii) {
+    let resolved_pii = pii.unwrap_or(&default_pii);
+    if let Ok(value) = cel::to_value(resolved_pii) {
         ctx.add_variable_from_value("pii", value);
     }
 
