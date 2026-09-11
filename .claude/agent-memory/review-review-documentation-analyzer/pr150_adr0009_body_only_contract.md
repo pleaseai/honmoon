@@ -56,3 +56,23 @@ check each against source *individually*, before assessing whether the surroundi
 A correct argument wrapped around a false guarantee is the failure mode of this PR class, and it is
 invisible if you only follow the reasoning. Contrast with [[adr_0006_signed_header_amendment]] and
 [[pr122_hook_salt_parity]], which were genuinely clean.
+
+**Two more classes surfaced in later rounds, neither an absolute claim.** Add both to the checklist:
+
+4. *An enumeration drifting from the list it claims to summarize.* A paragraph opened "the four
+   fail-open cases above" and then enumerated a different four — `Content-Range` silently swapped
+   for a decode-overflow case that was not on the original list. Re-read what "the N above"
+   actually names; do not trust the count.
+5. *A fail-open list read as a list of uninspectable requests.* Two of honmoon's four fail-opens
+   are **redaction-only**: detection and `decide` run in `inspect_body` (`mitm.rs:702-703`) before
+   `forwarded_request` is reached, and `forwarded_request`'s `CONTENT_RANGE` check (`mitm.rs:403`)
+   skips only the rewrite — so a `Content-Range` partial upload, and a body with an undecodable
+   `Content-Encoding`, are both fully scanned and a `pii.count > 0 -> deny` still blocks them.
+   When a doc groups cases by their *warn*, check whether they share the behaviour the grouping
+   implies.
+
+Also worth noting for prose review generally: "no `warn` is logged for header-shaped fields" was
+*true as meant* and still had to be qualified, because two of the four warns are **triggered** by a
+header (`Content-Range` presence, an unparseable `Content-Encoding`) even though each reports a
+skipped *body* rewrite. A claim that survives verification can still contradict what an operator
+reads. Same lesson shape as [[guard-unnecessary-doc-comment]].

@@ -4,4 +4,4 @@
 - [PR #122 hook-salt parity](pr122_hook_salt_parity.md) — issue #98 fix; README + rustdoc verified accurate against hook_salt.rs/HookSalt, 0 findings
 - [PR #146 signed-digest README/CLI stale](pr146_signed_digest_readme_cli_stale.md) — issue #116 fix; ADR-0006 updated correctly, but README.md + honmoon-cli --signed-body help still describe framing-headers-only, now stale
 - [PR #152 shadowed-rule empty-condition claim](pr152_shadowed_rule_warning_empty_condition.md) — wiki says empty CEL condition "matches nothing"; actually Program::compile("") panics (verified), contradicting page's own Fail-closed section
-- [PR #150 ADR-0009 body-only contract](pr150_adr0009_body_only_contract.md) — issue #133; my pass returned 0 findings and was WRONG — later reviewers found 3 false absolute claims. Check absolute claims first
+- [PR #150 ADR-0009 body-only contract](pr150_adr0009_body_only_contract.md) — issue #133; my pass returned 0 findings and was WRONG — later reviewers found 5 classes of defect. Check absolute claims, enumeration drift, and fail-open groupings first
