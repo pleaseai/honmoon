@@ -351,7 +351,9 @@ fn query_values<'a>(uri: &'a Uri, name: &'static str) -> impl Iterator<Item = &'
 /// both is scanned, and labels are matched across all of them rather than
 /// only within a single field value.
 fn message_signature_covers_body_digest(headers: &HeaderMap) -> bool {
-    message_signature_covers(headers, is_body_digest_header)
+    message_signature_covers(headers, |component| {
+        signature_over_header_binds_body(headers, component)
+    })
 }
 
 /// RFC 9421: whether some member's component list names a component `covered`
@@ -451,6 +453,33 @@ fn is_body_digest_header(name: &str) -> bool {
         .any(|candidate| name.eq_ignore_ascii_case(candidate.as_str()))
 }
 
+/// Whether a signature over the header `name` binds this request's body bytes.
+///
+/// The [`BODY_DIGEST_HEADERS`] are body digests by definition. So is an
+/// `x-amz-content-sha256` that carries a real payload hash — a signature over
+/// it binds the bytes exactly as a `Content-Digest` signature does — and
+/// a scheme that signs it is not always SigV4: an RFC 9421 or draft-cavage
+/// signature can name it in its covered list with no AWS authentication on the
+/// request at all. Its value decides: a `STREAMING-UNSIGNED-PAYLOAD…` or
+/// `UNSIGNED-PAYLOAD` marker is signed but binds nothing, so that request stays
+/// redactable.
+///
+/// It is *not* in `BODY_DIGEST_HEADERS`, which is the set the rewrite strips:
+/// honmoon leaves this header as the client sent it, because for a SigV4
+/// request the signature covers it and stripping it would break that signature
+/// outright. The consequence is only which failure a rewrite would produce —
+/// the stale hash then describes bytes the upstream no longer receives, so the
+/// upstream rejects on the payload hash rather than on the signature. Both are
+/// the opaque far-end failure this module exists to prevent, so both take the
+/// same decision.
+fn signature_over_header_binds_body(headers: &HeaderMap, name: &str) -> bool {
+    if is_body_digest_header(name) {
+        return true;
+    }
+    name.eq_ignore_ascii_case(X_AMZ_CONTENT_SHA256.as_str())
+        && header_values(headers, &X_AMZ_CONTENT_SHA256).any(declares_signed_payload)
+}
+
 /// Whether the parenthesised component list of a `Signature-Input` member —
 /// not the member's other `;param=value` metadata — names a quoted component
 /// that `covered` accepts.
@@ -524,7 +553,9 @@ fn signature_input_lists_component(value: &str, covered: impl Fn(&str) -> bool) 
 /// field may in principle repeat), and the `headers` parameter's grammar
 /// permits whitespace around `=`.
 fn cavage_signature_covers_digest(headers: &HeaderMap) -> bool {
-    cavage_signature_covers(headers, is_body_digest_header)
+    cavage_signature_covers(headers, |name| {
+        signature_over_header_binds_body(headers, name)
+    })
 }
 
 /// draft-cavage: whether some `headers="…"` parameter's covered list names a
@@ -763,6 +794,78 @@ mod tests {
                 "{marker}"
             );
         }
+    }
+
+    /// A signature over `x-amz-content-sha256` binds the body as directly as one
+    /// over `Content-Digest`: the value is a hash of the bytes. The rewrite
+    /// leaves that header alone rather than stripping it, so what the upstream
+    /// rejects is the payload hash rather than the signature — the same opaque
+    /// failure either way, so it takes the same decision.
+    #[test]
+    fn message_signature_over_a_payload_hash_signs_the_body() {
+        let hex_sha256 = "a".repeat(64);
+        assert_eq!(
+            scheme(
+                &[
+                    (
+                        "signature-input",
+                        r#"sig1=("@method" "x-amz-content-sha256");created=1618884473"#
+                    ),
+                    ("signature", "sig1=:abc:"),
+                    ("x-amz-content-sha256", hex_sha256.as_str()),
+                ],
+                "https://storage.example.com/b/k"
+            ),
+            Some(SignedBodyScheme::HttpMessageSignature)
+        );
+    }
+
+    /// The same signature over a header that declares the payload unsigned
+    /// binds no bytes, so the body stays redactable.
+    #[test]
+    fn message_signature_over_an_unsigned_payload_marker_leaves_the_body_uncovered() {
+        assert_eq!(
+            scheme(
+                &[
+                    (
+                        "signature-input",
+                        r#"sig1=("@method" "x-amz-content-sha256");created=1618884473"#
+                    ),
+                    ("signature", "sig1=:abc:"),
+                    ("x-amz-content-sha256", "UNSIGNED-PAYLOAD"),
+                ],
+                "https://storage.example.com/b/k"
+            ),
+            None
+        );
+    }
+
+    /// draft-cavage reaches the same conclusion through its `headers=` list.
+    #[test]
+    fn cavage_signature_over_a_payload_hash_signs_the_body() {
+        let hex_sha256 = "a".repeat(64);
+        let signature = r#"keyId="k",algorithm="hs2019",headers="(request-target) x-amz-content-sha256",signature="abc""#;
+        assert_eq!(
+            scheme(
+                &[
+                    ("signature", signature),
+                    ("x-amz-content-sha256", hex_sha256.as_str()),
+                ],
+                "https://storage.example.com/b/k"
+            ),
+            Some(SignedBodyScheme::CavageSignature)
+        );
+        assert_eq!(
+            scheme(
+                &[
+                    ("signature", signature),
+                    ("x-amz-content-sha256", "UNSIGNED-PAYLOAD"),
+                ],
+                "https://storage.example.com/b/k"
+            ),
+            None,
+            "an unsigned-payload marker binds nothing"
+        );
     }
 
     /// A standard S3 presigned URL signs the *request*, not the upload: its

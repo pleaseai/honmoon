@@ -103,6 +103,19 @@ long-lived secrets.
 - **draft-cavage** — a `Signature` header, or an `Authorization: Signature …` value, whose
   `headers="…"` parameter (tolerating whitespace around `=`) names a body-digest header.
 
+**A signature over `x-amz-content-sha256` counts for those two schemes too**, when that header
+carries a real payload hash (#81). The value is a hash of the bytes, so signing it binds the body
+exactly as signing `Content-Digest` does, and the scheme that signs it need not be SigV4 — an RFC
+9421 or draft-cavage covered list can name it on a request with no AWS authentication at all. The
+same header carrying `UNSIGNED-PAYLOAD` or `STREAMING-UNSIGNED-PAYLOAD…` is signed but binds
+nothing, so that request stays redactable. This header is deliberately **not** in the body-digest
+set below, because that set is also what the rewrite strips and honmoon must leave this one as the
+client sent it: for a SigV4 request the signature covers it, and stripping it would break that
+signature outright. The only difference the divergence makes is which failure a rewrite would
+produce — a stale hash left in place describes bytes the upstream no longer receives, so the
+upstream rejects on the payload hash rather than on the signature. Both are the opaque far-end
+failure this ADR exists to prevent, so both take the same decision.
+
 The body-digest set is the same for both schemes and is **the set of validators the rewrite path
 strips** — `digest`, `content-digest`, `content-md5`, `repr-digest`. Signing any of them binds the
 body: the digest cannot survive a rewrite, and stripping it as a stale validator breaks the
