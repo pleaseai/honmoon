@@ -369,9 +369,23 @@ describe('trackedIndexFiles', () => {
     expect(trackedIndexFiles(repo)).toEqual([index])
   })
 
-  test('answers empty outside a work tree, where there is nothing to assert', () => {
-    const bare = mkdtempSync(join(tmpdir(), 'not-a-repo-'))
+  test('answers empty where git reports no repository at all', () => {
+    const outside = mkdtempSync(join(tmpdir(), 'not-a-repo-'))
     try {
+      expect(trackedIndexFiles(outside)).toEqual([])
+    }
+    finally {
+      rmSync(outside, { recursive: true, force: true })
+    }
+  })
+
+  // The other way to have no work tree, and it is not the failure branch above:
+  // `ls-files` succeeds in a bare repository and simply lists nothing, so the
+  // `[]` here is an answered question rather than a swallowed error.
+  test('answers empty in a bare repository, via the success path', () => {
+    const bare = mkdtempSync(join(tmpdir(), 'bare-repo-'))
+    try {
+      execFileSync('git', ['init', '-q', '--bare'], { cwd: bare })
       expect(trackedIndexFiles(bare)).toEqual([])
     }
     finally {

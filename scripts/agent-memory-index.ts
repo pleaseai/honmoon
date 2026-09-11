@@ -501,10 +501,12 @@ export function readNotes(dir: string): NoteEntry[] {
  */
 export function trackedIndexFiles(cwd: string = REPO_ROOT): string[] {
   // Spawned the way `scripts/bump-version.ts` shells out to cargo, and checked
-  // the same way — on the exit code. Only "not a work tree" may answer `[]`:
-  // that is the value meaning *the invariant holds*, so a git that failed for
-  // any other reason (missing binary, unreadable index, a sandbox that blocks
-  // it) must raise rather than report an all-clear nobody verified.
+  // the same way — on the exit code. Only "not a git repository" may answer
+  // `[]`: that is the value meaning *the invariant holds*, so a git that
+  // failed for any other reason (missing binary, unreadable index, a sandbox
+  // that blocks it) must raise rather than report an all-clear nobody
+  // verified. A bare repository is not one of those reasons — `ls-files` there
+  // exits 0 with no output, so it reaches the same `[]` down the success path.
   // `-z` is not a detail: without it git C-quotes any path holding a non-ASCII
   // character, a quote or a backslash, so `agent-mémoire/MEMORY.md` arrives as
   // `"agent-m\303\251moire/MEMORY.md"` and ends in `"` — the suffix filter
