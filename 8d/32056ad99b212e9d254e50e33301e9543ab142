@@ -1,0 +1,21 @@
+.claude/agent-memory/review-review-documentation-analyzer/MEMORY.md
+  s_c4758cf40f67ff::t_361e44b1f22708 3
+.claude/agent-memory/review-review-documentation-analyzer/pr122_hook_salt_parity.md
+  s_c4758cf40f67ff::t_a8175b0b3eb912 1-23
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "8d32056ad99b212e9d254e50e33301e9543ab142",
+  "prompts": {},
+  "sessions": {
+    "s_c4758cf40f67ff": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "5eee7cb5-9641-48c8-be75-ad8db0bdac05",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
