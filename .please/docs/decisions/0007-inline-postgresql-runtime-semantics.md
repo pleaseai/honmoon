@@ -142,8 +142,10 @@ that fails to parse: it is refused rather than forwarded blind.
     different tasks, and lowering the forwarded side leaves a window in which an answer delivered
     concurrently is credited against the old, higher value and survives the subtraction, inverting
     the pair and releasing the next refusal early. Crediting instead keeps both counters under the
-    single watch update the relay also writes through, so `delivered <= forwarded` holds by
-    construction rather than by timing.
+    single watch update the relay also writes through, so `sync_points <= forwarded` holds by
+    construction rather than by timing. The bounded quantity is the delivered `ReadyForQuery`
+    count specifically; the watched value's other field counts every backend message of any kind
+    and routinely runs far ahead of it, since one query's sync point can carry thousands of rows.
   - **A written-off answer that arrives after all is discarded, and that has to be tracked rather
     than inferred.** The credit a write-off takes is a fiction the database can still puncture, and
     comparing a late answer against the forwarded count does not catch it: any statement forwarded
@@ -154,7 +156,20 @@ that fails to parse: it is refused rather than forwarded blind.
     `ReadyForQuery` after a write-off belongs to the oldest unanswered statement — a written-off
     one — and it pays down a unit of debt instead of advancing the count. Once the debt is clear,
     answers advance the count again, so a statement forwarded after a write-off is still released by
-    its own answer rather than paying the bound a second time. For the same reason a sync point is
+    its own answer rather than paying the bound a second time.
+
+    **This costs a sync point that can never be answered its one-time price.** A `Sync` swallowed
+    during copy-in is written off like any other, but no late answer for it will ever arrive, so the
+    debt it records is paid down by the *next* statement's genuine `ReadyForQuery` instead. The
+    accounting stays one behind from then on and every later refusal on that connection pays a stall
+    window, not just the first. The two cases are indistinguishable on the wire — "an answer arrived
+    after a write-off, with another statement forwarded in between" is what both look like, and
+    which one it is depends on whether a *second* answer is still coming, which is unknowable at the
+    moment the choice has to be made. Resolving it the other way means crediting an answer that may
+    belong to an earlier statement, which releases a refusal ahead of its response and is the defect
+    this whole section exists to remove. So the ambiguity is resolved toward waiting: the failure is
+    latency, never ordering. Removing the cost needs the runtime to know a `Sync` was swallowed,
+    which means tracking copy-in mode across the two tasks — a mechanism this ADR does not have. For the same reason a sync point is
     counted **before** the frame that earns it is forwarded, never after: a fast database can have
     its `ReadyForQuery` relayed to the client before the forwarding task runs its next line, and
     the discard above would then throw away a perfectly good answer as an over-count, leaving the

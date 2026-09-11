@@ -222,6 +222,30 @@ struct Delivered {
     /// queued behind that one ahead of its response, which is #101 again.
     /// Carrying the count here lets each such answer be matched to the write-off
     /// it belongs to and discarded.
+    ///
+    /// # The case this gets wrong, and why it is still the right way round
+    ///
+    /// A sync point that can never be answered — a `Sync` swallowed during
+    /// copy-in — is written off like any other, and the debt it records is then
+    /// paid down by the *next* statement's real `ReadyForQuery`. The accounting
+    /// stays one behind from there, so every later refusal on the connection
+    /// pays a stall window rather than only the first.
+    ///
+    /// This is not fixable by counting. The two cases look identical on the
+    /// wire — an answer arriving after a write-off with a further statement
+    /// forwarded in between — and telling them apart means knowing whether a
+    /// *second* answer is still coming, which is unknowable at the moment the
+    /// choice must be made. Resolving it the other way (credit the answer,
+    /// carry no debt) is exactly the design this replaced: a late answer for an
+    /// earlier statement is credited to a later statement's slot and the refusal
+    /// behind that one is released before its response exists. So the ambiguity
+    /// is resolved toward waiting. The failure here is latency; the failure
+    /// there is #101.
+    ///
+    /// Removing the cost needs the runtime to know the `Sync` was swallowed,
+    /// which means tracking copy-in mode from the relay — which only the relay
+    /// sees the `CopyInResponse` for — back into the message loop. That is a
+    /// mechanism, not a tweak, and it is filed separately.
     debt: u64,
 }
 
@@ -243,12 +267,20 @@ impl ClientLink {
     /// Record a frame forwarded to the database that it will answer with a
     /// `ReadyForQuery`.
     ///
-    /// Overcounting only stalls a refusal until
-    /// [`REFUSAL_ORDER_STALL_TIMEOUT`], which then writes the difference off;
-    /// undercounting lets a refusal overtake a response, which is the defect
-    /// this exists to prevent. So a message whose sync point is uncertain is
-    /// counted — `Sync` among them, which PostgreSQL ignores (and therefore
-    /// never answers) while a `COPY` is in progress.
+    /// Overcounting stalls a refusal; undercounting lets one overtake a
+    /// response, which is the defect this exists to prevent. So a message whose
+    /// sync point is uncertain is counted — `Sync` among them, which PostgreSQL
+    /// ignores (and therefore never answers) while a `COPY` is in progress.
+    ///
+    /// Be clear about what that costs, because it is more than one stall. A
+    /// point that is merely slow costs [`REFUSAL_ORDER_STALL_TIMEOUT`] once and
+    /// is then settled. A point that can *never* be answered is written off like
+    /// any other, but the debt that write-off records is paid down by the next
+    /// statement's genuine answer rather than by a late one of its own, so the
+    /// accounting stays one behind and **every** later refusal on the connection
+    /// pays a stall window too. The trade is still the right way round — the
+    /// failure is latency, never a refusal overtaking a response — but it is a
+    /// recurring cost, not a one-time one. See [`Delivered::debt`].
     ///
     /// Called *before* the bytes are written upstream, never after. A fast
     /// database on a multi-threaded runtime can have its `ReadyForQuery` relayed
