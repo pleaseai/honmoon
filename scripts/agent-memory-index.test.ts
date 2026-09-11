@@ -250,6 +250,40 @@ metadata:
     expect(parseFrontmatter(text).problems).toEqual([expect.stringContaining('tab')])
   })
 
+  // An outdented comment ends a block scalar the same way a column-zero one
+  // does. Skipping it and leaving the block open folded the line after it in,
+  // so the index carried a summary from a document pyyaml refuses to parse.
+  test('reports block content that resumes after an outdented comment', () => {
+    const text = '---\nname: a-note\ndescription: >\n  first\n # note\n  second\n---\n'
+    expect(parseFrontmatter(text).problems).toEqual([expect.stringContaining('resumes after a comment')])
+  })
+
+  // ...but only *content* resumes. A second comment after the one that ended
+  // the value is still a comment, and pyyaml loads the note.
+  test('accepts a comment after the one that ended the value', () => {
+    for (const after of [' # b', '  # b']) {
+      const text = `---\nname: a-note\ndescription: >\n  first\n # a\n${after}\n---\n`
+      expect(parseFrontmatter(text)).toMatchObject({ scalars: { description: 'first' }, problems: [] })
+    }
+  })
+
+  // A no-break space is not indentation and not a separator, so a line opening
+  // on one is content — pyyaml refuses the document. Deciding with
+  // `String.prototype.trim` dropped it and read `\u00A0# note` as a comment.
+  test('does not read a no-break space before a hash as a comment', () => {
+    const text = `---\nname: a-note\ndescription: summary\n\u00A0# note\n---\n`
+    expect(parseFrontmatter(text).problems).toEqual([expect.stringContaining('is not a key')])
+  })
+
+  // The same class on a continuation line, where trimming it edited the value:
+  // pyyaml keeps the no-break space at either edge of a folded line.
+  test('keeps a no-break space at the edge of a continuation line', () => {
+    const lead = `---\nname: a-note\ndescription: summary\n  \u00A0more\n---\n`
+    const trail = `---\nname: a-note\ndescription: summary\n  more\u00A0\n---\n`
+    expect(parseFrontmatter(lead).scalars.description).toBe('summary \u00A0more')
+    expect(parseFrontmatter(trail).scalars.description).toBe('summary more\u00A0')
+  })
+
   // An explicit indicator counts from the mapping's own indentation, not from
   // column zero: under a mapping indented by two, `|2` requires four spaces.
   // pyyaml refuses three and accepts four.

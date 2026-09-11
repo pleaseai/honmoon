@@ -110,6 +110,10 @@ const YAML_PADDING = /^[ \t]+|[ \t]+$/g
  * no-break space — which in a frontmatter value is the value's own first
  * character, not indentation.
  */
+function yamlTrim(line: string): string {
+  return line.replace(YAML_PADDING, '')
+}
+
 function indentWidth(line: string): number {
   return line.length - line.replace(/^[ \t]+/, '').length
 }
@@ -421,7 +425,7 @@ export function parseFrontmatter(text: string): Frontmatter {
   // set no indentation in YAML, so they are passed over here too.
   const lines = block[1].split(/\r?\n/)
   const firstContent = lines.find((candidate) => {
-    const text = candidate.trim()
+    const text = yamlTrim(candidate)
     return text !== '' && !text.startsWith('#') && text !== '---' && text !== '...'
   })
   const rootIndent = firstContent === undefined ? 0 : indentWidth(firstContent)
@@ -499,7 +503,13 @@ export function parseFrontmatter(text: string): Frontmatter {
     // content with no key to hang it on, and both readers refuse the document.
     // The continuation branch below only looks at indented lines, so this fell
     // through every check and the note indexed as though it were well formed.
-    const bare = line.trim()
+    // Trimmed with YAML's separators, not JavaScript's whitespace class. The two
+    // differ on the no-break space, and every decision below is made on `bare`:
+    // `trim` dropped a leading one and read a no-break space before a `#` as
+    // the start of a comment, where
+    // YAML sees content at a column that has to hold a key and refuses the
+    // document. It is the value's own character on a continuation line, too.
+    const bare = yamlTrim(line)
 
     // A comment at column zero closes the value above it — a block scalar ends
     // there, and so does a plain one. Nothing is wrong with the comment itself;
@@ -544,7 +554,12 @@ export function parseFrontmatter(text: string): Frontmatter {
     // of issue references that a comment-stripping parser would eat.
     if (key && !atRoot && bare !== '') {
       if (closedByComment.has(key)) {
-        resumedAfterComment.add(key)
+        // A further comment is still a comment — YAML drops it and loads the
+        // note. Only content lands where a key is expected, and reporting the
+        // comment too failed a note pyyaml reads without complaint.
+        if (!bare.startsWith('#')) {
+          resumedAfterComment.add(key)
+        }
         continue
       }
 
@@ -563,7 +578,7 @@ export function parseFrontmatter(text: string): Frontmatter {
       // so a tab *inside* one is not indentation and does not make the note
       // unreadable — pyyaml loads it fine. Checking the tab first rejected a
       // valid note over text YAML had already discarded.
-      if (plainScalar && line.trim().startsWith('#')) {
+      if (plainScalar && bare.startsWith('#')) {
         continue
       }
 
@@ -581,7 +596,7 @@ export function parseFrontmatter(text: string): Frontmatter {
       // still follow it — YAML drops that — but content cannot: it lands where
       // a key is expected and neither reader will parse it.
       if (quoted && (DOUBLE_QUOTED.test(soFarRaw) || SINGLE_QUOTED.test(soFarRaw))) {
-        if (!line.trim().startsWith('#')) {
+        if (!bare.startsWith('#')) {
           afterClose.add(key)
         }
         continue
@@ -598,7 +613,13 @@ export function parseFrontmatter(text: string): Frontmatter {
         // ignores it and the note is fine — folding it in both corrupted the
         // summary and failed a valid note. Outdented *content* is the parse
         // error it always was.
-        if (line.trim().startsWith('#')) {
+        //
+        // But the block is over either way: a comment ends it here just as one
+        // at column zero does, so the close is recorded rather than only the
+        // line skipped. Leaving the block open folded the next indented line
+        // into the summary and reported nothing, for a document pyyaml refuses.
+        if (bare.startsWith('#')) {
+          closedByComment.add(key)
           continue
         }
         underIndented.add(key)
@@ -612,7 +633,7 @@ export function parseFrontmatter(text: string): Frontmatter {
       // index said something the note never did. The count has to be odd: a
       // `\\` at the end is an escaped backslash, not an escaped break.
       if (!brokenByBlank.has(key) && soFar.startsWith('"') && /(?:^|[^\\])(?:\\\\)*\\$/.test(soFar)) {
-        scalars[key] = `${soFar.slice(0, -1)}${line.trim()}`
+        scalars[key] = `${soFar.slice(0, -1)}${bare}`
       }
       else {
         // The trailing backslash is dropped here as well when a blank line
@@ -624,7 +645,7 @@ export function parseFrontmatter(text: string): Frontmatter {
         // it edited the note's own summary.
         const escaped = brokenByBlank.delete(key) && soFar.startsWith('"') && soFar.endsWith('\\')
         const head = escaped ? soFar.slice(0, -1) : soFar
-        scalars[key] = `${head} ${line.trim()}`
+        scalars[key] = `${head} ${bare}`
       }
     }
   }
@@ -645,7 +666,7 @@ export function parseFrontmatter(text: string): Frontmatter {
     const raw = value.replace(YAML_PADDING, '')
 
     if (resumedAfterComment.has(name)) {
-      problems.push(`\`${name}:\` resumes after a comment at column zero, which ends the value — YAML expects a key on the next unindented line, not more text`)
+      problems.push(`\`${name}:\` resumes after a comment that ended the value — YAML expects a key next, not more text`)
     }
 
     if (tabIndented.has(name)) {
