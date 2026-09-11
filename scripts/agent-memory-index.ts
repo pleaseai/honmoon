@@ -86,6 +86,18 @@ const FRONTMATTER = /^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/
 const TOP_LEVEL_KEY = /^([a-z][\w-]*):[ \t]*(\S.*)?$/i
 
 /**
+ * Whether a line could be a mapping key at all — a colon with a space or the
+ * line end after it.
+ *
+ * Deliberately looser than `TOP_LEVEL_KEY`, which matches only the two keys
+ * this index reads. YAML admits far more (`foo.bar:`, `2fa:`, `"odd key":`),
+ * and the unkeyed-line check has no business deciding what a key looks like:
+ * reporting those failed CI for notes that load perfectly well. It only names
+ * a line that cannot be a key under any spelling.
+ */
+const COULD_BE_KEY = /:(?:[ \t]|$)/
+
+/**
  * A YAML block-scalar header — `>` or `|`, with an optional explicit indent
  * (a single digit) and chomping indicator (`+`/`-`) in **either** order, which
  * is what the YAML block-header production allows: `>-`, `|+`, `>2`, `|2-`,
@@ -417,8 +429,9 @@ export function parseFrontmatter(text: string): Frontmatter {
     // content with no key to hang it on, and both readers refuse the document.
     // The continuation branch below only looks at indented lines, so this fell
     // through every check and the note indexed as though it were well formed.
-    if (line.trim() !== '' && !/^[ \t]/.test(line) && !line.trimStart().startsWith('#')) {
-      problems.push(`\`${line.trim()}\` is not a key, and YAML expects one at the start of a line in this mapping — indent it to continue the value above, or give it a key`)
+    const bare = line.trim()
+    if (bare !== '' && !/^[ \t]/.test(line) && !bare.startsWith('#') && bare !== '---' && bare !== '...' && !COULD_BE_KEY.test(line)) {
+      problems.push(`\`${bare}\` is not a key, and YAML expects one at the start of a line in this mapping — indent it to continue the value above, or give it a key`)
       continue
     }
 
@@ -474,6 +487,13 @@ export function parseFrontmatter(text: string): Frontmatter {
       }
       const required = blockIndent.get(key)
       if (required !== undefined && (/^ */.exec(line)?.[0].length ?? 0) < required) {
+        // An outdented line ends the block scalar. If it is a comment, YAML
+        // ignores it and the note is fine — folding it in both corrupted the
+        // summary and failed a valid note. Outdented *content* is the parse
+        // error it always was.
+        if (line.trim().startsWith('#')) {
+          continue
+        }
         underIndented.add(key)
       }
       const soFar = scalars[key] ?? ''

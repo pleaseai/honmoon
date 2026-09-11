@@ -235,6 +235,57 @@ metadata:
     expect(parseFrontmatter(text)).toMatchObject({ scalars: { description: 'done' }, problems: [] })
   })
 
+  // The unkeyed-line check must not decide what a *key* looks like. Plenty of
+  // valid keys fall outside the narrow pattern this file matches for `name` and
+  // `description`, and reporting them failed CI for notes that load fine.
+  test('leaves a valid top-level key it does not index alone', () => {
+    for (const line of ['foo.bar: x', '2fa: x', '"odd key": x', 'UPPER: x']) {
+      const text = `---
+name: a-note
+description: a summary
+${line}
+---
+`
+      expect(parseFrontmatter(text).problems).toEqual([])
+    }
+  })
+
+  // `...` ends a YAML document explicitly and may precede the closing fence.
+  test('accepts an explicit document end marker', () => {
+    const text = `---
+name: a-note
+description: a summary
+...
+---
+`
+    expect(parseFrontmatter(text).problems).toEqual([])
+  })
+
+  // A comment indented under a block scalar's content ends the scalar, and YAML
+  // ignores it — folding it in both corrupted the summary and failed the note.
+  test('ignores a comment outdented below block content', () => {
+    const text = `---
+name: a-note
+description: >
+  first
+ # note
+---
+`
+    expect(parseFrontmatter(text)).toMatchObject({ scalars: { description: 'first' }, problems: [] })
+  })
+
+  // ...while outdented *content* is still the parse error it was.
+  test('still reports outdented block content', () => {
+    const text = `---
+name: a-note
+description: >
+  first
+ second
+---
+`
+    expect(parseFrontmatter(text).problems).toEqual([expect.stringContaining('indent')])
+  })
+
   // A column-zero line that is neither a key nor a delimiter is content with no
   // key, which both readers refuse — and the continuation branch, which only
   // looks at indented lines, skipped it in silence.
