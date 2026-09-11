@@ -1013,6 +1013,72 @@ fn signed_body_request_keeps_its_digest_trailer_in_forward_mode() {
     assert_eq!(mappings.unwrap().len(), 0);
 }
 
+// #133: the inspection contract covers request *bodies* only. Trailer values —
+// like the request headers they are shaped after — are never scanned for PII or
+// secrets, never redacted, and reach the upstream verbatim. This pins that
+// boundary so it cannot drift silently: a `pii.count > 0 -> deny` rule that
+// refuses the same content in the body does not fire on a trailer, and wire
+// redaction leaves the trailer alone. Widening the scan to one header-shaped
+// field but not the other would imply a guarantee the body-only pipeline cannot
+// keep — see ADR-0009.
+#[test]
+fn trailer_content_is_outside_the_inspection_contract() {
+    let policy = "egress:\n  default: allow\nrules:\n  - name: block-pii\n    endpoint: '*'\n    condition: \"pii.count > 0\"\n    verdict: deny\n";
+    let (upstream, captured) = start_upstream(ResponseMode::Static(b"ok".to_vec()));
+    let (proxy, _) = start_proxy_with_policy(policy, PiiMode::Block);
+    let body = "clean body";
+    let note = format!("rrn={RRN} key={SECRET}");
+
+    let request = format!(
+        "POST http://127.0.0.1:{upstream}/submit HTTP/1.1\r\n\
+         Host: 127.0.0.1:{upstream}\r\n\
+         Trailer: X-Note\r\n\
+         Transfer-Encoding: chunked\r\n\
+         Connection: close\r\n\r\n\
+         {:x}\r\n{body}\r\n0\r\nX-Note: {note}\r\n\r\n",
+        body.len()
+    );
+    let response = raw_proxy_request(proxy, request.as_bytes());
+
+    // The deny rule never fires: the scan saw only the body, so `pii.count`
+    // stayed 0 for content that would have been refused had it been in the body.
+    assert!(
+        response.starts_with(b"HTTP/1.1 200"),
+        "trailer PII is not scanned, so a pii.count rule cannot refuse it"
+    );
+    let forwarded = captured.recv_timeout(Duration::from_secs(5)).unwrap();
+    assert_eq!(forwarded.body, body.as_bytes());
+    assert_eq!(
+        header_value(&forwarded.trailers, "x-note"),
+        Some(note.as_str()),
+        "trailer values reach the upstream unscanned and unredacted"
+    );
+}
+
+// The counterpart that makes the boundary meaningful: the *same* content in the
+// body is refused by the *same* rule. Without this, the test above could pass
+// because the policy never matched anything.
+#[test]
+fn the_same_content_in_the_body_is_refused_by_the_same_rule() {
+    let policy = "egress:\n  default: allow\nrules:\n  - name: block-pii\n    endpoint: '*'\n    condition: \"pii.count > 0\"\n    verdict: deny\n";
+    let (upstream, captured) = start_upstream(ResponseMode::Static(b"ok".to_vec()));
+    let (proxy, _) = start_proxy_with_policy(policy, PiiMode::Block);
+    let body = format!("rrn={RRN} key={SECRET}");
+
+    let request = format!(
+        "POST http://127.0.0.1:{upstream}/submit HTTP/1.1\r\n\
+         Host: 127.0.0.1:{upstream}\r\n\
+         Transfer-Encoding: chunked\r\n\
+         Connection: close\r\n\r\n\
+         {:x}\r\n{body}\r\n0\r\n\r\n",
+        body.len()
+    );
+    let response = raw_proxy_request(proxy, request.as_bytes());
+
+    assert!(response.starts_with(b"HTTP/1.1 403"));
+    assert!(captured.recv_timeout(Duration::from_millis(250)).is_err());
+}
+
 // The `identity` negotiation must not leak onto the common 'signed request,
 // nothing to redact' path either: the client's `Accept-Encoding` may be one of
 // the headers it signed.
