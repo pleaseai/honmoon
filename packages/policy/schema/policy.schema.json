@@ -54,7 +54,7 @@
           "type": "string",
           "minLength": 1,
           "pattern": "\\S",
-          "description": "CEL expression over protocol facts. Must not be blank: `Program::compile` panics on a condition that lexes to no tokens, so `Policy::from_yaml` refuses to load one. Write \"true\" for a rule that always matches."
+          "description": "CEL expression over protocol facts. Must not be blank: the CEL compiler panics on a blank condition rather than returning an error, so Policy::from_yaml refuses to load one. Write \"true\" for a rule that always matches. This pattern approximates the Rust check (char::is_whitespace) with the ECMAScript \\s class; they differ on U+FEFF and U+0085, and neither validates CEL."
         },
         "verdict": { "$ref": "#/$defs/verdict" }
       }

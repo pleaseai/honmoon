@@ -123,7 +123,7 @@ endpoints:
 
 **Matching is exact**: the host must be equal (case-insensitive, with a trailing FQDN dot
 trimmed) *and* the port must be equal. There is no IP resolution and no wildcard host in v0.1.0
-([lib.rs:210-227](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/lib.rs#L210-L227)).
+([lib.rs:255-272](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/lib.rs#L255-L272)).
 The port comes from what the client dialed — the CONNECT authority for an HTTPS tunnel, defaulting
 to 443 (or 80 for a cleartext forward-proxy request) when the authority carries no explicit port,
 or the SOCKS5 handshake's own `host:port` for a non-HTTP protocol.
@@ -163,11 +163,11 @@ tunnel through the same listener, gated once on `domain` by the `egress` block �
 A rule referencing an endpoint that `endpoints` does not declare is a **load-time warning, not an
 error**: `Facts.endpoint` may be set by other means, and refusing the whole policy over one
 dangling name would fail open for every other rule
-([lib.rs:235-245](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/lib.rs#L235-L245)).
+([lib.rs:274-290](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/lib.rs#L274-L290)).
 
 That tolerance covers *undefined references only*. An unusable `endpoints` entry is a **load-time
 error** — the policy is rejected outright
-([lib.rs:183-208](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/lib.rs#L183-L208)):
+([lib.rs:198-223](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/lib.rs#L198-L223)):
 
 | Mistake | Why it fails the load |
 |---------|-----------------------|
@@ -217,7 +217,7 @@ rules:
 Write those two the other way round and `postgres-connect` answers every *statement* too — a
 `DROP` is allowed, and the rule meant to stop it never runs. `Policy::from_yaml` warns at load
 when it finds that ordering, naming both rules
-([lib.rs:286-371](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/lib.rs#L286-L371)):
+([lib.rs:292-384](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/lib.rs#L292-L384)):
 
 ```
 WARN policy rule is unreachable: an earlier unconditional rule always matches first
@@ -242,11 +242,14 @@ than crashing on the first request that reaches the rule
 ([#151](https://github.com/pleaseai/honmoon/issues/151)):
 
 ```
-Error: rule `blank` has a blank `condition`; write `"true"` for a rule that always matches
+Error: rule `blank` (rules[0]) has a blank `condition`; write `"true"` for a rule that always matches
 ```
 
-Whitespace does not help — `" "` and `"\n"` are rejected the same way. Give every rule a real
-condition; write `"true"` when you mean always.
+Whitespace does not help — `" "`, `"\n"` and a non-breaking or ideographic space are rejected the
+same way. A condition made only of **zero-width** characters is not, though: it looks empty in an
+editor but is not whitespace, so it loads and then crashes like any other unparseable condition
+(see [Fail-closed semantics](#fail-closed-semantics)). Give every rule a real condition; write
+`"true"` when you mean always.
 :::
 
 ### Facts available to conditions
@@ -278,7 +281,7 @@ http.method == 'POST' && http.body_size > 10485760
 Honmoon is designed to **fail closed**: a rule whose condition fails to compile, or references a
 fact that has not been populated, simply **does not match** — it can never turn a `deny` into an
 `allow`. Combined with the `deny`-by-default egress verdict, an absent or broken rule is always
-the safe outcome ([engine.rs:35-37](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/engine.rs#L35-L37), [engine.rs:167-201](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/engine.rs#L167-L201)).
+the safe outcome ([engine.rs:35-37](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/engine.rs#L35-L37), [engine.rs:167-209](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/engine.rs#L167-L209)).
 
 Read "fails to compile" there literally: it means the CEL compiler **returned an error**. Not
 every malformed condition does. Some panic instead, and a panic is not a rule that fails closed —
@@ -288,12 +291,21 @@ in Honmoon:
 - A **blank** condition panics, and Honmoon catches that case at the only point where it can:
   `Policy::from_yaml` refuses to load a policy containing one, so it never reaches evaluation.
   See [Rule order and unreachable rules](#rule-order-and-unreachable-rules) above.
-- **Other** malformed conditions panic the same way — `"&&"`, `")"`, an unterminated string
-  literal, a condition that is only a comment — and those are *not* detected at load. A rule
+- **Other** malformed conditions panic the same way and are *not* detected at load. A rule
   carrying one loads cleanly and crashes the decision path when a request reaches it. Tracked in
-  [#154](https://github.com/pleaseai/honmoon/issues/154); telling those apart from valid CEL
-  without compiling them means parsing CEL, so the fix is not a check Honmoon can add at the call
-  site. Most syntax errors do return an error and do fail closed — `"(true"` and `"a[]"`, for
+  [#154](https://github.com/pleaseai/honmoon/issues/154). The compiler panics on any single
+  character it cannot begin a token with, so this covers far more than obvious typos like `"&&"`
+  or `")"`: an unterminated string literal, a condition that is only a comment, a stray `"@"` or
+  `"§"`, and — the one to watch — a condition made only of **zero-width** characters such as
+  `U+200B` or a stray byte-order mark. That last one renders as an empty box or as nothing at all,
+  so it reads exactly like the blank condition caught above while being, to the compiler, an
+  ordinary unparseable one.
+
+  Honmoon does not extend the blank check to cover it, because the line would be arbitrary:
+  `U+200B` panics for the same reason `"@"` does, and neither is whitespace. Separating either
+  from valid CEL without compiling it means parsing CEL.
+
+  Most syntax errors *do* return an error and do fail closed — `"(true"` and `"a[]"`, for
   instance — but do not rely on it: give every rule a condition you have seen evaluate.
 
 ```mermaid
@@ -317,7 +329,7 @@ sequenceDiagram
 
 This behavior is locked by tests: `unknown_fact_reference_does_not_match` proves a condition
 referencing an unpopulated `sql` fact falls through to the egress default
-([engine.rs:176-184](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/engine.rs#L176-L184)).
+([engine.rs:372-380](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/engine.rs#L372-L380)).
 
 ## Validating a policy
 

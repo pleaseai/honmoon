@@ -23,7 +23,16 @@ export interface Rule {
    * Must not be blank. A blank condition is not "always" (that is the literal
    * `"true"`) and not a disabled rule either: the CEL compiler panics on it
    * rather than returning an error, so `Policy::from_yaml` rejects the whole
-   * policy. The JSON Schema enforces the same.
+   * policy.
+   *
+   * The JSON Schema rejects a blank condition too, but the two definitions of
+   * "blank" are near-identical rather than identical, and neither is a general
+   * guard: Rust uses `char::is_whitespace`, the schema uses the ECMAScript
+   * `\s` class. `U+FEFF` is in the second and not the first; `U+0085` is in
+   * the first and not the second. Both disagreements are one character wide
+   * and both land inside the far larger class of conditions that panic without
+   * being blank at all (see honmoon issue 154), so treat either check as
+   * catching the common mistake, not as validating CEL.
    */
   condition: string
   verdict: Verdict
