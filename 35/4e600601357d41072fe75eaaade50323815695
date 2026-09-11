@@ -1,0 +1,38 @@
+crates/honmoon-core/src/lib.rs
+  s_4094bbd4c7170a::t_e965d1605dfec0 362-369,567-572,576-577
+packages/policy/src/index.ts
+  s_4094bbd4c7170a::t_f6be6dfe69648b 24-26,34-37
+Cargo.toml
+  s_4094bbd4c7170a::t_314b6acbf94aea 15
+wiki/getting-started/policy-authoring.md
+  s_4094bbd4c7170a::t_f03b687abd10ec 286-301,303-307
+packages/policy/src/policy.schema.test.ts
+  s_4094bbd4c7170a::t_f03b687abd10ec 86-87
+wiki/llms-full.txt
+  s_4094bbd4c7170a::t_534d6f7c19eb5d 2848-2863,2865-2869
+crates/honmoon-core/src/engine.rs
+  s_4094bbd4c7170a::t_8b6664d5cc780c 371-429
+  s_4094bbd4c7170a::t_cd5f43e3b676e5 170-173,177,179-184
+  s_4094bbd4c7170a::t_8e6d5e8e2760d8 174-176
+  s_4094bbd4c7170a::t_314b6acbf94aea 3,220,225,230,237
+crates/honmoon-core/Cargo.toml
+  s_4094bbd4c7170a::t_314b6acbf94aea 12
+Cargo.lock
+  s_4094bbd4c7170a::t_7dc0b9d7d15baf 35-43,96,98,147,398-399,401,403,405,407,410,442,445,608-613,1037,1047,1082,1151,1235-1258,1578-1579,1581,2220,2494,2675-2709,2725-2733,2845
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "354e600601357d41072fe75eaaade50323815695",
+  "prompts": {},
+  "sessions": {
+    "s_4094bbd4c7170a": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "27c19e8f-ac49-4d85-aeaa-c51fe711d295",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
