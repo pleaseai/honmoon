@@ -1,6 +1,6 @@
 ---
 name: mitm-test-harness
-description: honmoon-proxy's MITM integration test harness (tests/mitm.rs) cannot observe forwarded/upstream bytes — relevant when reviewing detect-only forwarding claims
+description: honmoon-proxy's MITM integration harness (tests/mitm.rs) has an upstream that always drops the connection, so forwarded/upstream bytes are never asserted — only audit-log findings are; relevant when reviewing detect-only forwarding claims
 metadata:
   type: project
 ---

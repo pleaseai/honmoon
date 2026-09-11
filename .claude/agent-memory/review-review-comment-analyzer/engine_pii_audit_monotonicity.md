@@ -1,6 +1,6 @@
 ---
 name: engine-pii-audit-monotonicity
-description: honmoon-core decide_pii_audit_only can produce a stricter verdict than block mode when a PII-caused non-Allow rule is skipped and a later, unrelated, stricter rule matches
+description: honmoon-core decide_pii_audit_only can produce a stricter verdict than block mode when a PII-caused non-Allow rule is skipped and a later, unrelated, stricter rule matches — the guarantee is Allow-preservation only, stated in the rustdoc since PR #108
 metadata:
   type: project
 ---

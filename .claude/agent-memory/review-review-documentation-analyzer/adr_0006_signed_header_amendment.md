@@ -1,6 +1,6 @@
 ---
 name: adr-0006-signed-header-amendment-verified
-description: PR #115 amended ADR-0006 to cover header-signed (not just body-signed) requests under wire redaction — verified accurate against signed_body.rs/mitm.rs
+description: PR #115 amended ADR-0006 to cover header-signed (not just body-signed) requests under wire redaction — verified accurate against signed_body.rs/mitm.rs; a clean-PR calibration point whose only soft spot was the auto-maintained decisions/index.md title
 metadata:
   type: project
 ---

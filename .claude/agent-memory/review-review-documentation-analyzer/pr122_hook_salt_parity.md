@@ -1,6 +1,6 @@
 ---
 name: pr122-hook-salt-parity
-description: PR #122 (issue #98) hook-salt parity fix — doc review found zero issues; calibration point for clean PRs
+description: PR #122 (issue #98) hook-salt parity fix — README + rustdoc verified accurate against hook_salt.rs/HookSalt, zero findings; a calibration point for clean PRs
 metadata:
   type: project
 ---

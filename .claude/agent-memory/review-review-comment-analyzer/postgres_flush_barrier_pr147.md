@@ -1,6 +1,6 @@
 ---
 name: postgres-flush-barrier-pr147
-description: PR #147 (issue #113) flush-driven-batch barrier comments in crates/honmoon-proxy/src/runtime/postgres.rs
+description: PR #147 (issue #113) flush-driven-batch barrier comments in crates/honmoon-proxy/src/runtime/postgres.rs — the flush counters verified accurate end-to-end; the one gap found (the `# Invariant` block not cross-referencing flush_answers <= flushes) was fixed in-PR
 metadata:
   type: project
 ---

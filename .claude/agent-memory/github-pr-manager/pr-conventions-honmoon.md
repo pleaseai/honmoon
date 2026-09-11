@@ -1,6 +1,6 @@
 ---
 name: pr-conventions-honmoon
-description: pleaseai/honmoon PR mechanics — no PR template, graphite tracks the repo but not feature branches, draft-by-default org
+description: pleaseai/honmoon PR mechanics — no PR template, draft-by-default org, and graphite tracks the repo but usually not feature branches (check `gt ls`)
 metadata:
   type: project
 ---

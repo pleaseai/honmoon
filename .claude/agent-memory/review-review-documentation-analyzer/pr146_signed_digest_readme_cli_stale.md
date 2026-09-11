@@ -1,6 +1,6 @@
 ---
 name: pr146-signed-digest-readme-cli-stale
-description: PR #146 (issue #116) fixed BODY_DIGEST_HEADERS being missing from the header-signed decision; ADR-0006 was updated correctly, but README.md wire-redaction section and crates/honmoon-cli/src/main.rs --signed-body help text still only mention framing headers (Content-Length/Content-Encoding/Transfer-Encoding), not digest headers (content-md5/digest/content-digest/repr-digest) — both now stale relative to the fixed code.
+description: PR #146 (issue #116) fixed BODY_DIGEST_HEADERS missing from the header-signed decision and updated ADR-0006 correctly, but README.md's wire-redaction section and honmoon-cli's --signed-body help still describe framing headers only, not digest headers — both stale relative to the fixed code
 metadata:
   type: project
 ---

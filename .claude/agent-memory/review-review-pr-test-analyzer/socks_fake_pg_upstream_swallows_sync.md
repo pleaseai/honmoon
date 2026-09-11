@@ -1,6 +1,6 @@
 ---
 name: socks-fake-pg-upstream-swallows-sync
-description: crates/honmoon-proxy/tests/socks.rs's start_pg_upstream fake PostgreSQL server answers Q, P and Sync; it still drops FunctionCall/Bind/Execute/CopyData — relevant when reviewing extended-protocol or sync-point-ordering features tested against it
+description: crates/honmoon-proxy/tests/socks.rs's start_pg_upstream fake PostgreSQL server answers Q, P and Sync but still drops FunctionCall/Bind/Execute/CopyData — FunctionCall is the one remaining sync point it drops, a latent 30s-timeout trap for ordering-barrier integration tests
 metadata:
   type: project
 ---

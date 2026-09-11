@@ -1,6 +1,6 @@
 ---
 name: policy-yaml-trust-boundary
-description: Policy YAML is trusted local author input — loaded only from a local file path; the mgmt API exposes GET /api/policy and no write/upload route
+description: Policy YAML is trusted local author input — loaded only from a local file path, and the mgmt API exposes GET /api/policy with no write/upload route; do not flag author-controlled strings in from_yaml warnings
 metadata:
   type: project
 ---

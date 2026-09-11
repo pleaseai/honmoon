@@ -1,6 +1,6 @@
 ---
 name: adr0009-trailer-contract
-description: PR #150 (ADR-0009) documents the body-only inspection contract for request trailers/headers — verified accurate against source
+description: PR #150 (ADR-0009) documents the body-only inspection contract for request trailers/headers — the warn claims, the debug-vs-warn split and buffered-vs-overflow trailer visibility all verified accurate against source
 metadata:
   type: project
 ---

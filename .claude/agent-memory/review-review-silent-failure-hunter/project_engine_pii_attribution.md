@@ -1,6 +1,6 @@
 ---
 name: project-engine-pii-attribution
-description: honmoon-core engine.rs per-rule PII attribution (decide_pii_audit_only) design and its one real gap
+description: honmoon-core engine.rs per-rule PII attribution (decide_pii_audit_only) — design verified sound; its one real gap is eval_condition's unlogged execution errors
 metadata:
   type: project
 ---

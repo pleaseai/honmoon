@@ -1,6 +1,6 @@
 ---
 name: adr-reference-link-convention
-description: honmoon-proxy has two competing conventions for citing ADRs in rustdoc comments; new code should follow the linked one
+description: honmoon-proxy has two competing conventions for citing ADRs in rustdoc (linked `[ADR-N]` vs bare text); new code should follow the linked one, and the split is style, not accuracy
 metadata:
   type: project
 ---
