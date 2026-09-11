@@ -189,7 +189,9 @@ that fails to parse: it is refused rather than forwarded blind.
     at a message boundary. "Could have produced" is decided by excluding the backend messages that
     can never be the *last* of a flush's output — rows and copy data, the asynchronous
     `NoticeResponse`/`NotificationResponse`/`ParameterStatus` that a statement can emit while it is
-    still running, `ParameterDescription`, and the messages that open or punctuate a copy. The list
+    still running, the `ParameterDescription`/`RowDescription` that answer a `Describe` (a backend
+    that has planned a query and not yet produced a row pauses right after `RowDescription`), and
+    the messages that open or punctuate a copy. The list
     names what cannot end a batch rather than what always does, because the two ways of being wrong
     are not equal: a message wrongly treated as terminal releases a refusal into the middle of a
     statement's output, and one wrongly treated as non-terminal costs a stall window. The two counters stay separate because they are settled by different
@@ -242,7 +244,10 @@ that fails to parse: it is refused rather than forwarded blind.
 
     **What it still does not guarantee.** A burst split across TCP segments can leave the socket
     momentarily empty part-way through one batch's output, and a quiet read there settles that
-    batch early. A `Flush` that elicits nothing at all — sent with no pending output, or ignored
+    batch early. In the other direction, a batch whose output genuinely ends on an excluded message
+    — a bare `Describe` of a row-returning statement, ending on `RowDescription` — is never settled
+    by a quiet and costs the next refusal one stall window, or none at all when a `Sync` follows and
+    answers for it. A `Flush` that elicits nothing at all — sent with no pending output, or ignored
     because a `COPY` is in progress — is never settled by the relay and costs the next refusal one
     `REFUSAL_ORDER_STALL_TIMEOUT` before being written off, which a client can make itself pay
     repeatedly by sending a lone `Flush` before each denied statement. Closing the first needs the

@@ -802,8 +802,11 @@ async fn relay_backend_messages(
         //   are asynchronous and can be emitted *during* a statement — a
         //   function that raises a notice and then computes for a while flushes
         //   the notice and goes quiet with its `CommandComplete` still to come;
-        // - `ParameterDescription`: a `Describe` of a statement answers with it
-        //   and then `RowDescription` or `NoData`;
+        // - `ParameterDescription` / `RowDescription`: a `Describe` of a
+        //   statement answers with the first and then the second or `NoData`,
+        //   and a `Bind`/`Describe`/`Execute` batch emits `RowDescription`
+        //   before the first row — a backend that has planned the query and not
+        //   yet produced a row pauses exactly there;
         // - `CopyInResponse` / `CopyOutResponse` / `CopyBothResponse` /
         //   `CopyDone`: each opens or punctuates a copy whose `CommandComplete`
         //   has not been sent.
@@ -817,7 +820,7 @@ async fn relay_backend_messages(
         let settling = fresh > 0
             && !matches!(
                 last_tag,
-                b'D' | b'd' | b'N' | b'A' | b'S' | b't' | b'G' | b'H' | b'W' | b'c'
+                b'D' | b'd' | b'N' | b'A' | b'S' | b't' | b'T' | b'G' | b'H' | b'W' | b'c'
             )
             && link.delivered.borrow().flush_answers < owed;
 
@@ -2682,6 +2685,56 @@ mod tests {
         );
 
         // The statement's own completion really does end it.
+        let tag = b"SELECT 1\0";
+        let mut done = vec![b'C'];
+        done.extend_from_slice(&((4 + tag.len()) as u32).to_be_bytes());
+        done.extend_from_slice(tag);
+        database.write_all(&done).await.unwrap();
+        tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            link.await_forwarded_responses(),
+        )
+        .await
+        .expect("the batch ended, so the refusal is released");
+    }
+
+    #[tokio::test]
+    async fn a_row_description_before_the_rows_does_not_settle_the_flush() {
+        // `RowDescription` answers a `Describe`, and a `Bind`/`Describe`/
+        // `Execute`/`Flush` batch emits it before the first row. A backend that
+        // has planned the query and not yet produced a row pauses exactly
+        // there, so settling on it drops the refusal in front of the whole
+        // result set. `ParameterDescription` was already excluded for the same
+        // reason; leaving `RowDescription` in was an inconsistency in that list.
+        let (link, mut peer) = loopback_link().await;
+        let (mut database, _relay) = loopback_relay(link.clone()).await;
+        link.forwarded_flush();
+
+        // `BindComplete`, then a one-column `RowDescription`.
+        let mut partial = vec![b'2', 0, 0, 0, 4];
+        partial.extend_from_slice(&[b'T', 0, 0, 0, 26, 0, 1]);
+        partial.extend_from_slice(b"x\0");
+        partial.extend_from_slice(&[0, 0, 0, 0, 0, 0, 0, 0, 0, 23, 0, 4]);
+        partial.extend_from_slice(&[0xff, 0xff, 0xff, 0xff, 0, 0]);
+        database.write_all(&partial).await.unwrap();
+        for expected in *b"2T" {
+            assert_eq!(read_message_tag(&mut peer).await, expected);
+        }
+        assert!(
+            tokio::time::timeout(
+                std::time::Duration::from_millis(200),
+                link.await_forwarded_responses(),
+            )
+            .await
+            .is_err(),
+            "a pause before the first row settled a batch whose result set has not started"
+        );
+
+        // The rows, and then the completion that really ends it.
+        database
+            .write_all(&[b'D', 0, 0, 0, 11, 0, 1, 0, 0, 0, 1, b'x'])
+            .await
+            .unwrap();
         let tag = b"SELECT 1\0";
         let mut done = vec![b'C'];
         done.extend_from_slice(&((4 + tag.len()) as u32).to_be_bytes());
