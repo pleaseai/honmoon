@@ -1,0 +1,27 @@
+.claude/agent-memory/review-review-security-reviewer/MEMORY.md
+  s_85a852507dfbd0::t_d83eea02a6ad3a 4
+.claude/agent-memory/review-review-type-design-analyzer/honmoon_proxy_sync_point_tracking.md
+  s_85a852507dfbd0::t_d83eea02a6ad3a 3,13-19,21-36
+.claude/agent-memory/review-review-security-reviewer/postgres-refusal-ordering-barrier.md
+  s_85a852507dfbd0::t_c22176f2ed5d84 3,12-23,30-32,36-45,48,52,54-60
+.claude/agent-memory/review-review-comment-analyzer/MEMORY.md
+  s_85a852507dfbd0::t_d83eea02a6ad3a 2
+.claude/agent-memory/review-review-type-design-analyzer/MEMORY.md
+  s_85a852507dfbd0::t_d83eea02a6ad3a 1
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "535b7297adeb23a9aca99b0b3c7fa449b32f7cee",
+  "prompts": {},
+  "sessions": {
+    "s_85a852507dfbd0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "cb4670ad-8046-4aa5-b876-712fecc38af2",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
