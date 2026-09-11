@@ -160,6 +160,80 @@ metadata:
   // Only a whole plain value resolves that way: prose that merely starts with
   // one of those words is text, and a quoted one really is the string.
   // A flow sequence or mapping is valid YAML and is not a summary.
+  // Verified against both readers: `description: summary: detail` is a hard
+  // parse error ("mapping values are not allowed here" / "Unexpected token"),
+  // so the note cannot be loaded at all — the one defect class that makes the
+  // whole file unreadable rather than merely misread.
+  test('reports a plain description holding a mapping separator', () => {
+    for (const value of ['summary: detail', 'summary:']) {
+      const text = note('n', 'placeholder').replace('description: placeholder', `description: ${value}`)
+      expect(parseFrontmatter(text).problems).toEqual([expect.stringContaining('mapping')])
+    }
+  })
+
+  // A colon only opens a mapping when a space or the line end follows it.
+  test('leaves a colon alone where YAML does', () => {
+    const text = note('n', 'placeholder').replace('description: placeholder', 'description: ratio 3:1 and summary:detail')
+    expect(parseFrontmatter(text).problems).toEqual([])
+  })
+
+  // The range guard below this one stops at 0x10FFFF, and every surrogate is
+  // under it, so `\uD800` slipped through into `String.fromCodePoint` — which
+  // does not throw on one. That put a lone surrogate in the index text, where
+  // it cannot be encoded as UTF-8. Bun.YAML rejects the input outright.
+  test('reports a double-quoted escape naming a surrogate code point', () => {
+    for (const value of [String.raw`"\uD800"`, String.raw`"\U0000DFFF"`]) {
+      const text = note('n', 'placeholder').replace('description: placeholder', `description: ${value}`)
+      expect(parseFrontmatter(text).problems).toEqual([expect.stringContaining('surrogate')])
+    }
+  })
+
+  // An indented `#` is literal inside a block scalar and a comment after a
+  // plain one — both readers give `first` here. Appending it unconditionally
+  // built `first # note`, which the ` #` check then rejected: a valid note
+  // failing CI on a comment YAML had already discarded.
+  test('drops a comment line following a plain scalar', () => {
+    const text = `---
+name: n
+description: first
+  # note
+metadata:
+  type: project
+---
+`
+    expect(parseFrontmatter(text)).toMatchObject({ scalars: { description: 'first' }, problems: [] })
+  })
+
+  // Block scalar content is literal: a leading `&`, `!` or quote is text, not
+  // scalar syntax, so it must not be run through the quoted-scalar reader.
+  test('keeps block scalar content literal', () => {
+    for (const [content, expected] of [['&notanchor', '&notanchor'], ['"not quoted"', '"not quoted"'], ['!tag', '!tag']]) {
+      const text = `---
+name: n
+description: |
+  ${content}
+metadata:
+  type: project
+---
+`
+      expect(parseFrontmatter(text)).toMatchObject({ scalars: { description: expected }, problems: [] })
+    }
+  })
+
+  // Only `name` and `description` reach the index, so a top-level field that is
+  // legitimately a number is not a note defect — reporting it failed `--check`
+  // over a value the index never renders.
+  test('ignores top-level fields the index does not read', () => {
+    const text = `---
+name: n
+description: a summary
+version: 2
+tags: [a, b]
+---
+`
+    expect(parseFrontmatter(text).problems).toEqual([])
+  })
+
   test('reports a flow collection used as a description', () => {
     for (const value of ['[summary]', '{summary: text}']) {
       const text = note('n', 'placeholder').replace('description: placeholder', `description: ${value}`)

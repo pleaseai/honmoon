@@ -164,6 +164,15 @@ function unescapeDoubleQuoted(body: string, onInvalid: (problem: string) => void
           onInvalid(undefinedEscape(match))
           return match
         }
+        // Every surrogate is *under* that ceiling, so the range check above
+        // waves them through — and `String.fromCodePoint` does not throw on
+        // one, it returns a lone surrogate. That is not a character: it cannot
+        // be encoded as UTF-8, so writing it to the index yields a replacement
+        // character, and Bun.YAML rejects the escape outright.
+        if (codePoint >= 0xD800 && codePoint <= 0xDFFF) {
+          onInvalid(`is double-quoted and holds \`${match}\`, which names a surrogate code point rather than a character — YAML does not admit one, and it cannot be written to the index`)
+          return match
+        }
         return String.fromCodePoint(codePoint)
       }
 
@@ -283,6 +292,9 @@ function unquote(value: string, onInvalid: (problem: string) => void): string {
   return value
 }
 
+/** The only frontmatter this index renders, and so the only part it judges. */
+const INDEXED_KEYS = ['name', 'description'] as const
+
 /** What a note's frontmatter block yields: its scalars, and why any is suspect. */
 export interface Frontmatter {
   scalars: Record<string, string | undefined>
@@ -339,6 +351,13 @@ export function parseFrontmatter(text: string): Frontmatter {
     // inside a folded scalar it is literal text, and these descriptions are full
     // of issue references that a comment-stripping parser would eat.
     if (key && /^[ \t]/.test(line) && line.trim() !== '') {
+      // ...but only inside a block scalar. After a plain one an indented `#`
+      // opens a comment like any other, and both readers drop it: appending it
+      // built `first # note`, which the ` #` check below then rejected — a
+      // valid note failing CI over text YAML had already discarded.
+      if (!blockScalars.has(key) && line.trim().startsWith('#')) {
+        continue
+      }
       const soFar = scalars[key] ?? ''
       // Inside a double-quoted scalar a trailing backslash escapes the line
       // break itself: YAML drops the break *and* the indentation and joins with
@@ -360,8 +379,16 @@ export function parseFrontmatter(text: string): Frontmatter {
   // index entry is one line of a markdown list, and a double-quoted `\n` only
   // becomes a newline once `unquote` has decoded it. Folding here means no
   // description can split its own list item, whatever notation wrote it.
-  for (const [name, value] of Object.entries(scalars)) {
-    const raw = (value ?? '').trim()
+  // Only these two reach the index, and a defect is only a defect if it can
+  // change what the index says. A note carrying its own `version: 2` is not
+  // malformed, and failing `--check` over a field nothing renders turned a
+  // valid note into a broken build.
+  for (const name of INDEXED_KEYS) {
+    const value = scalars[name]
+    if (value === undefined) {
+      continue
+    }
+    const raw = value.trim()
 
     // In a plain scalar — and only there — whitespace followed by `#` starts a
     // comment, so YAML reads `fixed in PR #155, so do X` as `fixed in PR`. This
@@ -377,7 +404,20 @@ export function parseFrontmatter(text: string): Frontmatter {
     // `[summary]` is a sequence and `{summary: text}` a mapping — valid YAML,
     // and not a summary. Kept with the scalar checks because the failure is the
     // same one: the index would advertise the source spelling as the text.
-    if (plain && (raw.startsWith('[') || raw.startsWith('{'))) {
+    // `summary: detail` is not a scalar holding a colon, it is a mapping — and
+    // a nested one where YAML allows no value, so both readers stop with a hard
+    // parse error rather than misreading it. The note cannot be loaded at all,
+    // which makes this the one defect that costs more than a wrong index line.
+    // Only a colon *followed by a space or the line end* does it; `3:1` and
+    // `summary:detail` are ordinary text and stay that way. A flow collection
+    // is excluded too: `{a: b}` really is a mapping, and a valid one, so it is
+    // the check below that has something to say about it.
+    const flow = raw.startsWith('[') || raw.startsWith('{')
+    if (plain && !flow && /:(?:[ \t]|$)/.test(raw)) {
+      problems.push(`\`${name}:\` is unquoted and contains \`:\` followed by a space, which YAML reads as a nested mapping and refuses to load — quote the value`)
+    }
+
+    if (plain && flow) {
       problems.push(`\`${name}:\` is a flow ${raw.startsWith('[') ? 'sequence' : 'mapping'}, not text — quote it if the brackets are part of the summary`)
     }
 
@@ -385,7 +425,13 @@ export function parseFrontmatter(text: string): Frontmatter {
       problems.push(`\`${name}:\` is \`${raw}\`, which YAML resolves to a ${raw === '~' || /^null$/i.test(raw) ? 'null' : 'non-string'} rather than text — quote it if the value really is that word`)
     }
 
-    scalars[name] = unquote(raw, problem => problems.push(`\`${name}:\` ${problem}`))
+    // A block scalar's content is literal — a leading `&`, `!` or quote there is
+    // text, not scalar syntax — so only a plain or quoted value is unquoted.
+    // Running block content through it stripped a note's real quotes and
+    // reported its literal `&` as an anchor.
+    scalars[name] = (blockScalars.has(name)
+      ? raw
+      : unquote(raw, problem => problems.push(`\`${name}:\` ${problem}`)))
       .replace(/\s+/g, ' ')
       .trim()
   }
