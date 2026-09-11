@@ -2,7 +2,7 @@
 
 use cel_interpreter::{Context, Program, Value};
 
-use crate::{Facts, PiiFacts, Policy, Verdict};
+use crate::{Facts, PiiFacts, Policy, Rule, Verdict};
 
 /// A decision plus the reason it was reached.
 ///
@@ -95,7 +95,7 @@ fn decide_with(policy: &Policy, facts: &Facts, pii_weight: PiiWeight) -> Outcome
         }
         // Compiled once and reused for the attribution check below, which
         // re-runs the very same condition.
-        let Some(program) = compile_condition(&rule.condition) else {
+        let Some(program) = compile_condition(rule) else {
             continue;
         };
         if !eval_program(&program, facts, facts.pii.as_ref()) {
@@ -166,11 +166,45 @@ pub fn matches_domain(pattern: &str, domain: &str) -> bool {
 
 /// Compile a rule condition. A condition that does not compile cannot match,
 /// which keeps a malformed rule from turning a deny into an allow.
-fn compile_condition(condition: &str) -> Option<Program> {
-    match Program::compile(condition) {
+///
+/// A **blank** condition is declined without reaching the compiler, because
+/// `Program::compile` does not return on one — it panics (#151). Panicking is
+/// the one outcome worse than failing to match, and blank is not the only
+/// condition that causes it (see the gap below); it is the one worth naming
+/// separately, because it is the one an author writes by accident.
+/// [`Policy::from_yaml`](crate::Policy::from_yaml) already refuses to load
+/// such a policy, so this guard is not what an operator meets; it is what
+/// `decide` owes a [`Policy`](crate::Policy) built in code, which the public
+/// API accepts just the same. The two answers differ on purpose: the loader is
+/// reading the author's file and says so loudly, while here the rule declines
+/// like any other condition that cannot compile.
+///
+/// Blank is the only case it covers. Other malformed conditions panic in
+/// `Program::compile` too — `"&&"`, `")"`, an unterminated string literal, a
+/// comment with no expression after it — and those still reach it, so the
+/// `Err` arm below is not the whole failure mode. That gap is #154.
+fn compile_condition(rule: &Rule) -> Option<Program> {
+    // Both arms name the rule. A policy that reached here was built in code
+    // rather than loaded, so there is no file and line to point an operator at,
+    // and `condition` alone does not identify which rule went inert — least of
+    // all on the blank arm, where it is empty by definition. This mirrors
+    // `warn_undefined_endpoints` and `warn_shadowed_rules`, the loader's own
+    // two "a rule of yours is inert" warnings.
+    if crate::is_blank_condition(&rule.condition) {
+        tracing::warn!(
+            rule = %rule.name,
+            "policy rule condition is blank; the rule cannot match"
+        );
+        return None;
+    }
+    match Program::compile(&rule.condition) {
         Ok(program) => Some(program),
         Err(_) => {
-            tracing::warn!(%condition, "policy rule condition failed to compile");
+            tracing::warn!(
+                rule = %rule.name,
+                condition = %rule.condition,
+                "policy rule condition failed to compile"
+            );
             None
         }
     }
@@ -223,7 +257,7 @@ fn eval_program(program: &Program, facts: &Facts, pii: Option<&PiiFacts>) -> boo
 
 #[cfg(test)]
 mod tests {
-    use crate::{Facts, HttpFacts, Policy, Verdict};
+    use crate::{Facts, HttpFacts, Policy, Rule, Verdict};
 
     fn domain_facts(domain: &str) -> Facts {
         Facts {
@@ -302,6 +336,37 @@ mod tests {
 
         facts.endpoint = Some("postgres-prod".into());
         assert_eq!(super::decide(&policy, &facts), Verdict::Deny);
+    }
+
+    /// #151: a rule carrying a blank condition must decline like any other
+    /// condition that cannot compile, not take the decision path down.
+    ///
+    /// `Policy::from_yaml` refuses to load such a policy at all, so this builds
+    /// the `Policy` in code — the shape `decide` still has to answer for, since
+    /// it accepts any `&Policy`.
+    #[test]
+    fn a_blank_condition_declines_instead_of_panicking() {
+        // Unicode whitespace included: `trim` treats it as blank, so the guard
+        // must too — `Program::compile` panics on it just as it does on `""`.
+        for condition in ["", " ", "\n", "\t\r\n", "\u{00a0}", "\u{3000}"] {
+            let policy = Policy {
+                rules: vec![Rule {
+                    name: "blank".into(),
+                    endpoint: "*".into(),
+                    condition: condition.to_string(),
+                    verdict: Verdict::Allow,
+                }],
+                ..Default::default()
+            };
+
+            // The rule declines, so the egress default (deny) answers: the
+            // blank condition can neither match nor crash.
+            assert_eq!(
+                super::decide(&policy, &Facts::default()),
+                Verdict::Deny,
+                "condition {condition:?}"
+            );
+        }
     }
 
     #[test]

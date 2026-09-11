@@ -1,6 +1,6 @@
 ---
 name: pr152-shadowed-rule-warning-empty-condition
-description: policy-authoring.md's empty-CEL-condition claim must be checked against engine.rs::compile_condition, not the YAML loader — an empty condition panics, it does not fail closed (found and fixed in PR #152)
+description: policy-authoring.md's blank-CEL-condition claim has been wrong twice; Policy::validate_rules rejects a blank condition at load (PR #155), so do not flag the page for missing a request-time crash — check the claim against where Program::compile is actually called, and treat the 11 other conditions that still panic (#154) as the open gap
 metadata:
   type: project
 ---
@@ -14,11 +14,13 @@ Verified accurate: `*`-endpoint shadowing-everything claim, endpoint-specific-ru
 -reachable claim, "only literal `true`" claim, the sample `tracing::warn!` field names/order
 (`rule`, `shadowed_by`, `endpoint`), and the citation content itself (the 262-329 range is
 merely off by ~1-2 lines at each edge from the true function block 260-330 — minor, not a
-correctness issue; corrected to 260-330 before merge).
+correctness issue; corrected to 260-330 before merge, and moved again to 286-371 by PR #155,
+which inserted `validate_rules` and `is_blank_condition` into that file).
 
-**The one real defect**: the wiki claims "an empty condition is not valid CEL, so such a rule
-matches nothing." I confirmed by test (`cel_interpreter::Program::compile("")` under
-`catch_unwind`) that it actually **panics** (antlr4rust `unreachable code` at tree.rs:383), and
+**The one real defect** (as of PR #152 — see the supersession note at the end): the wiki claimed
+"an empty condition is not valid CEL, so such a rule matches nothing." I confirmed by test
+(`cel_interpreter::Program::compile("")` under `catch_unwind`) that it actually **panics**
+(antlr4rust `unreachable code` at tree.rs:383), and
 `engine.rs::compile_condition` does not catch that panic — it only matches `Ok`/`Err`, so an
 empty-condition rule that is ever *reached* at evaluation time crashes the process, not "matches
 nothing" gracefully. This also contradicts the page's own pre-existing "## Fail-closed semantics"
@@ -39,8 +41,18 @@ CEL condition behavior against `engine.rs::compile_condition` (or wherever `Prog
 actually invoked) rather than the YAML-loading code, since load and evaluation are different
 code paths with different error handling.
 
-**Resolved in PR #152 (commit 952b5fb).** The wiki now carries a danger callout stating that
-`Program::compile("")` panics and linking #151, and the "## Fail-closed semantics" section names
-the empty condition as the one exception to the guarantee it makes. Codex flagged the same
-sentence independently on the PR. The panic itself is still open as #151 — the fix belongs in
-`compile_condition`, plus a `minLength: 1` on `condition` in the JSON Schema.
+**Superseded twice — read this before reviewing any claim about blank conditions.**
+
+PR #152 (commit 952b5fb) fixed the wiki to say the panic happens. PR #155 then fixed the panic,
+which made that wording wrong in turn: `Policy::validate_rules` now rejects a rule whose
+`condition` is blank at load (`Error::BlankRuleCondition`), and `engine.rs::compile_condition`
+declines a blank condition before reaching the compiler. A blank condition therefore never
+reaches evaluation in a loaded policy, and the wiki says so. Do **not** flag the page for failing
+to warn about a request-time crash on `condition: ""` — that is the pre-#155 behaviour.
+
+What is still true, and is the thing to check instead: the panic was never unique to the empty
+string. #155 probed 22 inputs and 12 panicked — `""`, `" "`, `"\n"`, `"\t\r\n"`, `"// nothing"`,
+`")"`, `"&&"`, `"true &&"`, `"'abc"`, `"."`, `"()"`, `";"` — against 5 returning `Err`. Only the
+blank class is handled; the rest is open as #154. So "a rule whose condition fails to compile
+simply does not match" is still not a complete account of the failure modes, and any page
+asserting it needs the qualifier the "Fail-closed semantics" section now carries.
