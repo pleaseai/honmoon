@@ -84,3 +84,33 @@ predicate deliberately does NOT cover, and is worth re-checking on any change:
 - read (T0) → chmod → metadata (T1) is path-based and symlink-following, so the
   observed mode need not be the mode of the bytes adopted (attacker-writable dir
   only — outside the documented threat model).
+
+**2026-09 (#143) — exposure is now two variants, read around the chmod.**
+`restrict_to_owner_only(path, SaltProvenance)` does `stat` (FromFile only) → `chmod`
+→ `stat`, returning `Option<SaltExposure>`: `Open` = still loose after the attempt,
+rule `hook-salt-exposed`; `Closed` = found loose and **not** seen loose afterwards,
+new rule `hook-salt-was-exposed`. `SaltProvenance::FreshlyWritten` (the
+`write_secret_file` truncate path) deliberately skips the pre-`stat`, so the mode of
+the inode a fresh secret is written into is never read as that key's history.
+
+Two of the three gaps found on PR #170 were **fixed in that PR** — recorded because
+the shapes recur, not as open findings:
+
+- A failing post-correction `stat` used to `return None`, discarding an
+  already-confirmed loose `found`. `found_exposure` now reports it, with a `reason`
+  that names the mode seen and omits the "is now mode NNNN" clause it cannot fill.
+  The general shape: **positive evidence downgraded to silence because a second,
+  unrelated observation failed.** Worth grepping for on any `Option` early return
+  that sits downstream of a successful observation.
+- The shared doc comments claimed `None` attests "owner-only at the two instants the
+  loader looked"; `FreshlyWritten` looks once and `publish_secret_atomically`'s
+  winner path looks zero times. Both docs now scope the count to the provenance.
+
+Still open, tracked as **#171**: the `must_overwrite` arm is also reached when `read`
+fails with a non-`NotFound` error, where the discarded file may have held a valid salt
+other processes adopted. The key being written is correctly unexposed; the *replaced*
+key's exposure is what goes unrecorded, and routing it through this channel would pair
+a history claim with a `key_source` describing a different key — which is why it was
+split out rather than folded in. **#172** carries the older path-based-observation
+entry above: read/chmod/stat still resolve `path` separately, so the mode observed is
+not bound to the inode the bytes came from.

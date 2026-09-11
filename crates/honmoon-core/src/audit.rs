@@ -66,11 +66,15 @@ pub enum Decision {
 ///
 /// Two independent things can be wrong with that key, and the event's `rule`
 /// says which: `hook-salt-fallback` for a key that is not the persisted one
-/// (`key_source` then names what was lost), `hook-salt-exposed` for a key that
-/// *is* the persisted one but whose file is readable beyond its owner. The
-/// second keeps `key_source` at [`RedactionKeySource::Persisted`] deliberately —
-/// exposure and provenance are different axes, and the bytes really did come
-/// from `~/.honmoon/hook-salt` (issue #141).
+/// (`key_source` then names what was lost), or one of two exposure rules for a
+/// key that *is* the persisted one but whose file was readable beyond its owner
+/// — `hook-salt-exposed` when it still is after the loader tried to restrict it
+/// (issue #141), `hook-salt-was-exposed` when the loader found it that way and
+/// the restriction took (issue #143). The two are separate because the remedies
+/// are: a file that is loose now can be tightened, while one that was is a key
+/// that may already be copied. Both keep `key_source` at
+/// [`RedactionKeySource::Persisted`] deliberately — exposure and provenance are
+/// different axes, and the bytes really did come from `~/.honmoon/hook-salt`.
 ///
 /// Placeholders are `HMAC(salt, secret)`, and the salt is derived from a machine
 /// key the transports read from disk. When that key cannot be read or created the
@@ -87,7 +91,9 @@ pub struct RedactionFacts {
     /// Which transport derived it.
     pub transport: RedactionTransport,
     /// What the loader observed, in its own words: why the persisted key was
-    /// unavailable, or the mode a salt file it could not restrict was left with.
+    /// unavailable, or the modes it saw on a salt file readable beyond its owner
+    /// — the one it was left with under `hook-salt-exposed`, the one it was found
+    /// with under `hook-salt-was-exposed`.
     pub reason: String,
 }
 
@@ -104,9 +110,11 @@ pub enum RedactionKeySource {
     ///
     /// Says where the bytes came from, not who else can read them — that is the
     /// event's `rule`, which is `hook-salt-exposed` when the loader found the
-    /// file readable beyond its owner and could not restrict it. So this value
-    /// does appear on a degraded event, and an event carrying it is about the
-    /// file's permissions rather than the key's provenance.
+    /// file readable beyond its owner and could not restrict it, and
+    /// `hook-salt-was-exposed` when it found it that way and the restriction
+    /// took. So this value does appear on a degraded event, and an event
+    /// carrying it is about the file's permissions rather than the key's
+    /// provenance.
     Persisted,
     /// A private random secret that never reached disk, so it is unforgeable
     /// but lives and dies with one process: placeholders stop being stable
