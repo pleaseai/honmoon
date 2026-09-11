@@ -5,3 +5,4 @@
 - [hook salt audit visibility #131](project_hook_salt_audit_visibility_131.md) — new Degraded audit path is sound at open-failure; the post-open sink-write silence was fixed before merge by record_durable — tracing::warn! is not a reporting channel in a short-lived subprocess.
 - [Flush refusal barrier PG#113](project_flush_refusal_barrier_pg113.md) — EOF/error-as-pending peek verified safe via relay_finished; write-off warn! lacks flush-side fields.
 - [ADR-0009 trailer contract](project_adr0009_trailer_contract.md) — PR #150 doc-only PR verified accurate: warn claims, debug-vs-warn split, buffered-vs-overflow trailer visibility all check out.
+- [CEL compile panics #151](project_cel_compile_panics_151.md) — Program::compile panics on 12 of 22 probed malformed conditions instead of returning Err; compile_condition's Err arm is not the whole failure mode. Blank handled by PR #155, the rest open as #154; read #154 before proposing catch_unwind or compile-at-load.
