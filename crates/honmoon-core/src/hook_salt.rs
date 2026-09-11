@@ -15,6 +15,13 @@
 //!
 //! Neither input is this crate's to fetch: reading the machine key is
 //! filesystem I/O the transports own, which keeps `honmoon-core` I/O-free.
+//!
+//! That last point bounds the guarantee: the transports agree because they read
+//! the same machine key, which holds while they run as one user on one host. A
+//! gateway under a different `HOME`, user, or host reads a different key, and
+//! then equal contexts still mint different placeholders — a pinned salt context
+//! cannot close that, since the key is what the context is mixed into. Sharing
+//! key material explicitly is tracked in issue #126.
 
 use hmac::{Hmac, Mac};
 use serde_json::Value;
@@ -27,7 +34,18 @@ type HmacSha256 = Hmac<Sha256>;
 /// Deterministic in both inputs: the same machine key and context always yield
 /// the same salt, so two transports that agree on the context mint identical
 /// placeholders for a given secret.
+///
+/// **Panics** on an empty `machine_key`. HMAC accepts a key of any length, so an
+/// empty one derives a salt anybody can reproduce — and with it every
+/// placeholder for every known secret. The two other entry points that take key
+/// material reject it the same way (`honmoon-mgmt`'s `HookSalt` constructors and
+/// `honmoon-proxy`'s `RedactionState::new`); refusing it here covers the
+/// derivation itself, which is what both of them call.
 pub fn derive_hook_salt(machine_key: &[u8], salt_context: &str) -> Vec<u8> {
+    assert!(
+        !machine_key.is_empty(),
+        "hook machine key must not be empty"
+    );
     let mut mac =
         <HmacSha256 as Mac>::new_from_slice(machine_key).expect("HMAC accepts a key of any length");
     mac.update(salt_context.as_bytes());
@@ -76,6 +94,14 @@ mod tests {
             derive_hook_salt(b"another-machine-key", "session-a"),
             "the machine key must key the derivation"
         );
+    }
+
+    #[test]
+    #[should_panic(expected = "hook machine key must not be empty")]
+    fn empty_machine_key_is_refused() {
+        // An empty HMAC key would make every placeholder publicly reproducible,
+        // so fail loudly rather than mint forgeable tokens.
+        derive_hook_salt(b"", "session-a");
     }
 
     #[test]

@@ -215,15 +215,26 @@ given, verbatim. Verified on 2.1.263 — the module's engine call returns an emp
 verdict and the transcript carries one set of placeholders. Drop the `hooks` key
 from `hooks/hooks.json` to run the module alone.
 
-That holds for `transport: "http"` as well. Both transports derive the salt from
-the payload's `session_id`, keyed by the machine secret at `~/.honmoon/hook-salt`,
-so one secret mints one `<<hs:…>>` token per session whichever layer saw it — a
-`Bash` result redacted by the command hook and a `WebFetch` result redacted by the
-module carry the identical placeholder (#98). The exception is a gateway started
-with `--hook-salt-context`: that pins the endpoint to the given context instead of
-the session, so either leave it unset or pin the command hooks to the same value
+That holds for `transport: "http"` as well **when the gateway runs as the same user
+on the same host as the agent** — the co-located deployment the `hookUrl` example
+above describes. Both transports then derive the salt from the payload's
+`session_id`, keyed by the same machine secret at `~/.honmoon/hook-salt`, so one
+secret mints one `<<hs:…>>` token per session whichever layer saw it: a `Bash`
+result redacted by the command hook and a `WebFetch` result redacted by the module
+carry the identical placeholder (#98). A gateway started with `--hook-salt-context`
+is the exception — that pins the endpoint to the given context instead of the
+session, so either leave it unset or pin the command hooks to the same value
 (`honmoon hook --salt-context`, or `HONMOON_HOOK_SALT_CONTEXT` in their
 environment).
+
+**Known limitation — a gateway that is not co-located.** `honmoon hook` reads the
+agent process's `~/.honmoon/hook-salt`; the management endpoint reads the gateway
+process's. Under a different user, a different `HOME`, or a different host those
+are different keys, so the same `session_id` mints different placeholders and the
+parity above does not hold. Matching `--hook-salt-context` values do **not** close
+it: the context is mixed into an HMAC the machine key keys, so mismatched keys stay
+mismatched. Until the key can be shared explicitly (#126), run the two on one host
+as one user, or keep `transport: "process"`.
 
 ### Typings
 
