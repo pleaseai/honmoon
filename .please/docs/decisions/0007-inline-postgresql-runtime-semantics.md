@@ -175,13 +175,41 @@ that fails to parse: it is refused rather than forwarded blind.
     the discard above would then throw away a perfectly good answer as an over-count, leaving the
     counters a permanent one apart. Counting early cannot be wrong — a sync point recorded for a
     write that then fails costs nothing, because the session ends with that write.
-  - **A batch driven by `Flush` is not ordered at all.** `Flush` makes the backend emit what it has
-    buffered — `ParseComplete`, `BindComplete`, rows, `CommandComplete` — with no `ReadyForQuery`,
-    so it is not a sync point and honmoon counts nothing for it. A client using libpq pipeline mode
-    can therefore still read a refusal ahead of an earlier batch's responses, exactly as it did
-    before this barrier. The protocol offers no marker for "the backend has finished flushing", so
-    counting cannot close this the way it closes `Sync`; it is recorded here rather than implied
-    away, and tracked separately.
+  - **A batch driven by `Flush` is ordered against a quiet upstream, not against a marker.**
+    `Flush` makes the backend emit what it has buffered — `ParseComplete`, `BindComplete`, rows,
+    `CommandComplete` — with no `ReadyForQuery`, so it is not a sync point. This ADR originally
+    recorded that as unclosable and left such a batch unordered entirely, which meant a client
+    using libpq pipeline mode read a refusal ahead of an earlier batch's responses exactly as it
+    did before the barrier existed. #113 closed it, and this entry is amended rather than removed
+    because what replaced it is weaker than the `Sync` guarantee and the difference matters.
+
+    `Flush` frames are counted in a second counter of their own, and settled from the relay rather
+    than by any frontend-predictable marker: a flush is drained once the relay has delivered a
+    message the flush could have produced and then finds the upstream socket carrying nothing more
+    at a message boundary. The two counters stay separate because they are settled by different
+    observations — one counter would let a sync point's answer settle a flush, and a quiet upstream
+    settle a sync point the database is still computing.
+
+    **One quiet settles one flush, never every flush outstanding.** A quiet cannot say how many
+    flushes it drained, and the two readings fail in opposite directions. A client may legitimately
+    flush mid-batch (`Parse`/`Bind`/`Flush`/`Execute`/`Flush`, which is what `PQsendFlushRequest`
+    is for), and there the backend answers the first flush and then goes quiet computing the
+    `Execute`: crediting both flushes releases the refusal ahead of the rows, which is the defect
+    this section exists to remove. Crediting one is wrong only when two batches' output reaches the
+    relay as a single uninterrupted burst, and costs the next refusal one stall window before the
+    write-off. The ambiguity is resolved toward waiting, for the same reason it is everywhere else
+    here: the failure is latency, never ordering.
+
+    **What it still does not guarantee.** A burst split across TCP segments can leave the socket
+    momentarily empty part-way through one batch's output, and a quiet read there settles that
+    batch early. A `Flush` that elicits nothing at all — sent with no pending output, or ignored
+    because a `COPY` is in progress — is never settled by the relay and costs the next refusal one
+    `REFUSAL_ORDER_STALL_TIMEOUT` before being written off, which a client can make itself pay
+    repeatedly by sending a lone `Flush` before each denied statement. Closing the first needs the
+    relay to wait out a grace period on every quiet: a second timing constant and a latency floor
+    under every flush-driven refusal, which is a mechanism rather than a tweak and is tracked
+    separately. Neither residual can forward a denied statement, and neither escapes the stall
+    bound.
   - **A relay that stops partway through a message writes nothing more.** The client is left
     holding a frame header whose payload never arrived, so its stream is already desynchronised and
     it would read an injected `ErrorResponse` as that payload's remainder. The barrier is still
