@@ -328,9 +328,16 @@ machine, a permissive umask on a file created before honmoon tightened it — ea
 is a legitimate, non-malicious way to arrive at a loose salt, and each now raises an
 event. That is deliberate: there is no way to tell those apart from the malicious case by
 looking at the mode, which is why the record exists rather than a judgement. It is one
-event per loose-find, not one per invocation: the correction took, so the next loader
-sees `0600` and says nothing. A host emitting this repeatedly is a host where something
-keeps re-loosening the file, which is itself worth knowing.
+event per loose-find, not one per invocation: where the correction took, the next loader
+sees `0600` and says nothing.
+
+**If it does repeat, read the `reason` before concluding anything.** Two different hosts
+produce that. One where the `reason` names a mode it read back is a host where something
+keeps re-loosening the file — a sync agent, a cron `chmod`, a restore that runs on a
+timer — which is itself worth knowing. One where the `reason` says the mode could not be
+read back is a host where the loader cannot see the file's permissions at all, so it can
+neither confirm its own correction nor stop reporting the window it already saw; there
+the fix is to repair that access, not to hunt for a process changing modes.
 
 **What it does and does not attest.** Both events are raised on a **mode**, never on the
 `chmod` returning an error — a read-only mount fails the call on a file that is already
