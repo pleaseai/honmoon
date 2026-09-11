@@ -233,6 +233,33 @@ metadata:
     expect(parseFrontmatter(text).scalars.type).toBeUndefined()
   })
 
+  // The root indentation comes from the mapping's first content line, not from
+  // the first line that happens to look like an indexable key. An outer key
+  // `TOP_LEVEL_KEY` cannot spell — a dot puts it out of reach — used to leave
+  // the root undecided, so its *members* claimed the root and the index
+  // published a nested summary as the note's own.
+  test('does not read a nested mapping as the root one', () => {
+    const text = '---\nmy.key:\n  name: nested\n  description: nested summary\n---\n'
+    expect(parseFrontmatter(text).scalars.description).toBeUndefined()
+  })
+
+  // A tab never indents in YAML, so a mapping indented with one is a document
+  // neither reader will load. Measuring the tab as a width accepted it.
+  test('reports a root mapping indented with a tab', () => {
+    const text = '---\n\tname: a-note\n\tdescription: summary\n---\n'
+    expect(parseFrontmatter(text).problems).toEqual([expect.stringContaining('tab')])
+  })
+
+  // An explicit indicator counts from the mapping's own indentation, not from
+  // column zero: under a mapping indented by two, `|2` requires four spaces.
+  // pyyaml refuses three and accepts four.
+  test('counts an explicit block indicator from the root indentation', () => {
+    const short = '---\n  name: a-note\n  description: |2\n   text\n---\n'
+    const met = '---\n  name: a-note\n  description: |2\n    text\n---\n'
+    expect(parseFrontmatter(short).problems).toEqual([expect.stringContaining('indentation indicator')])
+    expect(parseFrontmatter(met)).toMatchObject({ scalars: { description: 'text' }, problems: [] })
+  })
+
   // Only a double-quoted scalar uses a trailing backslash to escape the break.
   // In a plain or single-quoted one it is literal text, and dropping it edited
   // the summary.

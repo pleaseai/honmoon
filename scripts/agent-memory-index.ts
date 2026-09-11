@@ -104,6 +104,17 @@ const TOP_LEVEL_KEY = /^([ \t]*)([a-z][\w-]*):[ \t]*([^ \t].*)?$/i
 const YAML_PADDING = /^[ \t]+|[ \t]+$/g
 
 /**
+ * How far a line is indented, counting only what YAML indents with.
+ *
+ * `trimStart` uses JavaScript's whitespace class, so it would count a leading
+ * no-break space — which in a frontmatter value is the value's own first
+ * character, not indentation.
+ */
+function indentWidth(line: string): number {
+  return line.length - line.replace(/^[ \t]+/, '').length
+}
+
+/**
  * Whether a line could be a mapping key at all — a colon with a space or the
  * line end after it.
  *
@@ -398,20 +409,38 @@ export function parseFrontmatter(text: string): Frontmatter {
   const closedByComment = new Set<string>()
   const brokenByBlank = new Set<string>()
   // A frontmatter mapping may be indented as a whole; what makes a key a *root*
-  // key is agreeing with the first one, not sitting at column zero. Anything
-  // deeper is nested or a continuation, which is what keeps `metadata:`'s own
-  // lines out of the top level.
-  let rootIndent: number | null = null
+  // key is sitting at the mapping's own indentation, not at column zero.
+  // Anything deeper is nested or a continuation, which is what keeps
+  // `metadata:`'s own lines out of the top level.
+  //
+  // That indentation is the *first content line's*, not the first line that
+  // happens to look like an indexable key: an outer key `TOP_LEVEL_KEY` cannot
+  // spell — `my.key:`, whose dot puts it out of reach — would otherwise leave
+  // the root undecided until its own members matched, and the index published
+  // a nested `description:` as the note's own. Comments and document markers
+  // set no indentation in YAML, so they are passed over here too.
+  const lines = block[1].split(/\r?\n/)
+  const firstContent = lines.find((candidate) => {
+    const text = candidate.trim()
+    return text !== '' && !text.startsWith('#') && text !== '---' && text !== '...'
+  })
+  const rootIndent = firstContent === undefined ? 0 : indentWidth(firstContent)
+  // A tab never indents in YAML — it is the one whitespace forbidden there —
+  // so a mapping indented with one is a document neither reader will load.
+  // Measuring its width, which is what made an indented root readable at all,
+  // is exactly what let this through.
+  if (firstContent !== undefined && /^[ \t]*\t/.test(firstContent)) {
+    problems.push('the frontmatter mapping is indented with a tab, which YAML forbids wherever indentation goes — indent it with spaces')
+  }
   const resumedAfterComment = new Set<string>()
   const afterClose = new Set<string>()
   const badHeader = new Set<string>()
   let key: string | null = null
 
-  for (const line of block[1].split(/\r?\n/)) {
+  for (const line of lines) {
     const top = TOP_LEVEL_KEY.exec(line)
-    if (top && (rootIndent === null || top[1].length === rootIndent)) {
-      const [, indent, name, value] = top
-      rootIndent ??= indent.length
+    if (top && top[1].length === rootIndent) {
+      const [, , name, value] = top
       // `key: # text` is a key with a *comment*, and YAML gives it a null value.
       // Capturing the comment as the value is how `description: # write this
       // later` reached an index as though it were the summary, when what the
@@ -447,9 +476,11 @@ export function parseFrontmatter(text: string): Frontmatter {
           blockScalars.add(key)
           const explicit = header[1] ?? header[2]
           if (explicit !== undefined) {
-            // Top-level frontmatter keys sit at column 0, so the indicator is
-            // the content's required indentation outright.
-            blockIndent.set(key, Number(explicit))
+            // The indicator counts from the node's own indentation, not from
+            // column zero: under a mapping indented by two, `|2` requires four
+            // spaces, and pyyaml refuses three. Storing the bare indicator was
+            // right only while every key sat at column zero.
+            blockIndent.set(key, rootIndent + Number(explicit))
           }
         }
         else {
@@ -474,11 +505,7 @@ export function parseFrontmatter(text: string): Frontmatter {
     // there, and so does a plain one. Nothing is wrong with the comment itself;
     // what YAML refuses is indented content *after* it, which lands where a key
     // is expected. Recorded here and reported at the continuation below.
-    // Only a space and a tab indent in YAML, so the width is measured against
-    // those alone — `trimStart` would count a leading no-break space, which is
-    // the value's own first character.
-    const indent = line.length - line.replace(/^[ \t]+/, '').length
-    const atRoot = indent <= (rootIndent ?? 0)
+    const atRoot = indentWidth(line) <= rootIndent
     if (bare.startsWith('#') && atRoot) {
       if (key) {
         closedByComment.add(key)
