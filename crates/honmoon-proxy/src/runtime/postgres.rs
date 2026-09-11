@@ -1823,24 +1823,36 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn an_answer_written_off_and_then_delivered_late_is_not_counted_twice() {
-        // A written-off answer lowers `forwarded` past it. If the answer then
-        // turns up, counting it would push `delivered` above `forwarded` and
-        // release the *next* refusal before its own answer — losing the
-        // ordering the write-off was only meant to make affordable.
+        // A write-off credits the delivered count for an answer the client
+        // never got. If the answer then turns up, counting it as well would
+        // take that credit twice and release the *next* refusal before its own
+        // answer — losing the ordering the write-off was only meant to make
+        // affordable.
         let (link, _peer) = loopback_link().await;
         link.forwarded_sync_point();
         link.await_forwarded_responses().await;
         assert_eq!(
             link.forwarded.load(Ordering::Relaxed),
-            0,
-            "the answer that never came was written off"
+            1,
+            "a write-off never lowers what was forwarded"
+        );
+        assert_eq!(
+            (
+                link.delivered.borrow().sync_points,
+                link.delivered.borrow().debt
+            ),
+            (Some(1), 1),
+            "the answer that never came was credited, and remembered as owed"
         );
 
         // The database was slow, not silent: the answer arrives after all.
         link.delivered_message(true);
         assert_eq!(
-            link.delivered.borrow().sync_points,
-            Some(0),
+            (
+                link.delivered.borrow().sync_points,
+                link.delivered.borrow().debt
+            ),
+            (Some(1), 0),
             "a late answer to a written-off statement is discarded, not credited"
         );
 
@@ -1854,6 +1866,61 @@ mod tests {
             .await
             .is_err(),
             "the refusal after a write-off is still ordered behind its own answer"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_late_written_off_answer_does_not_release_a_refusal_behind_a_later_query() {
+        // The dangerous shape is a write-off, *then* another query, *then* the
+        // written-off answer. Matching that answer against what was forwarded
+        // is not enough — the later query raised that ceiling, so the stale
+        // answer fits under it and is credited to a slot it does not own,
+        // releasing the refusal queued behind the later query before the
+        // database has answered it. That is #101, reached the long way round.
+        let (link, _peer) = loopback_link().await;
+
+        // Query A goes out and is never answered.
+        link.forwarded_sync_point();
+        link.await_forwarded_responses().await;
+
+        // Query B goes out while A is still owed.
+        link.forwarded_sync_point();
+        // A's answer finally arrives — B's has not.
+        link.delivered_message(true);
+
+        assert!(
+            tokio::time::timeout(
+                REFUSAL_ORDER_STALL_TIMEOUT / 2,
+                link.await_forwarded_responses(),
+            )
+            .await
+            .is_err(),
+            "a written-off statement's late answer does not answer for the statement after it"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_query_forwarded_after_a_write_off_is_still_released_by_its_own_answer() {
+        // The other half of the same rule, and the easy thing to break while
+        // fixing the first: discarding late answers must not leave the barrier
+        // permanently one short, or every refusal for the rest of the session
+        // pays the stall bound again — which is what the write-off exists to
+        // prevent.
+        let (link, _peer) = loopback_link().await;
+
+        link.forwarded_sync_point();
+        link.await_forwarded_responses().await;
+        link.forwarded_sync_point();
+        // A's late answer is discarded against the debt, then B's own answers B.
+        link.delivered_message(true);
+        link.delivered_message(true);
+
+        let started = tokio::time::Instant::now();
+        link.await_forwarded_responses().await;
+        assert_eq!(
+            started.elapsed(),
+            std::time::Duration::ZERO,
+            "the statement after a write-off is released by its own answer, at once"
         );
     }
 
