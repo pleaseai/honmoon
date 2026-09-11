@@ -1,35 +1,41 @@
 ---
 name: project-audit-sink-nofollow-138
-description: PR #163 (issue #138) audit sink O_NOFOLLOW/O_NONBLOCK hardening — reviewed clean, libc dep judgment call resolved
+description: What #138/PR #163 changed in the audit sink open, and the libc-in-honmoon-core dependency judgment two reviewers reached independently
 metadata:
   type: project
 ---
 
-PR #163 hardens `AuditLog::with_file` (`crates/honmoon-core/src/audit.rs`) via a new
-`open_sink()`: `O_NOFOLLOW` (blocks symlink retargeting, CWE-59) + `O_NONBLOCK` (prevents
-a FIFO from blocking the `honmoon hook` short-lived process) + post-open `fstat`-based
-regular-file check (immune to TOCTOU since it checks the fd, not the path) + `mode(0o600)`
-on creation only. Reviewed clean: builds and passes on macOS (verified locally — 12
-audit tests + 18 hook tests), clippy/fmt clean, CI's ubuntu job runs
-`cargo test --workspace` (catches the `#[cfg(target_os = "linux")]` tests like
-`/dev/full` char-device refusal), macOS job is scoped to `-p honmoon-cli` but still
-compiles honmoon-core. `#[cfg(unix)]`/`#[cfg(not(unix))]` split on `describe_file_type`
-is consistent with `open_sink`'s own inline `#[cfg(unix)]` block.
+`AuditLog::with_file` (`crates/honmoon-core/src/audit.rs`) routes the operator-supplied
+`--audit-log` / `HONMOON_AUDIT_LOG` path through `open_sink()`, which on Unix adds
+`O_NOFOLLOW` (refuses a symlink as the final component, CWE-59), `O_NONBLOCK` (so a FIFO
+cannot block the short-lived `honmoon hook` process), `mode(0o600)`, and a post-open
+`fstat` refusing anything that is not a regular file. `explain_refusal` rewrites the one
+misleading errno — `O_NOFOLLOW` reports a refused symlink as `ELOOP`, "Too many levels of
+symbolic links", which describes a link cycle.
 
-**Dependency judgment**: `crates/AGENTS.md` lists "adding a new workspace dependency" as
-ask-first. `libc = "0.2"` was already declared in root `Cargo.toml`
-`[workspace.dependencies]` and already used by `honmoon-cli` before this PR — the PR only
-adds `[target.'cfg(unix)'.dependencies] libc.workspace = true` to honmoon-core's own
-Cargo.toml, referencing the existing pin. Read this as *not* triggering "ask first": that
-rule is about introducing a new external crate to the graph, not wiring an
-already-pinned crate to one more workspace member. Only production use is two `O_*`
-flag constants passed through `std::fs`'s `OpenOptionsExt::custom_flags` — no syscall goes
-through `libc` directly except `libc::mkfifo` in test code. Does not read as violating
-"Never: add ... any I/O dependency to honmoon-core" either, on the same reasoning.
+Two contract details worth keeping straight, both of which a first draft got wrong:
 
-**Minor-only finding**: the two call sites (`honmoon-cli/src/main.rs:338`,
-`honmoon-cli/src/hook.rs:436`) wrap the io::Error with their own "opening audit log
-{path}" / "could not record ... in {path}" context, which duplicates path text already
-present in `open_sink`'s own `InvalidInput` message for the post-open type-check case
-(char/block device). Cosmetic only, not flagged as more than a low-confidence nitpick —
-matches the `with_context` pattern used everywhere else in this codebase.
+- **`mode(0o600)` is a ceiling, not a guarantee** — it is filtered through the process
+  umask (`umask 0200` yields `0400`). The test asserts `mode & 0o077 == 0`, not equality;
+  asserting the exact value fails on a machine whose umask is *stricter* than required.
+- **It applies on creation only.** An existing sink keeps whatever mode it has, which is
+  deliberate and tracked in #161 — see [[audit-sink-residual-gaps]] before accepting that
+  issue as covering the adversarial form.
+
+**Dependency judgment (reached independently by the code and security reviewers).**
+`crates/AGENTS.md` lists "adding a new workspace dependency" as ask-first and "any I/O
+dependency to honmoon-core" as never. `libc = "0.2"` was already in the root
+`[workspace.dependencies]` and already used by `honmoon-cli`; the PR only adds
+`[target.'cfg(unix)'.dependencies] libc.workspace = true` to honmoon-core, for the two
+`O_*` constants `OpenOptionsExt::custom_flags` needs. No production syscall goes through
+`libc` (only `libc::mkfifo` in tests), and the I/O stays `std::fs`, which this module
+already did before the PR. Read as triggering neither rule: the ask-first rule is about
+introducing a new external crate to the graph, not wiring an already-pinned one to one
+more member. A bot reviewer (codex) read it the other way and proposed moving the open to
+the CLI; that was answered on the PR — moving it would leave the public `with_file`
+unhardened, so the next caller reinvents the defect.
+
+**CI platform split, worth knowing before claiming coverage:** `.github/workflows/ci.yml`
+runs `cargo test --workspace` on ubuntu only; the macOS job is scoped to
+`-p honmoon-cli`. So `honmoon-core`'s `#[cfg(unix)]` tests execute on Linux in CI and on
+a developer's machine, never on macOS in CI.

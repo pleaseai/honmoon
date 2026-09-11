@@ -1,31 +1,36 @@
 ---
 name: pr163-open-sink-hardening
-description: PR #163 (issue #138) open_sink() O_NOFOLLOW/regular-file hardening — attacker-plantable trigger now reaches the pre-existing hook stderr-swallow gap from #131.
+description: The audit sink's two call sites react to a refused open very differently — gateway fail-closed and loud, hook swallowed to a stderr nobody reads (#165)
 metadata:
   type: project
 ---
 
-Reviewed `crates/honmoon-core/src/audit.rs`'s new `open_sink()` (`AuditLog::with_file`): refuses a
-symlinked final path component (`O_NOFOLLOW`) and any non-regular post-open target (FIFO via
-`O_NONBLOCK` so it can't block the hook, char/block device via `fstat`), creates mode `0600`.
-`main.rs`/`hook.rs` had **zero diff** in this PR — only `audit.rs` changed.
+`open_sink()` (`crates/honmoon-core/src/audit.rs`, #138/#163) refuses a symlinked final
+path component and any non-regular target. The two call sites react to that refusal
+asymmetrically, and the asymmetry is the thing to remember:
 
-Verified both call sites' reaction to the new failure modes:
-- Gateway (`main.rs:336`): `with_file(...).with_context(...)?` → propagates to `main() -> Result<()>`,
-  process exits nonzero with the full message printed. Fail-closed, loud — good, no gap.
-- Hook (`hook.rs:425` `audit_machine_key_status`): pre-existing, already-reviewed-in-#131 pattern
-  (see [[project_hook_salt_audit_visibility_131]]) — swallows any `with_file`/write failure to a
-  single `eprintln!`, deliberate per its own doc comment ("stderr usually reaches nobody" for a
-  non-interactive hook subprocess). This PR does not touch that code, but *does* widen the set of
-  conditions that trigger it: a symlink or FIFO planted at the operator's `--audit-log` path is now
-  a failure `with_file` refuses, where before the open would have followed the symlink and still
-  recorded *something*. `audit_machine_key_status` only fires when the machine key is **already
-  degraded**, so this is the one durable trace of that worst case — an attacker who can write to
-  the audit-log's directory can now suppress it entirely by planting a symlink/FIFO there, in
-  addition to whatever they could already do.
+- **Gateway** (`honmoon-cli/src/main.rs`): `with_file(...).with_context(...)?` propagates
+  to `main() -> Result<()>`, so the process exits nonzero with the full message. Fail-closed
+  and loud — no gap. The context string names the regular-file constraint so the operator
+  can act on it.
+- **Hook** (`honmoon-cli/src/hook.rs`, `audit_machine_key_status`): swallows any
+  `with_file`/write failure after a single `eprintln!`, deliberate per its own doc comment
+  and reviewed in #131 (see [[project_hook_salt_audit_visibility_131]]). That stderr is a
+  channel a non-interactive hook subprocess discards. The function only fires when the
+  machine key is **already degraded**, so this is the one durable trace of the worst case.
 
-Flagged this at moderate confidence (~55) as an amplification of the #131 gap rather than new
-silent-failure code — the swallow itself is deliberate/reviewed; what's new is who can reach it and
-how reliably. `record` vs `record_durable` split (issue #131 fix) is unchanged by this PR.
-Symlinked-parent-directory and existing-file-mode-preservation limitations are explicitly
-documented, tested, and tracked as separate issues (#160, #161) — correctly handled, not gaps.
+That swallow is untouched by #163 — but the PR **widens the set of conditions that reach
+it**: before, a symlink planted at the `--audit-log` path was followed and the record
+landed somewhere; a FIFO blocked until the agent timed the hook out. Both are now refused,
+so an actor who can write the audit directory can suppress the degradation record on
+purpose. Still a net improvement — a followed symlink wrote the record where nobody reads
+and a blocking FIFO cost the hook its whole timeout budget — but the trigger is cheaper to
+reach deliberately.
+
+**Status: tracked in #165**, which carries the options (distinguish a hostile-target
+refusal from an ordinary open failure; a second durable channel; surface it in the hook's
+JSON response) and notes it shares #161's "the event about the sink is written to that
+sink" recursion. The hook flag's own `--help` text now says a refused path costs the
+record. **Do not re-report this as an unnamed gap.**
+
+`record` vs `record_durable` (the #131 fix) is unchanged by #163.

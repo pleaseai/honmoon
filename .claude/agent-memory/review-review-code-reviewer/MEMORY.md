@@ -5,4 +5,4 @@
 - [Hook salt parity (#98/PR #122)](project_hook_salt_parity_98.md) — reviewed clean; wire-vs-hook salt now intentionally diverges by default, only hook transports need to agree
 - [Hook salt fallback visibility (#131/PR #137)](project_hook_salt_fallback_visibility_131.md) — reviewed clean; the Overview.tsx decision-mix omission was found mid-review and closed before merge
 - [Trailer contract ADR (#133/PR #150)](project_trailer_contract_adr_133.md) — ADR-0009 claims verified true against source + commit 023cf54; docs-only, tests pass
-- [Audit sink O_NOFOLLOW hardening (#138/PR #163)](project_audit_sink_nofollow_138.md) — reviewed clean; libc dep judgment call resolved as not ask-first (already workspace-pinned)
+- [Audit sink O_NOFOLLOW hardening (#138/PR #163)](project_audit_sink_nofollow_138.md) — what the open refuses; mode(0o600) is a umask-filtered ceiling applied on creation only; libc-in-core judged not ask-first; core tests run on Linux CI only

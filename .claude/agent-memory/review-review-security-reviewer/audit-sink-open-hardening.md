@@ -9,7 +9,9 @@ metadata:
 path through `open_sink` (`crates/honmoon-core/src/audit.rs`), which on Unix adds
 `mode(0o600)` + `custom_flags(O_NOFOLLOW | O_NONBLOCK)` and then rejects any fstat
 that is not a regular file. `libc` is a `cfg(unix)` dep of honmoon-core for the two
-constants only.
+constants only. `mode(0o600)` is umask-filtered, so it is a ceiling rather than an
+exact mode, and `explain_refusal` rewrites `ELOOP` — which reads as a link *cycle* —
+into a message naming `O_NOFOLLOW`.
 
 Verified once, do not re-derive:
 - `File::metadata()` is fd-based (`statx(fd, "", AT_EMPTY_PATH)` on Linux, `fstat`

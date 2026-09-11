@@ -8,4 +8,4 @@
 - [Policy YAML trust boundary](policy-yaml-trust-boundary.md) — policy YAML is trusted local author input (file-only load, mgmt API is GET-only); do not flag author-controlled strings in from_yaml warnings
 - [CEL compile panic class](cel-compile-panic-class.md) — Program::compile panics on any lone char it can't start a token with (`@`, `§`, emoji, zero-width), not just no-token input; trim() deliberately covers only the whitespace slice (#154) — never recommend catch_unwind, it's rejected there
 - [Audit sink open hardening](audit-sink-open-hardening.md) — #138's O_NOFOLLOW/O_NONBLOCK/fstat semantics, each verified once; don't re-derive them
-- [Audit sink residual gaps](audit-sink-residual-gaps.md) — #160/#161 are accurate, but hard links and hostile pre-creation are an unnamed third gap; don't accept "#161 covers it"
+- [Audit sink residual gaps](audit-sink-residual-gaps.md) — three gaps, all now named in-code and tracked (#160 symlinked parent; #161 pre-existing mode *and* the hard-link/hostile-pre-creation bypass); verify the list still has all three rather than re-reporting
