@@ -269,14 +269,28 @@ export HONMOON_AUDIT_LOG=honmoon-audit.jsonl   # the file `honmoon gateway --aud
 ```
 
 Each degraded derivation then appends one `"decision":"degraded"` event naming the
-key source, the transport, and why the persisted key was unavailable — queryable as
-`GET /api/audit?decision=degraded` and shown on the dashboard as a `Degraded` pill.
-Only degradations are written from the hook, never per-invocation verdicts, so a
-healthy host leaves the file untouched: an event appearing there at all is the
-signal. The gateway records the same event once at startup when *its* key falls
-back, covering the HTTP transport and wire redaction. Pointing both at one file is
-intended — each process appends whole lines, and the query layer orders by timestamp
-because ids are process-local.
+key source, the transport, and why the persisted key was unavailable. Only
+degradations are written from the hook, never per-invocation verdicts, so a healthy
+host leaves the file untouched: an event appearing there at all is the signal.
+
+**Where each event is visible.** The two transports reach different readers, because
+the gateway's management API serves its own in-process ring rather than the file:
+
+| Recorded by | In the JSONL file | `@honmoon/api` (`GET /api/audit?decision=degraded`) | Gateway dashboard |
+| --- | --- | --- | --- |
+| `honmoon hook` (its own process) | yes | yes | **no** |
+| `honmoon gateway` (once at startup, covering the HTTP transport and wire redaction) | yes, when `--audit-log` is set | yes | yes — a `Degraded` pill |
+
+So a hook-side degradation is found by querying the log, not by watching the
+dashboard. Pointing both processes at one file is intended: each appends whole
+lines, and the query layer orders by timestamp because ids are process-local.
+
+**Pick a path on a different filesystem from `~/.honmoon` where you can.** The
+conditions that make the salt unwritable — a read-only filesystem, a full disk, an
+unwritable `HOME` — can equally stop the audit log from being opened or appended to.
+`honmoon hook` reports that on stderr and carries on (reporting a degradation must
+never become one), but stderr is the channel this setting exists to stop relying on,
+so a correlated failure leaves the degradation unrecorded.
 
 **Getting one key onto both sides.** Co-located processes sharing a `HOME` read one
 file and need nothing. Anywhere else — separate hosts, containers, different users

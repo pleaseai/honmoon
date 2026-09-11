@@ -82,10 +82,13 @@ export interface K8sFacts {
  * produce and check it against a redacted transcript.
  */
 export interface RedactionFacts {
-  /** `persisted` (the private per-machine secret) or `fallback` (public). */
-  key_source: string
-  /** `hook` (the `honmoon hook` subprocess) or `gateway`. */
-  transport: string
+  /** Whether placeholder minting was keyed by a private secret. */
+  key_source: 'persisted' | 'fallback'
+  /**
+   * `hook` is the `honmoon hook` subprocess; `gateway` covers wire redaction
+   * and the management hook endpoint, which share one key read at startup.
+   */
+  transport: 'hook' | 'gateway'
   /** Why the persisted key was unavailable. */
   reason: string
 }

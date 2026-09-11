@@ -162,8 +162,8 @@ the management API serializes and the dashboard/query layer consume — mirrorin
 
 | Type | Mirrors (Rust) |
 |------|----------------|
-| `Decision` (`allowed`/`denied`/`paused`/`approved`/`rejected`) | `honmoon_core::audit::Decision` |
-| `AuditEvent`, `FactsSummary`, `HttpFacts`/`SqlFacts`/`K8sFacts` | `honmoon_core::audit::*` |
+| `Decision` (`allowed`/`denied`/`paused`/`approved`/`rejected`/`degraded`) | `honmoon_core::audit::Decision` |
+| `AuditEvent`, `FactsSummary`, `HttpFacts`/`SqlFacts`/`K8sFacts`, `RedactionFacts` | `honmoon_core::audit::*` |
 | `PendingApproval` | `honmoon_proxy::approval::PendingApproval` |
 
 ::: warning Still hand-synced (TD-001)

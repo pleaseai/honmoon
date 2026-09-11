@@ -362,9 +362,15 @@ fn gateway(args: GatewayArgs) -> Result<()> {
     // endpoint, so one record at startup covers every placeholder this gateway
     // mints. It goes in before the listeners bind: a gateway that cannot key its
     // placeholders privately should say so in the log it is about to fill.
-    hook::record_machine_key_source(&audit, hook::GATEWAY_TRANSPORT, &machine_key.source);
+    if let Err(e) = hook::record_machine_key_source(
+        &audit,
+        honmoon_core::RedactionTransport::Gateway,
+        machine_key.source(),
+    ) {
+        tracing::warn!(error = %e, "could not record the fallback redaction key in the audit log");
+    }
     let wire_salt = honmoon_core::derive_hook_salt(
-        &machine_key.bytes,
+        machine_key.as_slice(),
         hook_salt_context.as_deref().unwrap_or(DEFAULT_SALT_CONTEXT),
     );
     let redaction = redact_secrets
@@ -397,7 +403,11 @@ fn gateway(args: GatewayArgs) -> Result<()> {
     let mgmt_listener = TcpListener::bind(&mgmt_addr)
         .with_context(|| format!("binding management API {mgmt_addr}"))?;
 
-    let hook_salt = hook_salt_for(hook_salt_context.as_deref(), wire_salt, machine_key.bytes);
+    let hook_salt = hook_salt_for(
+        hook_salt_context.as_deref(),
+        wire_salt,
+        machine_key.into_bytes(),
+    );
     let app_state = AppState::with_hook_config(state.clone(), policy_yaml, hook_salt, hook_token);
 
     let runtime = tokio::runtime::Runtime::new().context("build tokio runtime")?;

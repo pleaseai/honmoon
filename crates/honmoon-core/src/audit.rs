@@ -7,6 +7,14 @@
 //!
 //! It is transport-agnostic on purpose — the data plane (`honmoon-proxy`) and
 //! the management API (`honmoon-mgmt`) share one `Arc<AuditLog>`.
+//!
+//! The **ring** is per process; the **JSONL file** is not. `honmoon hook` runs
+//! as its own short-lived process and appends its degradation events to the
+//! same path (see [`Decision::Degraded`]), so one file can hold the output of
+//! several `AuditLog`s. Ids are therefore process-local and repeat across
+//! writers — readers order by `timestamp` (`@honmoon/api`'s `queryAudit` says
+//! so) — and only what reached *this* process's ring is visible through
+//! `/api/audit`.
 
 use std::collections::VecDeque;
 use std::io::Write as _;
@@ -66,15 +74,38 @@ pub enum Decision {
 /// two paths, which is why the provenance is recorded here instead.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RedactionFacts {
-    /// Where the HMAC key came from: `persisted` (the private per-machine
-    /// secret) or `fallback` (the public compiled-in constant).
-    pub key_source: String,
-    /// Which transport derived it: `hook` (the `honmoon hook` subprocess) or
-    /// `gateway` (wire redaction and the management hook endpoint, which read
-    /// the key once at startup).
-    pub transport: String,
+    /// Where the HMAC key came from.
+    pub key_source: RedactionKeySource,
+    /// Which transport derived it.
+    pub transport: RedactionTransport,
     /// Why the persisted key was unavailable, as the loader reported it.
     pub reason: String,
+}
+
+/// Whether placeholder minting was keyed by a private secret.
+///
+/// A closed two-value domain, so it is an enum rather than a string, matching
+/// every other wire-serialized domain in this crate ([`Verdict`],
+/// [`Decision`], `PathResolution`): a typo then fails to compile here instead
+/// of failing to match on the query side.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum RedactionKeySource {
+    /// The private random secret persisted at `~/.honmoon/hook-salt`.
+    Persisted,
+    /// The public constant compiled into the binary.
+    Fallback,
+}
+
+/// Which transport recorded a [`RedactionFacts`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum RedactionTransport {
+    /// The `honmoon hook` subprocess, which derives per invocation.
+    Hook,
+    /// The gateway process — wire redaction and the management hook endpoint,
+    /// which share one key read once at startup.
+    Gateway,
 }
 
 /// A compact, serializable snapshot of the [`Facts`] a decision was made on.
@@ -191,7 +222,31 @@ impl AuditLog {
     }
 
     /// Record a decision; returns the stored event (with its assigned id).
+    ///
+    /// A sink write failure is logged and swallowed: it must not break
+    /// enforcement, and the event still sits in this process's ring, so the
+    /// management API can serve it. A caller whose process has neither — no
+    /// `tracing` subscriber at that level, and no later reader of its ring —
+    /// wants [`record_durable`](Self::record_durable) instead.
     pub fn record(&self, draft: AuditDraft) -> AuditEvent {
+        let (event, sink) = self.record_durable(draft);
+        if let Err(e) = sink {
+            // A sink write failure must not break enforcement — log and carry on.
+            tracing::warn!(error = %e, "audit sink write failed");
+        }
+        event
+    }
+
+    /// [`record`](Self::record), additionally handing back whether the durable
+    /// JSONL sink took the event (`Ok(())` when there is no sink configured).
+    ///
+    /// For a short-lived writer the distinction is the whole point: `honmoon
+    /// hook` is a fresh process per invocation with no ring anyone will query
+    /// and, under a plugin dispatcher, no `RUST_LOG`, so `EnvFilter` drops a
+    /// `warn!` before it is written — a swallowed sink failure there would make
+    /// a degradation record vanish with no trace at all, which is the one
+    /// outcome the degradation record exists to prevent (issue #131).
+    pub fn record_durable(&self, draft: AuditDraft) -> (AuditEvent, std::io::Result<()>) {
         // Assign the id and update the ring under the lock, then release it
         // *before* any file I/O. Holding the ring lock across a synchronous
         // sink write would stall the gateway hot path (and serialize all audit
@@ -216,16 +271,14 @@ impl AuditLog {
             event
         };
 
-        if let Some(sink) = &self.sink {
-            // A sink write failure must not break enforcement — log and carry on.
-            // The sink has its own lock (writes stay ordered) and no longer
-            // contends with the ring.
-            if let Err(e) = append_jsonl(sink, &event) {
-                tracing::warn!(error = %e, "audit sink write failed");
-            }
-        }
+        // The sink has its own lock (writes stay ordered) and no longer contends
+        // with the ring.
+        let written = match &self.sink {
+            Some(sink) => append_jsonl(sink, &event),
+            None => Ok(()),
+        };
 
-        event
+        (event, written)
     }
 
     /// The most recent events, newest first, capped at `limit`.
@@ -245,12 +298,16 @@ impl AuditLog {
 }
 
 fn append_jsonl(sink: &Mutex<std::fs::File>, event: &AuditEvent) -> std::io::Result<()> {
-    // Terminator appended in-buffer so the record leaves as **one** `write` on an
-    // `O_APPEND` file. The sink is no longer single-writer — `honmoon hook` runs
-    // as its own short-lived process and appends its own degradation events to
-    // the same path (issue #131) — and a separate write for the newline would let
-    // a concurrent appender land between an event and its terminator, fusing two
-    // JSON objects onto one line that the reader then drops as malformed.
+    // Terminator appended in-buffer, because the sink is no longer single-writer:
+    // `honmoon hook` runs as its own short-lived process and appends its own
+    // degradation events to the same path (issue #131). Writing the newline
+    // separately guaranteed a second syscall, and `O_APPEND` positions each one
+    // at EOF independently, so a concurrent appender could land between an event
+    // and its terminator and fuse two objects onto a line the reader drops as
+    // malformed. One buffer removes that gap for the ordinary case — it is not a
+    // hard guarantee: `write_all` loops on a short write, and atomic append is a
+    // local-filesystem property NFS does not provide. A reader that must not lose
+    // a record should treat a malformed line as a signal, not as noise.
     let mut line = serde_json::to_string(event)?;
     line.push('\n');
     let mut file = sink.lock().expect("audit sink poisoned");
@@ -309,6 +366,100 @@ mod tests {
         // The three newest ids survive (8, 9, 10).
         assert_eq!(recent[0].id, 10);
         assert_eq!(recent[2].id, 8);
+    }
+
+    #[test]
+    fn concurrent_writers_never_fuse_two_events_onto_one_line() {
+        // The sink gained a second writer process (`honmoon hook`), which is why
+        // `append_jsonl` emits the terminator in the same buffer as the record.
+        // Threads here stand in for those processes: distinct `AuditLog`s over
+        // one path, as two processes would have. Every line must still parse —
+        // a fused line is one the reader drops, and the record most likely to be
+        // lost is the `degraded` one that exists to be seen.
+        let dir = std::env::temp_dir().join(format!(
+            "honmoon-audit-concurrent-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("audit.jsonl");
+        let _ = std::fs::remove_file(&path);
+
+        const WRITERS: usize = 8;
+        const PER_WRITER: usize = 40;
+        let handles: Vec<_> = (0..WRITERS)
+            .map(|_| {
+                let path = path.clone();
+                std::thread::spawn(move || {
+                    let log = AuditLog::with_file(4, &path).expect("open sink");
+                    for _ in 0..PER_WRITER {
+                        log.record(draft(Decision::Denied));
+                    }
+                })
+            })
+            .collect();
+        for h in handles {
+            h.join().expect("writer panicked");
+        }
+
+        let contents = std::fs::read_to_string(&path).expect("read sink");
+        let lines: Vec<&str> = contents.lines().filter(|l| !l.is_empty()).collect();
+        assert_eq!(lines.len(), WRITERS * PER_WRITER, "no record was lost");
+        for line in &lines {
+            serde_json::from_str::<AuditEvent>(line)
+                .unwrap_or_else(|e| panic!("line is not one whole event ({e}): {line}"));
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn record_durable_reports_a_refused_sink() {
+        // `record` logs and swallows; `record_durable` hands the failure back for
+        // a caller with no subscriber and no ring (issue #131). Make the sink
+        // fail after a successful open by removing the directory underneath it.
+        let dir = std::env::temp_dir().join(format!("honmoon-audit-nosink-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let log = AuditLog::with_file(4, dir.join("audit.jsonl")).expect("open sink");
+        let (_, written) = log.record_durable(draft(Decision::Denied));
+        assert!(written.is_ok(), "a healthy sink takes the record");
+
+        // No sink configured at all is success, not failure: nothing was refused.
+        let memory_only = AuditLog::new(4);
+        let (event, written) = memory_only.record_durable(draft(Decision::Degraded));
+        assert!(written.is_ok());
+        assert_eq!(event.decision, Decision::Degraded);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_degraded_event_round_trips_with_its_redaction_facts() {
+        // The wire shape the dashboard and `@honmoon/api` read: `redaction` is
+        // present only here, and absent — not null — on every other event.
+        let log = AuditLog::new(4);
+        let event = log.record(AuditDraft {
+            decision: Decision::Degraded,
+            verdict: Verdict::Allow,
+            rule: Some("hook-salt-fallback".into()),
+            facts: FactsSummary {
+                redaction: Some(RedactionFacts {
+                    key_source: RedactionKeySource::Fallback,
+                    transport: RedactionTransport::Hook,
+                    reason: "unwritable HOME".into(),
+                }),
+                ..Default::default()
+            },
+            approval_id: None,
+        });
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(json.contains(r#""decision":"degraded""#), "{json}");
+        assert!(json.contains(r#""key_source":"fallback""#), "{json}");
+        assert!(json.contains(r#""transport":"hook""#), "{json}");
+        let back: AuditEvent = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.facts.redaction, event.facts.redaction);
+
+        // An ordinary decision carries no `redaction` key at all.
+        let ordinary = serde_json::to_string(&log.record(draft(Decision::Denied))).unwrap();
+        assert!(!ordinary.contains("redaction"), "{ordinary}");
     }
 
     #[test]

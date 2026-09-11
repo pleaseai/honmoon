@@ -38,6 +38,10 @@ export function Overview() {
   const allowed = count(events, 'allowed', 'approved')
   const denied = count(events, 'denied', 'rejected')
   const paused = count(events, 'paused')
+  // Not a request outcome, so it is counted apart from allowed/denied/paused —
+  // but it still has to appear, or `total` (every recorded event) and the
+  // decision mix silently stop adding up once the first one lands.
+  const degraded = count(events, 'degraded')
   const total = events.length
 
   const stats = [
@@ -116,7 +120,13 @@ export function Overview() {
 
             <Panel>
               <SectionHead title="Decision mix" meta="Recorded events" />
-              <DecisionMix allowed={allowed} denied={denied} paused={paused} known={auditKnown} />
+              <DecisionMix
+                allowed={allowed}
+                denied={denied}
+                paused={paused}
+                degraded={degraded}
+                known={auditKnown}
+              />
             </Panel>
           </div>
         </div>
@@ -279,18 +289,21 @@ function DecisionMix({
   allowed,
   denied,
   paused,
+  degraded,
   known,
 }: {
   allowed: number
   denied: number
   paused: number
+  degraded: number
   known: boolean
 }) {
-  const total = Math.max(allowed + denied + paused, 1)
+  const total = Math.max(allowed + denied + paused + degraded, 1)
   const rows = [
     { label: 'Allowed + approved', value: allowed, color: 'bg-accent' },
     { label: 'Denied + rejected', value: denied, color: 'bg-deny' },
     { label: 'Paused decisions', value: paused, color: 'bg-warn' },
+    { label: 'Degraded guarantees', value: degraded, color: 'bg-warn' },
   ]
   return (
     <div className="px-5 pt-1 pb-5">

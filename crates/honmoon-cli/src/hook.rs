@@ -141,7 +141,7 @@ fn session_salt(payload: &Value, salt_context: Option<&str>, machine_key: &Machi
     let env_context = std::env::var("HONMOON_HOOK_SALT_CONTEXT").ok();
     let pinned = salt_context.or(env_context.as_deref());
     honmoon_core::derive_hook_salt(
-        &machine_key.bytes,
+        machine_key.as_slice(),
         honmoon_core::hook_salt_context(pinned, payload),
     )
 }
@@ -151,12 +151,6 @@ fn session_salt(payload: &Value, salt_context: Option<&str>, machine_key: &Machi
 /// every placeholder minted under it is forgeable by anyone (see
 /// [`MachineKeySource::Fallback`]).
 const FALLBACK_MACHINE_KEY: &[u8] = b"honmoon-hook-v1-fallback-key";
-
-/// `transport` value recorded for the `honmoon hook` subprocess.
-pub const HOOK_TRANSPORT: &str = "hook";
-/// `transport` value recorded for the gateway process, which reads the machine
-/// key once at startup for wire redaction and the management hook endpoint.
-pub const GATEWAY_TRANSPORT: &str = "gateway";
 
 /// Where the bytes in a [`MachineKey`] came from.
 pub enum MachineKeySource {
@@ -177,9 +171,33 @@ pub enum MachineKeySource {
 
 /// The machine secret that keys every hook salt derivation, plus where it came
 /// from.
+///
+/// The two travel together and are constructed together, so a caller cannot
+/// label one key's bytes with the other's provenance — the whole point of this
+/// type is that the recorded degradation matches the key actually in use. The
+/// bytes stay private for the reason [`honmoon_mgmt::HookSalt`]'s `HookKey`
+/// keeps its own private: key material has no business on a public field.
 pub struct MachineKey {
-    pub bytes: Vec<u8>,
-    pub source: MachineKeySource,
+    bytes: Vec<u8>,
+    source: MachineKeySource,
+}
+
+impl MachineKey {
+    /// The key material, for HMAC derivation.
+    pub fn as_slice(&self) -> &[u8] {
+        &self.bytes
+    }
+
+    /// Consume the key for a caller that must own the bytes (the gateway hands
+    /// them to the management endpoint, which derives per request).
+    pub fn into_bytes(self) -> Vec<u8> {
+        self.bytes
+    }
+
+    /// Where these bytes came from.
+    pub fn source(&self) -> &MachineKeySource {
+        &self.source
+    }
 }
 
 /// The persisted machine secret that keys every hook salt derivation, for the
@@ -224,15 +242,20 @@ fn machine_key_in(dir: &Path) -> MachineKey {
 /// One event per derivation, deliberately: on a host that cannot persist a salt
 /// every invocation is separately degraded, and a log that says so once would
 /// understate how much of a transcript was redacted under a public key.
+///
+/// Returns whether the durable sink took the record — `Ok(())` when the key was
+/// persisted and there was nothing to say. The caller must not discard an
+/// `Err`: this record is the degradation's only durable trace, so a sink that
+/// refused it has to be reported through whatever channel that caller does have.
 pub fn record_machine_key_source(
     audit: &honmoon_core::AuditLog,
-    transport: &str,
+    transport: honmoon_core::RedactionTransport,
     source: &MachineKeySource,
-) {
+) -> std::io::Result<()> {
     let MachineKeySource::Fallback { reason } = source else {
-        return;
+        return Ok(());
     };
-    audit.record(honmoon_core::AuditDraft {
+    let (_, written) = audit.record_durable(honmoon_core::AuditDraft {
         decision: honmoon_core::Decision::Degraded,
         // What happened to the traffic, not to the guarantee: nothing was
         // blocked — redaction ran and content went through (the fail-open
@@ -241,14 +264,15 @@ pub fn record_machine_key_source(
         rule: Some("hook-salt-fallback".to_string()),
         facts: honmoon_core::FactsSummary {
             redaction: Some(honmoon_core::RedactionFacts {
-                key_source: "fallback".to_string(),
-                transport: transport.to_string(),
+                key_source: honmoon_core::RedactionKeySource::Fallback,
+                transport,
                 reason: reason.clone(),
             }),
             ..Default::default()
         },
         approval_id: None,
     });
+    written
 }
 
 /// Report a fallback machine key to `audit_log`, the hook transport's only
@@ -256,9 +280,10 @@ pub fn record_machine_key_source(
 /// in-memory ring anyone could query.
 ///
 /// The sink must be configured (`--audit-log`, or `HONMOON_AUDIT_LOG` for the
-/// agent environment, which is all the plugin's dispatcher can pass): it cannot
-/// default under `~/.honmoon`, because an unwritable `~/.honmoon` is precisely
-/// one of the conditions that produces a fallback key in the first place. Every
+/// agent environment, which is all the plugin's dispatcher can pass). It
+/// deliberately does not default under `~/.honmoon`: an unwritable `~/.honmoon`
+/// is one of the conditions that produces a fallback key in the first place, so
+/// that default would be unwritable exactly when it had something to say. Every
 /// failure here is swallowed after a stderr line — the fail-open contract owns
 /// this process, and reporting a degradation must not itself become one.
 fn audit_machine_key_source(audit_log: Option<&Path>, source: &MachineKeySource) {
@@ -268,12 +293,18 @@ fn audit_machine_key_source(audit_log: Option<&Path>, source: &MachineKeySource)
     let Some(path) = audit_log else {
         return;
     };
-    match honmoon_core::AuditLog::with_file(1, path) {
-        Ok(audit) => record_machine_key_source(&audit, HOOK_TRANSPORT, source),
-        Err(e) => eprintln!(
-            "honmoon hook: could not open audit log {} ({e}) — fallback salt reported to stderr only",
+    // Opened-then-failed earns the same line as never-opened: this process keeps
+    // no ring anyone can query afterwards, and with no `RUST_LOG` its `tracing`
+    // warnings are filtered out before they are written — so when the sink does
+    // not take the record, stderr is all that is left.
+    let recorded = honmoon_core::AuditLog::with_file(1, path).and_then(|audit| {
+        record_machine_key_source(&audit, honmoon_core::RedactionTransport::Hook, source)
+    });
+    if let Err(e) = recorded {
+        eprintln!(
+            "honmoon hook: could not record the fallback salt in {} ({e}) — reported to stderr only",
             path.display()
-        ),
+        );
     }
 }
 
@@ -738,8 +769,18 @@ mod tests {
         );
 
         let audit = honmoon_core::AuditLog::new(8);
-        record_machine_key_source(&audit, HOOK_TRANSPORT, &first.source);
-        record_machine_key_source(&audit, HOOK_TRANSPORT, &second.source);
+        record_machine_key_source(
+            &audit,
+            honmoon_core::RedactionTransport::Hook,
+            &first.source,
+        )
+        .expect("an in-memory log has no sink to fail");
+        record_machine_key_source(
+            &audit,
+            honmoon_core::RedactionTransport::Hook,
+            &second.source,
+        )
+        .expect("an in-memory log has no sink to fail");
         let events = audit.recent(8);
         assert_eq!(
             events.len(),
@@ -758,8 +799,11 @@ mod tests {
             .redaction
             .as_ref()
             .expect("a degraded event carries redaction facts");
-        assert_eq!(redaction.key_source, "fallback");
-        assert_eq!(redaction.transport, HOOK_TRANSPORT);
+        assert_eq!(
+            redaction.key_source,
+            honmoon_core::RedactionKeySource::Fallback
+        );
+        assert_eq!(redaction.transport, honmoon_core::RedactionTransport::Hook);
         assert!(
             !redaction.reason.is_empty(),
             "the loader's error is carried through so the cause is diagnosable"
@@ -769,10 +813,57 @@ mod tests {
         let healthy = machine_key_in(tmp.path());
         assert!(matches!(healthy.source, MachineKeySource::Persisted));
         let audit = honmoon_core::AuditLog::new(8);
-        record_machine_key_source(&audit, HOOK_TRANSPORT, &healthy.source);
+        record_machine_key_source(
+            &audit,
+            honmoon_core::RedactionTransport::Hook,
+            &healthy.source,
+        )
+        .expect("nothing to record");
         assert!(
             audit.is_empty(),
             "a persisted key is not a degradation and must not be logged as one"
+        );
+    }
+
+    #[test]
+    fn a_refused_sink_is_reported_rather_than_swallowed() {
+        // The degradation record is its own only durable trace: this process
+        // keeps no queryable ring, and with no `RUST_LOG` the `tracing::warn!`
+        // inside `AuditLog::record` never reaches a writer. So a sink that
+        // refuses the record has to come back as an error, not a silent `()`.
+        let tmp = TempDir::new("sink-refused");
+        let unusable = unusable_salt_dir(&tmp);
+        let blocked_log = tmp.path().join("not-a-dir").join("audit.jsonl");
+        assert!(
+            honmoon_core::AuditLog::with_file(1, &blocked_log).is_err(),
+            "the log path must be unopenable for this test to mean anything"
+        );
+        // The hook swallows it after a stderr line — reporting a degradation
+        // must not itself become one — so this asserts only that it does not
+        // panic or propagate, leaving the process's exit-0 contract intact.
+        audit_machine_key_source(Some(&blocked_log), &machine_key_in(&unusable).source);
+    }
+
+    #[test]
+    fn the_gateway_transport_is_recorded_distinctly_from_the_hook() {
+        // `record_machine_key_source` takes the transport as a parameter, and the
+        // gateway's call site is inside `gateway()`, which binds listeners and
+        // blocks — so no test reaches it. Pin the value the gateway passes here,
+        // so at least a swapped or renamed transport fails a test rather than
+        // silently attributing a gateway degradation to the hook.
+        let tmp = TempDir::new("gateway-transport");
+        let unusable = unusable_salt_dir(&tmp);
+        let audit = honmoon_core::AuditLog::new(2);
+        record_machine_key_source(
+            &audit,
+            honmoon_core::RedactionTransport::Gateway,
+            &machine_key_in(&unusable).source,
+        )
+        .expect("an in-memory log has no sink to fail");
+        let event = audit.recent(1).remove(0);
+        assert_eq!(
+            event.facts.redaction.expect("redaction facts").transport,
+            honmoon_core::RedactionTransport::Gateway
         );
     }
 
@@ -791,7 +882,7 @@ mod tests {
         assert_eq!(event.decision, honmoon_core::Decision::Degraded);
         assert_eq!(
             event.facts.redaction.expect("redaction facts").key_source,
-            "fallback"
+            honmoon_core::RedactionKeySource::Fallback
         );
 
         // A healthy key writes nothing at all — not even an empty file.
