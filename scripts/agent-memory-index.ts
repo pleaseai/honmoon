@@ -138,7 +138,19 @@ const DOUBLE_QUOTED_ESCAPES: Record<string, string> = {
  * claim is the drift this index was derived to remove; it cannot be allowed
  * back in through the parser.
  */
-function unescapeDoubleQuoted(body: string, onInvalid: (escape: string) => void): string {
+/**
+ * The one problem `unquote` reports about a scalar's *contents* rather than its
+ * shape. Every reporter below hands back a complete predicate — "is …", "opens
+ * with …", "starts with …" — because a caller that has only a bare token left
+ * has to guess a clause to wrap it in, and the guess was wrong for three of the
+ * four reporters: an unterminated `'…` and a plain `&anchor` were both
+ * announced as double-quoted, each with a whole report nested inside another.
+ */
+function undefinedEscape(escape: string): string {
+  return `is double-quoted and holds \`${escape}\`, which YAML does not define — this reader keeps it literally, the reader that loads the note may not`
+}
+
+function unescapeDoubleQuoted(body: string, onInvalid: (problem: string) => void): string {
   return body.replace(
     /\\(x[0-9A-Fa-f]{2}|u[0-9A-Fa-f]{4}|U[0-9A-Fa-f]{8}|[\s\S])/g,
     (match, escape: string) => {
@@ -149,7 +161,7 @@ function unescapeDoubleQuoted(body: string, onInvalid: (escape: string) => void)
         // whole run — and every other note with it — down with it.
         const codePoint = Number.parseInt(escape.slice(1), 16)
         if (codePoint > 0x10FFFF) {
-          onInvalid(match)
+          onInvalid(undefinedEscape(match))
           return match
         }
         return String.fromCodePoint(codePoint)
@@ -157,7 +169,7 @@ function unescapeDoubleQuoted(body: string, onInvalid: (escape: string) => void)
 
       const resolved = DOUBLE_QUOTED_ESCAPES[escape]
       if (resolved === undefined) {
-        onInvalid(match)
+        onInvalid(undefinedEscape(match))
         return match
       }
       return resolved
@@ -373,8 +385,7 @@ export function parseFrontmatter(text: string): Frontmatter {
       problems.push(`\`${name}:\` is \`${raw}\`, which YAML resolves to a ${raw === '~' || /^null$/i.test(raw) ? 'null' : 'non-string'} rather than text — quote it if the value really is that word`)
     }
 
-    scalars[name] = unquote(raw, escape =>
-      problems.push(`\`${name}:\` is double-quoted and holds \`${escape}\`, which YAML does not define — this reader keeps it literally, the reader that loads the note may not`))
+    scalars[name] = unquote(raw, problem => problems.push(`\`${name}:\` ${problem}`))
       .replace(/\s+/g, ' ')
       .trim()
   }

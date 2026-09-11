@@ -537,6 +537,32 @@ describe('parseFrontmatter — quoted scalars', () => {
     }
   })
 
+  // One callback carried two unrelated problem kinds, and only one of them
+  // passed a bare token: the other passed a whole sentence, which the caller
+  // then wrapped in "is double-quoted and holds `…`". So an unterminated
+  // single quote and a plain `&anchor` were both reported as double-quoted,
+  // each with a complete report nested inside another one.
+  test('describes a malformed scalar as the kind it actually is', () => {
+    const report = (value: string): string =>
+      parseFrontmatter(`---
+name: n
+description: ${value}
+metadata:
+  type: project
+---
+`).problems[0] ?? ''
+
+    expect(report(String.raw`"holds \q here`.concat('"'))).toContain('is double-quoted and holds')
+    expect(report('&anchor')).toContain('anchor indicator')
+    expect(report(String.raw`'unclosed`)).toContain('never closes it')
+
+    // None of the others is double-quoted, and none nests a second report.
+    for (const value of [String.raw`"unclosed`, String.raw`'unclosed`, '&anchor', '*alias', '!tag']) {
+      expect(report(value)).not.toContain('is double-quoted and holds')
+      expect(report(value)).not.toContain('which YAML does not define')
+    }
+  })
+
   // Valid YAML: the comment is outside the quotes. Rejecting it would fail a
   // note that loads perfectly well — and `#` inside the quotes stays literal,
   // which is what these descriptions are full of.

@@ -60,6 +60,13 @@ bun scripts/agent-memory-index.ts            # rebuild (also: mise run agent-mem
 bun scripts/agent-memory-index.ts --check    # CI gate: every note can supply its line
 ```
 
+Quote a `description:` that is anything but plain prose. A plain YAML scalar ends at the first
+` #`, so `description: fixed in PR #155, then do X` is the summary `fixed in PR` to a reader —
+and the index line is built from that. The same goes for one that opens with `[`, `{`, `&`, `*`
+or `!`, or that is entirely a number or a date, since YAML resolves those to something that is
+not text. The generator reports each case instead of guessing, and `--check` fails until the
+description is quoted, so CI catches it rather than a wrong index line reaching the repository.
+
 Hand-appending a shared index made every concurrent PR that recorded a memory for the same
 agent collide on one line, and duplicated each claim into a second place that drifted from the
 note (issue #129). `mise run install` rebuilds the indexes, and `orca.yaml`'s worktree setup
