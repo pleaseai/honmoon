@@ -208,6 +208,28 @@ metadata:
     expect(parseFrontmatter(text)).toMatchObject({ scalars: { description: 'done' }, problems: [] })
   })
 
+  // An escaped line break joins with nothing, but only to the line that follows
+  // it. A blank line in between is itself a break, so both readers resolve this
+  // to `one\ntwo` — which the one-line index renders as `one two`, not `onetwo`.
+  test('keeps the break a blank line puts back after an escaped continuation', () => {
+    const text = '---\nname: a-note\ndescription: "one\\\n\n  two"\n---\n'
+    expect(parseFrontmatter(text)).toMatchObject({ scalars: { description: 'one two' }, problems: [] })
+  })
+
+  // ...while the direct continuation still joins with nothing, as both readers do.
+  test('joins an escaped continuation with nothing when no blank line intervenes', () => {
+    const text = '---\nname: a-note\ndescription: "one\\\n  two"\n---\n'
+    expect(parseFrontmatter(text)).toMatchObject({ scalars: { description: 'onetwo' }, problems: [] })
+  })
+
+  // A key-shaped line at column zero ends the value above it, whether or not
+  // this index reads that key — otherwise its wrapped value folds into the
+  // previous one and the index renders text the note never put there.
+  test('does not fold a non-indexed key\'s wrapped value into the previous key', () => {
+    const text = '---\nname: a-note\ndescription: a summary\nfoo.bar: first\n  second\n---\n'
+    expect(parseFrontmatter(text)).toMatchObject({ scalars: { description: 'a summary' }, problems: [] })
+  })
+
   // A comment at column zero ends the value above it, so indented content after
   // one lands where YAML expects a key. Both readers refuse it, for a block
   // scalar and a plain one alike.

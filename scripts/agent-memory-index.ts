@@ -366,6 +366,7 @@ export function parseFrontmatter(text: string): Frontmatter {
   const tabIndented = new Set<string>()
   const tabInPlain = new Set<string>()
   const closedByComment = new Set<string>()
+  const brokenByBlank = new Set<string>()
   const resumedAfterComment = new Set<string>()
   const afterClose = new Set<string>()
   const badHeader = new Set<string>()
@@ -446,7 +447,26 @@ export function parseFrontmatter(text: string): Frontmatter {
 
     if (bare !== '' && !/^[ \t]/.test(line) && !bare.startsWith('#') && bare !== '---' && bare !== '...' && !COULD_BE_KEY.test(line)) {
       problems.push(`\`${bare}\` is not a key, and YAML expects one at the start of a line in this mapping — indent it to continue the value above, or give it a key`)
+      key = null
       continue
+    }
+
+    // Any other line at column zero ends the value above it too — a key this
+    // index does not read, `---`, `...`. Leaving the previous key open folded
+    // *its* wrapped value onto the one before, so the index rendered text the
+    // note never put there.
+    if (bare !== '' && !/^[ \t]/.test(line)) {
+      key = null
+      continue
+    }
+
+    // A blank line inside a value is itself a line break. It matters only for
+    // the escaped-continuation join below, which joins with nothing: YAML
+    // applies that to the line immediately after the backslash, so a blank line
+    // in between puts the break back and `"one\` + `` + `two"` is `one\ntwo`,
+    // not `onetwo`.
+    if (key && bare === '') {
+      brokenByBlank.add(key)
     }
 
     // Only an *indented* line continues the previous non-empty scalar — that is
@@ -523,11 +543,15 @@ export function parseFrontmatter(text: string): Frontmatter {
       // decoder read the `\ ` it had just created as an escaped space, so the
       // index said something the note never did. The count has to be odd: a
       // `\\` at the end is an escaped backslash, not an escaped break.
-      if (soFar.startsWith('"') && /(?:^|[^\\])(?:\\\\)*\\$/.test(soFar)) {
+      if (!brokenByBlank.has(key) && soFar.startsWith('"') && /(?:^|[^\\])(?:\\\\)*\\$/.test(soFar)) {
         scalars[key] = `${soFar.slice(0, -1)}${line.trim()}`
       }
       else {
-        scalars[key] = `${soFar} ${line.trim()}`
+        // The trailing backslash is dropped here as well when a blank line
+        // broke the join: it escaped a break that the blank line has already
+        // supplied, so keeping it would leave a stray `\` in the summary.
+        const head = brokenByBlank.delete(key) && soFar.endsWith('\\') ? soFar.slice(0, -1) : soFar
+        scalars[key] = `${head} ${line.trim()}`
       }
     }
   }
