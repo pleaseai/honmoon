@@ -1,0 +1,43 @@
+.claude/agent-memory/review-review-pr-test-analyzer/rewritten_headers_generic_dispatch.md
+  s_278e684068cde0::t_2996f0e04a71ee 1-32
+.claude/agent-memory/review-review-documentation-analyzer/pr146_signed_digest_readme_cli_stale.md
+  s_278e684068cde0::t_2996f0e04a71ee 1-30
+crates/honmoon-proxy/tests/redaction.rs
+  s_278e684068cde0::t_2996f0e04a71ee 29-35,1275-1367
+  s_278e684068cde0::t_38f8d93331290d 1368
+README.md
+  s_278e684068cde0::t_2996f0e04a71ee 212-216,231-232
+crates/honmoon-proxy/src/signed_body.rs
+  s_278e684068cde0::t_2996f0e04a71ee 103-105
+crates/honmoon-cli/src/main.rs
+  s_278e684068cde0::t_2996f0e04a71ee 98-102
+.claude/agent-memory/review-review-documentation-analyzer/MEMORY.md
+  s_278e684068cde0::t_2996f0e04a71ee 5
+.claude/agent-memory/review-review-pr-test-analyzer/MEMORY.md
+  s_278e684068cde0::t_2996f0e04a71ee 5
+.please/docs/decisions/0006-signed-body-requests-under-wire-redaction.md
+  s_278e684068cde0::t_2996f0e04a71ee 142-150
+crates/honmoon-proxy/src/mitm.rs
+  s_278e684068cde0::t_2996f0e04a71ee 503-508,511-512,532-533,1151-1153,1156-1159,1175-1194,1440-1477
+  s_278e684068cde0::t_17ea6356484fba 1478-1479
+.claude/agent-memory/review-review-code-reviewer/project_signed_body_framing_headers_83.md
+  s_278e684068cde0::t_2996f0e04a71ee 3,26-38
+.claude/agent-memory/review-review-security-reviewer/signed-body-detection-invariants.md
+  s_278e684068cde0::t_2996f0e04a71ee 32-39
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "d48cfb3a56d88112c38960962bd248f2da2ce8d5",
+  "prompts": {},
+  "sessions": {
+    "s_278e684068cde0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "f250795b-6e43-4d11-913b-21a295e9f51a",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
