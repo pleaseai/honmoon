@@ -193,7 +193,7 @@ If no rule matches, the egress block decides.
 Because the first match wins, an **unconditional** rule — `condition: "true"` — answers every
 request its `endpoint` covers, and nothing below it on that endpoint is ever reached.
 
-That matters most for the shape a `egress.default: deny` policy needs around a `postgres`
+That matters most for the shape an `egress.default: deny` policy needs around a `postgres`
 endpoint. The connection itself is gated before any statement exists, so the endpoint needs a
 connection-level `allow`; but a `sql.*` condition cannot match a connection that carries no
 statement yet, so that `allow` has to come **after** the statement rules
@@ -217,7 +217,7 @@ rules:
 Write those two the other way round and `postgres-connect` answers every *statement* too — a
 `DROP` is allowed, and the rule meant to stop it never runs. `Policy::from_yaml` warns at load
 when it finds that ordering, naming both rules
-([lib.rs:262-329](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/lib.rs#L262-L329)):
+([lib.rs:260-330](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/lib.rs#L260-L330)):
 
 ```
 WARN policy rule is unreachable: an earlier unconditional rule always matches first
@@ -231,8 +231,16 @@ Two details worth knowing when you read (or don't read) that warning:
   rule on one endpoint leaves a later `*` rule reachable through all the others.
 - **Only the literal `true` is recognised.** An expression that merely happens to be always true
   (`1 == 1`) is not flagged: Honmoon does not try to prove a CEL expression total, and a warning
-  that guessed would be one you learned to ignore. Leaving `condition` **empty** is not a way to
-  say "always" either — an empty condition is not valid CEL, so such a rule matches nothing.
+  that guessed would be one you learned to ignore.
+
+::: danger Never leave `condition` empty
+`condition: ""` is not a way to say "always", and it is not a safe no-op either. An empty string
+is not valid CEL, so the rule can never match — but it does **not** decline the way
+[Fail-closed semantics](#fail-closed-semantics) below describes: `Program::compile("")` panics instead
+of returning an error, so the first request that reaches such a rule takes down the decision path
+rather than falling through. Give every rule a real condition; write `"true"` when you mean
+always. Tracked in [#151](https://github.com/pleaseai/honmoon/issues/151).
+:::
 
 ### Facts available to conditions
 
@@ -264,6 +272,12 @@ Honmoon is designed to **fail closed**: a rule whose condition fails to compile,
 fact that has not been populated, simply **does not match** — it can never turn a `deny` into an
 `allow`. Combined with the `deny`-by-default egress verdict, an absent or broken rule is always
 the safe outcome ([engine.rs:16-18](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/engine.rs#L16-L18), [engine.rs:66-71](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/engine.rs#L66-L71)).
+
+One condition does not degrade this way: an **empty** one. `Program::compile("")` panics rather
+than returning the error this path handles, so an empty `condition` is not a broken rule that
+fails closed — it is a crash on the decision path. See
+[Rule order and unreachable rules](#rule-order-and-unreachable-rules) above and
+[#151](https://github.com/pleaseai/honmoon/issues/151).
 
 ```mermaid
 sequenceDiagram

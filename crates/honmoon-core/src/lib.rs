@@ -261,7 +261,7 @@ impl Policy {
     ///
     /// The first matching rule wins, so a rule whose condition is always true
     /// answers every request its endpoint covers and nothing below it on that
-    /// endpoint is ever reached. That is the shape ADR-0007 asks a
+    /// endpoint is ever reached. That is the shape ADR-0007 asks an
     /// `egress.default: deny` policy to write for a `postgres` endpoint — a
     /// connection-level `condition: "true"` allow — and putting it above the
     /// statement rules silently answers every query with `allow`.
@@ -505,7 +505,7 @@ endpoints:
             .collect()
     }
 
-    /// The defect from the ADR-0007 consequence: the connection-level allow a
+    /// The defect from the ADR-0007 consequence: the connection-level allow an
     /// `egress.default: deny` policy needs, written *above* the statement
     /// rules, answers every query.
     #[test]
@@ -643,6 +643,41 @@ rules:
         .expect("valid policy");
 
         assert!(shadowed_names(&policy).is_empty());
+    }
+
+    /// A rule is reported once, against the *first* rule that shadows it — and
+    /// an unconditional rule is not exempt from being shadowed itself, which is
+    /// what a duplicated connection-allow looks like.
+    #[test]
+    fn a_shadowed_rule_is_reported_against_the_first_rule_that_shadows_it() {
+        let policy = Policy::from_yaml(
+            r#"
+rules:
+  - name: postgres-connect
+    endpoint: postgres-prod
+    condition: "true"
+    verdict: allow
+  - name: postgres-connect-again
+    endpoint: postgres-prod
+    condition: "true"
+    verdict: allow
+  - name: sql-no-prod-drop
+    endpoint: postgres-prod
+    condition: "sql.verb == 'DROP'"
+    verdict: deny
+"#,
+        )
+        .expect("valid policy");
+
+        // Both later rules name `postgres-connect`, not the nearer duplicate:
+        // it is the rule that actually answers the request.
+        assert_eq!(
+            shadowed_names(&policy),
+            vec![
+                ("postgres-connect-again", "postgres-connect"),
+                ("sql-no-prod-drop", "postgres-connect"),
+            ]
+        );
     }
 
     /// Only the literal `true` counts. `1 == 1` is always true but the loader
