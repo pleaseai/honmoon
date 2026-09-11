@@ -330,6 +330,18 @@ function unquote(value: string, onInvalid: (problem: string) => void): string {
   return value
 }
 
+/**
+ * Whitespace that would break the index's single line, or pad its edges.
+ *
+ * Deliberately not `\s`: that class holds the no-break space and its
+ * relatives, which are *content* — flattening one to an ordinary space, or
+ * letting `trim` eat one off an edge, made the index text differ from the value
+ * the note's frontmatter yields, which is the whole defect this index removes.
+ * `\s` also omits NEL (`\N`), which really does break a line, so the class is
+ * spelled out either way.
+ */
+const LINE_WHITESPACE = /[\t\n\v\f\r \u0085\u2028\u2029]+/g
+
 /** The only frontmatter this index renders, and so the only part it judges. */
 const INDEXED_KEYS = ['name', 'description'] as const
 
@@ -550,7 +562,12 @@ export function parseFrontmatter(text: string): Frontmatter {
         // The trailing backslash is dropped here as well when a blank line
         // broke the join: it escaped a break that the blank line has already
         // supplied, so keeping it would leave a stray `\` in the summary.
-        const head = brokenByBlank.delete(key) && soFar.endsWith('\\') ? soFar.slice(0, -1) : soFar
+        // Only a double-quoted scalar uses a trailing backslash to escape the
+        // break, so only there is it the escape the blank line made redundant.
+        // In a plain or single-quoted scalar it is literal text, and dropping
+        // it edited the note's own summary.
+        const escaped = brokenByBlank.delete(key) && soFar.startsWith('"') && soFar.endsWith('\\')
+        const head = escaped ? soFar.slice(0, -1) : soFar
         scalars[key] = `${head} ${line.trim()}`
       }
     }
@@ -641,8 +658,8 @@ export function parseFrontmatter(text: string): Frontmatter {
     scalars[name] = (blockScalars.has(name)
       ? raw
       : unquote(raw, problem => problems.push(`\`${name}:\` ${problem}`)))
-      .replace(/\s+/g, ' ')
-      .trim()
+      .replace(LINE_WHITESPACE, ' ')
+      .replace(/^ | $/g, '')
   }
 
   return { scalars, problems }

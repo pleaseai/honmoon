@@ -208,6 +208,36 @@ metadata:
     expect(parseFrontmatter(text)).toMatchObject({ scalars: { description: 'done' }, problems: [] })
   })
 
+  // Only a double-quoted scalar uses a trailing backslash to escape the break.
+  // In a plain or single-quoted one it is literal text, and dropping it edited
+  // the summary.
+  test('keeps a literal trailing backslash in an unquoted scalar', () => {
+    const text = '---\nname: a-note\ndescription: ends with a backslash \\\n\n  more\n---\n'
+    expect(parseFrontmatter(text)).toMatchObject({ scalars: { description: 'ends with a backslash \\ more' }, problems: [] })
+  })
+
+  // The index is one line, so whitespace that would break it is collapsed —
+  // but a no-break space is content. Flattening it made the index text differ
+  // from the value the note's frontmatter yields.
+  test('keeps a no-break space, however it was written', () => {
+    const nbsp = '\u00A0'
+    for (const written of [`one${nbsp}two`, String.raw`"one\_two"`]) {
+      const got = parseFrontmatter(noteWith(written)).scalars.description ?? ''
+      expect([...got].map(c => c.charCodeAt(0))).toEqual([111, 110, 101, 0xA0, 116, 119, 111])
+    }
+  })
+
+  test('keeps a no-break space at the edges, which trim would have eaten', () => {
+    const got = parseFrontmatter(noteWith(String.raw`"\_padded\_"`)).scalars.description ?? ''
+    expect(got).toBe('\u00A0padded\u00A0')
+  })
+
+  // ...while every whitespace that really would break the line still collapses.
+  test('still folds line-breaking whitespace onto one line', () => {
+    const got = parseFrontmatter(noteWith(String.raw`"a\nb\tc\Ld\Pe\Nf"`)).scalars.description
+    expect(got).toBe('a b c d e f')
+  })
+
   // An escaped line break joins with nothing, but only to the line that follows
   // it. A blank line in between is itself a break, so both readers resolve this
   // to `one\ntwo` — which the one-line index renders as `one two`, not `onetwo`.
