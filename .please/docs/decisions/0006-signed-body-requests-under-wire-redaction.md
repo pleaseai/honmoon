@@ -2,7 +2,10 @@
 
 ## Status
 
-Accepted
+Accepted. Amended 2026-09-11 (#81): SigV4 body-signature detection is narrower than originally
+recorded — a presigned URL and a bare `x-amz-content-sha256` payload hash no longer count on their
+own. The Decision below is the current rule; the reasoning for the change is in the Context and
+Consequences.
 
 ## Context
 
@@ -40,6 +43,18 @@ that the `UNSIGNED-PAYLOAD` exception below therefore only means the body is not
 those uploads still broke on the signature, which is the outcome this decision exists to prevent
 (#83). The Decision covers both halves.
 
+Over-inclusion and under-inclusion are not symmetric, and the review of #80 (#81) found the
+original SigV4 rule on the wrong side of that asymmetry for two of its three signals. Under the
+default `block`, classifying a request as body-signed when it is not is merely disruptive — it
+refuses traffic that could have been redacted and forwarded. Under `--signed-body forward` the
+classification is what *disables* redaction, so the same over-inclusion is fail-open: a secret
+leaves unredacted. A presigned `X-Amz-Algorithm` query parameter authenticates the *request* — a
+standard S3 presigned URL puts `UNSIGNED-PAYLOAD` in its canonical request and binds no bytes —
+and a bare `x-amz-content-sha256` is an integrity header, not a signature, with no AWS
+authentication anywhere on the request to say who computed it. Neither carries a claim that a
+signature covers the payload, and both are fully client-settable, so both were narrowed. The
+same asymmetry justified requiring a matching `Signature` label for the RFC 9421 case in #80.
+
 Re-signing is the other direction one could take: give the gateway the client's AWS credentials
 and have it produce a fresh SigV4 signature over the redacted body. That turns the gateway into a
 credential holder for every signed upstream an agent talks to, which is a larger blast radius than
@@ -51,14 +66,37 @@ long-lived secrets.
 **Detect only schemes whose signature actually covers the body**, in
 `honmoon-proxy::signed_body::body_signature_scheme`:
 
-- **AWS SigV4** — an `Authorization` starting with `AWS4-HMAC-SHA256` or `AWS4-ECDSA-P256-SHA256`
-  (SigV4A), a presigned `X-Amz-Algorithm=AWS4-…` query parameter, or — as a deliberately
-  conservative fallback — a bare hex `x-amz-content-sha256` payload hash. That header is an
-  integrity check, not itself a signature, but a hash of the exact body bytes is inseparable from
-  whatever signed those bytes, so treating it as body-binding errs toward fail-closed rather than
-  risking a silent signature mismatch. **Exception:** `x-amz-content-sha256: UNSIGNED-PAYLOAD` or
-  `STREAMING-UNSIGNED-PAYLOAD…` declares the body explicitly out of the signature, so those stay
-  redactable.
+- **AWS SigV4** — SigV4 authentication whose canonical request *hashed the payload*. The two
+  carriers differ in what they bind, so they are treated differently (#81):
+  - a header-signed `Authorization` starting with `AWS4-HMAC-SHA256` or `AWS4-ECDSA-P256-SHA256`
+    (SigV4A) always hashes the payload into its canonical request — for non-S3 services the hash
+    is not even sent as a header — so it counts on its own;
+  - a presigned `X-Amz-Algorithm=AWS4-…` query parameter counts **only** alongside a payload hash
+    that declares a signed payload: a 64-character hex SHA-256, or one of the four
+    `STREAMING-AWS4-…-PAYLOAD[-TRAILER]` per-chunk signing markers, enumerated rather than
+    prefix-matched so an invented `STREAMING-AWS4-…` value is not evidence. On its own the query
+    parameter authenticates the request and the headers its `X-Amz-SignedHeaders` list names, not
+    the bytes.
+
+  The `x-amz-content-sha256` header is the authoritative carrier of that declaration — it is the
+  value a signer hashes into the canonical request — and every field value of it counts. The
+  `X-Amz-Content-Sha256` query parameter is read only when the request sends no such header *and*
+  is presigned **and carries no `AWS4-…` `Authorization`**: presigning hoists the `x-amz-…` headers
+  it signs into the query string, so a
+  presigned upload that bound its payload may carry the hash there and send no header at all, and
+  ignoring it would reach the `UNSIGNED-PAYLOAD` conclusion for a request that declared the
+  opposite. A query parameter never contradicts the header, in either direction — otherwise an
+  appended `?X-Amz-Content-Sha256=UNSIGNED-PAYLOAD` would have a signed body redacted and broken
+  upstream, and on a header-signed request that parameter is a bare query argument the verifier
+  never reads as the payload hash — and a header-signed credential carries its own payload hash in
+  its canonical request, so a query argument cannot speak for it even when the credential signs that
+  argument.
+
+  **Exception:** `UNSIGNED-PAYLOAD` or `STREAMING-UNSIGNED-PAYLOAD…` declares the body explicitly
+  out of the signature and wins over either carrier and either signal, so those stay redactable.
+  And a payload hash with no SigV4 authentication on the request is **not** a body signature: it
+  is an integrity check a client sets freely, and nothing on such a request claims a signature
+  covers those bytes.
 - **RFC 9421 message signatures** — a `Signature` header alongside `Signature-Input` (RFC 9421
   requires both; either may repeat across field values, all of which are scanned) whose component
   list names a body-digest header, under a label `Signature` actually carries. Labels are matched
@@ -67,6 +105,22 @@ long-lived secrets.
   is not a covered component, so `"@query-param";name="content-digest"` does not count.
 - **draft-cavage** — a `Signature` header, or an `Authorization: Signature …` value, whose
   `headers="…"` parameter (tolerating whitespace around `=`) names a body-digest header.
+
+**A signature over `x-amz-content-sha256` counts for those two schemes too**, when that header
+carries a hex SHA-256 payload hash (#81). The `STREAMING-AWS4-…` markers do not count here, only on
+the SigV4 path: they describe a body bound by *chunk* signatures derived from a SigV4 seed
+signature, a construct that does not exist outside SigV4, so a message signature over that header
+value fixes a string and binds no bytes. The value is a hash of the bytes, so signing it binds the body
+exactly as signing `Content-Digest` does, and the scheme that signs it need not be SigV4 — an RFC
+9421 or draft-cavage covered list can name it on a request with no AWS authentication at all. The
+same header carrying `UNSIGNED-PAYLOAD` or `STREAMING-UNSIGNED-PAYLOAD…` is signed but binds
+nothing, so that request stays redactable. This header is deliberately **not** in the body-digest
+set below, because that set is also what the rewrite strips and honmoon must leave this one as the
+client sent it: for a SigV4 request the signature covers it, and stripping it would break that
+signature outright. The only difference the divergence makes is which failure a rewrite would
+produce — a stale hash left in place describes bytes the upstream no longer receives, so the
+upstream rejects on the payload hash rather than on the signature. Both are the opaque far-end
+failure this ADR exists to prevent, so both take the same decision.
 
 The body-digest set is the same for both schemes and is **the set of validators the rewrite path
 strips** — `digest`, `content-digest`, `content-md5`, `repr-digest`. Signing any of them binds the
@@ -99,6 +153,17 @@ refuse the entire `UNSIGNED-PAYLOAD` upload path — the case the exception exis
 compatibility win. Leaving the behavior documented-but-broken was rejected for the same reason the
 body case was: a signature honmoon breaks itself is an opaque upstream failure at the far end of a
 TLS-terminated tunnel.
+
+Two narrower rules were rejected for the SigV4 carriers too (#81). **Making detection depend on the
+mode** — the strict rule under `forward`, the old broad one under `block` — was rejected because it
+makes the same request mean two different things and leaves `block` over-refusing presigned uploads
+that were never body-signed, which is the usability half of the complaint. **Keeping both signals
+and documenting the `forward` caveat more loudly** was rejected because a documented fail-open is
+still a fail-open, and the signals it rests on are set by the client. What this detection does not
+claim is forgery resistance: honmoon verifies no signature — it holds no keys — so a client that
+writes its own `Authorization: AWS4-…` is still classified as body-signed. Narrowing removes the
+two signals that assert nothing about a payload-covering signature; it does not turn the remaining
+one into proof, and `forward` stays the documented fail-open hole it always was.
 
 **The decision point is after redaction has been computed**, i.e. only when `outcome.redacted` is
 true. A signed request with nothing to redact is forwarded byte-identical and logs nothing, so
@@ -138,6 +203,19 @@ enough to unblock the two known shapes (signed uploads vs. bearer-token API traf
   rather than rewritten into an opaque upstream signature failure: `block` costs those uploads the
   same visible `403` a body-signed request gets, which is a behavior change from the release that
   rewrote them and let the upstream reject them (#83).
+- A presigned upload that carries no payload hash in either carrier, and a request whose only
+  AWS-shaped signal is a payload hash, are **redacted and forwarded** rather than refused (#81). This is the
+  weaker direction, and deliberately so: if such a request really was signed over its body by a
+  scheme honmoon cannot see, the upstream now rejects the rewritten bytes with the opaque error
+  this ADR exists to prevent. The cost is bounded to requests that present no evidence of a
+  payload-covering signature, and it is the same limit the last bullet already accepts for
+  unrecognized schemes. In exchange, the presigned upload path stops costing a `403` under the
+  default, and `forward` no longer drops redaction on two client-settable signals.
+- An operator who wants the old strictness for those two shapes cannot get it from `--signed-body`:
+  they are no longer recognized, so neither mode acts on them. Recovering a refusal means denying
+  the destination in policy (`egress`) for traffic that must never reach an upstream with a
+  rewritten body — per-host signed-body policy stays deferred. `block` remains the default and
+  still refuses every request whose signature does cover the payload or a framing header.
 - Detection of a covered header is as header-shaped as the body detection: a scheme we do not
   recognize whose signature covers `Content-Length` still breaks under redaction, exactly as it
   does for the body.
@@ -153,8 +231,9 @@ enough to unblock the two known shapes (signed uploads vs. bearer-token API traf
   and the request is either forwarded as signed or answered locally with a `403`. So the response
   may come back compressed and is then not detokenized, which is the existing behavior for any
   compressed response.
-- Detection is header-shaped and therefore approximate: a scheme we do not recognize whose
-  signature covers the body still breaks under redaction (as it does today), and a request that
-  merely *looks* signed is blocked. New schemes are one match arm in `signed_body.rs`.
+- Detection is header-shaped and therefore approximate in both directions: a scheme we do not
+  recognize whose signature covers the body still breaks under redaction, and a request that
+  presents a recognized scheme's evidence is treated as signed without that evidence being
+  verified. New schemes are one match arm in `signed_body.rs`.
 - Re-signing on the gateway is rejected as a design direction. If a future release revisits it, it
   needs its own ADR covering credential custody, not an extension of this one.

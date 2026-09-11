@@ -1,24 +1,36 @@
 ---
 name: signed-body-detection-invariants
-description: Invariants for crates/honmoon-proxy/src/signed_body.rs — over-inclusion is a redaction leak under --signed-body forward; each detector must be gated on real scheme evidence
+description: Invariants for crates/honmoon-proxy/src/signed_body.rs — over-inclusion is a redaction leak under --signed-body forward; current SigV4 rule after #81 narrowing
 metadata:
   type: project
 ---
 
 `signed_body.rs` decides whether a request's signature covers what wire redaction would rewrite
 (body via `body_signature_scheme`, framing headers via `signed_headers_among`). `mitm.rs`
-`forwarded_request` acts on it: under `--signed-body forward` a "signed" classification forwards
-the ORIGINAL bytes, secret unredacted.
+`forwarded_request` acts on it: under `--signed-body forward` *either* a "body-signed" or a
+"framing-header-signed" classification forwards the ORIGINAL bytes, secret unredacted.
 
 **Why:** over-inclusion is the leak direction (ADR 0006 states this explicitly); under-inclusion
 only breaks the client's own signature (opaque upstream 403). So every predicate must require
 genuine scheme evidence, not a single attacker-placeable token.
 
-**How to apply:** when reviewing changes here, check each detection source for its gate —
-`Authorization` must pass `is_sigv4_authorization`, and a presigned `X-Amz-*` query parameter must
-be accompanied by `X-Amz-Algorithm=AWS4-…` (`aws_sigv4_authenticates`). A detector that trusts a
-bare query parameter turns "append `?X-Amz-SignedHeaders=content-length`" into a redaction bypass.
-Also check that the set the rewrite mutates (`REWRITTEN_FRAMING_HEADERS`, `BODY_DIGEST_HEADERS`)
-is exactly the set detection asks about — the module's stated one-definition rule.
+**Current SigV4 body rule (narrowed by #81, PR #120 — this replaces the older broad rule):**
+1. `x-amz-content-sha256` declaring `UNSIGNED-PAYLOAD` / `STREAMING-UNSIGNED-PAYLOAD…` wins → not
+   body-signed;
+2. `Authorization: AWS4-HMAC-SHA256` / `AWS4-ECDSA-P256-SHA256` counts alone;
+3. a presigned `X-Amz-Algorithm=AWS4-…` query parameter counts **only** with a
+   `x-amz-content-sha256` that is a 64-char hex SHA-256 or `STREAMING-AWS4-…`;
+4. a bare payload hash with no SigV4 authentication counts for nothing.
+
+**How to apply:** when reviewing changes here, prove the new predicate is a *subset* of the old one
+(any widening is a potential leak under `forward`), and keep the framing-header path gated:
+`sigv4_signed_header_lists` only honours `X-Amz-SignedHeaders` when `aws_sigv4_authenticates`
+(Authorization OR `sigv4_presigned_query`) holds — otherwise `?X-Amz-SignedHeaders=content-length`
+is a bypass. Also check that the set the rewrite mutates (`REWRITTEN_FRAMING_HEADERS`,
+`BODY_DIGEST_HEADERS`) is exactly the set detection asks about.
+
+Known non-security gaps (compat, not leaks): `x-amz-content-sha256` is read via `header_str`, i.e.
+only the first field value; and a payload hash carried as a *query* parameter on a presigned URL is
+not considered, so such a body is redacted and the upstream rejects it.
 
 Related: [[project-redaction-failopen-design]]

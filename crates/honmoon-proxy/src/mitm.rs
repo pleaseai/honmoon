@@ -373,17 +373,17 @@ impl HonmoonHandler {
         // Ask upstreams for text we can safely detokenize on the response path.
         // A server may ignore this, in which case handle_response fails open.
         //
-        // Two disjoint exemptions, and the rewrite is skipped when *either*
-        // holds. `authentication_signs_headers` covers requests whose headers
-        // are demonstrably signed: some SigV4 signers list `accept-encoding` in
-        // `SignedHeaders` even when the payload itself is unsigned
-        // (`UNSIGNED-PAYLOAD`), and RFC 9421 / draft-cavage signatures cover
-        // whichever headers their component or `headers=` list names.
-        // `signature_scheme` covers the converse case — a bare hex
-        // `x-amz-content-sha256` binds the body without any recognized
-        // signature, so we cannot tell whether the scheme that produced it also
-        // signs headers, and that request is forwarded verbatim under
-        // `--signed-body forward`. Neither predicate implies the other.
+        // The negotiation is skipped when *either* predicate holds.
+        // `authentication_signs_headers` carries it: some SigV4 signers list
+        // `accept-encoding` in `SignedHeaders` even when the payload itself is
+        // unsigned (`UNSIGNED-PAYLOAD`), and RFC 9421 / draft-cavage signatures
+        // cover whichever headers their component or `headers=` list names.
+        // `signature_scheme` is the belt to that braces: every scheme this
+        // module recognizes as body-signing also carries the header-signing
+        // evidence the first predicate looks for, so it adds nothing today, but
+        // a body-signed request is forwarded verbatim under `--signed-body
+        // forward` and must keep the `Accept-Encoding` it was signed with even
+        // if a future scheme breaks that implication.
         //
         // Over-inclusion here is fail-safe: a compressed response is simply not
         // detokenized, as everywhere else.
