@@ -49,6 +49,20 @@ metadata:
     expect(scalars.description).toBe('first half second half')
   })
 
+  test('reads a folded or literal block scalar without its header', () => {
+    for (const header of ['>', '|', '>-', '|+', '>2']) {
+      expect(parseFrontmatter(`---
+name: block
+description: ${header}
+  first line
+  second line
+metadata:
+  type: project
+---
+`)).toMatchObject({ name: 'block', description: 'first line second line' })
+    }
+  })
+
   test('unquotes a scalar that had to be quoted to stay valid YAML', () => {
     expect(parseFrontmatter(`---
 description: "note: a colon forces quoting"

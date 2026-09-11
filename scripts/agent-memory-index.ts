@@ -86,6 +86,16 @@ const FRONTMATTER = /^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/
 const TOP_LEVEL_KEY = /^([a-z][\w-]*):[ \t]*(\S.*)?$/i
 
 /**
+ * A YAML block-scalar header — `>` or `|`, with an optional chomping indicator
+ * and explicit indent (`>-`, `|+`, `>2`).
+ *
+ * The value is carried by the indented lines that follow, so the header itself
+ * must not become the value: `description: >` would otherwise index as the
+ * literal `>` with the real text folded onto it.
+ */
+const BLOCK_SCALAR = /^[|>][+-]?\d*$/
+
+/**
  * Strip one layer of YAML quoting from a scalar.
  *
  * The memory tool writes plain scalars, but a `description:` containing `": "`
@@ -125,7 +135,11 @@ export function parseFrontmatter(text: string): Record<string, string | undefine
       const [, name, value] = top
       key = value === undefined ? null : name
       if (key) {
-        scalars[key] = value
+        // A block-scalar header opens a value the following indented lines
+        // carry, so start empty and let the continuation branch fill it. Both
+        // `>` and `|` end up folded onto one line, which is all an index line
+        // can be.
+        scalars[key] = BLOCK_SCALAR.test(value) ? '' : value
       }
       continue
     }
