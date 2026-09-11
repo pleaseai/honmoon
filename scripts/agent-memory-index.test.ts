@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process'
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
@@ -135,6 +135,14 @@ describe('renderIndex', () => {
       .toContain('](plain_note.md)')
   })
 
+  // `\s` matches past ASCII, and percent-encoding is defined over UTF-8 bytes:
+  // encoding the code unit of a non-breaking space would emit `%A0`, which is
+  // not the byte sequence the path is made of.
+  test('encodes non-ASCII whitespace as UTF-8 bytes, not code units', () => {
+    expect(renderIndex([noteEntry('a\u00A0b.md', note('n', 'a note'))]))
+      .toContain('](a%C2%A0b.md)')
+  })
+
   test('escapes a label that would end the link early', () => {
     expect(renderIndex([noteEntry('n.md', note('odd] name', 'a note'))]))
       .toContain('- [odd\\] name](n.md)')
@@ -236,6 +244,17 @@ describe('trackedIndexFiles', () => {
     expect(trackedIndexFiles(repo)).toEqual([])
   })
 
+  // git C-quotes a path holding a non-ASCII character unless asked not to, and a
+  // quoted path ends in `"` rather than `MEMORY.md` — so the suffix filter would
+  // silently miss a force-tracked index and report the all-clear it never earned.
+  test('finds a committed index under a non-ASCII agent directory', () => {
+    mkdirSync(join(repo, MEMORY_ROOT, 'agent-mémoire'), { recursive: true })
+    const index = join(MEMORY_ROOT, 'agent-mémoire', INDEX_NAME)
+    writeFileSync(join(repo, index), '- [n](n.md) — a hand-appended entry\n')
+    commit(index)
+    expect(trackedIndexFiles(repo)).toEqual([index])
+  })
+
   test('answers empty outside a work tree, where there is nothing to assert', () => {
     const bare = mkdtempSync(join(tmpdir(), 'not-a-repo-'))
     try {
@@ -288,5 +307,31 @@ describe('this repository', () => {
   // supply a line is a note future agents will not be pointed at.
   test('every committed note can supply its own index line', () => {
     expect(rebuild(MEMORY_DIR, { check: true }).problems).toEqual([])
+  })
+})
+
+describe('rebuild', () => {
+  let root: string
+
+  beforeEach(() => {
+    root = mkdtempSync(join(tmpdir(), 'agent-memory-symlink-'))
+    mkdirSync(join(root, 'some-agent'))
+    writeFileSync(join(root, 'some-agent', 'n.md'), note('n', 'a note'))
+  })
+
+  afterEach(() => rmSync(root, { recursive: true, force: true }))
+
+  // `writeFileSync` follows a symlink, so an ordinary rebuild would overwrite
+  // whatever a force-added index pointed at — before any other check runs.
+  test('refuses to write an index through a symlink, leaving the target intact', () => {
+    const target = join(root, 'private.txt')
+    writeFileSync(target, 'not an index\n')
+    symlinkSync(target, join(root, 'some-agent', INDEX_NAME))
+
+    const { written, problems } = rebuild(root)
+
+    expect(readFileSync(target, 'utf8')).toBe('not an index\n')
+    expect(written).toEqual([])
+    expect(problems).toEqual([`some-agent/${INDEX_NAME}: is a symlink; an index is generated in place, refusing to write through it`])
   })
 })

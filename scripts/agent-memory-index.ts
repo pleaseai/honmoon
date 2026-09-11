@@ -30,7 +30,7 @@
  *   bun scripts/agent-memory-index.ts           # rewrite every index
  *   bun scripts/agent-memory-index.ts --check   # verify only, write nothing (CI)
  */
-import { existsSync, readdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, lstatSync, readdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import process from 'node:process'
 import { fileURLToPath } from 'node:url'
@@ -174,6 +174,8 @@ function escapeLabel(text: string): string {
   return text.replace(/([[\]\\])/g, '\\$1')
 }
 
+const ENCODER = new TextEncoder()
+
 /**
  * Render a file name as a markdown link destination.
  *
@@ -183,12 +185,17 @@ function escapeLabel(text: string): string {
  * the *URL*, where `a#b.md` addresses `a` with a fragment rather than the file.
  * Percent-encoding covers both, and touches nothing in an ordinary
  * `some_note.md`.
+ *
+ * Percent-encoding is defined over UTF-8 *bytes*, and `\s` reaches past ASCII:
+ * a non-breaking space is one JS character but two bytes, so encoding the code
+ * unit would emit `%A0` where the path needs `%C2%A0`. `TextEncoder` is what
+ * makes the two agree. (`encodeURIComponent` would not: it leaves `(` and `)`
+ * unescaped, and those are exactly what ends a bare markdown destination.)
  */
 function linkTarget(file: string): string {
-  return file.replace(
-    /[%#?()<>\s]/g,
-    character => `%${character.charCodeAt(0).toString(16).toUpperCase().padStart(2, '0')}`,
-  )
+  return file.replace(/[%#?()<>\s]/g, character =>
+    Array.from(ENCODER.encode(character), byte =>
+      `%${byte.toString(16).toUpperCase().padStart(2, '0')}`).join(''))
 }
 
 /** Reduce one note file to its index entry. */
@@ -269,7 +276,11 @@ export function trackedIndexFiles(cwd: string = REPO_ROOT): string[] {
   // that is the value meaning *the invariant holds*, so a git that failed for
   // any other reason (missing binary, unreadable index, a sandbox that blocks
   // it) must raise rather than report an all-clear nobody verified.
-  const listed = Bun.spawnSync(['git', 'ls-files', '--', MEMORY_ROOT], { cwd })
+  // `-z` is not a detail: without it git C-quotes any path holding a non-ASCII
+  // character, a quote or a backslash, so `agent-mémoire/MEMORY.md` arrives as
+  // `"agent-m\303\251moire/MEMORY.md"` and ends in `"` — the suffix filter
+  // below would miss it and report the all-clear this function exists to earn.
+  const listed = Bun.spawnSync(['git', 'ls-files', '-z', '--', MEMORY_ROOT], { cwd })
   if (!listed.success) {
     const stderr = listed.stderr.toString()
     if (/not a git repository/i.test(stderr)) {
@@ -277,7 +288,7 @@ export function trackedIndexFiles(cwd: string = REPO_ROOT): string[] {
     }
     throw new Error(`git ls-files failed (exit ${listed.exitCode}): ${stderr.trim()}`)
   }
-  return listed.stdout.toString().split('\n').filter(path => path.endsWith(`/${INDEX_NAME}`))
+  return listed.stdout.toString().split('\0').filter(path => path.endsWith(`/${INDEX_NAME}`))
 }
 
 interface Result {
@@ -308,6 +319,15 @@ export function rebuild(root: string, options: { check?: boolean } = {}): Result
       continue
     }
 
+    // An index is a file this script owns and overwrites unconditionally, so
+    // it must not be reachable through a symlink: `writeFileSync` follows one,
+    // and the target — whatever a branch pointed it at — would be clobbered by
+    // an ordinary rebuild. Refuse instead, and report it as a problem.
+    if (existsSync(indexPath) && lstatSync(indexPath).isSymbolicLink()) {
+      problems.push(`${agent}/${INDEX_NAME}: is a symlink; an index is generated in place, refusing to write through it`)
+      continue
+    }
+
     written.push(indexPath)
     if (!options.check) {
       writeFileSync(indexPath, rendered)
@@ -324,12 +344,17 @@ export function rebuild(root: string, options: { check?: boolean } = {}): Result
  */
 export function main(argv: string[], root: string = MEMORY_DIR, cwd: string = REPO_ROOT): number {
   const check = argv.includes('--check')
+
+  // Read before rebuilding, not after: `rebuild` writes, and a run that ends in
+  // a non-zero exit has still written by then. Anything the tracked-index check
+  // would have refused has to be refused while the tree is untouched.
+  const tracked = trackedIndexFiles(cwd)
   const { written, problems } = rebuild(root, { check })
 
-  for (const tracked of trackedIndexFiles(cwd)) {
+  for (const trackedIndex of tracked) {
     problems.push(
-      `${tracked} is tracked by git — it is generated (issue #129). `
-      + `Run \`git rm --cached ${tracked}\`.`,
+      `${trackedIndex} is tracked by git — it is generated (issue #129). `
+      + `Run \`git rm --cached ${trackedIndex}\`.`,
     )
   }
 

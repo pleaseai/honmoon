@@ -17,4 +17,11 @@ scripts:
     # different branch with different notes. Build a fresh one from the notes
     # here. (`mise install` above installs tool versions; the `install` task in
     # mise.toml is a different thing and does not run.)
-    mise exec -- bun scripts/agent-memory-index.ts
+    # Not fatal, deliberately: the write path produces a usable index even when a
+    # note is malformed (that note gets a placeholder line), and the script still
+    # exits non-zero to report it. Under `set -e` that would turn one incomplete
+    # memory note on the branch into a failed worktree setup. The hard gate for
+    # note quality is the `--check` step in CI; here the job is only to leave
+    # this worktree with an index, so surface the problem and carry on.
+    mise exec -- bun scripts/agent-memory-index.ts \
+      || echo "agent-memory index: note problems reported above; worktree is otherwise ready"
