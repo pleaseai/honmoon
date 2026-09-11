@@ -128,7 +128,7 @@ HTTP request**; on the raw-tunnel path none of it applies, because nothing there
 
 | Field | Scanned for PII or secrets? | Does it reach the upstream? |
 | --- | --- | --- |
-| Request body | Yes — but only one that is buffered within the 2 MiB cap, decodes within it, and is UTF-8 text (see the note below) | Rewritten when redaction fires |
+| Request body | Yes — but only one that is buffered within the 2 MiB cap, decodes within it (or, when the declared encoding is unusable, falls back to its raw bytes), and reads as UTF-8 text (see the note below) | Rewritten when redaction fires |
 | Ordinary header (`X-Note:`) | **Never** | Yes |
 | Body-digest header (`Digest`, `Content-Digest`, `Content-MD5`, `Repr-Digest`) | **Never** | Stripped when the body is redacted |
 | Framing header (`Content-Length`, `Content-Encoding`, `Transfer-Encoding`) | **Never** — read as metadata only | Re-framed when the body is redacted |
@@ -137,20 +137,25 @@ HTTP request**; on the raw-tunnel path none of it applies, because nothing there
 **The body row's "yes" is itself conditional.** Three conditions mean no finding is possible at
 all. An over-cap body never reaches the scanner (`scanned` is `None`); a decoded body that
 overflows the cap is discarded rather than judged on a truncated prefix (`StrictDecode::Overflow` →
-`inspected: None`); a non-UTF-8 body is handed to the scanner but `utf8_prefix` yields no text. In
-all three `pii` ends up empty, so `pii.count > 0` cannot block them any more than it can block a
-trailer — the `warn` is the only thing that marks them.
+`inspected: None`); a body with *interior* invalid bytes is handed to the scanner but `utf8_prefix`
+returns `None`. That last one is narrower than "non-UTF-8": a merely truncated trailing multi-byte
+sequence is tolerated, and the valid prefix ahead of it is scanned, so a secret sitting in that
+prefix is still found. Where the three do bite, `pii` ends up empty, so `pii.count > 0` cannot
+block them any more than it can block a trailer — the `warn` is the only thing that marks them.
 
 **Two of the fail-open cases are redaction-only, and those bodies do reach the scanner** — do not
 read the fail-open list as a list of uninspectable requests. A partial upload carrying
 `Content-Range` is not exempt from inspection: `decide_explained` runs on it in `inspect_body`
 before `forwarded_request` is reached, and the `Content-Range` check there skips only the rewrite.
-Detector coverage is then exactly what the three conditions above allow — an over-cap or non-UTF-8
-partial upload yields no findings, like any other body of that shape. An undecodable
+Detector coverage is then exactly what the three conditions above allow — an over-cap partial
+upload, or one whose bytes do not read as text, yields no findings, like any other body of that
+shape. An undecodable
 `Content-Encoding` falls back to scanning the raw bytes, deliberately, so a plaintext body cannot
 evade the scan by claiming to be compressed — but that fallback only catches the
-mislabelled-plaintext case: genuinely compressed bytes fail `utf8_prefix` like any other binary
-body and still yield no finding. Where the scan does find something, a `pii.count > 0 -> deny` rule
+mislabelled-plaintext case: genuinely compressed bytes normally fail `utf8_prefix` like any other
+binary body and yield no finding. Normally, not always — `utf8_prefix` rejects interior invalid
+bytes, so a compressed stream that happens to be valid UTF-8 throughout is scanned as text. Treat
+the fallback as opportunistic, not as coverage. Where the scan does find something, a `pii.count > 0 -> deny` rule
 acts on it as usual — enforced under `--pii-mode block`, and under the **default** `detect` mode
 recorded as the would-be verdict and forwarded (`decide_pii_audit_only`). What fails open in both
 is the wire rewrite, not the inspection.

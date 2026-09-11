@@ -7,10 +7,12 @@ metadata:
 
 PR #150 added `.please/docs/decisions/0009-body-only-inspection-contract.md`, a README
 "Wire redaction fail modes" addendum, and an index.md row, documenting that honmoon's request
-inspection scans body bytes only — trailers/headers are never scanned or redacted, and nothing
-warns about their contents. `pii.count` stays 0, so no *positive-finding* rule fires on them; an
-**absence** rule (`pii.count == 0`) does fire and does audit its verdict, so "no audit" is wrong
-and was one of this PR's corrections.
+inspection scans body bytes only — trailers and headers are never scanned for PII or secrets and
+never passed to a detector (they *are* read, for framing, decoding and signature metadata), and
+nothing warns about their contents. `pii.count` stays 0, so no *positive-finding* rule fires on
+them; an **absence** rule (`pii.count == 0`) does fire, and a matching `deny`/`pause` is audited
+like any other verdict — a matching `allow` stays quiet, since `mitm.rs` audits a clean Allow only
+when `pii.count > 0`. So "no audit" is wrong, and was one of this PR's corrections.
 
 Verified line-by-line against the implementation:
 - The four-branch trailer table (pre/post #130, commit 023cf54) matches `inspect_body` exactly —
@@ -70,9 +72,11 @@ invisible if you only follow the reasoning. Contrast with [[adr_0006_signed_head
    `mitm.rs:727`, both inside `inspect_body` and both before `forwarded_request`, whose
    `CONTENT_RANGE` check (`mitm.rs:403`) skips only the rewrite. So a `Content-Range` partial
    upload is scanned like any other body, and a body with an undecodable `Content-Encoding` reaches
-   the scanner as raw bytes — though that fallback only catches mislabelled plaintext, since
-   genuinely compressed bytes still fail `utf8_prefix` and yield nothing. Reaching the scanner is
-   not the same as being inspectable; keep the two apart. When a doc groups cases by their *warn*,
+   the scanner as raw bytes — though that fallback is opportunistic, not coverage: it catches
+   mislabelled plaintext, while genuinely compressed bytes normally fail `utf8_prefix` and yield
+   nothing (normally, not always — `utf8_prefix` rejects only *interior* invalid bytes, so it
+   tolerates a truncated trailing sequence and accepts any stream that is valid UTF-8 throughout).
+   Reaching the scanner is not the same as being inspectable; keep the two apart. When a doc groups cases by their *warn*,
    check whether they share the behaviour the grouping implies.
 
 Also worth noting for prose review generally: "no `warn` is logged for header-shaped fields" was
