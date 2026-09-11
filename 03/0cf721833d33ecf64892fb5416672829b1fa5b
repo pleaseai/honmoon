@@ -1,0 +1,42 @@
+wiki/deep-dive/architecture.md
+  s_4094bbd4c7170a::t_162de945f9a23b 76
+crates/honmoon-core/src/lib.rs
+  s_4094bbd4c7170a::t_09a7887e28735a 230-233,235-240,633-637
+wiki/getting-started/installation.md
+  s_4094bbd4c7170a::t_09a7887e28735a 18
+.please/docs/knowledge/tech-stack.md
+  s_4094bbd4c7170a::t_162de945f9a23b 19
+packages/policy/schema/policy.schema.json
+  s_4094bbd4c7170a::t_3be6a44943fcfe 57
+ARCHITECTURE.md
+  s_4094bbd4c7170a::t_162de945f9a23b 79
+wiki/index.md
+  s_4094bbd4c7170a::t_162de945f9a23b 98
+wiki/llms-full.txt
+  s_4094bbd4c7170a::t_9f7df9ee6c4ef3 973,1269,1279,1293,2191,2800-2803,2811-2813
+wiki/deep-dive/policy-engine.md
+  s_4094bbd4c7170a::t_162de945f9a23b 135,145,159
+wiki/getting-started/policy-authoring.md
+  s_4094bbd4c7170a::t_4fc0b32abd92fc 238-241,249-251
+crates/honmoon-core/src/engine.rs
+  s_4094bbd4c7170a::t_3b973e069a176a 393,397-403,435-436,438-440
+  s_4094bbd4c7170a::t_ff05b33b2c3f47 437
+crates/honmoon-cli/tests/enforced_isolation.rs
+  s_4094bbd4c7170a::t_09a7887e28735a 243
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "030cf721833d33ecf64892fb5416672829b1fa5b",
+  "prompts": {},
+  "sessions": {
+    "s_4094bbd4c7170a": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "27c19e8f-ac49-4d85-aeaa-c51fe711d295",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
