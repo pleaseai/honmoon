@@ -1,0 +1,40 @@
+.claude/agent-memory/review-review-security-reviewer/MEMORY.md
+  s_1f1d717002bf42::t_6ae991d49d5fc0 8
+.claude/agent-memory/review-review-security-reviewer/policy-yaml-trust-boundary.md
+  s_1f1d717002bf42::t_6ae991d49d5fc0 1-14
+.claude/agent-memory/review-review-pr-test-analyzer/shadowed_rules_self_shadow_gap.md
+  s_1f1d717002bf42::t_e005de650bda3f 3,9-27
+  s_1f1d717002bf42::t_764d957b2179b9 1-2,4-8
+.claude/agent-memory/review-review-documentation-analyzer/pr152_shadowed_rule_warning_empty_condition.md
+  s_1f1d717002bf42::t_b65343e0cebb96 1-40
+.claude/agent-memory/review-review-pr-test-analyzer/MEMORY.md
+  s_1f1d717002bf42::t_e005de650bda3f 6
+wiki/getting-started/policy-authoring.md
+  s_1f1d717002bf42::t_ed9f58f4c993f1 196,220,234-237,240-243
+  s_1f1d717002bf42::t_08077c86a220ef 238-239,276-280
+  s_1f1d717002bf42::t_9aa5e5da637084 281
+wiki/llms-full.txt
+  s_1f1d717002bf42::t_08077c86a220ef 2758,2782,2796-2805,2838-2842
+  s_1f1d717002bf42::t_8d5eb679fcac51 2843
+crates/honmoon-core/src/lib.rs
+  s_1f1d717002bf42::t_eddcd5e52d12ea 648-682
+  s_1f1d717002bf42::t_f4d7580e801dd8 264,508
+.claude/agent-memory/review-review-documentation-analyzer/MEMORY.md
+  s_1f1d717002bf42::t_cdaff6e8ea5d80 6
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "952b5fbeb1bf17bb89426cd6a7259e2274604e42",
+  "prompts": {},
+  "sessions": {
+    "s_1f1d717002bf42": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "901bfa5f-9bd6-49e5-ad4f-0e9343b2121f",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
