@@ -56,6 +56,13 @@ enum Command {
         #[arg(long, default_value = "127.0.0.1:8444", value_name = "HOST:PORT")]
         mgmt_addr: String,
         /// Append every verdict to this JSONL audit log (default: in-memory only).
+        ///
+        /// Must name a regular file: the sink is opened with `O_NOFOLLOW`, so a
+        /// symlink as the final path component is refused, as is a FIFO, socket,
+        /// device or directory (issue #138) — `--audit-log /dev/stdout` and a
+        /// rotation symlink included. Created owner-only (`0600` before the umask)
+        /// when absent; an existing file keeps the mode it has. A refusal aborts
+        /// startup rather than running without the audit trail.
         #[arg(long, value_name = "FILE")]
         audit_log: Option<PathBuf>,
         /// Bearer token required by `POST /api/hooks/claude-code`.
@@ -169,6 +176,13 @@ enum Command {
         /// alone — which a non-interactive hook process discards. Set it
         /// through the environment: the plugin's dispatcher runs `honmoon hook`
         /// with no arguments.
+        ///
+        /// Same constraint as `honmoon gateway --audit-log`: a regular file, never
+        /// a symlink, FIFO, socket or device (issue #138). A refused path is
+        /// reported to stderr and the hook carries on — which, per the paragraph
+        /// above, is a channel a non-interactive hook process discards, so a
+        /// degradation recorded nowhere is the cost of pointing this at a target
+        /// the sink will not take (issue #165).
         #[arg(long, value_name = "FILE", env = "HONMOON_AUDIT_LOG")]
         audit_log: Option<PathBuf>,
     },
@@ -334,10 +348,13 @@ fn gateway(args: GatewayArgs) -> Result<()> {
     tracing::info!(rules = policy.rules.len(), %addr, %socks_addr, %mgmt_addr, "starting gateway");
 
     let audit = match &audit_log {
-        Some(path) => Arc::new(
-            AuditLog::with_file(1024, path)
-                .with_context(|| format!("opening audit log {}", path.display()))?,
-        ),
+        Some(path) => Arc::new(AuditLog::with_file(1024, path).with_context(|| {
+            format!(
+                "opening audit log {} (it must name a regular file — a symlink, \
+                     FIFO, socket, device or directory is refused)",
+                path.display()
+            )
+        })?),
         None => Arc::new(AuditLog::new(1024)),
     };
 

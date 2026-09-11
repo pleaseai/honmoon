@@ -320,7 +320,13 @@ impl AuditLog {
     }
 }
 
-/// Open the JSONL sink at `path` for appending, creating it mode `0600` on Unix.
+/// Open the JSONL sink at `path` for appending, creating it owner-only on Unix.
+///
+/// "Owner-only", not "exactly `0600`": the creation mode is filtered through the
+/// process umask, so `0600` is the ceiling the operator's umask can only narrow
+/// (`umask 0200` yields `0400`). Narrower is never a weaker guarantee, so the mode
+/// is passed as-is rather than forced with a `chmod` — which would also override a
+/// deliberately restrictive umask.
 ///
 /// The path comes from an operator flag, but the *directory* it sits in may not be
 /// one only the honmoon user can write, and since issue #137 a second, short-lived
@@ -346,18 +352,33 @@ impl AuditLog {
 /// - A **symlinked parent directory**. `O_NOFOLLOW` constrains the final
 ///   component only; every directory above it is still resolved through symlinks,
 ///   so an actor who controls a directory *on* the configured path still chooses
-///   where the log lands. Closing that needs `openat2(RESOLVE_NO_SYMLINKS)` or a
-///   component-by-component `openat` walk, neither portable to macOS. Tracked in
-///   issue #160.
+///   where the log lands. `openat2(RESOLVE_NO_SYMLINKS)` would close it in one
+///   call but is Linux-only; the portable form is a component-by-component
+///   `openat` walk with `O_NOFOLLOW` at each step, which macOS does support and
+///   which is simply not written yet — a larger change with its own test surface
+///   than this open. Tracked in issue #160.
 /// - The **mode of a file that already exists**. `mode` applies only when this
 ///   call creates the file, so a log left group- or world-readable by an earlier
 ///   honmoon (which created it at the umask default) or by the operator keeps
-///   that mode. Unlike the hook salt, which `set_permissions_0600` re-tightens on
-///   every read (`honmoon-cli/src/hook.rs`), this path is chosen by the operator
+///   that mode. Unlike the hook salt, which `restrict_to_owner_only` re-tightens
+///   on every read (`honmoon-cli/src/hook.rs`), this path is chosen by the operator
 ///   and may be collected by a log shipper that was granted group read
 ///   deliberately; silently re-tightening it every time the gateway or a hook
 ///   process opens it would break that collection with no signal. Reporting it
 ///   instead needs a degradation event of its own — issue #161.
+/// - **A final inode the attacker chose by means other than a symlink.** The two
+///   bullets above are what `O_NOFOLLOW` and the type check cover; this one is the
+///   same list read from the other side, because enumerating refused *link types*
+///   hides everything that is not a link. An actor who can write the directory can
+///   pre-create the path as an ordinary `0666` file, or `link(2)` it onto a file of
+///   their own: both are regular files owned by nobody this code checks, so the
+///   `fstat` passes, the creation mode never applies, and every record lands
+///   somewhere they read. The payload is what makes that matter — the gateway's
+///   records name hosts, SQL tables and PII categories, and a hook's degradation
+///   record carries the absolute `$HOME` path of the salt it could not use. Closing
+///   it means refusing a sink this process does not solely own (`uid`/`nlink` off
+///   the same `fstat`), which is the same decision as #161's: whether honmoon may
+///   refuse or re-tighten an audit file it did not create. Both are tracked there.
 fn open_sink(path: &Path) -> std::io::Result<std::fs::File> {
     let mut opts = std::fs::OpenOptions::new();
     opts.create(true).append(true);
@@ -367,7 +388,7 @@ fn open_sink(path: &Path) -> std::io::Result<std::fs::File> {
         opts.mode(0o600);
         opts.custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
     }
-    let file = opts.open(path)?;
+    let file = opts.open(path).map_err(|e| explain_refusal(path, e))?;
 
     // `File::metadata` is `fstat` on the descriptor above, not a fresh lookup of
     // `path`, so this is the type of the object actually opened.
@@ -385,13 +406,42 @@ fn open_sink(path: &Path) -> std::io::Result<std::fs::File> {
     Ok(file)
 }
 
+/// Rewrite the one open error whose wording actively misleads, and pass every
+/// other one through in the OS's own words.
+///
+/// `O_NOFOLLOW` reports a refused symlink as `ELOOP` — "Too many levels of symbolic
+/// links" — which describes a link *cycle*. An operator whose audit path is one
+/// ordinary symlink (a rotation `current -> audit-2026-09-12.jsonl`, say) reads that
+/// and learns nothing about why honmoon refused it, on a flag whose failure aborts
+/// gateway startup. A parent-directory loop reports the same errno, so the
+/// replacement names both rather than asserting which one happened.
+#[cfg(unix)]
+fn explain_refusal(path: &Path, e: std::io::Error) -> std::io::Error {
+    if e.raw_os_error() != Some(libc::ELOOP) {
+        return e;
+    }
+    std::io::Error::new(
+        std::io::ErrorKind::InvalidInput,
+        format!(
+            "audit log {} was refused with ELOOP: the audit sink is opened with              O_NOFOLLOW, so a symlink as the final path component is refused (a              symlink loop in a parent directory reports the same error)",
+            path.display()
+        ),
+    )
+}
+
+/// Non-Unix hosts get no `O_NOFOLLOW`, so there is no `ELOOP` of ours to explain.
+#[cfg(not(unix))]
+fn explain_refusal(_path: &Path, e: std::io::Error) -> std::io::Error {
+    e
+}
+
 /// Name what [`open_sink`] found at the audit path, so the operator is told which
 /// kind of wrong target they configured rather than only that it was wrong.
 ///
 /// The list is short because it names only what a write-mode open can actually
-/// succeed on. A directory (`EISDIR`), a socket (`ENXIO`) and a symlink
-/// (`O_NOFOLLOW` → `ELOOP`) never reach here: the open has already failed with
-/// its own errno, which is what the caller reports.
+/// succeed on. A directory (`EISDIR`), a socket (`ENXIO` on Linux, `EOPNOTSUPP`
+/// on macOS) and a symlink (`O_NOFOLLOW` → `ELOOP`) never reach here: the open
+/// has already failed with its own errno, which is what the caller reports.
 #[cfg(unix)]
 fn describe_file_type(file_type: &std::fs::FileType) -> &'static str {
     use std::os::unix::fs::FileTypeExt;
@@ -646,6 +696,11 @@ mod tests {
             "original\n",
             "the refused open must not have appended through the link: {err}"
         );
+        // Pin *why* it was refused. `is_err()` alone would also pass if the open
+        // failed for an unrelated reason, which would not prove `O_NOFOLLOW` is
+        // what is doing the work.
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput, "{err}");
+        assert!(err.to_string().contains("O_NOFOLLOW"), "{err}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -660,10 +715,10 @@ mod tests {
         let link = dir.join("audit.jsonl");
         std::os::unix::fs::symlink(&elsewhere, &link).expect("plant dangling symlink");
 
-        assert!(
-            AuditLog::with_file(4, &link).is_err(),
-            "a dangling symlinked sink must be refused"
-        );
+        let Err(err) = AuditLog::with_file(4, &link) else {
+            panic!("a dangling symlinked sink must be refused");
+        };
+        assert!(err.to_string().contains("O_NOFOLLOW"), "{err}");
         assert!(
             !elsewhere.exists(),
             "the refused open must not have created the link's target"
@@ -714,22 +769,78 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// `/dev/full` is a character device, which is not a durable audit sink
-    /// either. Also the constructor half of
-    /// `record_durable_hands_back_a_sink_that_refuses_the_write`, which now
-    /// installs its sink directly because of this refusal.
-    #[cfg(target_os = "linux")]
+    /// The half of the FIFO refusal the test above cannot reach. With no reader,
+    /// `O_NONBLOCK` makes `open` itself fail `ENXIO` before `fstat` ever runs — so
+    /// that test proves the sink does not block, and proves nothing about the
+    /// regular-file check. Attach a reader first and the open *succeeds*; only the
+    /// `fstat` refuses it.
+    ///
+    /// That is the adversarial ordering, not a curiosity: `O_NONBLOCK` alone is
+    /// defeated by anyone who can hold the FIFO open for reading, and this check is
+    /// the backstop. Without this test a regression that dropped
+    /// `!file_type.is_file()` would still pass the suite.
+    #[cfg(unix)]
+    #[test]
+    fn with_file_refuses_a_fifo_that_already_has_a_reader() {
+        use std::os::unix::fs::OpenOptionsExt;
+
+        let dir = scratch_dir("fifo-reader");
+        let fifo = dir.join("audit.jsonl");
+        let c_path = std::ffi::CString::new(fifo.as_os_str().as_encoded_bytes())
+            .expect("path has no interior NUL");
+        // SAFETY: `c_path` is a valid NUL-terminated path for the duration of the
+        // call, and `mkfifo` only creates a filesystem entry.
+        let made = unsafe { libc::mkfifo(c_path.as_ptr(), 0o600) };
+        assert_eq!(
+            made,
+            0,
+            "mkfifo failed: {}",
+            std::io::Error::last_os_error()
+        );
+
+        // `O_RDONLY | O_NONBLOCK` on a FIFO returns at once instead of waiting for
+        // a writer, so the reader is attached before the open under test runs.
+        let _reader = std::fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_NONBLOCK)
+            .open(&fifo)
+            .expect("attach a reader to the FIFO");
+
+        let Err(err) = AuditLog::with_file(4, &fifo) else {
+            panic!("a FIFO with a reader opens successfully and must be refused by the type check");
+        };
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput, "{err}");
+        assert!(err.to_string().contains("a FIFO"), "{err}");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A character device is not a durable audit sink either — and unlike a FIFO
+    /// or a socket it opens *successfully*, so this is the one refusal that can
+    /// only come from the post-open `fstat`. `/dev/null` rather than `/dev/full`
+    /// because it exists on every Unix; this is also the constructor half of
+    /// `record_durable_hands_back_a_sink_that_refuses_the_write`, which installs
+    /// its sink directly because of this refusal.
+    #[cfg(unix)]
     #[test]
     fn with_file_refuses_a_character_device() {
-        let Err(err) = AuditLog::with_file(4, "/dev/full") else {
+        let Err(err) = AuditLog::with_file(4, "/dev/null") else {
             panic!("a character device is not a regular file");
         };
         assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput, "{err}");
+        assert!(err.to_string().contains("a character device"), "{err}");
     }
 
-    /// The sink is created `0600`: the gateway's records name hosts, SQL tables
-    /// and PII categories, and a hook's degradation record carries the absolute
-    /// `$HOME` path of the salt it could not use.
+    /// The sink is created owner-only: the gateway's records name hosts, SQL
+    /// tables and PII categories, and a hook's degradation record carries the
+    /// absolute `$HOME` path of the salt it could not use.
+    ///
+    /// The assertion is `mode & 0o077 == 0`, not `mode == 0o600`, because the
+    /// creation mode is filtered through the process umask — `0600` is a ceiling
+    /// the operator's umask can only narrow (`umask 0200` yields `0400`, `umask
+    /// 0777` yields `0000`). Owner-only is the property this test exists to hold;
+    /// asserting the exact value would fail the suite on a machine whose umask is
+    /// *stricter* than required, which is not a defect.
     #[cfg(unix)]
     #[test]
     fn a_created_sink_is_owner_only() {
@@ -745,7 +856,11 @@ mod tests {
             .permissions()
             .mode()
             & 0o777;
-        assert_eq!(mode, 0o600, "created sink is {mode:04o}, want 0600");
+        assert_eq!(
+            mode & 0o077,
+            0,
+            "created sink is {mode:04o}, want no access beyond its owner"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 

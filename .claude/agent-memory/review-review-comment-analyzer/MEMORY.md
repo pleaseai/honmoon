@@ -2,3 +2,4 @@
 - [postgres.rs sync-point protocol claims](postgres_sync_point_protocol_claims.md) — PR #112 barrier mechanics verified accurate; one real prose imprecision ("answered" vs sync-point), and the COPY-Sync claim flagged there turned out to be correct per the v3 spec
 - [postgres.rs flush-barrier claims (PR #147)](postgres_flush_barrier_pr147.md) — issue #113 flush counters verified accurate end-to-end; the one gap found (`# Invariant` block not cross-referencing flush_answers<=flushes) was fixed in-PR
 - [ADR reference link convention split](adr_reference_link_convention.md) — honmoon-proxy has two coexisting styles for citing ADRs in rustdoc (linked `[ADR-N]` vs bare text); flag as style not accuracy
+- [PR #163 audit-sink comment claims](pr163_audit_sink_comment_claims.md) — wrong hook.rs function name, wrong macOS errno (EOPNOTSUPP not ENXIO for sockets), libc-syscall claim self-contradicted by PR's own test; cross-issue refs all checked out
