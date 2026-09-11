@@ -1,0 +1,80 @@
+.claude/agent-memory/review-review-documentation-analyzer/adr_0006_signed_header_amendment.md
+  s_34f639d2e09b64::t_e67cf0c61559b5 40-51
+.claude/agent-memory/review-review-pr-test-analyzer/socks_fake_pg_upstream_swallows_sync.md
+  s_34f639d2e09b64::t_e67cf0c61559b5 1-40
+.claude/agent-memory/review-review-type-design-analyzer/honmoon_proxy_sync_point_tracking.md
+  s_34f639d2e09b64::t_e67cf0c61559b5 1-67
+.claude/agent-memory/review-review-comment-analyzer/postgres_sync_point_protocol_claims.md
+  s_34f639d2e09b64::t_e67cf0c61559b5 1-36
+crates/honmoon-cli/src/main.rs
+  s_34f639d2e09b64::t_e67cf0c61559b5 98-102
+crates/honmoon-proxy/src/body.rs
+  s_34f639d2e09b64::t_e67cf0c61559b5 29,149-154,165-169,175,177-196,200-220,378-407,779-803,808-826,832
+.please/docs/decisions/0007-inline-postgresql-runtime-semantics.md
+  s_34f639d2e09b64::t_e67cf0c61559b5 112-209
+crates/honmoon-proxy/src/signed_body.rs
+  s_34f639d2e09b64::t_e67cf0c61559b5 103-105
+.claude/agent-memory/review-review-security-reviewer/MEMORY.md
+  s_34f639d2e09b64::t_e67cf0c61559b5 4,7
+.claude/agent-memory/review-review-pr-test-analyzer/content_length_trailers_h2.md
+  s_34f639d2e09b64::t_e67cf0c61559b5 1-29
+.claude/agent-memory/review-review-documentation-analyzer/MEMORY.md
+  s_34f639d2e09b64::t_e67cf0c61559b5 2,6
+.claude/agent-memory/review-review-pr-test-analyzer/rewritten_headers_generic_dispatch.md
+  s_34f639d2e09b64::t_e67cf0c61559b5 1-32
+.claude/agent-memory/review-review-security-reviewer/signed-body-detection-invariants.md
+  s_34f639d2e09b64::t_e67cf0c61559b5 32-39
+.claude/agent-memory/review-review-documentation-analyzer/honmoon_pg_runtime_timeout_docs.md
+  s_34f639d2e09b64::t_e67cf0c61559b5 1-24
+crates/honmoon-proxy/Cargo.toml
+  s_34f639d2e09b64::t_e67cf0c61559b5 22-24
+crates/honmoon-proxy/src/mitm.rs
+  s_34f639d2e09b64::t_e67cf0c61559b5 52-53,503-508,511-512,532-533,555-559,622-627,631,634,641,643,1151-1153,1156-1159,1175-1194,1440-1479,1619-1656
+  s_34f639d2e09b64::t_b8217ad2418365 1657
+.claude/agent-memory/review-review-security-reviewer/request-trailer-plumbing.md
+  s_34f639d2e09b64::t_e67cf0c61559b5 1-34
+.claude/agent-memory/review-review-pr-test-analyzer/MEMORY.md
+  s_34f639d2e09b64::t_e67cf0c61559b5 2,4-5
+.claude/agent-memory/review-review-security-reviewer/postgres-refusal-ordering-barrier.md
+  s_34f639d2e09b64::t_e67cf0c61559b5 1-66
+.claude/agent-memory/review-review-type-design-analyzer/MEMORY.md
+  s_34f639d2e09b64::t_e67cf0c61559b5 1
+.claude/agent-memory/review-review-silent-failure-hunter/project_trailer_preservation_body_rs.md
+  s_34f639d2e09b64::t_e67cf0c61559b5 1-26
+.claude/agent-memory/review-review-documentation-analyzer/pr146_signed_digest_readme_cli_stale.md
+  s_34f639d2e09b64::t_e67cf0c61559b5 1-30
+.claude/agent-memory/review-review-comment-analyzer/MEMORY.md
+  s_34f639d2e09b64::t_e67cf0c61559b5 2
+.claude/agent-memory/review-review-code-reviewer/project_signed_body_framing_headers_83.md
+  s_34f639d2e09b64::t_e67cf0c61559b5 3,26-38
+crates/honmoon-proxy/src/runtime/postgres.rs
+  s_34f639d2e09b64::t_e67cf0c61559b5 22-31,39,49,102-113,125-138,142-144,147,149-153,158-470,485,491-499,541-568,573,577-579,592-598,600-603,609,615-621,623-625,691-697,903-912,967-975,1115-1126,1129-1131,1168-1173,1175-1184,1186-1200,1292-1357,1709-2299
+  s_34f639d2e09b64::t_7efc377c824368 2300
+README.md
+  s_34f639d2e09b64::t_e67cf0c61559b5 212-216,231-232
+crates/honmoon-proxy/tests/redaction.rs
+  s_34f639d2e09b64::t_e67cf0c61559b5 29-35,47-48,79-88,109-169,981-1015,1275-1367
+  s_34f639d2e09b64::t_ac19ab1cfd9ac0 1368
+crates/honmoon-proxy/tests/socks.rs
+  s_34f639d2e09b64::t_e67cf0c61559b5 112-117
+.claude/agent-memory/review-review-silent-failure-hunter/MEMORY.md
+  s_34f639d2e09b64::t_e67cf0c61559b5 4
+.please/docs/decisions/0006-signed-body-requests-under-wire-redaction.md
+  s_34f639d2e09b64::t_e67cf0c61559b5 142-150
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "f3f98bb838634bc505bac5a74e231ccc0513471f",
+  "prompts": {},
+  "sessions": {
+    "s_34f639d2e09b64": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "deda3644-1fdd-412d-a687-7ecfae2c80b1",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
