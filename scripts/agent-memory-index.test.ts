@@ -66,6 +66,20 @@ metadata:
     }
   })
 
+  test('reads a block scalar whose header carries a comment', () => {
+    for (const header of ['> # summary follows', '|- # summary follows', '>2 # note']) {
+      expect(parseFrontmatter(`---
+name: block
+description: ${header}
+  first line
+  second line
+metadata:
+  type: project
+---
+`).scalars.description).toBe('first line second line')
+    }
+  })
+
   test('unquotes a scalar that had to be quoted to stay valid YAML', () => {
     expect(parseFrontmatter(`---
 description: "note: a colon forces quoting"

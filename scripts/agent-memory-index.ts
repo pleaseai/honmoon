@@ -93,9 +93,12 @@ const TOP_LEVEL_KEY = /^([a-z][\w-]*):[ \t]*(\S.*)?$/i
  *
  * The value is carried by the indented lines that follow, so the header itself
  * must not become the value: `description: >` would otherwise index as the
- * literal `>` with the real text folded onto it.
+ * literal `>` with the real text folded onto it. A header may carry a trailing
+ * comment, the same allowance the quoted forms get — and for the same reason,
+ * that failing to recognise the header does not fail loudly, it indexes the
+ * header text as though the note had written it.
  */
-const BLOCK_SCALAR = /^[|>](?:[1-9][+-]?|[+-][1-9]?)?$/
+const BLOCK_SCALAR = /^[|>](?:[1-9][+-]?|[+-][1-9]?)?(?:\s+#.*)?$/
 
 /**
  * The YAML double-quoted escapes that stand for one character.
