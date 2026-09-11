@@ -215,14 +215,15 @@ given, verbatim. Verified on 2.1.263 — the module's engine call returns an emp
 verdict and the transcript carries one set of placeholders. Drop the `hooks` key
 from `hooks/hooks.json` to run the module alone.
 
-That holds for the `process` transport. With `transport: "http"` the two layers
-key their placeholders differently: `honmoon hook` derives its salt from the
-payload's `session_id`, while the management API uses the gateway's
-`--hook-salt-context`, so one secret can surface as two different `<<hs:…>>`
-tokens in a session (a `Bash` result redacted by the command hook, a `WebFetch`
-result redacted by the module). Until the gateway derives its salt from the
-session as well, run the http transport with the command hooks dropped, or keep
-`transport: "process"`.
+That holds for `transport: "http"` as well. Both transports derive the salt from
+the payload's `session_id`, keyed by the machine secret at `~/.honmoon/hook-salt`,
+so one secret mints one `<<hs:…>>` token per session whichever layer saw it — a
+`Bash` result redacted by the command hook and a `WebFetch` result redacted by the
+module carry the identical placeholder (#98). The exception is a gateway started
+with `--hook-salt-context`: that pins the endpoint to the given context instead of
+the session, so either leave it unset or pin the command hooks to the same value
+(`honmoon hook --salt-context`, or `HONMOON_HOOK_SALT_CONTEXT` in their
+environment).
 
 ### Typings
 
