@@ -24,9 +24,9 @@ gap 2 stands.**
    channel the PR's own docs say a non-interactive hook's output "reaches nobody". The merged code
    splits the write out: `AuditLog::record_durable` returns the sink result, `record` keeps the
    old warn-and-continue behaviour for every existing caller, `record_machine_key_source`
-   (`hook.rs:284`) returns that result, and `audit_machine_key_source` (`hook.rs:330`) reports a
-   refused sink with `eprintln!`. **The durable lesson: `tracing::warn!` is not a reporting
-   channel in a short-lived subprocess.** No `RUST_LOG`, no ring to query afterwards, and stderr
+   (`hook.rs:270`) returns that result, and `audit_machine_key_source` (`hook.rs:315`) reports a
+   refused sink with `eprintln!` (`hook.rs:330`). **The durable lesson: `tracing::warn!` is
+   not a reporting channel in a short-lived subprocess.** No `RUST_LOG`, no ring to query afterwards, and stderr
    discarded — a warn there is indistinguishable from doing nothing. A one-shot process must hand
    the failure back to its caller.
 2. Correlated failure: the same underlying condition that makes the persisted salt file
