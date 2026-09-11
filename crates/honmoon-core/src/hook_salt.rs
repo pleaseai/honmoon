@@ -17,11 +17,14 @@
 //! filesystem I/O the transports own, which keeps `honmoon-core` I/O-free.
 //!
 //! That last point bounds the guarantee: the transports agree because they read
-//! the same machine key, which holds while they run as one user on one host. A
-//! gateway under a different `HOME`, user, or host reads a different key, and
-//! then equal contexts still mint different placeholders — a pinned salt context
-//! cannot close that, since the key is what the context is mixed into. Sharing
-//! key material explicitly is tracked in issue #126.
+//! the same machine key, and each reads it from its own `$HOME/.honmoon/hook-salt`
+//! (a process with no `HOME` falls back to a working-directory-relative
+//! `.honmoon`). Running as one user on one host normally means one file, but it is
+//! the file that matters, not the user — the same user reads a different one
+//! whenever `HOME` differs. Different files mean different keys, and then equal
+//! contexts still mint different placeholders; a pinned salt context cannot close
+//! that, since the key is what the context is mixed into. Sharing key material
+//! explicitly is tracked in issue #126.
 
 use hmac::{Hmac, Mac};
 use serde_json::Value;

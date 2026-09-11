@@ -215,26 +215,32 @@ given, verbatim. Verified on 2.1.263 — the module's engine call returns an emp
 verdict and the transcript carries one set of placeholders. Drop the `hooks` key
 from `hooks/hooks.json` to run the module alone.
 
-That holds for `transport: "http"` as well **when the gateway runs as the same user
-on the same host as the agent** — the co-located deployment the `hookUrl` example
-above describes. Both transports then derive the salt from the payload's
-`session_id`, keyed by the same machine secret at `~/.honmoon/hook-salt`, so one
-secret mints one `<<hs:…>>` token per session whichever layer saw it: a `Bash`
-result redacted by the command hook and a `WebFetch` result redacted by the module
-carry the identical placeholder (#98). A gateway started with `--hook-salt-context`
-is the exception — that pins the endpoint to the given context instead of the
-session, so either leave it unset or pin the command hooks to the same value
-(`honmoon hook --salt-context`, or `HONMOON_HOOK_SALT_CONTEXT` in their
-environment).
+That holds for `transport: "http"` as well **when both processes read the same
+`~/.honmoon/hook-salt`** — that file is the machine secret keying the HMAC, and
+each process resolves it from its own `HOME`. Running the gateway as the same user
+on the same host as the agent, the co-located deployment the `hookUrl` example
+above describes, is the usual way that condition is met, not the condition itself.
+Both transports then derive the salt from the payload's `session_id` under that
+shared key, so one secret mints one `<<hs:…>>` token per session whichever layer
+saw it: a `Bash` result redacted by the command hook and a `WebFetch` result
+redacted by the module carry the identical placeholder (#98). A gateway started
+with `--hook-salt-context` is the exception — that pins the endpoint to the given
+context instead of the session, so either leave it unset or pin the command hooks
+to the same value (`honmoon hook --salt-context`, or `HONMOON_HOOK_SALT_CONTEXT`
+in their environment).
 
-**Known limitation — a gateway that is not co-located.** `honmoon hook` reads the
-agent process's `~/.honmoon/hook-salt`; the management endpoint reads the gateway
-process's. Under a different user, a different `HOME`, or a different host those
-are different keys, so the same `session_id` mints different placeholders and the
-parity above does not hold. Matching `--hook-salt-context` values do **not** close
-it: the context is mixed into an HMAC the machine key keys, so mismatched keys stay
-mismatched. Until the key can be shared explicitly (#126), run the two on one host
-as one user, or keep `transport: "process"`.
+**Known limitation — the two sides can read different salt files.** `honmoon hook`
+reads the agent process's `$HOME/.honmoon/hook-salt`; the management endpoint reads
+the gateway process's. Those differ across hosts and across users, and they differ
+for the *same* user whenever `HOME` does — a service unit with its own
+`Environment=HOME=`, a `sudo` that resets it, a container sharing the host's UID
+namespace. (A process with no `HOME` at all falls back to a `.honmoon` relative to
+its working directory, which differs again.) Different files mean different keys,
+so the same `session_id` mints different placeholders and the parity above does not
+hold. Matching `--hook-salt-context` values do **not** close it: the context is
+mixed into an HMAC the machine key keys, so mismatched keys stay mismatched. Until
+the key can be shared explicitly (#126), give both processes the same `HOME`, or
+keep `transport: "process"`.
 
 ### Typings
 
