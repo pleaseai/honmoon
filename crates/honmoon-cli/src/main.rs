@@ -377,13 +377,7 @@ fn gateway(args: GatewayArgs) -> Result<()> {
     let mgmt_listener = TcpListener::bind(&mgmt_addr)
         .with_context(|| format!("binding management API {mgmt_addr}"))?;
 
-    // The hook endpoint keys on the agent's session by default, byte-identical
-    // to `honmoon hook`, so mixed transports agree; a pinned context instead
-    // shares wire redaction's one salt (#98).
-    let hook_salt = match hook_salt_context {
-        Some(_) => HookSalt::fixed(wire_salt),
-        None => HookSalt::per_session(machine_key),
-    };
+    let hook_salt = hook_salt_for(hook_salt_context.as_deref(), wire_salt, machine_key);
     let app_state = AppState::with_hook_config(state.clone(), policy_yaml, hook_salt, hook_token);
 
     let runtime = tokio::runtime::Runtime::new().context("build tokio runtime")?;
@@ -617,6 +611,24 @@ fn bind_loopback_pair() -> Result<(TcpListener, Option<TcpListener>)> {
     ))
 }
 
+/// Choose how the management hook endpoint keys placeholder minting.
+///
+/// Unpinned — the default — it follows each payload's `session_id`, which is
+/// what makes it byte-identical to `honmoon hook` and is the whole of #98. A
+/// pinned context instead shares wire redaction's one salt, which is already
+/// derived from that same context.
+///
+/// Named and separate from `gateway` so the choice can be tested: swapping the
+/// two arms leaves every transport-level test passing while parity is dead in
+/// the shipped binary, because those tests are handed the variant rather than
+/// selecting it.
+fn hook_salt_for(context: Option<&str>, wire_salt: Vec<u8>, machine_key: Vec<u8>) -> HookSalt {
+    match context {
+        Some(_) => HookSalt::fixed(wire_salt),
+        None => HookSalt::per_session(machine_key),
+    }
+}
+
 fn load_policy(path: &PathBuf) -> Result<Policy> {
     let src = std::fs::read_to_string(path)
         .with_context(|| format!("reading policy {}", path.display()))?;
@@ -626,6 +638,31 @@ fn load_policy(path: &PathBuf) -> Result<Policy> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #98: an unpinned gateway must hand the endpoint a *session*-derived salt,
+    /// since that is the only variant that matches what `honmoon hook` derives.
+    /// The transport tests are given the variant, so this is the only check that
+    /// the gateway picks it.
+    #[test]
+    fn an_unpinned_context_selects_the_per_session_salt() {
+        let wire_salt = b"wire-salt-from-the-pinned-context".to_vec();
+        let machine_key = b"machine-key".to_vec();
+
+        assert!(
+            matches!(
+                hook_salt_for(None, wire_salt.clone(), machine_key.clone()),
+                HookSalt::PerSession(_)
+            ),
+            "unpinned must follow the payload's session, not the gateway's context"
+        );
+        assert!(
+            matches!(
+                hook_salt_for(Some("pinned"), wire_salt, machine_key),
+                HookSalt::Fixed(_)
+            ),
+            "a pinned context must share wire redaction's one salt"
+        );
+    }
 
     /// The macOS Seatbelt hole is `localhost:<port>`, which covers `::1` as well
     /// as `127.0.0.1`. Owning the port on both families is what makes that hole
