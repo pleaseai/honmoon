@@ -19,6 +19,15 @@ import {
   trackedIndexFiles,
 } from './agent-memory-index'
 
+/**
+ * A note whose `description:` is written out verbatim, for the multi-line and
+ * indicator-led values `note()` cannot express — the continuation lines are
+ * part of the argument.
+ */
+function noteWith(description: string, tail = 'metadata:\n  type: project'): string {
+  return `---\nname: a-note\ndescription: ${description}${tail ? `\n${tail}` : ''}\n---\n`
+}
+
 function note(name: string, description: string): string {
   return `---
 name: ${name}
@@ -83,21 +92,9 @@ metadata:
   // YAML gives `key: # text` a null value — the remainder is a comment. Capturing
   // it made a note with no summary list as though the comment were the summary.
   test('treats a comment-only value as no value at all', () => {
-    const { scalars, problems } = parseFrontmatter(`---
-name: a-note
-description: # write this later
-metadata:
-  type: project
----
-`)
+    const { scalars, problems } = parseFrontmatter(noteWith(`# write this later`))
     expect(scalars.description).toBeUndefined()
-    expect(noteEntry('n.md', `---
-name: a-note
-description: # write this later
-metadata:
-  type: project
----
-`).problems).toEqual([expect.stringContaining('no `description:`')])
+    expect(noteEntry('n.md', noteWith(`# write this later`)).problems).toEqual([expect.stringContaining('no `description:`')])
     expect(problems).toEqual([])
   })
 
@@ -125,14 +122,8 @@ metadata:
 
   // Inside a block scalar `#` is literal, so the report must not fire there.
   test('does not report a `#` inside a block scalar, where it is literal', () => {
-    expect(parseFrontmatter(`---
-name: a-note
-description: >
-  fixed in PR #155, so do X
-metadata:
-  type: project
----
-`)).toMatchObject({ scalars: { description: 'fixed in PR #155, so do X' }, problems: [] })
+    expect(parseFrontmatter(noteWith(`>
+  fixed in PR #155, so do X`))).toMatchObject({ scalars: { description: 'fixed in PR #155, so do X' }, problems: [] })
   })
 
   // `description: null` is the absence of a value, not the word — storing the
@@ -193,14 +184,8 @@ metadata:
   // built `first # note`, which the ` #` check then rejected: a valid note
   // failing CI on a comment YAML had already discarded.
   test('drops a comment line following a plain scalar', () => {
-    const text = `---
-name: a-note
-description: first
-  # note
-metadata:
-  type: project
----
-`
+    const text = noteWith(`first
+  # note`)
     expect(parseFrontmatter(text)).toMatchObject({ scalars: { description: 'first' }, problems: [] })
   })
 
@@ -209,14 +194,8 @@ metadata:
   // skipping the line there dropped real content and left the quote unclosed.
   test('keeps a # line continuing a quoted scalar', () => {
     for (const quote of ['"', '\'']) {
-      const text = `---
-name: a-note
-description: ${quote}first
-  # still text${quote}
-metadata:
-  type: project
----
-`
+      const text = noteWith(`${quote}first
+  # still text${quote}`)
       expect(parseFrontmatter(text)).toMatchObject({ scalars: { description: 'first # still text' }, problems: [] })
     }
   })
@@ -224,15 +203,25 @@ metadata:
   // ...and a quoted scalar that already closed on its own line is followed by a
   // real comment, which YAML drops.
   test('drops a comment after a closed quoted scalar', () => {
-    const text = `---
-name: a-note
-description: "done"
-  # note
-metadata:
-  type: project
----
-`
+    const text = noteWith(`"done"
+  # note`)
     expect(parseFrontmatter(text)).toMatchObject({ scalars: { description: 'done' }, problems: [] })
+  })
+
+  // A comment at column zero ends the value above it, so indented content after
+  // one lands where YAML expects a key. Both readers refuse it, for a block
+  // scalar and a plain one alike.
+  test('reports content resumed after a column-zero comment', () => {
+    for (const opening of ['>', 'first']) {
+      expect(parseFrontmatter(noteWith(`${opening}\n# comment\n  actual`, '')).problems)
+        .toEqual([expect.stringContaining('comment')])
+    }
+  })
+
+  // ...but a column-zero comment that simply precedes the next key is fine, and
+  // an *indented* comment under a block scalar is its content, not a comment.
+  test('accepts a column-zero comment that ends the value cleanly', () => {
+    expect(parseFrontmatter(noteWith('>\n# comment', 'metadata:\n  type: project')).problems).toEqual([])
   })
 
   // The unkeyed-line check must not decide what a *key* looks like. Plenty of
@@ -240,49 +229,27 @@ metadata:
   // `description`, and reporting them failed CI for notes that load fine.
   test('leaves a valid top-level key it does not index alone', () => {
     for (const line of ['foo.bar: x', '2fa: x', '"odd key": x', 'UPPER: x']) {
-      const text = `---
-name: a-note
-description: a summary
-${line}
----
-`
+      const text = noteWith('a summary', line)
       expect(parseFrontmatter(text).problems).toEqual([])
     }
   })
 
   // `...` ends a YAML document explicitly and may precede the closing fence.
   test('accepts an explicit document end marker', () => {
-    const text = `---
-name: a-note
-description: a summary
-...
----
-`
+    const text = noteWith('a summary', '...')
     expect(parseFrontmatter(text).problems).toEqual([])
   })
 
   // A comment indented under a block scalar's content ends the scalar, and YAML
   // ignores it — folding it in both corrupted the summary and failed the note.
   test('ignores a comment outdented below block content', () => {
-    const text = `---
-name: a-note
-description: >
-  first
- # note
----
-`
+    const text = noteWith('>\n  first\n # note', '')
     expect(parseFrontmatter(text)).toMatchObject({ scalars: { description: 'first' }, problems: [] })
   })
 
   // ...while outdented *content* is still the parse error it was.
   test('still reports outdented block content', () => {
-    const text = `---
-name: a-note
-description: >
-  first
- second
----
-`
+    const text = noteWith('>\n  first\n second', '')
     expect(parseFrontmatter(text).problems).toEqual([expect.stringContaining('indent')])
   })
 
@@ -290,14 +257,7 @@ description: >
   // key, which both readers refuse — and the continuation branch, which only
   // looks at indented lines, skipped it in silence.
   test('reports an unkeyed line at column zero', () => {
-    const text = `---
-name: a-note
-description: summary
-stray
-metadata:
-  type: project
----
-`
+    const text = noteWith('summary', 'stray\nmetadata:\n  type: project')
     expect(parseFrontmatter(text).problems).toEqual([expect.stringContaining('not a key')])
   })
 
@@ -317,28 +277,16 @@ metadata:
   // A comment line is dropped before it is ever measured: a tab inside one is
   // not indentation, and pyyaml loads this note as `first`.
   test('keeps a tab inside a comment following a plain scalar', () => {
-    const text = `---
-name: a-note
-description: first
-  # note\twith tab
-metadata:
-  type: project
----
-`
+    const text = noteWith(`first
+  # note\twith tab`)
     expect(parseFrontmatter(text)).toMatchObject({ scalars: { description: 'first' }, problems: [] })
   })
 
   // ...but a comment line that *starts* with a tab still puts one where the
   // indentation goes, which YAML refuses.
   test('reports a comment line indented with a tab', () => {
-    const text = `---
-name: a-note
-description: first
-\t# note
-metadata:
-  type: project
----
-`
+    const text = noteWith(`first
+\t# note`)
     expect(parseFrontmatter(text).problems).toEqual([expect.stringContaining('tab')])
   })
 
@@ -370,56 +318,32 @@ metadata:
   // A tab is only forbidden where indentation goes. Past the required indent of
   // a block scalar it is ordinary content, and both readers keep it.
   test('keeps a tab that falls after block indentation', () => {
-    const text = `---
-name: a-note
-description: |
-  \tfoo
-metadata:
-  type: project
----
-`
+    const text = noteWith(`|
+  \tfoo`)
     expect(parseFrontmatter(text).problems).toEqual([])
   })
 
   // In a plain continuation the readers disagree — pyyaml refuses the document,
   // Bun.YAML folds the tab in — which is the drift this reader reports.
   test('reports a tab inside a plain continuation', () => {
-    const text = `---
-name: a-note
-description: first
-  second\tthird
-metadata:
-  type: project
----
-`
+    const text = noteWith(`first
+  second\tthird`)
     expect(parseFrontmatter(text).problems).toEqual([expect.stringContaining('tab')])
   })
 
   // Without an explicit indicator the first content line sets the indentation,
   // and a later line under it ends the scalar where YAML expects a key.
   test('reports block content under the inferred indentation', () => {
-    const text = `---
-name: a-note
-description: >
+    const text = noteWith(`>
   first
- second
-metadata:
-  type: project
----
-`
+ second`)
     expect(parseFrontmatter(text).problems).toEqual([expect.stringContaining('indent')])
   })
 
   test('accepts block content that holds the inferred indentation', () => {
-    const text = `---
-name: a-note
-description: >
+    const text = noteWith(`>
   first
-  second
-metadata:
-  type: project
----
-`
+  second`)
     expect(parseFrontmatter(text)).toMatchObject({ scalars: { description: 'first second' }, problems: [] })
   })
 
@@ -440,28 +364,16 @@ metadata:
   // Once the quote closes, the scalar is finished: a further content line is a
   // key YAML cannot parse. A further *comment* line is still fine.
   test('reports content after a closed quoted scalar', () => {
-    const text = `---
-name: a-note
-description: "done" # note
-  junk
-metadata:
-  type: project
----
-`
+    const text = noteWith(`"done" # note
+  junk`)
     expect(parseFrontmatter(text).problems).not.toEqual([])
   })
 
   // A tab cannot provide YAML indentation at all, so a tab-continued scalar is
   // a document neither reader will load — and this one folded it silently.
   test('reports a tab used as indentation', () => {
-    const text = `---
-name: a-note
-description: first
-\tsecond
-metadata:
-  type: project
----
-`
+    const text = noteWith(`first
+\tsecond`)
     expect(parseFrontmatter(text).problems).toEqual([expect.stringContaining('tab')])
   })
 
@@ -490,14 +402,8 @@ metadata:
 
   test('still accepts every valid block header', () => {
     for (const header of ['|', '>', '|2', '>-', '|+', '> # note']) {
-      const text = `---
-name: a-note
-description: ${header}
-  content here
-metadata:
-  type: project
----
-`
+      const text = noteWith(`${header}
+  content here`)
       expect(parseFrontmatter(text).problems).toEqual([])
     }
   })
@@ -506,40 +412,22 @@ metadata:
   // content must actually meet it: both readers refuse `|2` over a line with
   // one space. The continuation branch accepted any indentation at all.
   test('reports block content under an explicit indentation indicator', () => {
-    const text = `---
-name: a-note
-description: |2
- first
-metadata:
-  type: project
----
-`
+    const text = noteWith(`|2
+ first`)
     expect(parseFrontmatter(text).problems).toEqual([expect.stringContaining('indentation indicator')])
   })
 
   test('accepts block content that meets the indicator', () => {
-    const text = `---
-name: a-note
-description: |2
-  first
-metadata:
-  type: project
----
-`
+    const text = noteWith(`|2
+  first`)
     expect(parseFrontmatter(text)).toMatchObject({ scalars: { description: 'first' }, problems: [] })
   })
 
   // The first occurrence never reached `scalars` when it had no value, so the
   // repeat check could not see it and a malformed note passed silently.
   test('reports a repeat whose first occurrence had no value', () => {
-    const text = `---
-name: a-note
-description: # write this later
-description: real
-metadata:
-  type: project
----
-`
+    const text = noteWith(`# write this later
+description: real`)
     expect(parseFrontmatter(text).problems).toEqual([expect.stringContaining('more than once')])
   })
 
@@ -547,14 +435,8 @@ metadata:
   // — but the author wrote two summaries and one vanished silently, and YAML
   // requires mapping keys to be unique (js-yaml refuses the document outright).
   test('reports an indexed key given more than once', () => {
-    const text = `---
-name: a-note
-description: first
-description: second
-metadata:
-  type: project
----
-`
+    const text = noteWith(`first
+description: second`)
     expect(parseFrontmatter(text).problems).toEqual([expect.stringContaining('more than once')])
   })
 
@@ -562,14 +444,8 @@ metadata:
   // scalar syntax, so it must not be run through the quoted-scalar reader.
   test('keeps block scalar content literal', () => {
     for (const [content, expected] of [['&notanchor', '&notanchor'], ['"not quoted"', '"not quoted"'], ['!tag', '!tag']]) {
-      const text = `---
-name: a-note
-description: |
-  ${content}
-metadata:
-  type: project
----
-`
+      const text = noteWith(`|
+  ${content}`)
       expect(parseFrontmatter(text)).toMatchObject({ scalars: { description: expected }, problems: [] })
     }
   })
@@ -578,13 +454,7 @@ metadata:
   // legitimately a number is not a note defect — reporting it failed `--check`
   // over a value the index never renders.
   test('ignores top-level fields the index does not read', () => {
-    const text = `---
-name: a-note
-description: a summary
-version: 2
-tags: [a, b]
----
-`
+    const text = noteWith('a summary', 'version: 2\ntags: [a, b]')
     expect(parseFrontmatter(text).problems).toEqual([])
   })
 
@@ -1025,14 +895,8 @@ metadata:
   // YAML drops an escaped line break *and* the indentation after it, where
   // every other continuation joins with a space.
   test('joins an escaped line break with nothing, not a space', () => {
-    const { scalars, problems } = parseFrontmatter(`---
-name: a-note
-description: "one\\
-  two"
-metadata:
-  type: project
----
-`)
+    const { scalars, problems } = parseFrontmatter(noteWith(`"one\\
+  two"`))
     expect(scalars.description).toBe('onetwo')
     expect(problems).toEqual([])
   })
@@ -1040,14 +904,8 @@ metadata:
   // A trailing `\\` is an escaped backslash, not an escaped break, so that line
   // folds with a space like any other.
   test('still folds with a space after an escaped backslash', () => {
-    const { scalars } = parseFrontmatter(`---
-name: a-note
-description: "one\\\\
-  two"
-metadata:
-  type: project
----
-`)
+    const { scalars } = parseFrontmatter(noteWith(`"one\\\\
+  two"`))
     expect(scalars.description).toBe('one\\ two')
   })
 

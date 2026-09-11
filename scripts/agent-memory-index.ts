@@ -365,6 +365,8 @@ export function parseFrontmatter(text: string): Frontmatter {
   const underIndented = new Set<string>()
   const tabIndented = new Set<string>()
   const tabInPlain = new Set<string>()
+  const closedByComment = new Set<string>()
+  const resumedAfterComment = new Set<string>()
   const afterClose = new Set<string>()
   const badHeader = new Set<string>()
   let key: string | null = null
@@ -430,6 +432,18 @@ export function parseFrontmatter(text: string): Frontmatter {
     // The continuation branch below only looks at indented lines, so this fell
     // through every check and the note indexed as though it were well formed.
     const bare = line.trim()
+
+    // A comment at column zero closes the value above it — a block scalar ends
+    // there, and so does a plain one. Nothing is wrong with the comment itself;
+    // what YAML refuses is indented content *after* it, which lands where a key
+    // is expected. Recorded here and reported at the continuation below.
+    if (bare.startsWith('#') && !/^[ \t]/.test(line)) {
+      if (key) {
+        closedByComment.add(key)
+      }
+      continue
+    }
+
     if (bare !== '' && !/^[ \t]/.test(line) && !bare.startsWith('#') && bare !== '---' && bare !== '...' && !COULD_BE_KEY.test(line)) {
       problems.push(`\`${bare}\` is not a key, and YAML expects one at the start of a line in this mapping — indent it to continue the value above, or give it a key`)
       continue
@@ -441,6 +455,11 @@ export function parseFrontmatter(text: string): Frontmatter {
     // inside a folded scalar it is literal text, and these descriptions are full
     // of issue references that a comment-stripping parser would eat.
     if (key && /^[ \t]/.test(line) && line.trim() !== '') {
+      if (closedByComment.has(key)) {
+        resumedAfterComment.add(key)
+        continue
+      }
+
       const soFarRaw = (scalars[key] ?? '').trim()
       const quoted = /^['"]/.test(soFarRaw)
       const plainScalar = !blockScalars.has(key) && !quoted
@@ -527,6 +546,10 @@ export function parseFrontmatter(text: string): Frontmatter {
       continue
     }
     const raw = value.trim()
+
+    if (resumedAfterComment.has(name)) {
+      problems.push(`\`${name}:\` resumes after a comment at column zero, which ends the value — YAML expects a key on the next unindented line, not more text`)
+    }
 
     if (tabIndented.has(name)) {
       problems.push(`\`${name}:\` is continued by a line indented with a tab, which YAML does not accept as indentation — indent with spaces`)
