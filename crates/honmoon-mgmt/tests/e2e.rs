@@ -15,7 +15,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use honmoon_core::{AuditLog, Decision, PathResolution, Policy};
-use honmoon_mgmt::AppState;
+use honmoon_mgmt::{AppState, HookSalt};
 use honmoon_proxy::approval::ApprovalRegistry;
 use honmoon_proxy::ca::CaMaterial;
 use honmoon_proxy::gateway::{GatewayState, InterceptPolicy, PiiMode, RedactionState};
@@ -44,12 +44,16 @@ struct Gateway {
 
 /// Start the proxy and the management API on one runtime, sharing state.
 fn start_gateway(policy_yaml: &str) -> Gateway {
-    start_gateway_with_hook(policy_yaml, b"e2e-hook-salt".to_vec(), None)
+    start_gateway_with_hook(
+        policy_yaml,
+        HookSalt::fixed(b"e2e-hook-salt".to_vec()),
+        None,
+    )
 }
 
 fn start_gateway_with_hook(
     policy_yaml: &str,
-    hook_salt: Vec<u8>,
+    hook_salt: HookSalt,
     hook_token: Option<String>,
 ) -> Gateway {
     let policy = Policy::from_yaml(policy_yaml).unwrap();
@@ -289,7 +293,7 @@ fn claude_code_hook_endpoint_redacts_and_requires_configured_bearer() {
     let salt = b"http-hook-parity-salt".to_vec();
     let gw = start_gateway_with_hook(
         "egress:\n  default: deny\n",
-        salt.clone(),
+        HookSalt::fixed(salt.clone()),
         Some("test-hook-token".to_string()),
     );
     let payload = serde_json::json!({
@@ -325,7 +329,11 @@ fn claude_code_hook_endpoint_redacts_and_requires_configured_bearer() {
 
 #[test]
 fn claude_code_hook_resolves_agent_relative_paths_and_denies_unresolved() {
-    let gw = start_gateway_with_hook("egress:\n  default: deny\n", b"cwd-salt".to_vec(), None);
+    let gw = start_gateway_with_hook(
+        "egress:\n  default: deny\n",
+        HookSalt::fixed(b"cwd-salt".to_vec()),
+        None,
+    );
 
     // Agent-side working directory holding an innocuously-named symlink to key
     // material — the issue #55 bypass scenario. The gateway runs in a different
@@ -403,7 +411,12 @@ fn claude_code_hook_endpoint_accumulates_live_mappings() {
     let policy_yaml = "egress:\n  default: deny\n";
     let policy = Policy::from_yaml(policy_yaml).unwrap();
     let state = GatewayState::new(policy);
-    let app = AppState::with_hook_config(state, policy_yaml, b"mapping-store-salt".to_vec(), None);
+    let app = AppState::with_hook_config(
+        state,
+        policy_yaml,
+        HookSalt::fixed(b"mapping-store-salt".to_vec()),
+        None,
+    );
     let mappings = app.hook_mappings.clone();
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port();
@@ -442,7 +455,7 @@ fn hook_created_mapping_restores_proxy_response_without_request_remint() {
     let mut state = GatewayState::new(Policy::from_yaml(policy_yaml).unwrap());
     state.redaction = Some(RedactionState::new(salt.clone()));
     let proxy_mappings = Arc::clone(&state.redaction.as_ref().unwrap().mappings);
-    let app = AppState::with_hook_config(state.clone(), policy_yaml, salt, None);
+    let app = AppState::with_hook_config(state.clone(), policy_yaml, HookSalt::fixed(salt), None);
     assert!(Arc::ptr_eq(&app.hook_mappings, &proxy_mappings));
 
     let proxy_listener = TcpListener::bind("127.0.0.1:0").unwrap();

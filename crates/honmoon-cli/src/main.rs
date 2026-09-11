@@ -10,11 +10,14 @@ use std::sync::Arc;
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand, ValueEnum};
 use honmoon_core::{AuditLog, Policy};
-use honmoon_mgmt::AppState;
+use honmoon_mgmt::{AppState, HookSalt};
 use honmoon_proxy::ca::CaMaterial;
 use honmoon_proxy::gateway::{
     DEFAULT_PAUSE_TIMEOUT, GatewayState, InterceptPolicy, PiiMode, RedactionState, SignedBodyMode,
 };
+
+/// Salt context wire redaction keys on when the operator pins none.
+const DEFAULT_SALT_CONTEXT: &str = "default";
 
 #[derive(Parser)]
 #[command(
@@ -59,19 +62,21 @@ enum Command {
         /// May also be supplied through `HONMOON_HOOK_TOKEN`.
         #[arg(long, value_name = "TOKEN", env = "HONMOON_HOOK_TOKEN")]
         hook_token: Option<String>,
-        /// Stable salt context shared by gateway hook redaction and CLI hooks.
-        /// Domain-separation input only: placeholder unforgeability and per-machine
-        /// uniqueness come from the random `~/.honmoon/hook-salt` secret, which
-        /// keys the HMAC this value is mixed into — so the default is safe. Override
-        /// it only to separate instances that deliberately share one machine salt.
+        /// Pin the salt context for hook redaction instead of keying it on each
+        /// hook payload's `session_id`.
+        ///
+        /// Unset (the default), `POST /api/hooks/claude-code` derives its salt
+        /// from the session exactly as `honmoon hook` does, so a session that
+        /// mixes the two transports mints one placeholder per secret (#98). Pin
+        /// it — matching `honmoon hook --salt-context` / the same
+        /// `HONMOON_HOOK_SALT_CONTEXT` on the agent side — to instead share one
+        /// salt with wire redaction, which is process-scoped and always keys on
+        /// this context (`default` when unset). Domain-separation input only:
+        /// unforgeability and per-machine uniqueness come from the random
+        /// `~/.honmoon/hook-salt` secret that keys the HMAC it is mixed into.
         /// May also be supplied through `HONMOON_HOOK_SALT_CONTEXT`.
-        #[arg(
-            long,
-            value_name = "CONTEXT",
-            env = "HONMOON_HOOK_SALT_CONTEXT",
-            default_value = "default"
-        )]
-        hook_salt_context: String,
+        #[arg(long, value_name = "CONTEXT", env = "HONMOON_HOOK_SALT_CONTEXT")]
+        hook_salt_context: Option<String>,
         /// Terminate TLS (MITM) to inspect request bodies for PII. Agents must
         /// trust the CA certificate. See --pii-mode to choose audit or enforcement.
         #[arg(long)]
@@ -260,7 +265,7 @@ struct GatewayArgs {
     mgmt_addr: String,
     audit_log: Option<PathBuf>,
     hook_token: Option<String>,
-    hook_salt_context: String,
+    hook_salt_context: Option<String>,
     tls_intercept: bool,
     redact_secrets: bool,
     signed_body: SignedBodyArg,
@@ -335,9 +340,15 @@ fn gateway(args: GatewayArgs) -> Result<()> {
         )
     };
 
-    let salt = hook::derive_salt_context(&hook_salt_context);
+    // Wire redaction is process-scoped — the proxy sees connections, not agent
+    // sessions — so it always keys on the configured context.
+    let machine_key = hook::machine_key();
+    let wire_salt = honmoon_core::derive_hook_salt(
+        &machine_key,
+        hook_salt_context.as_deref().unwrap_or(DEFAULT_SALT_CONTEXT),
+    );
     let redaction = redact_secrets
-        .then(|| RedactionState::new(salt.clone()).with_signed_body(signed_body.into()));
+        .then(|| RedactionState::new(wire_salt.clone()).with_signed_body(signed_body.into()));
     let state = GatewayState {
         policy: Arc::new(policy),
         audit,
@@ -366,7 +377,14 @@ fn gateway(args: GatewayArgs) -> Result<()> {
     let mgmt_listener = TcpListener::bind(&mgmt_addr)
         .with_context(|| format!("binding management API {mgmt_addr}"))?;
 
-    let app_state = AppState::with_hook_config(state.clone(), policy_yaml, salt, hook_token);
+    // The hook endpoint keys on the agent's session by default, byte-identical
+    // to `honmoon hook`, so mixed transports agree; a pinned context instead
+    // shares wire redaction's one salt (#98).
+    let hook_salt = match hook_salt_context {
+        Some(_) => HookSalt::fixed(wire_salt),
+        None => HookSalt::per_session(machine_key),
+    };
+    let app_state = AppState::with_hook_config(state.clone(), policy_yaml, hook_salt, hook_token);
 
     let runtime = tokio::runtime::Runtime::new().context("build tokio runtime")?;
     runtime.block_on(async move {
