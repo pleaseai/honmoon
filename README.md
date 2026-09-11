@@ -210,8 +210,14 @@ the body is redacted, that value reaches the upstream verbatim, and a `warn` nam
 were skipped. Unlike the header-shaped fields below it was scanned — it counts toward `pii.count`,
 it is audited, and `--pii-mode block` can deny on it.
 
-**Those are the cases where honmoon tries to rewrite and cannot, or can only in part. They are not
-the only way content reaches the upstream unredacted.** Inspection covers request **bodies** only: header and
+A further case is *quiet*: the redaction floor is MEDIUM (`DEFAULT_MIN_PII_SEVERITY`), so a finding
+below it — a bare IPv4 address is the standing example — is detected and deliberately left in
+place. When it is a body's only finding, nothing is rewritten and **no redaction `warn` is
+logged**, because nothing failed. Lower the floor if you want those redacted.
+
+**Those are the cases where honmoon tries to rewrite and cannot, or chooses not to. They are not
+the only way content reaches the upstream unredacted, and this list does not claim to be
+exhaustive.** Inspection covers request **bodies** only: header and
 trailer values are never scanned for PII or secrets and never redacted — including a secret placed
 in a chunked trailer (`Trailer: X-Note` followed by `0\r\nX-Note: <secret>`). Unlike every
 redaction case above, no `warn` is logged about their contents: header-shaped fields were never in

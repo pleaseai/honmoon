@@ -115,22 +115,33 @@ obligation deferred by this ADR.
 
 ## Consequences
 
-**What this guarantees.** A reader of the fail-modes section now gets a complete answer to "how can
-content reach the upstream unredacted **on an intercepted request**?". The threat model has one
-stated boundary rather than an enumeration that reads as exhaustive and is not. It is not an answer
-for traffic that is never intercepted: the SOCKS5 raw tunnel, and a CONNECT tunnel without
-`--tls-intercept`, gate on `domain` and inspect nothing at all — whole bodies included. The README
-documents that as a second egress path in its own right.
+**What this guarantees — and the claim it deliberately stops making.** This ADR states one
+boundary: **the inspection contract covers request bodies only.** That claim is exhaustive and is
+the thing to rely on.
 
-It is not an account of *partial* redaction either. When an `application/json` body carries PII in
-an **unquoted numeric value**, `quoted_json_spans` skips that span so the rewrite cannot emit
-invalid JSON: the rest of the body is redacted, the skipped value reaches the upstream verbatim,
-and a `warn` names the count (`wire redaction skipped unquoted JSON PII to preserve valid syntax`,
-`mitm.rs:449`; test `unquoted_numeric_json_pii_is_not_rewritten`). That case is unlike the
-header-shaped fields this ADR is about, and the difference is the whole point of the distinction
-drawn here: the value *was* scanned, so it counts toward `pii.count`, an audit records it, and a
-`pii.count > 0 -> deny` under `--pii-mode block` refuses the request. What fails there is the
-rewrite, not the inspection.
+It does **not** claim to enumerate every way content can reach the upstream unredacted. The
+fail-modes section said it did, and each review round found another path it had missed, which is
+the evidence that the claim was the wrong shape rather than merely incomplete. The paths known
+today are recorded below, and the list is offered as known-incomplete:
+
+- **Never intercepted.** The SOCKS5 raw tunnel, and a CONNECT tunnel without `--tls-intercept`,
+  gate on `domain` and inspect nothing at all — whole bodies included. The README documents that
+  as a second egress path in its own right.
+- **Partial redaction, JSON syntax.** When an `application/json` body carries PII in an **unquoted
+  numeric value**, `quoted_json_spans` skips that span so the rewrite cannot emit invalid JSON: the
+  rest of the body is redacted, the skipped value reaches the upstream verbatim, and a `warn` names
+  the count (`mitm.rs:449`; test `unquoted_numeric_json_pii_is_not_rewritten`).
+- **Partial redaction, severity floor.** `DEFAULT_MIN_PII_SEVERITY` is MEDIUM, so a finding below
+  it — a bare IPv4 address is the standing example — is detected and deliberately left in place. If
+  it is the body's *only* finding, `outcome.redacted` is false and `forwarded_request` returns the
+  request unchanged with **no** redaction `warn` (test
+  `min_severity_gate_skips_low_severity_ip_by_default`, `redact.rs:209`).
+
+The last two are unlike the header-shaped fields this ADR is about, and the difference is the whole
+point of the distinction drawn here: those values *were* scanned, so they count toward `pii.count`,
+an audit records them, and a `pii.count > 0 -> deny` under `--pii-mode block` refuses the request.
+What fails there is the rewrite, not the inspection. For a header or a trailer, nothing is scanned
+and no positive-finding rule can fire at all.
 
 **What this does not guarantee.** Nothing about the data plane changed. What *reaches* the upstream
 turns out to be conditional in enough independent ways that every attempt to state it in one
@@ -148,10 +159,10 @@ HTTP request**; on the raw-tunnel path none of it applies, because nothing there
 **The body row's "yes" is itself conditional.** Three conditions mean no finding is possible at
 all. An over-cap body never reaches the scanner (`scanned` is `None`); a decoded body that
 overflows the cap is discarded rather than judged on a truncated prefix (`StrictDecode::Overflow` →
-`inspected: None`); a body with *interior* invalid bytes is handed to the scanner but `utf8_prefix`
-returns `None`. That last one is narrower than "non-UTF-8": a merely truncated trailing multi-byte
-sequence is tolerated, and the valid prefix ahead of it is scanned, so a secret sitting in that
-prefix is still found. Where the three do bite, `pii` ends up empty, so `pii.count > 0` cannot
+`inspected: None`); a body with *interior* invalid bytes is rejected **before** the scanner, since
+`inspect_body` runs `utf8_prefix` first and `detect_spans` never sees a `None`. That last one is
+narrower than "non-UTF-8": a merely truncated trailing multi-byte sequence is tolerated, and the
+valid prefix ahead of it *is* scanned, so a secret sitting in that prefix is still found. Where the three do bite, `pii` ends up empty, so `pii.count > 0` cannot
 block them any more than it can block a trailer — the `warn` is the only thing that marks them.
 
 **Two of the fail-open cases are redaction-only, and those bodies do reach the scanner** — do not

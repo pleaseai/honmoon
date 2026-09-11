@@ -83,4 +83,4 @@ Also worth noting for prose review generally: "no `warn` is logged for header-sh
 *true as meant* and still had to be qualified, because two of the four warns are **triggered** by a
 header (`Content-Range` presence, an unparseable `Content-Encoding`) even though each reports a
 skipped *body* rewrite. A claim that survives verification can still contradict what an operator
-reads. Same lesson shape as [[guard-unnecessary-doc-comment]].
+reads.

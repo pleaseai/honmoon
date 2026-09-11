@@ -26,7 +26,7 @@
 //!   carried trailer survives is a separate, conditional matter: a wire
 //!   redaction rewrite replaces the body with `Full`, which has no trailer
 //!   frame, so the client's trailers are dropped there (see
-//!   `mitm::MitmHandler::forwarded_request`). See
+//!   `mitm::HonmoonHandler::forwarded_request`). See
 //!   `.please/docs/decisions/0009-body-only-inspection-contract.md`.
 
 use std::borrow::Cow;
