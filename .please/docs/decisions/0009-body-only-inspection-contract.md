@@ -89,8 +89,9 @@ None of that changes the inspection contract: a dropped trailer was not inspecte
 
 This is recorded in three places so it cannot be rediscovered as a surprise:
 
-1. `README.md`, in the "Wire redaction fail modes" section, which now distinguishes the four
-   loud fail-open cases from the silent out-of-contract surface.
+1. `README.md`, in the "Wire redaction fail modes" section, which now distinguishes the loud
+   redaction cases — the four fail-opens and the partial JSON skip — from the silent
+   out-of-contract surface.
 2. Module documentation on `inspect_body` and on `buffer_up_to`/`buffered_body` — at the point in
    the code where trailers are preserved, so the next reader of that code sees the boundary
    without leaving the file.
@@ -120,6 +121,16 @@ stated boundary rather than an enumeration that reads as exhaustive and is not. 
 for traffic that is never intercepted: the SOCKS5 raw tunnel, and a CONNECT tunnel without
 `--tls-intercept`, gate on `domain` and inspect nothing at all — whole bodies included. The README
 documents that as a second egress path in its own right.
+
+It is not an account of *partial* redaction either. When an `application/json` body carries PII in
+an **unquoted numeric value**, `quoted_json_spans` skips that span so the rewrite cannot emit
+invalid JSON: the rest of the body is redacted, the skipped value reaches the upstream verbatim,
+and a `warn` names the count (`wire redaction skipped unquoted JSON PII to preserve valid syntax`,
+`mitm.rs:449`; test `unquoted_numeric_json_pii_is_not_rewritten`). That case is unlike the
+header-shaped fields this ADR is about, and the difference is the whole point of the distinction
+drawn here: the value *was* scanned, so it counts toward `pii.count`, an audit records it, and a
+`pii.count > 0 -> deny` under `--pii-mode block` refuses the request. What fails there is the
+rewrite, not the inspection.
 
 **What this does not guarantee.** Nothing about the data plane changed. What *reaches* the upstream
 turns out to be conditional in enough independent ways that every attempt to state it in one

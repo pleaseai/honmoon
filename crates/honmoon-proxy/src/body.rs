@@ -19,7 +19,10 @@
 //! - **Bodies only**: the helpers here produce *body* bytes for inspection.
 //!   Trailers are carried through this module to be replayed on the
 //!   pass-through path, but carrying is not scanning — trailer and header
-//!   values are never inspected or redacted anywhere in the pipeline. Whether a
+//!   values are never scanned for PII or secrets, never passed to a detector
+//!   and never redacted anywhere in the pipeline. (Headers *are* read, for
+//!   framing, decoding and signature metadata — that is metadata handling, not
+//!   detection.) Whether a
 //!   carried trailer survives is a separate, conditional matter: a wire
 //!   redaction rewrite replaces the body with `Full`, which has no trailer
 //!   frame, so the client's trailers are dropped there (see

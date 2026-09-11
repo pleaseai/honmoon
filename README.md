@@ -204,13 +204,19 @@ bodies whose declared `Content-Encoding` cannot be decoded, and partial uploads 
 — except when the request's authentication signs headers or binds the body, since `Accept-Encoding`
 may itself be signed; those responses may arrive compressed and are then left as they are).
 
-**Those four are the cases where honmoon tries to rewrite and cannot. They are not the only way
-content reaches the upstream unredacted.** Inspection covers request **bodies** only: header and
+One further case is *partial* rather than fail-open: in an `application/json` body, PII in an
+**unquoted numeric value** is skipped by the rewrite so the output stays valid JSON. The rest of
+the body is redacted, that value reaches the upstream verbatim, and a `warn` names how many spans
+were skipped. Unlike the header-shaped fields below it was scanned — it counts toward `pii.count`,
+it is audited, and `--pii-mode block` can deny on it.
+
+**Those are the cases where honmoon tries to rewrite and cannot, or can only in part. They are not
+the only way content reaches the upstream unredacted.** Inspection covers request **bodies** only: header and
 trailer values are never scanned for PII or secrets and never redacted — including a secret placed
-in a chunked trailer (`Trailer: X-Note` followed by `0\r\nX-Note: <secret>`). Unlike the four
-fail-open cases above, no `warn` is logged about their contents: header-shaped fields were never in
+in a chunked trailer (`Trailer: X-Note` followed by `0\r\nX-Note: <secret>`). Unlike every
+redaction case above, no `warn` is logged about their contents: header-shaped fields were never in
 scope, so there is nothing to fail — the scan is not failing open, it never applied. Two of those
-four warns are triggered by a header — `Content-Range`'s presence, an unparseable
+warns are triggered by a header — `Content-Range`'s presence, an unparseable
 `Content-Encoding` — but each reports a skipped *body* rewrite, not an unscanned header value.
 
 **`pii.count` stays `0`, and that cuts both ways.** No rule that requires a *positive* finding can
