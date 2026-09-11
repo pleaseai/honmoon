@@ -964,6 +964,32 @@ fn presigned_sigv4_upload_without_a_payload_hash_is_still_redacted() {
     assert_eq!(mappings.unwrap().len(), 1);
 }
 
+// `forward` is the same escape hatch for the presigned carrier: the bytes the
+// client signed reach the upstream untouched, whichever carrier classified the
+// request as body-signed.
+#[test]
+fn presigned_sigv4_upload_with_a_payload_hash_is_forwarded_unredacted_in_forward_mode() {
+    let (upstream, captured) = start_upstream(ResponseMode::Static(b"ok".to_vec()));
+    let (proxy, mappings) = start_proxy_with_signed_body(true, SignedBodyMode::Forward);
+    let body = format!("key={SECRET}");
+
+    let response = proxy_request_to(
+        proxy,
+        upstream,
+        PRESIGNED_TARGET,
+        body.as_bytes(),
+        &[("x-amz-content-sha256", &"a".repeat(64))],
+    );
+    assert!(response.starts_with(b"HTTP/1.1 200"));
+    let forwarded = captured.recv_timeout(Duration::from_secs(5)).unwrap();
+    assert_eq!(forwarded.body, body.as_bytes());
+    assert_eq!(
+        header_value(&forwarded.headers, "content-length"),
+        Some(body.len().to_string().as_str())
+    );
+    assert_eq!(mappings.unwrap().len(), 0);
+}
+
 // The presigned URL that *does* bind its payload — a hex `x-amz-content-sha256`
 // alongside the query signature — still takes the fail-closed decision.
 #[test]
