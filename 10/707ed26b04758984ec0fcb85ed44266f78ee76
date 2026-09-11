@@ -1,0 +1,37 @@
+.claude/agent-memory/review-review-security-reviewer/policy-yaml-trust-boundary.md
+  s_278e684068cde0::t_cf30b6f1790dbe 1-14
+wiki/getting-started/policy-authoring.md
+  s_278e684068cde0::t_cf30b6f1790dbe 191-244,276-280
+  s_278e684068cde0::t_6a38f84382bfd9 281
+.claude/agent-memory/review-review-pr-test-analyzer/MEMORY.md
+  s_278e684068cde0::t_cf30b6f1790dbe 6
+crates/honmoon-core/src/lib.rs
+  s_278e684068cde0::t_cf30b6f1790dbe 184-187,192,259-329,497-727
+.claude/agent-memory/review-review-documentation-analyzer/pr152_shadowed_rule_warning_empty_condition.md
+  s_278e684068cde0::t_cf30b6f1790dbe 1-46
+.claude/agent-memory/review-review-pr-test-analyzer/shadowed_rules_self_shadow_gap.md
+  s_278e684068cde0::t_cf30b6f1790dbe 1-27
+.claude/agent-memory/review-review-documentation-analyzer/MEMORY.md
+  s_278e684068cde0::t_cf30b6f1790dbe 7
+.claude/agent-memory/review-review-security-reviewer/MEMORY.md
+  s_278e684068cde0::t_cf30b6f1790dbe 8
+wiki/llms-full.txt
+  s_278e684068cde0::t_cf30b6f1790dbe 2753-2806,2838-2842
+  s_278e684068cde0::t_f7dadd803f1c20 2843
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "10707ed26b04758984ec0fcb85ed44266f78ee76",
+  "prompts": {},
+  "sessions": {
+    "s_278e684068cde0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "f250795b-6e43-4d11-913b-21a295e9f51a",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
