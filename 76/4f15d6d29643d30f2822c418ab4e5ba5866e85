@@ -1,0 +1,32 @@
+.claude/agent-memory/review-review-documentation-analyzer/pr147_adr0007_flush_gap_stale.md
+  s_278e684068cde0::t_d010f208ba79a9 1-31
+.claude/agent-memory/review-review-silent-failure-hunter/project_flush_refusal_barrier_pg113.md
+  s_278e684068cde0::t_840e17b4513aef 1-29
+.claude/agent-memory/review-review-comment-analyzer/postgres_flush_barrier_pr147.md
+  s_278e684068cde0::t_cb5022a27ced6b 1-38
+.claude/agent-memory/review-review-documentation-analyzer/MEMORY.md
+  s_278e684068cde0::t_c23aa6b2eab4db 5
+.claude/agent-memory/review-review-security-reviewer/postgres-refusal-ordering-barrier.md
+  s_278e684068cde0::t_e6df5449ae89cd 57-60
+  s_278e684068cde0::t_a4bdb467e206cb 33-56,61
+.claude/agent-memory/review-review-comment-analyzer/MEMORY.md
+  s_278e684068cde0::t_a4bdb467e206cb 3
+.claude/agent-memory/review-review-silent-failure-hunter/MEMORY.md
+  s_278e684068cde0::t_c742cdee2fad2e 5
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "764f15d6d29643d30f2822c418ab4e5ba5866e85",
+  "prompts": {},
+  "sessions": {
+    "s_278e684068cde0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "f250795b-6e43-4d11-913b-21a295e9f51a",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
