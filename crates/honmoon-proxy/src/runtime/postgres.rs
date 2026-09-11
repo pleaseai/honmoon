@@ -480,16 +480,25 @@ impl ClientLink {
             // credited here.
             let covered = flushes_covered.load(Ordering::Relaxed);
             // This answer proves the output of every flush it covers was
-            // emitted, so a write-off debt standing for those flushes is
+            // emitted, so write-off debt standing for those flushes is
             // discharged rather than still owed: it was recorded to absorb the
             // quiet their late output would produce, and this `ReadyForQuery`
             // also reset the relay's freshness count, so the next quiet belongs
             // to a later batch and has to credit *it*. Leaving the debt standing
             // would make that batch's refusal pay a stall window for output the
             // client already has.
-            if covered >= delivered.flush_answers {
-                delivered.flush_debt = 0;
-            }
+            //
+            // Only the portion this answer proves, though. Write-offs stack: a
+            // second batch can be written off before the first sync point is
+            // answered, and that answer then covers only the earlier flush.
+            // Debt is always owed for the *most recent* credits, since a
+            // write-off raises `flush_answers` and the debt together — so
+            // everything at or below `flush_answers - flush_debt` was genuinely
+            // observed, and what this answer retires is how far `covered`
+            // reaches past that line.
+            let genuine = delivered.flush_answers.saturating_sub(delivered.flush_debt);
+            let proved = covered.saturating_sub(genuine).min(delivered.flush_debt);
+            delivered.flush_debt -= proved;
             delivered.flush_answers = delivered.flush_answers.max(covered);
             let Some(count) = delivered.sync_points.as_mut() else {
                 return;
@@ -3004,6 +3013,55 @@ mod tests {
         )
         .await
         .expect("the batch was answered, so the refusal is released without a stall");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_partly_covering_answer_discharges_only_the_debt_it_proves() {
+        // Two write-offs can stack before the first sync point's answer lands,
+        // and that answer then covers only the earlier flush. Discharging the
+        // debt only when it covers *all* of it leaves the proven unit standing,
+        // so a later batch pays a stall window for output already accounted
+        // for. Discharge the covered portion instead.
+        let (link, _peer) = loopback_link().await;
+        link.forwarded_flush();
+        link.forwarded_sync_point();
+        link.await_forwarded_responses().await;
+
+        // A second flushed batch, written off in its own stall window while the
+        // first sync point is still unanswered.
+        link.forwarded_flush();
+        link.await_forwarded_responses().await;
+        assert_eq!(
+            (
+                link.delivered.borrow().flush_answers,
+                link.delivered.borrow().flush_debt,
+            ),
+            (2, 2),
+            "both flushes were written off, so both are owed back"
+        );
+
+        // The first sync point's answer finally arrives. It proves the output
+        // of the flush it covers — the first — and nothing about the second.
+        link.delivered_message(true);
+        assert_eq!(
+            (
+                link.delivered.borrow().flush_answers,
+                link.delivered.borrow().flush_debt,
+            ),
+            (2, 1),
+            "the answer proved one flush, so exactly one unit of debt is retired"
+        );
+
+        // One quiet clears what is genuinely still owed, and the next credits
+        // the batch it belongs to rather than paying a debt already proved.
+        link.forwarded_flush();
+        link.flush_drained(link.flushes.load(Ordering::Relaxed));
+        link.flush_drained(link.flushes.load(Ordering::Relaxed));
+        assert_eq!(
+            link.delivered.borrow().flush_answers,
+            3,
+            "a stale debt unit swallowed the quiet that should have settled this batch"
+        );
     }
 
     #[tokio::test]

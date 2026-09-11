@@ -212,7 +212,11 @@ that fails to parse: it is refused rather than forwarded blind.
     `ReadyForQuery` proving that output was emitted also resets the relay's freshness count — so no
     such quiet can still be coming, and the next one belongs to a later batch and has to credit it.
     Leaving the debt standing would make that batch pay a stall window for output the client
-    already has.
+    already has. Only the portion the answer proves is retired, because write-offs stack: a second
+    batch can be written off before the first sync point is answered, and that answer then speaks
+    for the earlier flush alone. Debt is always owed for the most recent credits — a write-off
+    raises the counter and the debt together — so everything below the line they leave was
+    genuinely observed, and the answer retires however far its coverage reaches past that line.
 
     **One quiet settles one flush, never every flush outstanding.** A quiet cannot say how many
     flushes it drained, and the two readings fail in opposite directions. A client may legitimately
