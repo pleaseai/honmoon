@@ -129,9 +129,12 @@ export function parseFrontmatter(text: string): Record<string, string | undefine
       }
       continue
     }
-    // An indented line continues the previous non-empty scalar, or belongs to a
-    // nested mapping we do not care about.
-    if (key && line.trim() !== '') {
+    // Only an *indented* line continues the previous non-empty scalar — that is
+    // what folding means in YAML, and it is also what keeps a column-0 comment
+    // line out of the value above it. An indented `#` is left alone on purpose:
+    // inside a folded scalar it is literal text, and these descriptions are full
+    // of issue references that a comment-stripping parser would eat.
+    if (key && /^[ \t]/.test(line) && line.trim() !== '') {
       scalars[key] = `${scalars[key] ?? ''} ${line.trim()}`
     }
   }
@@ -208,8 +211,12 @@ export function agentDirs(root: string): string[] {
 
 /** Notes in one agent directory — every `.md` file except the index itself. */
 export function readNotes(dir: string): NoteEntry[] {
-  return readdirSync(dir)
-    .filter(file => file.endsWith('.md') && file !== INDEX_NAME)
+  return readdirSync(dir, { withFileTypes: true })
+    // Excluding directories rather than selecting regular files: a directory
+    // named `*.md` would otherwise reach `readFileSync` as `EISDIR`, while
+    // `isFile()` would quietly drop a symlinked note, which is a real note.
+    .filter(entry => !entry.isDirectory() && entry.name.endsWith('.md') && entry.name !== INDEX_NAME)
+    .map(entry => entry.name)
     .sort()
     .map(file => noteEntry(file, readFileSync(join(dir, file), 'utf8')))
 }

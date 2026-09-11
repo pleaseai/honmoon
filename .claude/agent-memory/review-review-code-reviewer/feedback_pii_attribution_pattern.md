@@ -1,6 +1,6 @@
 ---
 name: pii-attribution-pattern
-description: How honmoon-core's detect-mode PII attribution (decide_pii_audit_only) proves fail-closed safety, and the three test cases to require on any future change to it
+description: How honmoon-core's detect-mode PII attribution (decide_pii_audit_only) proves fail-closed safety, and the four test cases to require on any future change to it
 metadata:
   type: project
 ---

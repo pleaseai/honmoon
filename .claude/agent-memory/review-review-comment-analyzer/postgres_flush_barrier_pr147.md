@@ -23,11 +23,13 @@ verified accurate by hand-tracing the code and the four new tests:
   `None`-relay-finished short-circuit in `await_forwarded_responses` ignores
   `flush_answers` entirely once the relay has ended.
 
-Only issue found: the pre-existing `Delivered` `# Invariant` doc block still
-enumerates only the `sync_points <= forwarded` invariant and doesn't
-cross-reference the new analogous `flush_answers <= flushes` one (which is
-documented, correctly, only on the `flush_answers` field itself). Not factually
-wrong, just an incomplete first-read entry point. Low confidence/severity.
+Only issue found, and fixed in PR #147 itself: the pre-existing `Delivered`
+`# Invariant` doc block enumerated only the `sync_points <= forwarded`
+invariant and did not cross-reference the analogous `flush_answers <= flushes`
+one (which was documented, correctly, only on the `flush_answers` field). Never
+factually wrong, just an incomplete first-read entry point. The merged block now
+names the second pair explicitly and points at its per-field docs — do not
+re-report it.
 
 **Why:** this file's dense load-bearing comment style (see
 [[postgres_sync_point_protocol_claims]]) means PRs touching it tend to be
@@ -35,4 +37,5 @@ comment-heavy and worth the line-by-line trace; PR #147 is the second such PR
 and came back essentially clean.
 **How to apply:** if a third counter pair is ever added to this barrier
 (mirroring `forwarded`/`flushes`), check whether the `# Invariant` block has
-been updated to at least point at the per-field docs for the newer pairs.
+been extended to point at the per-field docs for it, the way PR #147 extended it
+for `flush_answers`.

@@ -1,6 +1,6 @@
 ---
 name: project-engine-pii-attribution
-description: honmoon-core engine.rs per-rule PII attribution (decide_pii_audit_only) — design verified sound; its one real gap is eval_condition's unlogged execution errors
+description: honmoon-core engine.rs per-rule PII attribution (decide_pii_audit_only) — design verified sound; the one real gap it found, unlogged condition-execution errors, was closed in PR #108 and now logs at tracing::debug! in eval_program
 metadata:
   type: project
 ---
