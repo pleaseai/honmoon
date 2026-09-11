@@ -604,6 +604,38 @@ endpoints:
         );
     }
 
+    /// The two code points where Rust and the JSON Schema could have drifted.
+    ///
+    /// `is_blank_condition` follows `char::is_whitespace` (Unicode
+    /// `White_Space`); the schema's mirror is an ECMAScript regex, whose `\s`
+    /// differs from that set in exactly these two places — it omits `U+0085`
+    /// and adds `U+FEFF`. The schema corrects for both
+    /// (`packages/policy/src/policy.schema.test.ts` pins its side); this pins
+    /// the side it is mirroring, so a change here cannot silently desync them.
+    #[test]
+    fn the_two_code_points_the_schema_mirror_turns_on() {
+        // `U+0085` (NEXT LINE) is whitespace to Rust, so a condition of only
+        // that is blank and does not load.
+        let error = Policy::from_yaml(
+            "rules:\n  - name: nel\n    endpoint: '*'\n    condition: \"\\u0085\"\n    verdict: allow\n",
+        )
+        .expect_err("U+0085 is whitespace, so the condition is blank");
+        assert!(
+            matches!(&error, Error::BlankRuleCondition { name, .. } if name == "nel"),
+            "unexpected error: {error}"
+        );
+
+        // `U+FEFF` is *not* whitespace to Rust, so a condition of only that is
+        // not blank and does load. It is still unevaluable — it panics in the
+        // CEL parser like any other lone character the lexer cannot start a
+        // token with (#154) — which is precisely why this check does not claim
+        // to be a validity test, only an emptiness one.
+        Policy::from_yaml(
+            "rules:\n  - name: bom\n    endpoint: '*'\n    condition: \"\\ufeff\"\n    verdict: allow\n",
+        )
+        .expect("U+FEFF is not whitespace, so the condition is not blank");
+    }
+
     /// The load-time check is about a condition with nothing in it, not about
     /// a condition the loader dislikes: it never inspects CEL syntax.
     #[test]
