@@ -3,4 +3,5 @@
 - [ADR-0006 signed-header amendment verified](adr_0006_signed_header_amendment.md) — PR #115 clean doc PR; calibration point, only soft spot is auto-maintained decisions/index.md title
 - [PR #122 hook-salt parity](pr122_hook_salt_parity.md) — issue #98 fix; README + rustdoc verified accurate against hook_salt.rs/HookSalt, 0 findings
 - [PR #146 signed-digest README/CLI stale](pr146_signed_digest_readme_cli_stale.md) — issue #116 fix; ADR-0006 updated correctly, but README.md + honmoon-cli --signed-body help still describe framing-headers-only, now stale
+- [PR #147 ADR-0007 Flush amended](pr147_adr0007_flush_amended.md) — barrier PRs must amend ADR-0007 in-PR (est. by #112 history, met by #147); check this file when postgres.rs barrier changes
 - [PR #152 shadowed-rule empty-condition claim](pr152_shadowed_rule_warning_empty_condition.md) — wiki says empty CEL condition "matches nothing"; actually Program::compile("") panics (verified), contradicting page's own Fail-closed section

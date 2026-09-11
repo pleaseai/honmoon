@@ -2,3 +2,4 @@
 - [engine.rs PII attribution](project_engine_pii_attribution.md) — decide_pii_audit_only design verified sound; only gap is eval_condition's unlogged execution errors.
 - [signed_body.rs SigV4 narrowing](project_signed_body_narrowing.md) — PR #120's aws_sigv4_signs_body narrowing reviewed clean; branch matrix to recheck if touched again.
 - [Trailer preservation body.rs](project_trailer_preservation_body_rs.md) — PR #130: dead-code frame-kind drop + HeaderMap::extend overwrite-not-merge edge case, both low risk today.
+- [Flush refusal barrier PG#113](project_flush_refusal_barrier_pg113.md) — EOF/error-as-pending peek verified safe via relay_finished; write-off warn! lacks flush-side fields.
