@@ -228,10 +228,10 @@ honmoon gateway --config policies/agent.yaml --tls-intercept --redact-secrets \
 Bearer tokens, Basic auth, and API keys authenticate the caller rather than the bytes, so requests
 carrying them are redacted normally — as are SigV4 uploads that declare
 `x-amz-content-sha256: UNSIGNED-PAYLOAD` and whose `SignedHeaders` list leaves the framing headers
-alone. A presigned URL is in the same group unless it also sends a payload hash: its signature
-covers the request and the headers it names, not the uploaded bytes. So is a bare
-`x-amz-content-sha256` with no AWS authentication on the request — that header is an integrity
-check, not a signature. The covered list is parsed rather than assumed, and only headers the rewrite would actually
+alone. A presigned URL is in the same group unless it also sends a payload hash (in the
+`x-amz-content-sha256` header or the `X-Amz-Content-Sha256` query parameter): its signature covers
+the request and the headers it names, not the uploaded bytes. So is a bare payload hash with no AWS
+authentication on the request — that is an integrity check, not a signature. The covered list is parsed rather than assumed, and only headers the rewrite would actually
 change count. A signed request with nothing to redact is always forwarded untouched. See [ADR-0006](.please/docs/decisions/0006-signed-body-requests-under-wire-redaction.md).
 
 ### What `honmoon run` enforces, and what it costs

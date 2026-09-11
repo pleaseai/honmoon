@@ -71,16 +71,22 @@ long-lived secrets.
   - a header-signed `Authorization` starting with `AWS4-HMAC-SHA256` or `AWS4-ECDSA-P256-SHA256`
     (SigV4A) always hashes the payload into its canonical request — for non-S3 services the hash
     is not even sent as a header — so it counts on its own;
-  - a presigned `X-Amz-Algorithm=AWS4-…` query parameter counts **only** alongside an
-    `x-amz-content-sha256` that declares a signed payload: a 64-character hex SHA-256, or a
-    `STREAMING-AWS4-…` per-chunk signing marker. On its own it authenticates the request and the
-    headers its `X-Amz-SignedHeaders` list names, not the bytes.
+  - a presigned `X-Amz-Algorithm=AWS4-…` query parameter counts **only** alongside a payload hash
+    that declares a signed payload: a 64-character hex SHA-256, or one of the four
+    `STREAMING-AWS4-…-PAYLOAD[-TRAILER]` per-chunk signing markers, enumerated rather than
+    prefix-matched so an invented `STREAMING-AWS4-…` value is not evidence. On its own the query
+    parameter authenticates the request and the headers its `X-Amz-SignedHeaders` list names, not
+    the bytes.
 
-  **Exception:** `x-amz-content-sha256: UNSIGNED-PAYLOAD` or `STREAMING-UNSIGNED-PAYLOAD…`
-  declares the body explicitly out of the signature and wins over either carrier, so those stay
-  redactable. And a bare `x-amz-content-sha256` with no SigV4 authentication on the request is
-  **not** a body signature: the header is an integrity check a client sets freely, and nothing on
-  such a request claims a signature covers those bytes.
+  The payload hash is read from both carriers a signer uses — the `x-amz-content-sha256` header
+  (every field value) and the `X-Amz-Content-Sha256` query parameter presigning moves a signed
+  header into — because a presigned upload that binds its payload may carry the hash in either.
+
+  **Exception:** `UNSIGNED-PAYLOAD` or `STREAMING-UNSIGNED-PAYLOAD…` declares the body explicitly
+  out of the signature and wins over either carrier and either signal, so those stay redactable.
+  And a payload hash with no SigV4 authentication on the request is **not** a body signature: it
+  is an integrity check a client sets freely, and nothing on such a request claims a signature
+  covers those bytes.
 - **RFC 9421 message signatures** — a `Signature` header alongside `Signature-Input` (RFC 9421
   requires both; either may repeat across field values, all of which are scanned) whose component
   list names a body-digest header, under a label `Signature` actually carries. Labels are matched
@@ -171,8 +177,8 @@ enough to unblock the two known shapes (signed uploads vs. bearer-token API traf
   rather than rewritten into an opaque upstream signature failure: `block` costs those uploads the
   same visible `403` a body-signed request gets, which is a behavior change from the release that
   rewrote them and let the upstream reject them (#83).
-- A presigned upload that carries no payload hash, and a request whose only AWS-shaped header is an
-  `x-amz-content-sha256`, are **redacted and forwarded** rather than refused (#81). This is the
+- A presigned upload that carries no payload hash in either carrier, and a request whose only
+  AWS-shaped signal is a payload hash, are **redacted and forwarded** rather than refused (#81). This is the
   weaker direction, and deliberately so: if such a request really was signed over its body by a
   scheme honmoon cannot see, the upstream now rejects the rewritten bytes with the opaque error
   this ADR exists to prevent. The cost is bounded to requests that present no evidence of a
