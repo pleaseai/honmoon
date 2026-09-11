@@ -32,6 +32,27 @@ format from sibling ADRs (0002/0007/0008 just say "Accepted"; 0006 uses "Accepte
 violation, so out of scope per the review's "no style/taste" filter — noted here only as a
 calibration point for future PRs in this ADR series.
 
-Result: 0 findings. This is a case where the documentation *is* the deliverable and it earned
-that — treat as a positive calibration point alongside [[adr_0006_signed_header_amendment]] and
-[[pr122_hook_salt_parity]].
+**Result: 0 findings — and that verdict was wrong.** Do not treat this as a positive calibration
+point; it is the opposite. After this pass, codex, greptile and cubic found three *false absolute
+claims* in the same text I had just verified:
+
+1. "header and trailer values are forwarded verbatim" — false on the redaction-rewrite path:
+   `forwarded_request` rebuilds the body with `Full::new`, which carries no trailer frame, so a
+   redacted request *drops* its trailers.
+2. "Nothing in the pipeline reads a `HeaderMap`" — false: `inspect_body` reads `Content-Length`,
+   `Content-Type` and `Content-Encoding`, and signature detection reads `Authorization`. The true
+   claim is that no *detector* runs over a header map.
+3. "`pii.count` stays 0, so no `pii.*` rule can fire, no audit record" — false: `eval_program`
+   binds `pii` with its empty default so absence conditions work, so `pii.count == 0` fires and a
+   matching deny audits. Only *positive-finding* rules cannot fire.
+
+**What I did wrong:** I verified the ADR's *argument* (the four-branch table, the parity reasoning,
+the #130 history) and confirmed its citations resolve, then read the contract's own clauses as
+framing rather than as claims. The argument was sound; the clauses were what shipped.
+
+**How to apply:** in a docs PR, the load-bearing sentences are the unconditional ones —
+"never", "nothing", "always", "verbatim", "no X can happen". Enumerate every absolute claim and
+check each against source *individually*, before assessing whether the surrounding argument holds.
+A correct argument wrapped around a false guarantee is the failure mode of this PR class, and it is
+invisible if you only follow the reasoning. Contrast with [[adr_0006_signed_header_amendment]] and
+[[pr122_hook_salt_parity]], which were genuinely clean.
