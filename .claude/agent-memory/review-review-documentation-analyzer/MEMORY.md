@@ -6,3 +6,4 @@
 - [PR #146 signed-digest README/CLI stale](pr146_signed_digest_readme_cli_stale.md) — issue #116 fix; ADR-0006 updated correctly, but README.md + honmoon-cli --signed-body help still describe framing-headers-only, now stale
 - [PR #147 ADR-0007 Flush amended](pr147_adr0007_flush_amended.md) — barrier PRs must amend ADR-0007 in-PR (est. by #112 history, met by #147); check this file when postgres.rs barrier changes
 - [PR #152 shadowed-rule empty-condition claim](pr152_shadowed_rule_warning_empty_condition.md) — wiki says empty CEL condition "matches nothing"; actually Program::compile("") panics (verified), contradicting page's own Fail-closed section
+- [PR #137 Decision::Degraded](pr137_degraded_decision_variant.md) — README/rustdoc/TS accurate; the wiki Decision-enum tables + roadmap "every verdict" staleness was caught in review and fixed before merge

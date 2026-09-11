@@ -58,6 +58,18 @@ re-check on any future change here:
   never returns empty (>=16B file, 32B fresh, or the fallback constant), so the asserts
   are startup-only, not a remote panic.
 
+**2026-09 (#131) — fallback is now reported to the audit log.** `machine_key()` returns
+`MachineKey { bytes, source }`; a `Fallback { reason }` source makes `honmoon hook` open
+an operator-supplied JSONL path (`--audit-log` / `HONMOON_AUDIT_LOG`) via
+`AuditLog::with_file` and append a `Decision::Degraded` event carrying
+`RedactionFacts { key_source, transport, reason }`. Re-check on changes here: the sink is
+now **multi-process** (hook subprocess + gateway append to one file, `write_all` of one
+buffer on `O_APPEND` — not a hard atomicity guarantee on NFS/short writes); the path is
+opened with `create(true).append(true)`, so it follows symlinks and blocks on a FIFO in a
+process contracted to exit fast; and `reason` is an `anyhow` chain that embeds `$HOME`
+paths and OS errors, surfaced by the unauthenticated `GET /api/audit` and the dashboard.
+No key bytes are serialized — `MachineKey`/`MachineKeySource` derive no `Debug`.
+
 **2026-09 (#141) — exposure is a second axis on the key status.** `MachineKeySource`
 (provenance) is now wrapped in `MachineKeyStatus { source, exposure }`;
 `restrict_to_owner_only(path)` chmods 0600 then re-`metadata`s and returns
