@@ -1,0 +1,27 @@
+.claude/agent-memory/review-review-security-reviewer/postgres-refusal-ordering-barrier.md
+  s_278e684068cde0::t_a7566c4ecd97d4 3,31-33
+  s_278e684068cde0::t_db6329a87ba77a 53-64
+  s_278e684068cde0::t_fd12da3b7359f7 65
+.claude/agent-memory/review-review-documentation-analyzer/MEMORY.md
+  s_278e684068cde0::t_a7566c4ecd97d4 6
+.claude/agent-memory/review-review-documentation-analyzer/pr147_adr0007_flush_gap_stale.md
+  s_278e684068cde0::t_a7566c4ecd97d4 2-3,15-23,25-27,30,33-34
+.claude/agent-memory/review-review-silent-failure-hunter/project_flush_refusal_barrier_pg113.md
+  s_278e684068cde0::t_a7566c4ecd97d4 3,10-14,16-17,24-29
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "e2fa257f4531b13f35ae2a5132b6c711fd9cfa7b",
+  "prompts": {},
+  "sessions": {
+    "s_278e684068cde0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "f250795b-6e43-4d11-913b-21a295e9f51a",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
