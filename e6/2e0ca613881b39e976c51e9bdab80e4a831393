@@ -1,0 +1,25 @@
+scripts/agent-memory-index.ts
+  s_23314bc1687b8f::t_8249acd55b7aad 132-137,214-219
+.claude/agent-memory/review-review-code-reviewer/feedback_pii_attribution_pattern.md
+  s_23314bc1687b8f::t_0005310364e47d 3
+.claude/agent-memory/review-review-comment-analyzer/postgres_flush_barrier_pr147.md
+  s_23314bc1687b8f::t_67786be68e85e5 26-32,40-41
+.claude/agent-memory/review-review-silent-failure-hunter/project_engine_pii_attribution.md
+  s_23314bc1687b8f::t_bcc1de0df192be 3
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "e62e0ca613881b39e976c51e9bdab80e4a831393",
+  "prompts": {},
+  "sessions": {
+    "s_23314bc1687b8f": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "6ff32bd2-e0d0-46dd-b1cb-1ffcc5db7869",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
