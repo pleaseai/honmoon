@@ -1,0 +1,19 @@
+.claude/agent-memory/review-review-documentation-analyzer/pr152_shadowed_rule_warning_empty_condition.md
+  s_1f1d717002bf42::t_d77ee652227750 3,17,41-46
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "3fb28aa79173b2d890e96929e6b2810e3cc1c4af",
+  "prompts": {},
+  "sessions": {
+    "s_1f1d717002bf42": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "901bfa5f-9bd6-49e5-ad4f-0e9343b2121f",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
