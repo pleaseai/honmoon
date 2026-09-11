@@ -1,0 +1,42 @@
+.please/docs/decisions/0006-signed-body-requests-under-wire-redaction.md
+  s_85a852507dfbd0::t_88d8acd405eb24 5-8,46-57,69-99,109-124,157-167,206-218,234-237
+README.md
+  s_85a852507dfbd0::t_88d8acd405eb24 208-210,231-236
+.claude/agent-memory/review-review-silent-failure-hunter/project_signed_body_narrowing.md
+  s_85a852507dfbd0::t_88d8acd405eb24 1-35
+.claude/agent-memory/review-review-pr-test-analyzer/MEMORY.md
+  s_85a852507dfbd0::t_88d8acd405eb24 3
+  s_85a852507dfbd0::t_4e04997e2c3f79 2
+.claude/agent-memory/review-review-pr-test-analyzer/signed_body_sigv4_narrowing.md
+  s_85a852507dfbd0::t_88d8acd405eb24 1-34
+.claude/agent-memory/review-review-security-reviewer/signed-body-detection-invariants.md
+  s_85a852507dfbd0::t_88d8acd405eb24 3,10-11,17-34
+.claude/agent-memory/review-review-documentation-analyzer/adr_0006_signed_header_amendment.md
+  s_85a852507dfbd0::t_88d8acd405eb24 29-39
+.claude/agent-memory/review-review-silent-failure-hunter/MEMORY.md
+  s_85a852507dfbd0::t_88d8acd405eb24 3
+crates/honmoon-proxy/src/mitm.rs
+  s_85a852507dfbd0::t_88d8acd405eb24 376-386
+crates/honmoon-proxy/src/signed_body.rs
+  s_85a852507dfbd0::t_88d8acd405eb24 14-18,185,205-232,234-277,279-282,284-322,328-348,350,366-368,468-499,573-575,816-945,947-948,952-955,961-962,964,967-969,971,975-1073
+  s_85a852507dfbd0::t_026336783794f9 1074
+crates/honmoon-proxy/tests/redaction.rs
+  s_85a852507dfbd0::t_88d8acd405eb24 29-33,234-245,257,926-928,930,933,938-939,943-985,987-988,993-1014,1016
+  s_85a852507dfbd0::t_8e31ee3357d7ef 1015,1017
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "c71e84e89474fc241001ae93d9ad56705022077a",
+  "prompts": {},
+  "sessions": {
+    "s_85a852507dfbd0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "cb4670ad-8046-4aa5-b876-712fecc38af2",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
