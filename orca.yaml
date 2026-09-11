@@ -11,3 +11,10 @@ scripts:
     mise exec -- bunx @pleaseai/worktreeinclude "$ORCA_ROOT_PATH" "$ORCA_WORKTREE_PATH"
     mise exec -- bun install
     cargo fetch
+    # The per-agent memory indexes are generated and git-ignored, so they are
+    # deliberately NOT carried over by worktreeinclude: the source checkout's
+    # copy reflects the branch that checkout is on, and this worktree is a
+    # different branch with different notes. Build a fresh one from the notes
+    # here. (`mise install` above installs tool versions; the `install` task in
+    # mise.toml is a different thing and does not run.)
+    mise exec -- bun scripts/agent-memory-index.ts

@@ -62,9 +62,10 @@ bun scripts/agent-memory-index.ts --check    # CI gate: every note can supply it
 
 Hand-appending a shared index made every concurrent PR that recorded a memory for the same
 agent collide on one line, and duplicated each claim into a second place that drifted from the
-note (issue #129). `mise run install` rebuilds the indexes, and `.worktreeinclude` carries them
-into a new worktree. A checkout that has done neither still has every note — it is missing the
-table of contents, not the memory, until the next rebuild.
+note (issue #129). `mise run install` rebuilds the indexes, and `orca.yaml`'s worktree setup
+builds a fresh one — a derived file is not copied between worktrees, because the source
+checkout's copy describes whatever branch that checkout is on. A checkout that has done neither
+still has every note: it is missing the table of contents, not the memory, until the next rebuild.
 
 ## Code Style
 

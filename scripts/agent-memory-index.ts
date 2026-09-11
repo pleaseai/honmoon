@@ -177,14 +177,18 @@ function escapeLabel(text: string): string {
 /**
  * Render a file name as a markdown link destination.
  *
- * The label is not the only half that can be truncated: `)` ends a bare
- * destination, `#` starts a fragment, and whitespace ends it too — any of which
- * points the line at something other than the note. Angle brackets take all of
- * them literally, so they are used only when the name needs them, leaving an
- * ordinary `some_note.md` written plainly.
+ * The label is not the only half that can be truncated, and two different
+ * layers can break it. `(`, `)`, `<`, `>` and whitespace end the destination in
+ * the *markdown* parse; `#`, `?` and `%` survive that and then carry meaning in
+ * the *URL*, where `a#b.md` addresses `a` with a fragment rather than the file.
+ * Percent-encoding covers both, and touches nothing in an ordinary
+ * `some_note.md`.
  */
 function linkTarget(file: string): string {
-  return /[()#<>\s]/.test(file) ? `<${file.replace(/([<>])/g, '\\$1')}>` : file
+  return file.replace(
+    /[%#?()<>\s]/g,
+    character => `%${character.charCodeAt(0).toString(16).toUpperCase().padStart(2, '0')}`,
+  )
 }
 
 /** Reduce one note file to its index entry. */

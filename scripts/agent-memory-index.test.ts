@@ -119,12 +119,18 @@ describe('renderIndex', () => {
     expect(renderIndex([...entries].reverse())).toBe(renderIndex(entries))
   })
 
-  test('keeps a link resolvable when the file name would end the destination', () => {
-    for (const file of ['readme).md', 'a#b.md', 'two words.md']) {
-      const line = renderIndex([noteEntry(file, note('n', 'a note'))])
-      expect(line).toContain(`](<${file}>)`)
+  test('keeps a link resolvable when the file name carries markdown or URL meaning', () => {
+    const encoded: Record<string, string> = {
+      'readme).md': 'readme%29.md', // `)` would end the destination
+      'a#b.md': 'a%23b.md', //        `#` would address a fragment
+      'a?b.md': 'a%3Fb.md', //        `?` would start a query
+      'a%2Fb.md': 'a%252Fb.md', //    an existing `%` must not read as an escape
+      'two words.md': 'two%20words.md',
     }
-    // An ordinary name stays plain — the angle form is not applied blindly.
+    for (const [file, target] of Object.entries(encoded)) {
+      expect(renderIndex([noteEntry(file, note('n', 'a note'))])).toContain(`](${target})`)
+    }
+    // An ordinary name is untouched — encoding is not applied blindly.
     expect(renderIndex([noteEntry('plain_note.md', note('n', 'a note'))]))
       .toContain('](plain_note.md)')
   })
