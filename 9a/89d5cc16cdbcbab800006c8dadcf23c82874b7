@@ -1,0 +1,19 @@
+crates/honmoon-cli/src/main.rs
+  s_34f639d2e09b64::t_c75d95a0327352 159-169
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "9a89d5cc16cdbcbab800006c8dadcf23c82874b7",
+  "prompts": {},
+  "sessions": {
+    "s_34f639d2e09b64": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "deda3644-1fdd-412d-a687-7ecfae2c80b1",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
