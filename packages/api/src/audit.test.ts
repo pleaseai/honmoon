@@ -68,7 +68,25 @@ describe('auditStats', () => {
       paused: 0,
       approved: 0,
       rejected: 0,
+      degraded: 0,
     })
+  })
+
+  test('counts a degradation separately from the requests it did not block', () => {
+    // A fallback redaction key is fail-open: traffic still flows, so folding it
+    // into `allowed` would hide it behind the very thing that makes it easy to
+    // miss. It has to be its own count, and its own `?decision=` filter.
+    const events = [
+      event(1, { decision: 'allowed' }),
+      event(2, {
+        decision: 'degraded',
+        verdict: 'allow',
+        rule: 'hook-salt-fallback',
+        facts: { redaction: { key_source: 'fallback', transport: 'hook', reason: 'unwritable HOME' } },
+      }),
+    ]
+    expect(auditStats(events)).toMatchObject({ allowed: 1, degraded: 1 })
+    expect(queryAudit(events, { decision: 'degraded' }).map(e => e.id)).toEqual([2])
   })
 })
 

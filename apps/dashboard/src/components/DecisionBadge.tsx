@@ -16,6 +16,9 @@ const LABELS: Record<Decision, Label> = {
   paused: { glyph: '‖', text: 'Paused' },
   denied: { glyph: '✕', text: 'Denied' },
   rejected: { glyph: '✕', text: 'Rejected' },
+  // Not a request outcome: a guarantee the gateway is running without. It reads
+  // as a warning rather than a denial — nothing was blocked, which is the point.
+  degraded: { glyph: '!', text: 'Degraded' },
 }
 
 export function DecisionBadge({ decision }: { decision: Decision }) {

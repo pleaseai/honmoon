@@ -98,7 +98,7 @@ termination on that path.
 - [x] `pause` verdict: hold a request pending approval (local, single-node) — the data
   plane registers held requests in `honmoon-proxy::approval::ApprovalRegistry`, awaits a
   `oneshot` resolution (auto-rejects after `--pause-timeout`), and tunnels or `403`s
-- [x] Local audit log (every verdict, structured) — `honmoon-core::audit::AuditLog`
+- [x] Local audit log (every verdict plus recorded security degradations, structured) — `honmoon-core::audit::AuditLog`
   (bounded in-memory ring + optional JSONL sink via `--audit-log`) + query API: the
   in-process management API serves the live ring; `@honmoon/api` queries the durable JSONL
   log (`/api/audit` with `limit`/`decision`/`since`/`domain`, `/api/audit/stats`)

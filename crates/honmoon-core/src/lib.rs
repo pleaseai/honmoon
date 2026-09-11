@@ -17,7 +17,10 @@ pub mod redact;
 pub mod secret_detect;
 pub mod secret_tokenizer;
 
-pub use audit::{AuditDraft, AuditEvent, AuditLog, Decision, FactsSummary};
+pub use audit::{
+    AuditDraft, AuditEvent, AuditLog, Decision, FactsSummary, RedactionFacts, RedactionKeySource,
+    RedactionTransport,
+};
 pub use claude_code_hook::{
     ClaudeCodeHookVerdict, PathResolution, claude_code_hook_verdict, is_sensitive_path,
 };

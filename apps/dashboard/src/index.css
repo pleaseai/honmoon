@@ -215,6 +215,24 @@ body {
     background: var(--deny-soft);
   }
 
+  /* A guarantee the gateway is running without — a warning, not a denial:
+     nothing was blocked, which is exactly what makes it easy to miss. */
+  .verdict-degraded {
+    color: var(--warn-ink);
+    background: var(--warn-soft);
+  }
+
+  /* Decision-mix segment for `degraded`. It sits next to `paused` and belongs to
+     the same warning family, so it keeps that hue and separates by texture
+     instead — which also survives a reader who cannot tell two hues apart. */
+  .mix-degraded {
+    background: repeating-linear-gradient(
+      135deg,
+      var(--warn) 0 3px,
+      color-mix(in oklch, var(--warn) 40%, transparent) 3px 6px
+    );
+  }
+
   /* Pill actions. Exactly one `.action-approve` per action group. */
   .action {
     display: inline-flex;

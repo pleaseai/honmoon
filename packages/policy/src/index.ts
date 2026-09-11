@@ -46,8 +46,13 @@ export const DEFAULT_EGRESS_VERDICT: Verdict = 'deny'
 // Mirrors `honmoon-core::audit` and `honmoon-proxy::approval`. Serialized by the
 // management API; consumed by the dashboard and `@honmoon/api` query layer.
 
-/** Final disposition of a request, as recorded in the audit log. */
-export type Decision = 'allowed' | 'denied' | 'paused' | 'approved' | 'rejected'
+/**
+ * What an audit entry records: the disposition of a request, or — for
+ * `degraded` — a security property the engine is running without. Honmoon's
+ * degradations are fail-open and look identical from the outside, so `degraded`
+ * is how one stops being silent (see `RedactionFacts`).
+ */
+export type Decision = 'allowed' | 'denied' | 'paused' | 'approved' | 'rejected' | 'degraded'
 
 export interface HttpFacts {
   method: string
@@ -67,6 +72,32 @@ export interface K8sFacts {
   namespace: string
 }
 
+/**
+ * Why placeholder minting is or is not keyed by a private secret. Present only
+ * on a `degraded` event.
+ *
+ * A `fallback` key is the constant compiled into the binary and published in
+ * this repository's source: redaction keeps working and placeholders stay
+ * byte-stable, but anyone can mint the placeholder a guessed secret would
+ * produce and check it against a redacted transcript.
+ */
+export interface RedactionFacts {
+  /**
+   * Where the HMAC key came from. `unpersisted` is still private and therefore
+   * unforgeable, but never reached disk, so placeholders stop being stable
+   * across turns; `fallback` is the public compiled-in constant, where
+   * unforgeability is gone rather than weakened.
+   */
+  key_source: 'persisted' | 'unpersisted' | 'fallback'
+  /**
+   * `hook` is the `honmoon hook` subprocess; `gateway` covers wire redaction
+   * and the management hook endpoint, which share one key read at startup.
+   */
+  transport: 'hook' | 'gateway'
+  /** Why the persisted key was unavailable. */
+  reason: string
+}
+
 /** Compact snapshot of the facts a decision was made on. */
 export interface FactsSummary {
   domain?: string
@@ -74,6 +105,7 @@ export interface FactsSummary {
   http?: HttpFacts
   sql?: SqlFacts
   k8s?: K8sFacts
+  redaction?: RedactionFacts
 }
 
 /** One recorded decision (`GET /api/audit`). */

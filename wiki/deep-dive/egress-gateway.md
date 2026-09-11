@@ -230,7 +230,7 @@ silently leaving egress filtering down ([main.rs:104-127](https://github.com/ple
 |------|---------|---------|--------|
 | `--addr` | `127.0.0.1:8443` | Egress proxy listen address | [main.rs:39-40](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-cli/src/main.rs#L39-L40) |
 | `--mgmt-addr` | `127.0.0.1:8444` | Management API + dashboard address | [main.rs:42-43](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-cli/src/main.rs#L42-L43) |
-| `--audit-log` | (in-memory only) | Append every verdict to a JSONL file | [main.rs:45-46](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-cli/src/main.rs#L45-L46), [main.rs:89-95](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-cli/src/main.rs#L89-L95) |
+| `--audit-log` | (in-memory only) | Append every verdict — and any recorded security degradation — to a JSONL file | [main.rs:45-46](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-cli/src/main.rs#L45-L46), [main.rs:89-95](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-cli/src/main.rs#L89-L95) |
 
 ## Hermetic integration test
 
