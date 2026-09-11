@@ -217,7 +217,7 @@ rules:
 Write those two the other way round and `postgres-connect` answers every *statement* too — a
 `DROP` is allowed, and the rule meant to stop it never runs. `Policy::from_yaml` warns at load
 when it finds that ordering, naming both rules
-([lib.rs:260-330](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/lib.rs#L260-L330)):
+([lib.rs:286-371](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/lib.rs#L286-L371)):
 
 ```
 WARN policy rule is unreachable: an earlier unconditional rule always matches first
@@ -233,19 +233,26 @@ Two details worth knowing when you read (or don't read) that warning:
   (`1 == 1`) is not flagged: Honmoon does not try to prove a CEL expression total, and a warning
   that guessed would be one you learned to ignore.
 
-::: danger Never leave `condition` empty
-`condition: ""` is not a way to say "always", and it is not a safe no-op either. An empty string
-is not valid CEL, so the rule can never match — but it does **not** decline the way
-[Fail-closed semantics](#fail-closed-semantics) below describes: `Program::compile("")` panics instead
-of returning an error, so the first request that reaches such a rule takes down the decision path
-rather than falling through. Give every rule a real condition; write `"true"` when you mean
-always. Tracked in [#151](https://github.com/pleaseai/honmoon/issues/151).
+::: danger Never leave `condition` blank
+`condition: ""` is not a way to say "always", and it is not a safe no-op either. A blank string
+is not valid CEL, so the rule could never match — and it does not even decline the way
+[Fail-closed semantics](#fail-closed-semantics) below describes, because `Program::compile("")`
+panics instead of returning an error. So Honmoon refuses to load a policy containing one, rather
+than crashing on the first request that reaches the rule
+([#151](https://github.com/pleaseai/honmoon/issues/151)):
+
+```
+Error: rule `blank` has a blank `condition`; write `"true"` for a rule that always matches
+```
+
+Whitespace does not help — `" "` and `"\n"` are rejected the same way. Give every rule a real
+condition; write `"true"` when you mean always.
 :::
 
 ### Facts available to conditions
 
 Conditions reference protocol facts as CEL variables of the same name. Each is only populated
-when the corresponding parser has run ([lib.rs:119-138](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/lib.rs#L119-L138)):
+when the corresponding parser has run ([lib.rs:129-148](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/lib.rs#L129-L148)):
 
 | Variable | Fields | Populated by | Status |
 |----------|--------|--------------|--------|
@@ -271,13 +278,23 @@ http.method == 'POST' && http.body_size > 10485760
 Honmoon is designed to **fail closed**: a rule whose condition fails to compile, or references a
 fact that has not been populated, simply **does not match** — it can never turn a `deny` into an
 `allow`. Combined with the `deny`-by-default egress verdict, an absent or broken rule is always
-the safe outcome ([engine.rs:16-18](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/engine.rs#L16-L18), [engine.rs:66-71](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/engine.rs#L66-L71)).
+the safe outcome ([engine.rs:35-37](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/engine.rs#L35-L37), [engine.rs:167-201](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/engine.rs#L167-L201)).
 
-One condition does not degrade this way: an **empty** one. `Program::compile("")` panics rather
-than returning the error this path handles, so an empty `condition` is not a broken rule that
-fails closed — it is a crash on the decision path. See
-[Rule order and unreachable rules](#rule-order-and-unreachable-rules) above and
-[#151](https://github.com/pleaseai/honmoon/issues/151).
+Read "fails to compile" there literally: it means the CEL compiler **returned an error**. Not
+every malformed condition does. Some panic instead, and a panic is not a rule that fails closed —
+it is a crash on the decision path. Two limits follow, and both are in the compiler rather than
+in Honmoon:
+
+- A **blank** condition panics, and Honmoon catches that case at the only point where it can:
+  `Policy::from_yaml` refuses to load a policy containing one, so it never reaches evaluation.
+  See [Rule order and unreachable rules](#rule-order-and-unreachable-rules) above.
+- **Other** malformed conditions panic the same way — `"&&"`, `")"`, an unterminated string
+  literal, a condition that is only a comment — and those are *not* detected at load. A rule
+  carrying one loads cleanly and crashes the decision path when a request reaches it. Tracked in
+  [#154](https://github.com/pleaseai/honmoon/issues/154); telling those apart from valid CEL
+  without compiling them means parsing CEL, so the fix is not a check Honmoon can add at the call
+  site. Most syntax errors do return an error and do fail closed — `"(true"` and `"a[]"`, for
+  instance — but do not rely on it: give every rule a condition you have seen evaluate.
 
 ```mermaid
 sequenceDiagram

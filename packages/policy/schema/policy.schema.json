@@ -50,7 +50,12 @@
       "properties": {
         "name": { "type": "string" },
         "endpoint": { "type": "string" },
-        "condition": { "type": "string" },
+        "condition": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "\\S",
+          "description": "CEL expression over protocol facts. Must not be blank: `Program::compile` panics on a condition that lexes to no tokens, so `Policy::from_yaml` refuses to load one. Write \"true\" for a rule that always matches."
+        },
         "verdict": { "$ref": "#/$defs/verdict" }
       }
     }

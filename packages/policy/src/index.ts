@@ -17,7 +17,14 @@ export interface Egress {
 export interface Rule {
   name: string
   endpoint: string
-  /** CEL expression over protocol facts, e.g. `"sql.verb == 'DROP'"`. */
+  /**
+   * CEL expression over protocol facts, e.g. `"sql.verb == 'DROP'"`.
+   *
+   * Must not be blank. A blank condition is not "always" (that is the literal
+   * `"true"`) and not a disabled rule either: the CEL compiler panics on it
+   * rather than returning an error, so `Policy::from_yaml` rejects the whole
+   * policy. The JSON Schema enforces the same.
+   */
   condition: string
   verdict: Verdict
 }
