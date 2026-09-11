@@ -1,0 +1,30 @@
+crates/honmoon-core/src/audit.rs
+  s_eb6bd8ee319fba::t_b933989efd3fb9 364-369
+  s_eb6bd8ee319fba::t_6d73fee178c68c 21,226-232,235,323-350,352-359,361-363,370-389,396,406,415
+  s_eb6bd8ee319fba::t_87a8ca82462f99 351,360,756
+  s_eb6bd8ee319fba::t_e87ffc25d857d7 390-395,397-405,407-414,416,663-666
+  s_eb6bd8ee319fba::t_b59820262b9b2e 694-699
+  s_eb6bd8ee319fba::t_551c90b88a3709 555-561,565-570,615-640,644-662,667-693,700-723,727-755,757-796
+  s_eb6bd8ee319fba::t_b2f0a7efa637bf 641-643,724-726
+  s_eb6bd8ee319fba::t_53cce20395868f 417,797
+crates/honmoon-core/Cargo.toml
+  s_eb6bd8ee319fba::t_3e65ec102a0e73 25-33
+Cargo.lock
+  s_eb6bd8ee319fba::t_e17b2e93dc2259 1032
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "c237c3b294fcc23c84d92f6c590f658c9771e45b",
+  "prompts": {},
+  "sessions": {
+    "s_eb6bd8ee319fba": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "25941171-efe8-4e42-853b-a5179790d96a",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
