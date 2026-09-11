@@ -1,6 +1,6 @@
 ---
 name: postgres-refusal-ordering-barrier
-description: The honmoon postgres runtime's refusal ordering invariant (sync_points <= forwarded), what the barrier does and does not cover, and the one residual gap plus the settled rules not to undo.
+description: The honmoon postgres runtime's refusal ordering invariant (sync_points <= forwarded), what the barrier does and does not cover, its two live gaps (Flush, and the swallowed COPY-Sync of #128), and the settled rules not to undo.
 metadata:
   type: project
 ---
@@ -31,8 +31,10 @@ Undercounting is the security-relevant direction; overcounting only delays.
 them. The first two are live gaps; the rest are settled decisions that look like
 bugs and must not be "fixed" back:
 - `Flush` (`H`) produces no `ReadyForQuery`, so extended-protocol responses can
-  be in flight with `delivered == forwarded` and a refusal can still overtake
-  them (libpq pipeline mode).
+  be in flight with `sync_points == forwarded` — the barrier's release condition
+  — and a refusal can still overtake them (libpq pipeline mode). Note the field:
+  `delivered` is the whole watched value, and its `messages` count runs far ahead
+  of `forwarded`; only `sync_points` is the bounded one.
 - A `Sync` swallowed during `COPY` is counted but can never be answered, and
   that now costs **every** later refusal on the connection a stall window, not
   just the first: the write-off records it as debt, and because no late answer

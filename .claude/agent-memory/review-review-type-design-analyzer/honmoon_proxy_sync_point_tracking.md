@@ -59,7 +59,7 @@ still only *enforced* by convention across the call sites in one file, not
 structurally. Because the fields are module-private (not struct-private via
 a submodule), any code within `postgres.rs` — including the test at the
 line reading `link.forwarded.load(...)` directly — can bypass the
-`forwarded_sync_point`/`delivered_sync_point`/`await_forwarded_responses`
+`forwarded_sync_point`/`delivered_message`/`await_forwarded_responses`
 method surface. A real fix (nested submodule for true privacy, or an
 explicit read accessor for tests) was judged plausible but not clearly
 required — the file is cohesive/single-purpose and each call site is
