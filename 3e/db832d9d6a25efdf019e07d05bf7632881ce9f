@@ -1,0 +1,40 @@
+.claude/settings.json
+  s_23314bc1687b8f::t_b9ec3cbddaf38e 11-22
+package.json
+  s_23314bc1687b8f::t_d66fa26c989c8b 17-18
+.github/workflows/ci.yml
+  s_23314bc1687b8f::t_b9ec3cbddaf38e 141-149
+.gitignore
+  s_23314bc1687b8f::t_d66fa26c989c8b 26-32
+scripts/agent-memory-index.ts
+  s_23314bc1687b8f::t_66b1bcdb7242f6 74-76,116,228,232
+  s_23314bc1687b8f::t_71553497a35ece 34,36-39,41-43,202,253
+  s_23314bc1687b8f::t_a213f6a3bd8161 85-90,105-107,117-119,124-126,129-131,141-146,148-150,178-180,229-231,237-239,242-244,264-266,271-276,282-284
+  s_23314bc1687b8f::t_d26f668d3393a9 1-33,35,40,44-73,77-84,91-104,108-115,120-123,127-128,132-140,147,151-177,181-201,203-227,233-236,240-241,245-252,254-263,267-270,277-281
+mise.toml
+  s_23314bc1687b8f::t_b9ec3cbddaf38e 21,24-26
+  s_23314bc1687b8f::t_67ce5a38238edb 27
+.worktreeinclude
+  s_23314bc1687b8f::t_d66fa26c989c8b 16-19
+AGENTS.md
+  s_23314bc1687b8f::t_4e506e40d89a11 48-65
+scripts/agent-memory-index.test.ts
+  s_23314bc1687b8f::t_71553497a35ece 8,170
+  s_23314bc1687b8f::t_b59910d8e7b66f 1-7,9-169,171-172
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "3edb832d9d6a25efdf019e07d05bf7632881ce9f",
+  "prompts": {},
+  "sessions": {
+    "s_23314bc1687b8f": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "6ff32bd2-e0d0-46dd-b1cb-1ffcc5db7869",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
