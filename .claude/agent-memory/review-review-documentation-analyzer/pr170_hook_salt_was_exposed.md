@@ -1,6 +1,6 @@
 ---
 name: pr170-hook-salt-was-exposed
-description: PR #170 (issue #143) hook-salt-was-exposed docs — a single "reaches the dashboard on any host" guarantee took four rounds of valid findings, one unstated deployment premise each; narrow the claim rather than add qualifiers
+description: PR #170 (issue #143) hook-salt-was-exposed docs — a single "reaches the dashboard on any host" guarantee took four rounds of valid findings, one unstated premise each (trigger semantics, which branch fires, path resolution, a concurrency race); narrow the claim rather than add qualifiers
 metadata:
   type: project
 ---
@@ -62,8 +62,10 @@ just the prose that names the thing you changed.
 *On when to stop qualifying.* Rounds 2-4 were all defects in prose written to fix the
 previous round, each a real false claim and each found only after the fix shipped. A
 sentence asserting a guarantee over "any host" invites one valid finding per round, because
-every unstated deployment premise is a counterexample and the reviewer needs only to name
-the next one. Adding a fifth qualifier is the wrong move — narrow what the
+every unstated premise is a counterexample and the reviewer needs only to name the next
+one — and they are not all of a kind: these four were the trigger's own semantics, which
+branch actually emits the event, how the path resolves per process, and a race between two
+loaders. Adding a fifth qualifier is the wrong move — narrow what the
 sentence claims (name the deployment it holds for and defer to the limitation section)
 instead of enumerating the ways it fails.
 
