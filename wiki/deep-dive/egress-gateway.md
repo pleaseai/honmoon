@@ -230,7 +230,7 @@ silently leaving egress filtering down ([main.rs:104-127](https://github.com/ple
 |------|---------|---------|--------|
 | `--addr` | `127.0.0.1:8443` | Egress proxy listen address | [main.rs:39-40](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-cli/src/main.rs#L39-L40) |
 | `--mgmt-addr` | `127.0.0.1:8444` | Management API + dashboard address | [main.rs:42-43](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-cli/src/main.rs#L42-L43) |
-| `--audit-log` | (in-memory only) | Append every verdict — and any recorded security degradation — to a JSONL file. Must name a **regular file**: opened with `O_NOFOLLOW`, so a symlink as the final path component is refused, as are a FIFO, socket, device and directory, and the refusal aborts startup. Created owner-only when absent; an existing file keeps its mode | [main.rs:45-46](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-cli/src/main.rs#L45-L46), [main.rs:89-95](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-cli/src/main.rs#L89-L95) |
+| `--audit-log` | (in-memory only) | Append every verdict — and any recorded security degradation — to a JSONL file. Must name a **regular file**: opened with `O_NOFOLLOW`, so a symlink as the final path component is refused, as are a FIFO, socket, device and directory, and the refusal aborts startup. Created owner-only when absent; an existing file keeps its mode | [main.rs:58-67](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-cli/src/main.rs#L58-L67), [main.rs:350-359](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-cli/src/main.rs#L350-L359) |
 
 ## Hermetic integration test
 
