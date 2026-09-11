@@ -171,6 +171,17 @@ function unescapeDoubleQuoted(body: string, onInvalid: (escape: string) => void)
  * The memory tool writes plain scalars, but a `description:` containing `": "`
  * has to be quoted to stay valid YAML, so both forms must round-trip.
  */
+/**
+ * A plain scalar YAML resolves to something that is not a string.
+ *
+ * `description: null` is not the word "null", it is the *absence* of a value,
+ * and `true` and `42` are a boolean and an integer. Storing the source spelling
+ * made a note with no summary advertise `null` as its summary. Only a whole
+ * value matches — a description reading `42 ways to fail` is text and stays
+ * text — and only a plain one, since `"null"` is genuinely the string.
+ */
+const NON_STRING_SCALAR = /^(?:~|null|true|false|yes|no|on|off|[-+]?\d+|0x[\da-f]+|0o[0-7]+|[-+]?(?:\d+\.\d*|\.\d+)(?:e[-+]?\d+)?|[-+]?\.(?:inf|nan))$/i
+
 /** A leading YAML node indicator, which makes the rest a decoration, not text. */
 const NODE_INDICATOR = /^([&*!])/
 const INDICATOR_NAMES: Record<string, string> = { '&': 'anchor', '*': 'alias', '!': 'tag' }
@@ -313,8 +324,13 @@ export function parseFrontmatter(text: string): Frontmatter {
     // index exists to end: the note would say one thing here and another to the
     // reader that loads it. Reported rather than truncated, because the text
     // after the `#` is what the author meant; quoting the value keeps it.
-    if (!blockScalars.has(name) && !raw.startsWith('"') && !raw.startsWith('\'') && /[ \t]#/.test(raw)) {
+    const plain = !blockScalars.has(name) && !raw.startsWith('"') && !raw.startsWith('\'')
+    if (plain && /[ \t]#/.test(raw)) {
       problems.push(`\`${name}:\` is unquoted and contains \` #\`, which YAML reads as the start of a comment — quote the value so it survives`)
+    }
+
+    if (plain && NON_STRING_SCALAR.test(raw)) {
+      problems.push(`\`${name}:\` is \`${raw}\`, which YAML resolves to a ${raw === '~' || /^null$/i.test(raw) ? 'null' : 'non-string'} rather than text — quote it if the value really is that word`)
     }
 
     scalars[name] = unquote(raw, escape =>

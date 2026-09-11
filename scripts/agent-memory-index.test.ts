@@ -135,6 +135,24 @@ metadata:
 `)).toMatchObject({ scalars: { description: 'fixed in PR #155, so do X' }, problems: [] })
   })
 
+  // `description: null` is the absence of a value, not the word — storing the
+  // source spelling advertised `null` as a note's summary.
+  test('reports a value YAML resolves to something that is not text', () => {
+    for (const value of ['null', '~', 'true', 'no', '42', '3.14', '.inf']) {
+      const text = note('n', 'placeholder').replace('description: placeholder', `description: ${value}`)
+      expect(parseFrontmatter(text).problems).toEqual([expect.stringContaining('rather than text')])
+    }
+  })
+
+  // Only a whole plain value resolves that way: prose that merely starts with
+  // one of those words is text, and a quoted one really is the string.
+  test('leaves text alone even when it opens with such a word', () => {
+    for (const value of ['null and more', '42 ways to fail', String.raw`"null"`, String.raw`'42'`]) {
+      const text = note('n', 'placeholder').replace('description: placeholder', `description: ${value}`)
+      expect(parseFrontmatter(text).problems).toEqual([])
+    }
+  })
+
   test('unquotes a scalar that had to be quoted to stay valid YAML', () => {
     expect(parseFrontmatter(`---
 description: "note: a colon forces quoting"
