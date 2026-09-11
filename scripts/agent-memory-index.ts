@@ -168,12 +168,20 @@ function unescapeDoubleQuoted(body: string, onInvalid: (escape: string) => void)
  * The memory tool writes plain scalars, but a `description:` containing `": "`
  * has to be quoted to stay valid YAML, so both forms must round-trip.
  */
-function unquote(value: string, onInvalid: (escape: string) => void): string {
-  if (value.length >= 2 && value.startsWith('"') && value.endsWith('"')) {
-    return unescapeDoubleQuoted(value.slice(1, -1), onInvalid)
-  }
-  if (value.length >= 2 && value.startsWith('\'') && value.endsWith('\'')) {
-    return value.slice(1, -1).replace(/''/g, '\'')
+function unquote(value: string, onInvalid: (problem: string) => void): string {
+  for (const quote of ['"', '\'']) {
+    if (!value.startsWith(quote)) {
+      continue
+    }
+    // A plain scalar cannot begin with a quote, so one that does is a quoted
+    // scalar — and if it does not close, the note's YAML does not parse at all.
+    // Returning it raw would list the note as though it were fine.
+    if (value.length < 2 || !value.endsWith(quote)) {
+      onInvalid(`opens with ${quote} and never closes it, so the frontmatter is not valid YAML`)
+      return value
+    }
+    const body = value.slice(1, -1)
+    return quote === '"' ? unescapeDoubleQuoted(body, onInvalid) : body.replace(/''/g, '\'')
   }
   return value
 }
@@ -223,7 +231,20 @@ export function parseFrontmatter(text: string): Frontmatter {
     // inside a folded scalar it is literal text, and these descriptions are full
     // of issue references that a comment-stripping parser would eat.
     if (key && /^[ \t]/.test(line) && line.trim() !== '') {
-      scalars[key] = `${scalars[key] ?? ''} ${line.trim()}`
+      const soFar = scalars[key] ?? ''
+      // Inside a double-quoted scalar a trailing backslash escapes the line
+      // break itself: YAML drops the break *and* the indentation and joins with
+      // nothing, where every other continuation joins with a space. Folding
+      // both the same way turned `"one\` + `two"` into `one two` — and then the
+      // decoder read the `\ ` it had just created as an escaped space, so the
+      // index said something the note never did. The count has to be odd: a
+      // `\\` at the end is an escaped backslash, not an escaped break.
+      if (soFar.startsWith('"') && /(?:^|[^\\])(?:\\\\)*\\$/.test(soFar)) {
+        scalars[key] = `${soFar.slice(0, -1)}${line.trim()}`
+      }
+      else {
+        scalars[key] = `${soFar} ${line.trim()}`
+      }
     }
   }
 
@@ -405,15 +426,19 @@ export function rebuild(root: string, options: { check?: boolean } = {}): Result
   // agent inside one loop meant an earlier agent's index was already on disk by
   // the time a later one was refused, so a run that reported "nothing was
   // written" had written — the same clause-vs-code gap, one scope out.
+  const refusedAgents = new Set<string>()
   for (const agent of agentDirs(root)) {
     const indexPath = join(root, agent, INDEX_NAME)
     if (lstatSync(indexPath, { throwIfNoEntry: false })?.isSymbolicLink()) {
       refusals.push(`${agent}/${INDEX_NAME}: is a symlink; an index is generated in place, refusing to write through it`)
+      refusedAgents.add(agent)
     }
   }
-  if (refusals.length > 0) {
-    return { written, problems, refusals }
-  }
+  // Not an early return: the notes are still read and their defects still
+  // reported, so one invocation names everything it found rather than making
+  // the refusal hide a malformed note that will fail the next run too. What a
+  // refusal stops is the *writing*, below.
+  const refused = refusals.length > 0
 
   for (const agent of agentDirs(root)) {
     const dir = join(root, agent)
@@ -422,6 +447,13 @@ export function rebuild(root: string, options: { check?: boolean } = {}): Result
       for (const problem of note.problems) {
         problems.push(`${agent}/${note.file}: ${problem}`)
       }
+    }
+
+    // Its notes are read and reported like everyone else's; its index path is
+    // not ours to read either — a dangling link `lstat`s fine and then throws
+    // on open, which is the same trap `existsSync` set at the other end.
+    if (refusedAgents.has(agent)) {
+      continue
     }
 
     const indexPath = join(dir, INDEX_NAME)
@@ -435,6 +467,10 @@ export function rebuild(root: string, options: { check?: boolean } = {}): Result
       ? readFileSync(indexPath, 'utf8')
       : null
     if (current === rendered) {
+      continue
+    }
+
+    if (refused) {
       continue
     }
 

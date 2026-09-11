@@ -404,6 +404,44 @@ describe('parseFrontmatter — quoted scalars', () => {
     expect(problems).toEqual([expect.stringContaining(String.raw`\q`)])
   })
 
+  // A quote that never closes is not a plain scalar — the note's YAML does not
+  // parse at all, so listing it as though it were fine hides that.
+  test('reports a quoted scalar that never closes', () => {
+    for (const broken of ['"unfinished', '\'unfinished', '"']) {
+      const text = note('n', 'placeholder').replace('description: placeholder', `description: ${broken}`)
+      expect(parseFrontmatter(text).problems).toEqual([expect.stringContaining('never closes it')])
+    }
+  })
+
+  // YAML drops an escaped line break *and* the indentation after it, where
+  // every other continuation joins with a space.
+  test('joins an escaped line break with nothing, not a space', () => {
+    const { scalars, problems } = parseFrontmatter(`---
+name: n
+description: "one\\
+  two"
+metadata:
+  type: project
+---
+`)
+    expect(scalars.description).toBe('onetwo')
+    expect(problems).toEqual([])
+  })
+
+  // A trailing `\\` is an escaped backslash, not an escaped break, so that line
+  // folds with a space like any other.
+  test('still folds with a space after an escaped backslash', () => {
+    const { scalars } = parseFrontmatter(`---
+name: n
+description: "one\\\\
+  two"
+metadata:
+  type: project
+---
+`)
+    expect(scalars.description).toBe('one\\ two')
+  })
+
   // A note whose frontmatter this reader and the real one may read differently
   // has to fail the gate, not list with text neither of them agreed on.
   test('an undefined escape makes the note fail --check', () => {
@@ -491,6 +529,22 @@ describe('rebuild — the index file itself', () => {
 
     expect(written).toEqual([])
     expect(existsSync(join(root, 'some-agent', INDEX_NAME))).toBe(false)
+  })
+
+  // A refusal must not also silence the note defects: the next run would fail
+  // on them too, and one invocation should name everything it found.
+  test('reports a malformed note alongside a refusal', () => {
+    writeFileSync(join(root, 'some-agent', 'broken.md'), 'no frontmatter\n')
+    mkdirSync(join(root, 'z-agent'))
+    symlinkSync(join(root, 'elsewhere.txt'), join(root, 'z-agent', INDEX_NAME))
+
+    const { problems, refusals } = rebuild(root)
+
+    expect(refusals).toHaveLength(1)
+    expect(problems).toEqual([
+      expect.stringContaining('broken.md'),
+      expect.stringContaining('broken.md'),
+    ])
   })
 
   // A refusal means this agent has no index at all, so it cannot come back as
