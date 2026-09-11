@@ -1,0 +1,19 @@
+crates/honmoon-core/src/audit.rs
+  s_eb6bd8ee319fba::t_4450ac1614c33c 432-434,711,729
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "2a4b964182e84fe732f946a3ad7df82638c7eda8",
+  "prompts": {},
+  "sessions": {
+    "s_eb6bd8ee319fba": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "25941171-efe8-4e42-853b-a5179790d96a",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
