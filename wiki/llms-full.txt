@@ -2845,30 +2845,28 @@ fact that has not been populated, simply **does not match** — it can never tur
 `allow`. Combined with the `deny`-by-default egress verdict, an absent or broken rule is always
 the safe outcome ([engine.rs:35-37](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/engine.rs#L35-L37), [engine.rs:167-209](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/engine.rs#L167-L209)).
 
-Read "fails to compile" there literally: it means the CEL compiler **returned an error**. Not
-every malformed condition does. Some panic instead, and a panic is not a rule that fails closed —
-it is a crash on the decision path. Two limits follow, and both are in the compiler rather than
-in Honmoon:
+Read "fails to compile" there literally: the CEL compiler **returns an error**, Honmoon logs a
+warning naming the rule, and the rule goes inert. It cannot match, so the `deny`-by-default egress
+verdict answers instead.
 
-- A **blank** condition panics, and Honmoon catches that case at the only point where it can:
-  `Policy::from_yaml` refuses to load a policy containing one, so it never reaches evaluation.
+This used to carry an exception worth knowing about. On the previous CEL crate a whole class of
+malformed condition **panicked** rather than returning an error — crashing the decision path
+instead of failing closed — and the class was wide: any single character the lexer could not begin
+a token with, including invisible ones such as `U+200B` or a stray byte-order mark that render as
+nothing in an editor. That was tracked as
+[#154](https://github.com/pleaseai/honmoon/issues/154) and is **fixed**: every one of those inputs
+now returns an error and declines like any other unparseable condition.
+
+Two things still hold, and both are worth keeping in mind when authoring:
+
+- A **blank** condition is rejected at load. `Policy::from_yaml` refuses a policy containing one,
+  because a rule with no expression can never match and would sit in your policy looking active.
   See [Rule order and unreachable rules](#rule-order-and-unreachable-rules) above.
-- **Other** malformed conditions panic the same way and are *not* detected at load. A rule
-  carrying one loads cleanly and crashes the decision path when a request reaches it. Tracked in
-  [#154](https://github.com/pleaseai/honmoon/issues/154). The compiler panics on any single
-  character it cannot begin a token with, so this covers far more than obvious typos like `"&&"`
-  or `")"`: an unterminated string literal, a condition that is only a comment, a stray `"@"` or
-  `"§"`, and — the one to watch — a condition made only of **zero-width** characters such as
-  `U+200B` or a stray byte-order mark. That last one renders as an empty box or as nothing at all,
-  so it reads exactly like the blank condition caught above while being, to the compiler, an
-  ordinary unparseable one.
-
-  Honmoon does not extend the blank check to cover it, because the line would be arbitrary:
-  `U+200B` panics for the same reason `"@"` does, and neither is whitespace. Separating either
-  from valid CEL without compiling it means parsing CEL.
-
-  Most syntax errors *do* return an error and do fail closed — `"(true"` and `"a[]"`, for
-  instance — but do not rely on it: give every rule a condition you have seen evaluate.
+- **Neither the loader nor the JSON Schema validates CEL.** A non-blank condition that is not a
+  valid expression — `"&&"`, a stray `"@"`, a condition made only of zero-width characters — loads
+  cleanly, and you find out it is inert from a warning in the log rather than from a load failure.
+  It fails closed, but it is not doing what you wrote it to do. Give every rule a condition you
+  have seen evaluate.
 
 ```mermaid
 sequenceDiagram

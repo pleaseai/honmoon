@@ -83,8 +83,8 @@ describe('rule.condition pattern', () => {
     // a condition of only U+0085 is blank and must be rejected.
     expect(condition.test('\u0085')).toBe(false)
     // U+FEFF is ECMAScript `\s` but not Unicode White_Space: Rust does not trim
-    // it, so such a condition loads. It still panics in the CEL parser - that
-    // is honmoon issue 154, and not something this pattern claims to catch.
+    // it, so such a condition loads. The CEL compiler then rejects it and the
+    // rule goes inert - not something this pattern claims to catch either way.
     expect(condition.test('\uFEFF')).toBe(true)
   })
 

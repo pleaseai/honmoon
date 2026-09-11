@@ -9,7 +9,7 @@ description = "Honmoon policy engine, CEL evaluation, and protocol facts model"
 
 [dependencies]
 aho-corasick.workspace = true
-cel-interpreter = "0.10"
+cel = "0.14"
 hmac.workspace = true
 percent-encoding.workspace = true
 regex.workspace = true

@@ -359,15 +359,14 @@ fn is_unconditional(condition: &str) -> bool {
 /// must agree on exactly which conditions never reach `Program::compile`.
 ///
 /// Whitespace as Rust defines it (`char::is_whitespace`, so `\u{00a0}` and
-/// `\u{3000}` count), and nothing else. It is not a general test for "carries
-/// no expression", because no cheap one exists: `Program::compile` panics on
-/// *any* single character it cannot begin a token with, so `"&&"`, `"@"`,
-/// `"§"`, an emoji and a lone `\u{200b}` all panic exactly as `""` did. The
-/// last of those matters most here — a zero-width space is not
-/// `char::is_whitespace`, so a condition made only of them reads as empty in
-/// an editor, is *not* blank by this test, and still panics. Recognising it
-/// would mean drawing a line the compiler does not draw. That whole class is
-/// #154; this function is only the part of it that is cheap to name.
+/// `\u{3000}` count), and nothing else. It is deliberately not a general test
+/// for "carries no expression": since the move to `cel` 0.14 the compiler
+/// returns `Err` for the wider malformed set that used to panic here — `"&&"`,
+/// `"@"`, `"§"`, an emoji, a lone `\u{200b}` — so there is nothing left for a
+/// pre-check to rescue, and widening this one to chase that set would mean
+/// drawing a line the compiler does not draw. It stays because blank is the
+/// case worth its own message, not because blank is the case that would crash.
+/// The panic class it was written against is #154.
 pub(crate) fn is_blank_condition(condition: &str) -> bool {
     condition.trim().is_empty()
 }
@@ -565,15 +564,17 @@ endpoints:
         }
     }
 
-    /// #151: a blank `condition` is not a rule that quietly matches nothing —
-    /// `Program::compile` panics on it rather than returning the `Err` the
-    /// engine degrades on, so the policy is unevaluable and must not load.
+    /// #151: a blank `condition` is not a rule that quietly matches nothing.
+    /// It carries no expression, so it can never match and the rule is inert —
+    /// an author error the loader should say out loud rather than accept.
+    /// (It was originally rejected because `Program::compile` panicked on it;
+    /// `cel` 0.14 returns `Err` instead, and the rejection stays on the reason
+    /// above.)
     #[test]
     fn rejects_a_rule_with_a_blank_condition() {
         // `"\u00a0"` and `"\u3000"` are whitespace to `char::is_whitespace` but
-        // not to an ASCII test, and they panic in `Program::compile` exactly as
-        // `""` does — so a narrowing of `is_blank_condition` to ASCII would put
-        // the #151 panic back for a condition an author cannot see.
+        // not to an ASCII test — so a narrowing of `is_blank_condition` to
+        // ASCII would let a condition an author cannot see load as a live rule.
         for condition in [
             "\"\"",
             "\" \"",
