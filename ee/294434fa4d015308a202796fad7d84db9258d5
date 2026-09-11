@@ -1,0 +1,32 @@
+crates/honmoon-cli/src/hook.rs
+  s_9270e6fe5cfd82::t_0117142f4f3616 1388,1524-1525
+  s_9270e6fe5cfd82::t_b7781bafd0d05a 1401-1403,1488-1493
+  s_9270e6fe5cfd82::t_2a9e41c0ce7c78 170-189,227-258,275,280,282-291,293-304,407-408,410,433-434,439-443,537-541,546-547,549,566-570,676-677,679,746,752-760,775,801-803,805-816,819-822,824-825,831-836,841-843,845,847-857,864-898,901,904,906,910,934,1047-1055,1198-1206,1327-1387,1389-1400,1404-1487,1494-1523
+  s_9270e6fe5cfd82::t_505c8afa8ed67a 259-260
+  s_9270e6fe5cfd82::t_a54ddec5c304d7 817-818,823
+packages/policy/src/index.ts
+  s_9270e6fe5cfd82::t_248b55f81016a7 98-106,114-116,126-128
+packages/claude-plugin/README.md
+  s_9270e6fe5cfd82::t_97a3c3c0aa2a70 277-278,280-284,291
+  s_9270e6fe5cfd82::t_a1566894b09b56 308,312-357,360-361
+crates/honmoon-core/src/audit.rs
+  s_9270e6fe5cfd82::t_3acbdf5383ac33 94-96
+  s_9270e6fe5cfd82::t_a620a6fa8e5b91 113-117
+  s_9270e6fe5cfd82::t_87c3e430e83d9f 69-77
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "ee294434fa4d015308a202796fad7d84db9258d5",
+  "prompts": {},
+  "sessions": {
+    "s_9270e6fe5cfd82": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "7421a89d-0867-4381-8918-7ae56e76e1b6",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
