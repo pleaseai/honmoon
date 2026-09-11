@@ -10,6 +10,7 @@ use serde::{Deserialize, Serialize};
 pub mod audit;
 pub mod claude_code_hook;
 pub mod engine;
+pub mod hook_salt;
 pub mod pii;
 pub mod protocols;
 pub mod redact;
@@ -21,6 +22,7 @@ pub use claude_code_hook::{
     ClaudeCodeHookVerdict, PathResolution, claude_code_hook_verdict, is_sensitive_path,
 };
 pub use engine::{Outcome, decide, decide_explained, decide_pii_audit_only};
+pub use hook_salt::{derive_hook_salt, hook_salt_context};
 pub use pii::{PiiFacts, PiiSpan, detect_pii, detect_spans, summarize_spans};
 pub use redact::{DEFAULT_MIN_PII_SEVERITY, RedactionOutcome, redact, redact_with_spans};
 pub use secret_detect::{SecretFinding, detect_secrets};
