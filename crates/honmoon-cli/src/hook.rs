@@ -52,7 +52,7 @@ pub fn run(salt_context: Option<&str>, audit_log: Option<&Path>) -> Result<()> {
     };
 
     let machine_key = machine_key();
-    audit_machine_key_source(audit_log, &machine_key.source);
+    audit_machine_key_status(audit_log, &machine_key.status);
     let salt = session_salt(&payload, salt_context, &machine_key);
     let verdict = handle_hook(&payload, &salt);
     if verdict != serde_json::json!({}) {
@@ -152,15 +152,32 @@ fn session_salt(payload: &Value, salt_context: Option<&str>, machine_key: &Machi
 /// [`MachineKeySource::Fallback`]).
 const FALLBACK_MACHINE_KEY: &[u8] = b"honmoon-hook-v1-fallback-key";
 
-/// Where the bytes in a [`MachineKey`] came from.
+/// `rule` on a degraded event whose key is not the persisted one — the
+/// per-invocation [`MachineKeySource::Unpersisted`] salt, or
+/// [`FALLBACK_MACHINE_KEY`]. `key_source` distinguishes the two.
+const HOOK_SALT_FALLBACK_RULE: &str = "hook-salt-fallback";
+
+/// `rule` on a degraded event whose key *is* the persisted one but whose file is
+/// readable beyond its owner (issue #141).
+///
+/// A separate rule rather than a fourth [`honmoon_core::RedactionKeySource`]:
+/// exposure and provenance are independent axes, and the key on this path really
+/// did come from `~/.honmoon/hook-salt`, so a `key_source` of anything but
+/// `persisted` would be false. `rule` is where "which degradation is this"
+/// already lives on every audit event.
+const HOOK_SALT_EXPOSED_RULE: &str = "hook-salt-exposed";
+
+/// Where the bytes in a [`MachineKey`] came from — one of the two axes worth
+/// recording about a key. Who else can read them is the other, and it lives on
+/// [`MachineKeyStatus::exposure`] rather than here (issue #141): a key can
+/// genuinely be the persisted one *and* be group/world-readable, so a fourth
+/// variant folding the two together would have to lie about one of them.
 pub enum MachineKeySource {
     /// The random secret persisted at `~/.honmoon/hook-salt`.
     ///
-    /// Attests where the bytes came from, not who else can read them: the
-    /// loader re-tightens the file to `0600` but only logs a `chmod` it cannot
-    /// apply, so a salt left group/world-readable still arrives here. Recording
-    /// that as its own degradation is issue #141 — it is an orthogonal axis, and
-    /// a persisted key is exactly what this variant says it is.
+    /// Attests where the bytes came from, not who else can read them —
+    /// [`MachineKeyStatus::exposure`] carries that, recorded alongside rather
+    /// than folded in here.
     Persisted,
     /// A private random secret that could not be persisted, so it is this
     /// process's alone. `reason` is why it did not reach disk.
@@ -187,17 +204,50 @@ pub enum MachineKeySource {
     Fallback { reason: String },
 }
 
-/// The machine secret that keys every hook salt derivation, plus where it came
-/// from.
+/// Everything about a machine key that is worth recording: where its bytes came
+/// from, and what the loader observed about who else can read them.
+///
+/// Two fields rather than one wider enum, because the two are orthogonal — a key
+/// can genuinely be the persisted one *and* have been left group/world-readable
+/// (issue #141). Folding exposure into [`MachineKeySource`] would make whichever
+/// variant won the fold false about the other axis.
+pub struct MachineKeyStatus {
+    /// Which key this is.
+    pub source: MachineKeySource,
+    /// `Some(reason)` when the salt file behind a [`MachineKeySource::Persisted`]
+    /// key is readable beyond its owner *after* the loader tried to restrict it,
+    /// `reason` naming the mode observed.
+    ///
+    /// The observed mode is the claim, deliberately, and it is narrower than it
+    /// looks in both directions. A `chmod` that fails is not evidence of
+    /// exposure — a read-only mount refuses the call on a file that is already
+    /// `0600`, and recording that would be a false alarm in the one channel that
+    /// must stay worth reading. A `chmod` that succeeds is not evidence of
+    /// safety either: it closes the window going forward and says nothing about
+    /// who read the file before. So `None` attests "owner-only when the loader
+    /// looked", never "never exposed".
+    pub exposure: Option<String>,
+}
+
+impl MachineKeyStatus {
+    /// Whether there is anything to record — a key that is not the persisted
+    /// one, or a persisted one whose file was readable beyond its owner.
+    fn is_degraded(&self) -> bool {
+        !matches!(self.source, MachineKeySource::Persisted) || self.exposure.is_some()
+    }
+}
+
+/// The machine secret that keys every hook salt derivation, plus what is worth
+/// recording about it.
 ///
 /// The two travel together and are constructed together, so a caller cannot
-/// label one key's bytes with the other's provenance — the whole point of this
+/// label one key's bytes with another key's status — the whole point of this
 /// type is that the recorded degradation matches the key actually in use. The
 /// bytes stay private for the reason [`honmoon_mgmt::HookSalt`]'s `HookKey`
 /// keeps its own private: key material has no business on a public field.
 pub struct MachineKey {
     bytes: Vec<u8>,
-    source: MachineKeySource,
+    status: MachineKeyStatus,
 }
 
 impl MachineKey {
@@ -206,11 +256,11 @@ impl MachineKey {
         &self.bytes
     }
 
-    /// Split the key into its bytes and its provenance, for a caller that must
-    /// own both — the gateway hands the bytes to the management endpoint, which
-    /// derives per request, and keeps the provenance to record after startup.
-    pub fn into_parts(self) -> (Vec<u8>, MachineKeySource) {
-        (self.bytes, self.source)
+    /// Split the key into its bytes and its status, for a caller that must own
+    /// both — the gateway hands the bytes to the management endpoint, which
+    /// derives per request, and keeps the status to record after startup.
+    pub fn into_parts(self) -> (Vec<u8>, MachineKeyStatus) {
+        (self.bytes, self.status)
     }
 }
 
@@ -230,30 +280,47 @@ pub fn machine_key() -> MachineKey {
 /// reachable from a test without touching `HOME`.
 fn machine_key_in(dir: &Path) -> MachineKey {
     match load_or_create_machine_salt(dir) {
-        Ok(LoadedSalt { bytes, unpersisted }) => MachineKey {
+        Ok(LoadedSalt {
             bytes,
-            source: match unpersisted {
-                Some(reason) => MachineKeySource::Unpersisted { reason },
-                None => MachineKeySource::Persisted,
+            unpersisted,
+            exposed,
+        }) => MachineKey {
+            bytes,
+            status: MachineKeyStatus {
+                source: match unpersisted {
+                    Some(reason) => MachineKeySource::Unpersisted { reason },
+                    None => MachineKeySource::Persisted,
+                },
+                exposure: exposed,
             },
         },
         Err(e) => {
             eprintln!("honmoon hook: using fallback salt ({e:#})");
             MachineKey {
                 bytes: FALLBACK_MACHINE_KEY.to_vec(),
-                source: MachineKeySource::Fallback {
-                    reason: format!("{e:#}"),
+                status: MachineKeyStatus {
+                    source: MachineKeySource::Fallback {
+                        reason: format!("{e:#}"),
+                    },
+                    // No salt file was adopted, so there is no mode to observe.
+                    exposure: None,
                 },
             }
         }
     }
 }
 
-/// Record a machine key that is not the persisted one; a
-/// [`MachineKeySource::Persisted`] key records nothing, so presence in the log
-/// is itself the signal. `key_source` says which guarantee was lost —
-/// unforgeability under [`MachineKeySource::Fallback`], byte-stability under
-/// [`MachineKeySource::Unpersisted`].
+/// Record a machine key the engine should not be running on; a healthy key —
+/// the persisted one, owner-only when the loader looked — records nothing, so
+/// presence in the log is itself the signal.
+///
+/// Which degradation it is comes off `rule`, the discriminator every other audit
+/// event already carries: [`HOOK_SALT_FALLBACK_RULE`] for a key that is not the
+/// persisted one, [`HOOK_SALT_EXPOSED_RULE`] for a persisted key whose file is
+/// readable beyond its owner. On the fallback rule `key_source` then says which
+/// guarantee was lost — unforgeability under [`MachineKeySource::Fallback`],
+/// byte-stability under [`MachineKeySource::Unpersisted`]. On the exposure rule
+/// it stays `persisted`, because that is what the key is.
 ///
 /// The audit log is the one channel in this system a human reviews after the
 /// fact — a JSONL file the query API and the dashboard read — which is what the
@@ -267,19 +334,33 @@ fn machine_key_in(dir: &Path) -> MachineKey {
 /// persisted and there was nothing to say. The caller must not discard an
 /// `Err`: this record is the degradation's only durable trace, so a sink that
 /// refused it has to be reported through whatever channel that caller does have.
-pub fn record_machine_key_source(
+pub fn record_machine_key_status(
     audit: &honmoon_core::AuditLog,
     transport: honmoon_core::RedactionTransport,
-    source: &MachineKeySource,
+    status: &MachineKeyStatus,
 ) -> std::io::Result<()> {
-    let (key_source, reason) = match source {
-        MachineKeySource::Persisted => return Ok(()),
-        MachineKeySource::Unpersisted { reason } => {
-            (honmoon_core::RedactionKeySource::Unpersisted, reason)
-        }
-        MachineKeySource::Fallback { reason } => {
-            (honmoon_core::RedactionKeySource::Fallback, reason)
-        }
+    let (key_source, rule, reason) = match (&status.source, &status.exposure) {
+        (MachineKeySource::Persisted, None) => return Ok(()),
+        // The key genuinely is the persisted one, so `key_source` stays true and
+        // `rule` carries the orthogonal bad news (issue #141).
+        (MachineKeySource::Persisted, Some(reason)) => (
+            honmoon_core::RedactionKeySource::Persisted,
+            HOOK_SALT_EXPOSED_RULE,
+            reason,
+        ),
+        // A key that never reached disk, and the compiled-in constant, have no
+        // adopted salt file whose mode could have been observed — `exposure` is
+        // `None` on both by construction, which is why these arms ignore it.
+        (MachineKeySource::Unpersisted { reason }, _) => (
+            honmoon_core::RedactionKeySource::Unpersisted,
+            HOOK_SALT_FALLBACK_RULE,
+            reason,
+        ),
+        (MachineKeySource::Fallback { reason }, _) => (
+            honmoon_core::RedactionKeySource::Fallback,
+            HOOK_SALT_FALLBACK_RULE,
+            reason,
+        ),
     };
     let (_, written) = audit.record_durable(honmoon_core::AuditDraft {
         decision: honmoon_core::Decision::Degraded,
@@ -287,7 +368,7 @@ pub fn record_machine_key_source(
         // blocked — redaction ran and content went through (the fail-open
         // contract). The `degraded` decision carries the bad news.
         verdict: honmoon_core::Verdict::Allow,
-        rule: Some("hook-salt-fallback".to_string()),
+        rule: Some(rule.to_string()),
         facts: honmoon_core::FactsSummary {
             redaction: Some(honmoon_core::RedactionFacts {
                 key_source,
@@ -312,8 +393,8 @@ pub fn record_machine_key_source(
 /// that default would be unwritable exactly when it had something to say. Every
 /// failure here is swallowed after a stderr line — the fail-open contract owns
 /// this process, and reporting a degradation must not itself become one.
-fn audit_machine_key_source(audit_log: Option<&Path>, source: &MachineKeySource) {
-    if matches!(source, MachineKeySource::Persisted) {
+fn audit_machine_key_status(audit_log: Option<&Path>, status: &MachineKeyStatus) {
+    if !status.is_degraded() {
         return;
     }
     let Some(path) = audit_log else {
@@ -324,7 +405,7 @@ fn audit_machine_key_source(audit_log: Option<&Path>, source: &MachineKeySource)
     // warnings are filtered out before they are written — so when the sink does
     // not take the record, stderr is all that is left.
     let recorded = honmoon_core::AuditLog::with_file(1, path).and_then(|audit| {
-        record_machine_key_source(&audit, honmoon_core::RedactionTransport::Hook, source)
+        record_machine_key_status(&audit, honmoon_core::RedactionTransport::Hook, status)
     });
     if let Err(e) = recorded {
         eprintln!(
@@ -358,14 +439,23 @@ struct LoadedSalt {
     /// is the one every other process will read" are different facts and only
     /// the second one keeps placeholders stable (issues #20, #98).
     unpersisted: Option<String>,
+    /// `Some(reason)` when the salt file is readable beyond its owner after the
+    /// loader tried to restrict it — see [`MachineKeyStatus::exposure`], which
+    /// this becomes. Orthogonal to `unpersisted`: it is the file's mode, not the
+    /// bytes' provenance.
+    exposed: Option<String>,
 }
 
 impl LoadedSalt {
     /// A salt that is on disk and will be read back by every other process.
-    fn persisted(bytes: Vec<u8>) -> Self {
+    /// `exposed` is what the loader observed about who can read that file, which
+    /// every caller has to answer rather than inherit — see
+    /// [`restrict_to_owner_only`].
+    fn persisted(bytes: Vec<u8>, exposed: Option<String>) -> Self {
         Self {
             bytes,
             unpersisted: None,
+            exposed,
         }
     }
 }
@@ -377,9 +467,11 @@ fn load_or_create_machine_salt(dir: &Path) -> Result<LoadedSalt> {
     let must_overwrite = match std::fs::read(&path) {
         Ok(bytes) if bytes.len() >= 16 => {
             // Valid: adopt it, but correct its permissions in case an external
-            // actor (backup restore, older build) left it looser than 0600.
-            set_permissions_0600(&path);
-            return Ok(LoadedSalt::persisted(bytes));
+            // actor (backup restore, older build) left it looser than 0600 —
+            // and report what the file is *still* readable by if that correction
+            // did not take (issue #141).
+            let exposed = restrict_to_owner_only(&path);
+            return Ok(LoadedSalt::persisted(bytes, exposed));
         }
         Ok(bytes) => {
             eprintln!(
@@ -406,8 +498,9 @@ fn load_or_create_machine_salt(dir: &Path) -> Result<LoadedSalt> {
         // The file exists but is unusable, so there is no create race to lose:
         // overwrite it. (A concurrent second corrupt-recovery is negligible — the
         // damaged state is already anomalous.)
-        write_secret_file(&path, &salt).with_context(|| format!("writing {}", path.display()))?;
-        return Ok(LoadedSalt::persisted(salt));
+        let exposed = write_secret_file(&path, &salt)
+            .with_context(|| format!("writing {}", path.display()))?;
+        return Ok(LoadedSalt::persisted(salt, exposed));
     }
 
     // First use: publish atomically so a concurrent first-run process cannot
@@ -468,7 +561,10 @@ fn publish_secret_atomically(dir: &Path, path: &Path, salt: &[u8]) -> Result<Loa
     }
 
     match linked {
-        Ok(()) => Ok(LoadedSalt::persisted(salt.to_vec())),
+        // The target is a fresh inode: the temp was created `O_CREAT|O_EXCL`
+        // at mode 0600 and `hard_link` carries that mode across, so there is no
+        // pre-existing mode to have inherited and nothing to observe.
+        Ok(()) => Ok(LoadedSalt::persisted(salt.to_vec(), None)),
         Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
             // Lost the race: the target is already a complete salt (a publisher
             // links only after a full write), so a single read suffices. The two
@@ -479,7 +575,12 @@ fn publish_secret_atomically(dir: &Path, path: &Path, salt: &[u8]) -> Result<Loa
             // the top-level path, so without a diagnostic a transient recurrence
             // would leave no trace at all.
             match std::fs::read(path) {
-                Ok(bytes) if bytes.len() >= 16 => Ok(LoadedSalt::persisted(bytes)),
+                // The winner's file, not ours — so its mode is observed here for
+                // the same reason the top-level read path observes it.
+                Ok(bytes) if bytes.len() >= 16 => {
+                    let exposed = restrict_to_owner_only(path);
+                    Ok(LoadedSalt::persisted(bytes, exposed))
+                }
                 Ok(bytes) => {
                     let reason = format!(
                         "winner salt file {} is short/corrupt ({} bytes) after a lost publish race",
@@ -490,6 +591,7 @@ fn publish_secret_atomically(dir: &Path, path: &Path, salt: &[u8]) -> Result<Loa
                     Ok(LoadedSalt {
                         bytes: salt.to_vec(),
                         unpersisted: Some(reason),
+                        exposed: None,
                     })
                 }
                 Err(e) => {
@@ -501,6 +603,7 @@ fn publish_secret_atomically(dir: &Path, path: &Path, salt: &[u8]) -> Result<Loa
                     Ok(LoadedSalt {
                         bytes: salt.to_vec(),
                         unpersisted: Some(reason),
+                        exposed: None,
                     })
                 }
             }
@@ -543,7 +646,12 @@ fn hex_encode(bytes: &[u8]) -> String {
 /// secret is never briefly readable at the umask default between `write` and a
 /// later `chmod`. Truncates an existing file, and re-tightens permissions
 /// afterward since open-mode applies only on creation.
-fn write_secret_file(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+///
+/// Returns what [`restrict_to_owner_only`] observed, because the truncate path
+/// reuses an *existing* inode: a fresh secret written into a file some external
+/// actor left group/world-readable is exposed the moment it lands, exactly as an
+/// adopted one is.
+fn write_secret_file(path: &Path, bytes: &[u8]) -> std::io::Result<Option<String>> {
     use std::io::Write as _;
     let mut opts = std::fs::OpenOptions::new();
     opts.write(true).create(true).truncate(true);
@@ -554,8 +662,7 @@ fn write_secret_file(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     }
     let mut file = opts.open(path)?;
     file.write_all(bytes)?;
-    set_permissions_0600(path);
-    Ok(())
+    Ok(restrict_to_owner_only(path))
 }
 
 /// Read `n` bytes from the OS CSPRNG. Uses `/dev/urandom` to avoid pulling in an
@@ -579,19 +686,56 @@ fn random_bytes(_n: usize) -> Result<Vec<u8>> {
     anyhow::bail!("/dev/urandom CSPRNG is unavailable on non-Unix hosts")
 }
 
+/// Restrict `path` to `0600`, then report whether it is *still* readable beyond
+/// its owner: `Some(reason)` naming the mode observed, `None` for owner-only.
+///
+/// The mode read back after the attempt is the signal, not the call's result.
+/// Both directions of that matter:
+/// - A failed `chmod` is not evidence of exposure. A read-only mount refuses the
+///   call on a file that is already `0600`, and recording a degradation there
+///   would be a false alarm — the kind that teaches operators to ignore the one
+///   channel built to be read (issues #131, #141).
+/// - A successful `chmod` is not evidence of safety. It closes the window going
+///   forward and says nothing about who could read the file before. `None`
+///   therefore attests "owner-only when the loader looked", never "never
+///   exposed".
+///
+/// A mode that cannot be read back at all is reported as `None` after a stderr
+/// line, for the first reason: an unverifiable mode is not an observed exposure,
+/// and the loader has just read the file's contents, so this is a narrow window.
 #[cfg(unix)]
-fn set_permissions_0600(path: &Path) {
+fn restrict_to_owner_only(path: &Path) -> Option<String> {
     use std::os::unix::fs::PermissionsExt;
     if let Err(e) = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)) {
         eprintln!(
-            "honmoon hook: could not restrict permissions on {} ({e}) — salt may be group/world-readable",
+            "honmoon hook: could not restrict permissions on {} ({e}) — checking whether the salt is group/world-readable",
             path.display()
         );
     }
+    let mode = match std::fs::metadata(path) {
+        Ok(meta) => meta.permissions().mode() & 0o777,
+        Err(e) => {
+            eprintln!(
+                "honmoon hook: could not read back the permissions of {} ({e}) — exposure unverified",
+                path.display()
+            );
+            return None;
+        }
+    };
+    (mode & 0o077 != 0).then(|| {
+        format!(
+            "salt file {} is readable beyond its owner (mode {mode:04o}) and could not be restricted to 0600",
+            path.display()
+        )
+    })
 }
 
+/// Non-Unix hosts have no mode bits to observe, matching the `#[cfg(unix)]`
+/// open modes and `/dev/urandom` elsewhere in this file.
 #[cfg(not(unix))]
-fn set_permissions_0600(_path: &Path) {}
+fn restrict_to_owner_only(_path: &Path) -> Option<String> {
+    None
+}
 
 #[cfg(test)]
 mod tests {
@@ -697,6 +841,208 @@ mod tests {
             0o600,
             "loose permissions are re-tightened on the read path"
         );
+        assert!(
+            salt.exposed.is_none(),
+            "a correction that took is not an exposure — the mode read back is 0600"
+        );
+    }
+
+    /// A salt file this process can read but **cannot** `chmod` — the host
+    /// condition the exposure check exists for, and the one a plain temp file
+    /// cannot reproduce: we own it, so `set_permissions` always succeeds and the
+    /// mode is always corrected.
+    ///
+    /// - **macOS**: a file's owner may set the `uchg` (user-immutable) flag
+    ///   without privileges, after which `chmod(2)` fails with `EPERM` and the
+    ///   mode stays exactly as seeded. [`UnrestrictableSalt`] clears the flag on
+    ///   drop, or the temp dir could not be removed.
+    /// - **Linux**: procfs rejects `chmod` outright — for root too, so this is
+    ///   safe under any uid and mutates nothing — which makes a symlink at the
+    ///   salt path pointing into `/proc` genuinely unrestrictable.
+    ///   `/proc/version` is world-readable (`0444`), `/proc/self/auxv`
+    ///   owner-only (`0400`), and both are comfortably over the loader's 16-byte
+    ///   floor.
+    ///
+    /// The caller says which mode class it needs and this verifies the host
+    /// actually delivered it — readable, long enough, `chmod` genuinely refused,
+    /// and the group/world bits as asked. Neither arm of the exposure check may
+    /// pass because the condition in its name quietly failed to materialise.
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    fn unrestrictable_salt(dir: &Path, exposed: bool) -> UnrestrictableSalt {
+        use std::os::unix::fs::PermissionsExt;
+
+        let path = dir.join("hook-salt");
+        let guard = seed_unrestrictable_salt(&path, exposed);
+
+        let bytes = std::fs::read(&path).expect("the seeded salt must be readable");
+        assert!(
+            bytes.len() >= 16,
+            "the seeded salt must clear the loader's 16-byte floor, or it takes the regenerate path (got {} bytes)",
+            bytes.len()
+        );
+        assert!(
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).is_err(),
+            "this host let us chmod {} — the test would then prove nothing about an unrestrictable salt",
+            path.display()
+        );
+        let mode = std::fs::metadata(&path)
+            .expect("stat the seeded salt")
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(
+            mode & 0o077 != 0,
+            exposed,
+            "seeded salt has mode {mode:04o}, which is not the group/world exposure this arm asked for"
+        );
+        guard
+    }
+
+    /// Clears the macOS immutable flag so the temp dir can be removed; a Linux
+    /// symlink needs no teardown, so the guard is empty there.
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    struct UnrestrictableSalt {
+        #[cfg(target_os = "macos")]
+        path: PathBuf,
+    }
+
+    #[cfg(target_os = "macos")]
+    fn seed_unrestrictable_salt(path: &Path, exposed: bool) -> UnrestrictableSalt {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::write(path, [5u8; 32]).expect("seed salt bytes");
+        let mode = if exposed { 0o644 } else { 0o600 };
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode))
+            .expect("seed salt mode");
+        set_immutable(path, true);
+        UnrestrictableSalt {
+            path: path.to_path_buf(),
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    impl Drop for UnrestrictableSalt {
+        fn drop(&mut self) {
+            set_immutable(&self.path, false);
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    fn set_immutable(path: &Path, immutable: bool) {
+        use std::os::unix::ffi::OsStrExt;
+        let c_path = std::ffi::CString::new(path.as_os_str().as_bytes()).expect("path without NUL");
+        let flags = if immutable { libc::UF_IMMUTABLE } else { 0 };
+        // SAFETY: `c_path` is a NUL-terminated path that outlives the call, and
+        // `chflags` only reads it.
+        let rc = unsafe { libc::chflags(c_path.as_ptr(), flags) };
+        assert_eq!(
+            rc,
+            0,
+            "chflags({}, {flags:#x}): {}",
+            path.display(),
+            std::io::Error::last_os_error()
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    fn seed_unrestrictable_salt(path: &Path, exposed: bool) -> UnrestrictableSalt {
+        let target = if exposed {
+            "/proc/version"
+        } else {
+            "/proc/self/auxv"
+        };
+        std::os::unix::fs::symlink(target, path).expect("point the salt path at a procfs entry");
+        UnrestrictableSalt {}
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
+    fn a_readable_salt_that_cannot_be_restricted_is_audited_as_degraded() {
+        use std::os::unix::fs::PermissionsExt;
+
+        // The defect in #141: the read path adopts a valid salt and re-tightens
+        // it, but a `chmod` that cannot be applied only ever reached stderr — so
+        // a salt any local user can read was reported as a healthy persisted
+        // key, and with it they can mint the placeholder a guessed secret would
+        // produce for a session and confirm it against a redacted transcript.
+        let tmp = TempDir::new("exposed-salt");
+        let _guard = unrestrictable_salt(tmp.path(), true);
+        let path = tmp.path().join("hook-salt");
+
+        let key = machine_key_in(tmp.path());
+        assert_ne!(
+            key.as_slice(),
+            FALLBACK_MACHINE_KEY,
+            "the file was valid, so this is the persisted key, not the fallback"
+        );
+        assert!(
+            matches!(key.status.source, MachineKeySource::Persisted),
+            "provenance stays truthful: exposure is the other axis, not a fourth key source"
+        );
+        let mode = std::fs::metadata(&path)
+            .expect("stat salt file")
+            .permissions()
+            .mode()
+            & 0o777;
+        let exposure = key
+            .status
+            .exposure
+            .as_deref()
+            .expect("a salt still readable beyond its owner after the attempt is an exposure");
+        assert!(
+            exposure.contains(&format!("{mode:04o}")),
+            "the reason names the mode observed, not the chmod that failed: {exposure}"
+        );
+
+        // And it has to reach the durable sink, which is the hook's only channel.
+        let log = tmp.path().join("audit.jsonl");
+        audit_machine_key_status(Some(&log), &key.status);
+        let line = std::fs::read_to_string(&log).expect("the audit log was written");
+        let event: honmoon_core::AuditEvent =
+            serde_json::from_str(line.trim()).expect("one JSONL event per line");
+        assert_eq!(event.decision, honmoon_core::Decision::Degraded);
+        assert_eq!(
+            event.rule.as_deref(),
+            Some(HOOK_SALT_EXPOSED_RULE),
+            "its own rule — not the fallback's, which describes a different loss"
+        );
+        let redaction = event.facts.redaction.expect("redaction facts");
+        assert_eq!(
+            redaction.key_source,
+            honmoon_core::RedactionKeySource::Persisted,
+            "the key genuinely is the persisted one; saying otherwise would be the enum lying"
+        );
+        assert!(
+            redaction.reason.contains(&format!("{mode:04o}")),
+            "the recorded reason carries the observed mode: {}",
+            redaction.reason
+        );
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
+    fn an_owner_only_salt_whose_chmod_fails_is_not_a_degradation() {
+        // Why the signal is the mode read back rather than the `chmod` result: a
+        // read-only mount refuses the call on a file that is already `0600`.
+        // Recording there would raise a degraded event about a
+        // correctly-permissioned key, and false alarms are how an audit channel
+        // stops being read — which would undo what #131 asked for.
+        let tmp = TempDir::new("unrestrictable-owner-only");
+        let _guard = unrestrictable_salt(tmp.path(), false);
+
+        let key = machine_key_in(tmp.path());
+        assert!(matches!(key.status.source, MachineKeySource::Persisted));
+        assert!(
+            key.status.exposure.is_none(),
+            "the chmod failed, but the file is owner-only — there is nothing to report: {:?}",
+            key.status.exposure
+        );
+
+        let log = tmp.path().join("audit.jsonl");
+        audit_machine_key_status(Some(&log), &key.status);
+        assert!(
+            !log.exists(),
+            "an owner-only salt leaves the log untouched — not even an empty file"
+        );
     }
 
     #[test]
@@ -773,9 +1119,12 @@ mod tests {
                 .expect("publish loses to a short winner");
         let key = MachineKey {
             bytes: loaded.bytes,
-            source: match loaded.unpersisted {
-                Some(reason) => MachineKeySource::Unpersisted { reason },
-                None => panic!("this arm must report the salt as unpersisted"),
+            status: MachineKeyStatus {
+                source: match loaded.unpersisted {
+                    Some(reason) => MachineKeySource::Unpersisted { reason },
+                    None => panic!("this arm must report the salt as unpersisted"),
+                },
+                exposure: loaded.exposed,
             },
         };
         assert_ne!(
@@ -785,7 +1134,7 @@ mod tests {
         );
 
         let audit = honmoon_core::AuditLog::new(2);
-        record_machine_key_source(&audit, honmoon_core::RedactionTransport::Hook, &key.source)
+        record_machine_key_status(&audit, honmoon_core::RedactionTransport::Hook, &key.status)
             .expect("an in-memory log has no sink to fail");
         let event = audit.recent(1).remove(0);
         assert_eq!(event.decision, honmoon_core::Decision::Degraded);
@@ -892,16 +1241,16 @@ mod tests {
         );
 
         let audit = honmoon_core::AuditLog::new(8);
-        record_machine_key_source(
+        record_machine_key_status(
             &audit,
             honmoon_core::RedactionTransport::Hook,
-            &first.source,
+            &first.status,
         )
         .expect("an in-memory log has no sink to fail");
-        record_machine_key_source(
+        record_machine_key_status(
             &audit,
             honmoon_core::RedactionTransport::Hook,
-            &second.source,
+            &second.status,
         )
         .expect("an in-memory log has no sink to fail");
         let events = audit.recent(8);
@@ -934,12 +1283,12 @@ mod tests {
 
         // The working path records nothing, so presence in the log is the signal.
         let healthy = machine_key_in(tmp.path());
-        assert!(matches!(healthy.source, MachineKeySource::Persisted));
+        assert!(matches!(healthy.status.source, MachineKeySource::Persisted));
         let audit = honmoon_core::AuditLog::new(8);
-        record_machine_key_source(
+        record_machine_key_status(
             &audit,
             honmoon_core::RedactionTransport::Hook,
-            &healthy.source,
+            &healthy.status,
         )
         .expect("nothing to record");
         assert!(
@@ -964,7 +1313,7 @@ mod tests {
         // The hook swallows it after a stderr line — reporting a degradation
         // must not itself become one — so this asserts only that it does not
         // panic or propagate, leaving the process's exit-0 contract intact.
-        audit_machine_key_source(Some(&blocked_log), &machine_key_in(&unusable).source);
+        audit_machine_key_status(Some(&blocked_log), &machine_key_in(&unusable).status);
     }
 
     #[test]
@@ -977,10 +1326,10 @@ mod tests {
         let tmp = TempDir::new("gateway-transport");
         let unusable = unusable_salt_dir(&tmp);
         let audit = honmoon_core::AuditLog::new(2);
-        record_machine_key_source(
+        record_machine_key_status(
             &audit,
             honmoon_core::RedactionTransport::Gateway,
-            &machine_key_in(&unusable).source,
+            &machine_key_in(&unusable).status,
         )
         .expect("an in-memory log has no sink to fail");
         let event = audit.recent(1).remove(0);
@@ -998,7 +1347,7 @@ mod tests {
         let unusable = unusable_salt_dir(&tmp);
         let log = tmp.path().join("audit.jsonl");
 
-        audit_machine_key_source(Some(&log), &machine_key_in(&unusable).source);
+        audit_machine_key_status(Some(&log), &machine_key_in(&unusable).status);
         let line = std::fs::read_to_string(&log).expect("the audit log was written");
         let event: honmoon_core::AuditEvent =
             serde_json::from_str(line.trim()).expect("one JSONL event per line");
@@ -1010,7 +1359,7 @@ mod tests {
 
         // A healthy key writes nothing at all — not even an empty file.
         let quiet = tmp.path().join("quiet.jsonl");
-        audit_machine_key_source(Some(&quiet), &machine_key_in(tmp.path()).source);
+        audit_machine_key_status(Some(&quiet), &machine_key_in(tmp.path()).status);
         assert!(!quiet.exists(), "the working path leaves the log untouched");
     }
 

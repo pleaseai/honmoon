@@ -357,9 +357,10 @@ fn gateway(args: GatewayArgs) -> Result<()> {
 
     // Wire redaction is process-scoped — the proxy sees connections, not agent
     // sessions — so it always keys on the configured context.
-    // Provenance outlives the bytes: the key is consumed into the hook salt
-    // below, but where it came from is recorded only once startup has succeeded.
-    let (machine_key, key_source) = hook::machine_key().into_parts();
+    // The key's status outlives its bytes: the key is consumed into the hook
+    // salt below, but where it came from — and who else can read it — is
+    // recorded only once startup has succeeded.
+    let (machine_key, key_status) = hook::machine_key().into_parts();
     let wire_salt = honmoon_core::derive_hook_salt(
         &machine_key,
         hook_salt_context.as_deref().unwrap_or(DEFAULT_SALT_CONTEXT),
@@ -405,10 +406,10 @@ fn gateway(args: GatewayArgs) -> Result<()> {
     // that died on a taken port having minted nothing at all. The key is read once
     // per process and shared by wire redaction and the management hook endpoint,
     // so this single record covers every placeholder the process goes on to mint.
-    if let Err(e) = hook::record_machine_key_source(
+    if let Err(e) = hook::record_machine_key_status(
         &audit,
         honmoon_core::RedactionTransport::Gateway,
-        &key_source,
+        &key_status,
     ) {
         tracing::warn!(error = %e, "could not record the degraded redaction key in the audit log");
     }
