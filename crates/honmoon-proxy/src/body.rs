@@ -6,7 +6,7 @@
 //! inspection or rewriting; the response adapter restores known placeholders
 //! without buffering the upstream stream.
 //!
-//! Two invariants hold throughout:
+//! Three invariants hold throughout:
 //! - **Bounded memory**: no more than [`MAX_INSPECT_BODY`] bytes are ever
 //!   buffered, and inflation reads at most one byte past that cap (only to
 //!   detect overflow), so a large upload — or a decompression bomb — can't
@@ -17,9 +17,13 @@
 //!   claiming to be compressed must not evade detection, and genuinely
 //!   compressed bytes harmlessly fail the UTF-8 check downstream.
 //! - **Bodies only**: the helpers here produce *body* bytes for inspection.
-//!   Trailers are carried through this module so the upstream receives the
-//!   request the client sent, but carrying is not scanning — trailer and header
-//!   values are never inspected or redacted anywhere in the pipeline. See
+//!   Trailers are carried through this module to be replayed on the
+//!   pass-through path, but carrying is not scanning — trailer and header
+//!   values are never inspected or redacted anywhere in the pipeline. Whether a
+//!   carried trailer survives is a separate, conditional matter: a wire
+//!   redaction rewrite replaces the body with `Full`, which has no trailer
+//!   frame, so the client's trailers are dropped there (see
+//!   `mitm::MitmHandler::forwarded_request`). See
 //!   `.please/docs/decisions/0009-body-only-inspection-contract.md`.
 
 use std::borrow::Cow;

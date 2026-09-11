@@ -228,8 +228,11 @@ trailer frame and the client's trailers are dropped instead (deliberately: a dig
 original bytes is stale either way; the stale `Trailer:` header that drop leaves behind is
 issue #135). The same rewrite strips the body-digest headers (`Digest`, `Content-Digest`,
 `Content-MD5`, `Repr-Digest`) and re-frames `Content-Length`/`Content-Encoding`/
-`Transfer-Encoding`, while carrying every other header through. **None of those cases inspects
-anything** — which is the only part this contract covers.
+`Transfer-Encoding`, and carries the client's other headers through — with one exception that is
+not the rewrite's: whenever `--redact-secrets` is on, the proxy replaces `Accept-Encoding` with
+`identity` on every forwarded request, unless the request's authentication signs headers or binds
+the body (the detokenization note above). **None of those cases inspects anything** — which is the
+only part this contract covers.
 
 **There is no content-level lever for this surface.** `egress.default: deny` narrows *which hosts*
 an agent can reach and is worth keeping, but it scans nothing: an allow-listed destination — the

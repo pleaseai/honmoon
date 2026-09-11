@@ -130,15 +130,20 @@ sentence has been wrong, so it is enumerated instead:
 | Framing header (`Content-Length`, `Content-Encoding`, `Transfer-Encoding`) | **Never** — read as metadata only | Re-framed when the body is redacted |
 | Request trailer | **Never** | Only on a pass-through request, and only where the upstream leg's framing carries trailers at all (see issue #136) |
 
-**The body row's "yes" is itself conditional**, and the four fail-open cases above are not scanned
-alternatives to it — three of them mean no finding is possible at all. An over-cap body never
-reaches the scanner (`scanned` is `None`); a decoded body that overflows the cap is discarded
-rather than judged on a truncated prefix (`StrictDecode::Overflow` → `inspected: None`); a
-non-UTF-8 body is handed to the scanner but `utf8_prefix` yields no text. In all three `pii` ends
-up empty, so `pii.count > 0` cannot block them any more than it can block a trailer — the `warn` is
-the only thing that marks them. The one genuine exception is an **undecodable `Content-Encoding`**,
-which falls back to scanning the raw bytes (deliberately, so a plaintext body cannot evade the scan
-by claiming to be compressed); that one is a redaction fail-open, not an inspection skip.
+**The body row's "yes" is itself conditional.** Three conditions mean no finding is possible at
+all. An over-cap body never reaches the scanner (`scanned` is `None`); a decoded body that
+overflows the cap is discarded rather than judged on a truncated prefix (`StrictDecode::Overflow` →
+`inspected: None`); a non-UTF-8 body is handed to the scanner but `utf8_prefix` yields no text. In
+all three `pii` ends up empty, so `pii.count > 0` cannot block them any more than it can block a
+trailer — the `warn` is the only thing that marks them.
+
+**Two of the fail-open cases are redaction-only, and those bodies *are* inspected** — do not read
+the fail-open list as a list of uninspectable requests. An undecodable `Content-Encoding` falls
+back to scanning the raw bytes (deliberately, so a plaintext body cannot evade the scan by claiming
+to be compressed). A partial upload carrying `Content-Range` is scanned and policy-evaluated like
+any other body: detection and `decide` run in `inspect_body` before `forwarded_request` is reached,
+and the `Content-Range` check there skips only the rewrite. A `pii.count > 0 -> deny` rule still
+blocks both. What fails open is the wire rewrite, not the inspection.
 
 **Only the middle column is this ADR's contract.** The right-hand column is transport behaviour that
 varies with the redaction path and the upstream protocol, and it presupposes `--redact-secrets`:
