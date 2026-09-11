@@ -1,6 +1,6 @@
 ---
 name: agent-memory-index-129
-description: 'scripts/agent-memory-index.ts (PR #156) answers `[]` from trackedIndexFiles only for "not a work tree" and raises on any other git failure — an empty list means the tracked-index invariant was checked and holds, never that checking failed; keep that distinction if the function is touched'
+description: 'scripts/agent-memory-index.ts (PR #156) answers `[]` from trackedIndexFiles only when git says "not a git repository", and raises on any other git failure — an empty list means the tracked-index invariant was checked and holds, never that checking failed; keep that distinction if the function is touched'
 metadata:
   type: project
 ---
