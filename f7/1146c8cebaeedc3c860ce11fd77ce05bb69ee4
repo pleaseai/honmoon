@@ -1,0 +1,19 @@
+.claude/agent-memory/review-review-documentation-analyzer/MEMORY.md
+  s_278e684068cde0::t_bfa3ff8ef36abd 6
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "f71146c8cebaeedc3c860ce11fd77ce05bb69ee4",
+  "prompts": {},
+  "sessions": {
+    "s_278e684068cde0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "f250795b-6e43-4d11-913b-21a295e9f51a",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
