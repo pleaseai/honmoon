@@ -98,6 +98,48 @@ const TOP_LEVEL_KEY = /^([a-z][\w-]*):[ \t]*(\S.*)?$/i
 const BLOCK_SCALAR = /^[|>](?:[1-9][+-]?|[+-][1-9]?)?$/
 
 /**
+ * The YAML double-quoted escapes that stand for one character.
+ *
+ * Unescaping only `\"` and `\\` is not enough: in a double-quoted scalar every
+ * one of these is the character, not the two letters, so leaving them alone
+ * puts a literal `\n` in the index where the note said a space.
+ */
+const DOUBLE_QUOTED_ESCAPES: Record<string, string> = {
+  '0': '\0',
+  'a': '\x07',
+  'b': '\b',
+  't': '\t',
+  'n': '\n',
+  'v': '\v',
+  'f': '\f',
+  'r': '\r',
+  'e': '\x1B',
+  ' ': ' ',
+  '"': '"',
+  '/': '/',
+  '\\': '\\',
+  'N': '\x85',
+  '_': '\xA0',
+  'L': '\u2028',
+  'P': '\u2029',
+}
+
+/** Resolve the escape sequences of a YAML double-quoted scalar's body. */
+function unescapeDoubleQuoted(body: string): string {
+  return body.replace(
+    /\\(x[0-9A-F]{2}|u[0-9A-F]{4}|U[0-9A-F]{8}|[\s\S])/g,
+    (match, escape: string) => {
+      if (escape.length > 1) {
+        return String.fromCodePoint(Number.parseInt(escape.slice(1), 16))
+      }
+      // An escape YAML does not define is invalid YAML rather than something to
+      // guess at, so it is left exactly as written instead of being swallowed.
+      return DOUBLE_QUOTED_ESCAPES[escape] ?? match
+    },
+  )
+}
+
+/**
  * Strip one layer of YAML quoting from a scalar.
  *
  * The memory tool writes plain scalars, but a `description:` containing `": "`
@@ -105,7 +147,7 @@ const BLOCK_SCALAR = /^[|>](?:[1-9][+-]?|[+-][1-9]?)?$/
  */
 function unquote(value: string): string {
   if (value.length >= 2 && value.startsWith('"') && value.endsWith('"')) {
-    return value.slice(1, -1).replace(/\\(["\\])/g, '$1')
+    return unescapeDoubleQuoted(value.slice(1, -1))
   }
   if (value.length >= 2 && value.startsWith('\'') && value.endsWith('\'')) {
     return value.slice(1, -1).replace(/''/g, '\'')
@@ -155,6 +197,10 @@ export function parseFrontmatter(text: string): Record<string, string | undefine
     }
   }
 
+  // Collapsed after unquoting, not before, and that order is load-bearing: an
+  // index entry is one line of a markdown list, and a double-quoted `\n` only
+  // becomes a newline once `unquote` has decoded it. Folding here means no
+  // description can split its own list item, whatever notation wrote it.
   for (const [name, value] of Object.entries(scalars)) {
     scalars[name] = unquote((value ?? '').trim()).replace(/\s+/g, ' ').trim()
   }
@@ -314,17 +360,21 @@ export function rebuild(root: string, options: { check?: boolean } = {}): Result
 
     const indexPath = join(dir, INDEX_NAME)
     const rendered = renderIndex(notes)
-    const current = existsSync(indexPath) ? readFileSync(indexPath, 'utf8') : null
-    if (current === rendered) {
+
+    // Before reading, and before the equality check: an index is a file this
+    // script owns and overwrites unconditionally, so it must not be reachable
+    // through a symlink — `writeFileSync` follows one and would clobber
+    // whatever a branch pointed it at. `lstat` rather than `existsSync`,
+    // because `existsSync` follows the link too and answers false for a
+    // dangling one, which is the case that would otherwise be *created* here.
+    const link = lstatSync(indexPath, { throwIfNoEntry: false })
+    if (link?.isSymbolicLink()) {
+      problems.push(`${agent}/${INDEX_NAME}: is a symlink; an index is generated in place, refusing to write through it`)
       continue
     }
 
-    // An index is a file this script owns and overwrites unconditionally, so
-    // it must not be reachable through a symlink: `writeFileSync` follows one,
-    // and the target — whatever a branch pointed it at — would be clobbered by
-    // an ordinary rebuild. Refuse instead, and report it as a problem.
-    if (existsSync(indexPath) && lstatSync(indexPath).isSymbolicLink()) {
-      problems.push(`${agent}/${INDEX_NAME}: is a symlink; an index is generated in place, refusing to write through it`)
+    const current = link ? readFileSync(indexPath, 'utf8') : null
+    if (current === rendered) {
       continue
     }
 
@@ -338,32 +388,47 @@ export function rebuild(root: string, options: { check?: boolean } = {}): Result
 }
 
 /**
- * Returns the process exit code: non-zero when any note cannot be indexed, or
- * when an index is tracked again. `root` and `cwd` are defaulted for the CLI
- * and only passed by the tests, which need a checkout of their own.
+ * The exit code for a run that completed and reported defects, as opposed to
+ * one that could not run at all — which throws, and so exits 1.
+ *
+ * The two have to be distinguishable from a shell: a caller that wants to
+ * tolerate "the index is written, but a note is malformed" must not also
+ * tolerate "git is missing", and one exit code for both makes `|| true` the
+ * only option — the swallow this script exists to argue against.
+ */
+export const EXIT_PROBLEMS = 2
+
+function report(problems: string[]): number {
+  console.error('agent-memory index problems:')
+  for (const problem of problems) {
+    console.error(`  - ${problem}`)
+  }
+  return EXIT_PROBLEMS
+}
+
+/**
+ * Returns the process exit code: `EXIT_PROBLEMS` when any note cannot be
+ * indexed or an index is tracked again, 0 when clean. `root` and `cwd` are
+ * defaulted for the CLI and only passed by the tests, which need a checkout of
+ * their own.
  */
 export function main(argv: string[], root: string = MEMORY_DIR, cwd: string = REPO_ROOT): number {
   const check = argv.includes('--check')
 
-  // Read before rebuilding, not after: `rebuild` writes, and a run that ends in
-  // a non-zero exit has still written by then. Anything the tracked-index check
-  // would have refused has to be refused while the tree is untouched.
+  // Checked *and acted on* before rebuilding, not after: `rebuild` writes, and
+  // a run that ends in a non-zero exit has written by then. A tracked index is
+  // a broken invariant, so the tree is left exactly as found and the run stops.
   const tracked = trackedIndexFiles(cwd)
-  const { written, problems } = rebuild(root, { check })
-
-  for (const trackedIndex of tracked) {
-    problems.push(
+  if (tracked.length > 0) {
+    return report(tracked.map(trackedIndex =>
       `${trackedIndex} is tracked by git — it is generated (issue #129). `
-      + `Run \`git rm --cached ${trackedIndex}\`.`,
-    )
+      + `Run \`git rm --cached ${trackedIndex}\`.`))
   }
 
+  const { written, problems } = rebuild(root, { check })
+
   if (problems.length > 0) {
-    console.error('agent-memory index problems:')
-    for (const problem of problems) {
-      console.error(`  - ${problem}`)
-    }
-    return 1
+    return report(problems)
   }
 
   if (check) {

@@ -1,10 +1,11 @@
 import { execFileSync } from 'node:child_process'
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
 import {
   agentDirs,
+  EXIT_PROBLEMS,
   INDEX_NAME,
   main,
   MEMORY_DIR,
@@ -282,9 +283,43 @@ describe('main', () => {
     expect(readFileSync(join(root, 'some-agent', INDEX_NAME), 'utf8')).toContain('- [first](first.md)')
   })
 
-  test('exits 1 when a note cannot supply a line', () => {
+  // EXIT_PROBLEMS, not 1: a caller that tolerates a malformed note must still
+  // abort when the script could not run at all, and an uncaught throw exits 1.
+  test('exits EXIT_PROBLEMS when a note cannot supply a line', () => {
     writeFileSync(join(root, 'some-agent', 'broken.md'), 'no frontmatter\n')
-    expect(main([], root, root)).toBe(1)
+    expect(main([], root, root)).toBe(EXIT_PROBLEMS)
+    expect(EXIT_PROBLEMS).not.toBe(1)
+  })
+
+  // The tracked-index invariant is broken here, so the run has to stop with the
+  // tree exactly as it found it — reporting after writing is reporting too late.
+  test('refuses a tracked index without writing anything', () => {
+    const repo = mkdtempSync(join(tmpdir(), 'agent-memory-tracked-'))
+    try {
+      execFileSync('git', ['init', '-q'], { cwd: repo })
+      const dir = join(repo, MEMORY_ROOT, 'some-agent')
+      mkdirSync(dir, { recursive: true })
+      const index = join(MEMORY_ROOT, 'some-agent', INDEX_NAME)
+      writeFileSync(join(repo, index), 'stale hand-written index\n')
+      writeFileSync(join(dir, 'first.md'), note('first', 'the first note'))
+      execFileSync('git', ['add', '--', index], { cwd: repo })
+      execFileSync('git', [
+        '-c',
+        'user.email=test@example.com',
+        '-c',
+        'user.name=test',
+        'commit',
+        '-q',
+        '-m',
+        'add',
+      ], { cwd: repo })
+
+      expect(main([], join(repo, MEMORY_ROOT), repo)).toBe(EXIT_PROBLEMS)
+      expect(readFileSync(join(repo, index), 'utf8')).toBe('stale hand-written index\n')
+    }
+    finally {
+      rmSync(repo, { recursive: true, force: true })
+    }
   })
 
   test('--check exits 0 without writing', () => {
@@ -310,7 +345,43 @@ describe('this repository', () => {
   })
 })
 
-describe('rebuild', () => {
+describe('parseFrontmatter — quoted scalars', () => {
+  // Unescaping only `\"` and `\\` left a literal `\n` in the index where the
+  // note's own frontmatter said a line break.
+  test('decodes the escapes of a double-quoted description', () => {
+    const text = note('n', 'placeholder').replace(
+      'description: placeholder',
+      String.raw`description: "a\tb: \"quoted\", caf\u00E9, back\\slash"`,
+    )
+    // The tab decodes and is then folded with every other whitespace run, which
+    // is what keeps an entry to one line; the point here is that it decoded.
+    expect(parseFrontmatter(text).description).toBe('a b: "quoted", café, back\\slash')
+  })
+
+  // An escape YAML does not define is invalid YAML, not something to guess at.
+  test('leaves an undefined escape exactly as written', () => {
+    const text = note('n', 'placeholder').replace(
+      'description: placeholder',
+      String.raw`description: "a\qb"`,
+    )
+    expect(parseFrontmatter(text).description).toBe(String.raw`a\qb`)
+  })
+})
+
+describe('noteEntry — one line per entry', () => {
+  // An index entry is one line of a markdown list. A decoded `\n` would split
+  // the item and orphan everything after it, so the flattening is structural.
+  test('flattens a description that decodes to more than one line', () => {
+    const text = note('n', 'placeholder').replace(
+      'description: placeholder',
+      String.raw`description: "first\nsecond   third"`,
+    )
+    expect(noteEntry('n.md', text).description).toBe('first second third')
+    expect(renderIndex([noteEntry('n.md', text)]).split('\n').filter(l => l.startsWith('- '))).toHaveLength(1)
+  })
+})
+
+describe('rebuild — the index file itself', () => {
   let root: string
 
   beforeEach(() => {
@@ -323,6 +394,8 @@ describe('rebuild', () => {
 
   // `writeFileSync` follows a symlink, so an ordinary rebuild would overwrite
   // whatever a force-added index pointed at — before any other check runs.
+  const refusal = `some-agent/${INDEX_NAME}: is a symlink; an index is generated in place, refusing to write through it`
+
   test('refuses to write an index through a symlink, leaving the target intact', () => {
     const target = join(root, 'private.txt')
     writeFileSync(target, 'not an index\n')
@@ -332,6 +405,29 @@ describe('rebuild', () => {
 
     expect(readFileSync(target, 'utf8')).toBe('not an index\n')
     expect(written).toEqual([])
-    expect(problems).toEqual([`some-agent/${INDEX_NAME}: is a symlink; an index is generated in place, refusing to write through it`])
+    expect(problems).toEqual([refusal])
+  })
+
+  // `existsSync` follows the link and answers false here, so a guard built on it
+  // would fall through and *create* the target it was meant to protect.
+  test('refuses a dangling symlink rather than creating its target', () => {
+    const target = join(root, 'absent.txt')
+    symlinkSync(target, join(root, 'some-agent', INDEX_NAME))
+
+    const { written, problems } = rebuild(root)
+
+    expect(existsSync(target)).toBe(false)
+    expect(written).toEqual([])
+    expect(problems).toEqual([refusal])
+  })
+
+  // Reported even when nothing would be written: a symlinked index is a broken
+  // invariant whether or not its target happens to hold the right bytes today.
+  test('reports a symlink whose target already matches the rendered index', () => {
+    const target = join(root, 'match.txt')
+    writeFileSync(target, renderIndex(readNotes(join(root, 'some-agent'))))
+    symlinkSync(target, join(root, 'some-agent', INDEX_NAME))
+
+    expect(rebuild(root).problems).toEqual([refusal])
   })
 })
