@@ -1,0 +1,33 @@
+.claude/agent-memory/review-review-documentation-analyzer/pr146_signed_digest_readme_cli_stale.md
+  s_cf360b34e3fa0a::t_f7f8cbdaf424a2 1-30
+.claude/agent-memory/review-review-pr-test-analyzer/rewritten_headers_generic_dispatch.md
+  s_cf360b34e3fa0a::t_1e8ee0307cbdd4 1-32
+.claude/agent-memory/review-review-pr-test-analyzer/MEMORY.md
+  s_cf360b34e3fa0a::t_d4796f63626149 5
+.claude/agent-memory/review-review-documentation-analyzer/MEMORY.md
+  s_cf360b34e3fa0a::t_d1030e3912fc66 5
+crates/honmoon-proxy/src/mitm.rs
+  s_cf360b34e3fa0a::t_086c994ed788e0 532-533
+crates/honmoon-proxy/tests/redaction.rs
+  s_cf360b34e3fa0a::t_d3f07485da51f8 1338-1368
+crates/honmoon-cli/src/main.rs
+  s_cf360b34e3fa0a::t_73db3995cb53dc 98-102
+README.md
+  s_cf360b34e3fa0a::t_73db3995cb53dc 212-216,231-232
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "41cdc50dfaa516e80d01442a65c9f2024b6dc368",
+  "prompts": {},
+  "sessions": {
+    "s_cf360b34e3fa0a": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "19d3162b-6f84-426e-9cb4-3da15329f85e",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
