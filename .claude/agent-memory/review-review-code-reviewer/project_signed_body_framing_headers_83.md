@@ -1,6 +1,6 @@
 ---
 name: project-signed-body-framing-headers-83
-description: PR #115 (issue #83) extended ADR-0006's block/forward decision to signed framing headers; a related pre-existing gap to watch on future touches to this area
+description: PR #115 (issue #83) extended ADR-0006's block/forward decision to signed framing headers; PR #146 (issue #116) closed the related digest-header gap — both reviewed clean
 metadata:
   type: project
 ---
@@ -23,3 +23,16 @@ Not flaggable against #115 (code unchanged by that diff), but worth checking if 
 touches `sigv4_signs_header`/`REWRITTEN_FRAMING_HEADERS`/the `BODY_DIGEST_HEADERS` removal loop —
 ask whether `BODY_DIGEST_HEADERS` should join the candidate list `signed_headers_among` is asked
 about for SigV4 specifically.
+
+**Resolved by PR #146 (issue #116, reviewed 2026-09-11).** Added
+`mitm::rewritten_headers(headers, new_length)` = `reframed_headers(...)` plus the carried
+`BODY_DIGEST_HEADERS`, fed into `signed_headers_among` at the same call site. Only headers the
+request actually carries are included (avoids a spurious 403 for a `SignedHeaders` entry naming
+an absent header). The `outcome.redacted` gate earlier in `forwarded_request` means this only
+fires when a rewrite is actually happening, so no new false-positive 403 risk for untouched
+requests. Reviewed clean: compiles, clippy `-D warnings` clean, new tests
+(`carried_body_digest_headers_join_the_reframed_ones` in mitm.rs,
+`unsigned_payload_upload_signing_content_md5_is_blocked_by_default` and
+`a_signed_digest_header_the_request_never_sent_does_not_block` in redaction.rs) all pass. ADR-0006
+updated in the same diff to fold this into the main decision-point prose and drop the now-resolved
+Consequences bullet. No further gap in this area at this time.
