@@ -1,0 +1,24 @@
+.please/docs/research/md/001-claude-code-function-hooks-for-honmoon.md
+  s_75dd6aa4195c36::t_962927544f4e2a 5,7,14,17-19
+  s_75dd6aa4195c36::t_464415c7aff236 6
+  s_75dd6aa4195c36::t_6bed434511a764 22-179
+  s_75dd6aa4195c36::t_b72e00acb8535e 199-203,205,265-266,270,274
+.please/docs/research/index.md
+  s_75dd6aa4195c36::t_132cfb34842964 5
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "c38d0f935a12939b5806fa10068035a4e257981a",
+  "prompts": {},
+  "sessions": {
+    "s_75dd6aa4195c36": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "177b1e46-da6c-4dea-b06e-0f286c2a51d6",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
