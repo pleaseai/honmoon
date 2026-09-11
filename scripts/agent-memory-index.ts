@@ -86,14 +86,16 @@ const FRONTMATTER = /^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/
 const TOP_LEVEL_KEY = /^([a-z][\w-]*):[ \t]*(\S.*)?$/i
 
 /**
- * A YAML block-scalar header — `>` or `|`, with an optional chomping indicator
- * and explicit indent (`>-`, `|+`, `>2`).
+ * A YAML block-scalar header — `>` or `|`, with an optional explicit indent
+ * (a single digit) and chomping indicator (`+`/`-`) in **either** order, which
+ * is what the YAML block-header production allows: `>-`, `|+`, `>2`, `|2-`,
+ * `>+2` are all legal.
  *
  * The value is carried by the indented lines that follow, so the header itself
  * must not become the value: `description: >` would otherwise index as the
  * literal `>` with the real text folded onto it.
  */
-const BLOCK_SCALAR = /^[|>][+-]?\d*$/
+const BLOCK_SCALAR = /^[|>](?:[1-9][+-]?|[+-][1-9]?)?$/
 
 /**
  * Strip one layer of YAML quoting from a scalar.
@@ -172,6 +174,19 @@ function escapeLabel(text: string): string {
   return text.replace(/([[\]\\])/g, '\\$1')
 }
 
+/**
+ * Render a file name as a markdown link destination.
+ *
+ * The label is not the only half that can be truncated: `)` ends a bare
+ * destination, `#` starts a fragment, and whitespace ends it too — any of which
+ * points the line at something other than the note. Angle brackets take all of
+ * them literally, so they are used only when the name needs them, leaving an
+ * ordinary `some_note.md` written plainly.
+ */
+function linkTarget(file: string): string {
+  return /[()#<>\s]/.test(file) ? `<${file.replace(/([<>])/g, '\\$1')}>` : file
+}
+
 /** Reduce one note file to its index entry. */
 export function noteEntry(file: string, text: string): NoteEntry {
   const scalars = parseFrontmatter(text)
@@ -205,7 +220,7 @@ export function noteEntry(file: string, text: string): NoteEntry {
 export function renderIndex(entries: NoteEntry[]): string {
   const lines = [...entries]
     .sort((a, b) => (a.file < b.file ? -1 : a.file > b.file ? 1 : 0))
-    .map(entry => `- [${escapeLabel(entry.name)}](${entry.file}) — ${
+    .map(entry => `- [${escapeLabel(entry.name)}](${linkTarget(entry.file)}) — ${
       entry.description || '(no description — add one to this note\'s frontmatter)'
     }`)
 

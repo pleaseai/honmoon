@@ -50,7 +50,8 @@ metadata:
   })
 
   test('reads a folded or literal block scalar without its header', () => {
-    for (const header of ['>', '|', '>-', '|+', '>2']) {
+    // Indent and chomping indicators are legal in either order.
+    for (const header of ['>', '|', '>-', '|+', '>2', '|2-', '>+2', '|-']) {
       expect(parseFrontmatter(`---
 name: block
 description: ${header}
@@ -116,6 +117,21 @@ describe('renderIndex', () => {
 
   test('does not depend on the order the notes arrive in', () => {
     expect(renderIndex([...entries].reverse())).toBe(renderIndex(entries))
+  })
+
+  test('keeps a link resolvable when the file name would end the destination', () => {
+    for (const file of ['readme).md', 'a#b.md', 'two words.md']) {
+      const line = renderIndex([noteEntry(file, note('n', 'a note'))])
+      expect(line).toContain(`](<${file}>)`)
+    }
+    // An ordinary name stays plain — the angle form is not applied blindly.
+    expect(renderIndex([noteEntry('plain_note.md', note('n', 'a note'))]))
+      .toContain('](plain_note.md)')
+  })
+
+  test('escapes a label that would end the link early', () => {
+    expect(renderIndex([noteEntry('n.md', note('odd] name', 'a note'))]))
+      .toContain('- [odd\\] name](n.md)')
   })
 
   test('still lists a note with no description, so nothing becomes unreachable', () => {
