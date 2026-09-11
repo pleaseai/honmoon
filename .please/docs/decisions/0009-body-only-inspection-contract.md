@@ -115,12 +115,16 @@ obligation deferred by this ADR.
 ## Consequences
 
 **What this guarantees.** A reader of the fail-modes section now gets a complete answer to "how can
-content reach the upstream unredacted?". The threat model has one stated boundary rather than an
-enumeration that reads as exhaustive and is not.
+content reach the upstream unredacted **on an intercepted request**?". The threat model has one
+stated boundary rather than an enumeration that reads as exhaustive and is not. It is not an answer
+for traffic that is never intercepted: the SOCKS5 raw tunnel, and a CONNECT tunnel without
+`--tls-intercept`, gate on `domain` and inspect nothing at all — whole bodies included. The README
+documents that as a second egress path in its own right.
 
 **What this does not guarantee.** Nothing about the data plane changed. What *reaches* the upstream
 turns out to be conditional in enough independent ways that every attempt to state it in one
-sentence has been wrong, so it is enumerated instead:
+sentence has been wrong, so it is enumerated instead. **Every row below describes an intercepted
+HTTP request**; on the raw-tunnel path none of it applies, because nothing there is inspected:
 
 | Field | Scanned for PII or secrets? | Does it reach the upstream? |
 | --- | --- | --- |
@@ -137,13 +141,16 @@ overflows the cap is discarded rather than judged on a truncated prefix (`Strict
 all three `pii` ends up empty, so `pii.count > 0` cannot block them any more than it can block a
 trailer — the `warn` is the only thing that marks them.
 
-**Two of the fail-open cases are redaction-only, and those bodies *are* inspected** — do not read
-the fail-open list as a list of uninspectable requests. An undecodable `Content-Encoding` falls
-back to scanning the raw bytes (deliberately, so a plaintext body cannot evade the scan by claiming
-to be compressed). A partial upload carrying `Content-Range` is scanned and policy-evaluated like
-any other body: detection and `decide` run in `inspect_body` before `forwarded_request` is reached,
-and the `Content-Range` check there skips only the rewrite. A `pii.count > 0 -> deny` rule still
-blocks both. What fails open is the wire rewrite, not the inspection.
+**Two of the fail-open cases are redaction-only, and those bodies do reach the scanner** — do not
+read the fail-open list as a list of uninspectable requests. A partial upload carrying
+`Content-Range` is scanned and policy-evaluated like any other body: detection and
+`decide_explained` run in `inspect_body` before `forwarded_request` is reached, and the
+`Content-Range` check there skips only the rewrite. An undecodable `Content-Encoding` falls back to
+scanning the raw bytes, deliberately, so a plaintext body cannot evade the scan by claiming to be
+compressed — but that fallback only catches the mislabelled-plaintext case: genuinely compressed
+bytes fail `utf8_prefix` like any other binary body and still yield no finding. Where the scan does
+find something, a `pii.count > 0 -> deny` rule blocks it as usual. What fails open in both is the
+wire rewrite, not the inspection.
 
 **Only the middle column is this ADR's contract.** The right-hand column is transport behaviour that
 varies with the redaction path and the upstream protocol, and it presupposes `--redact-secrets`:

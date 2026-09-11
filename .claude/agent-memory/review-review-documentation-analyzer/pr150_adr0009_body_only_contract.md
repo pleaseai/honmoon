@@ -64,12 +64,14 @@ invisible if you only follow the reasoning. Contrast with [[adr_0006_signed_head
    for a decode-overflow case that was not on the original list. Re-read what "the N above"
    actually names; do not trust the count.
 5. *A fail-open list read as a list of uninspectable requests.* Two of honmoon's four fail-opens
-   are **redaction-only**: detection and `decide` run in `inspect_body` (`mitm.rs:702-703`) before
-   `forwarded_request` is reached, and `forwarded_request`'s `CONTENT_RANGE` check (`mitm.rs:403`)
-   skips only the rewrite — so a `Content-Range` partial upload, and a body with an undecodable
-   `Content-Encoding`, are both fully scanned and a `pii.count > 0 -> deny` still blocks them.
-   When a doc groups cases by their *warn*, check whether they share the behaviour the grouping
-   implies.
+   are **redaction-only**: detection runs at `mitm.rs:702-703` and `decide_explained` at
+   `mitm.rs:727`, both inside `inspect_body` and both before `forwarded_request`, whose
+   `CONTENT_RANGE` check (`mitm.rs:403`) skips only the rewrite. So a `Content-Range` partial
+   upload is scanned like any other body, and a body with an undecodable `Content-Encoding` reaches
+   the scanner as raw bytes — though that fallback only catches mislabelled plaintext, since
+   genuinely compressed bytes still fail `utf8_prefix` and yield nothing. Reaching the scanner is
+   not the same as being inspectable; keep the two apart. When a doc groups cases by their *warn*,
+   check whether they share the behaviour the grouping implies.
 
 Also worth noting for prose review generally: "no `warn` is logged for header-shaped fields" was
 *true as meant* and still had to be qualified, because two of the four warns are **triggered** by a

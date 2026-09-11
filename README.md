@@ -234,6 +234,10 @@ not the rewrite's: whenever `--redact-secrets` is on, the proxy replaces `Accept
 the body (the detokenization note above). **None of those cases inspects anything** — which is the
 only part this contract covers.
 
+This whole section is about **intercepted** requests. Traffic that takes the raw tunnel — SOCKS5
+to a non-PostgreSQL destination, or CONNECT without `--tls-intercept` — is gated on `domain` and
+inspected not at all, bodies included (see "SOCKS5 and inline PostgreSQL inspection" above).
+
 **There is no content-level lever for this surface.** `egress.default: deny` narrows *which hosts*
 an agent can reach and is worth keeping, but it scans nothing: an allow-listed destination — the
 API the agent exists to call — still receives header and trailer content unexamined, which is
