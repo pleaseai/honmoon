@@ -57,3 +57,18 @@ re-check on any future change here:
 - Empty-key guards moved into `HookSalt::fixed`/`per_session`; `hook::machine_key()`
   never returns empty (>=16B file, 32B fresh, or the fallback constant), so the asserts
   are startup-only, not a remote panic.
+
+**2026-09 (#141) — exposure is a second axis on the key status.** `MachineKeySource`
+(provenance) is now wrapped in `MachineKeyStatus { source, exposure }`;
+`restrict_to_owner_only(path)` chmods 0600 then re-`metadata`s and returns
+`Some(reason)` when `mode & 0o077 != 0`, which becomes a `Decision::Degraded`
+event with `rule: "hook-salt-exposed"` and `key_source: persisted`. What the
+predicate deliberately does NOT cover, and is worth re-checking on any change:
+- a **successful** chmod reports `None` — a salt that was 0644 until the loader
+  repaired it raises no event, so an already-copied key is never rotated;
+- **ownership** is never checked (no `MetadataExt::uid()`), so an adopted salt
+  owned by another uid at 0600 is reported healthy;
+- macOS NFSv4 ACLs survive `chmod` and are invisible to the mode-bit test;
+- read (T0) → chmod → metadata (T1) is path-based and symlink-following, so the
+  observed mode need not be the mode of the bytes adopted (attacker-writable dir
+  only — outside the documented threat model).
