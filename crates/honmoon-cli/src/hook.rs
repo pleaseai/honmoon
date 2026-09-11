@@ -1463,7 +1463,7 @@ mod tests {
         );
         assert!(
             redaction.reason.contains("0600"),
-            "and the mode it left behind, so the two rules are distinguishable from the reason alone: {}",
+            "and the mode it left behind, so the two exposure rules are distinguishable from the reason alone: {}",
             redaction.reason
         );
     }

@@ -373,8 +373,9 @@ its own in-process ring rather than the file:
 | `honmoon hook` (its own process, per invocation) | yes | yes | **no** |
 | `honmoon gateway` (once at startup, covering the HTTP transport and wire redaction) | yes, when `--audit-log` is set | yes | yes — a `Degraded` pill |
 
-That table holds for both rules: each process records what its own key read observed, so
-an unrestrictable salt reaches the same surfaces a fallback key does.
+That table holds for all three rules: each process records what its own key read
+observed, so a salt that is unrestrictable — or that was loose until the loader tightened
+it — reaches the same surfaces a fallback key does.
 
 So a hook-side degradation is found by querying the log, not by watching the dashboard.
 
