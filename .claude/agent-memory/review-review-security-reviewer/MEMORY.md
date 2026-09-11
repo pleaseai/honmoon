@@ -1,5 +1,6 @@
 - [Redaction fail-open design](project-redaction-failopen-design.md) — plugin/hook redaction is best-effort fail-open by design; proxy is the backstop. Don't over-flag documented fail-open; do flag transcript-hygiene gaps the proxy can't cover.
 - [Hook machine-salt security model](hook-salt-security-model.md) — how honmoon-cli's HMAC salt is stored, its 0600 invariant, and the fail-open fallback
 - [Detect-mode PII attribution](detect-mode-pii-attribution.md) — decide_pii_audit_only skip model; the Allow carve-out and Pause-skip invariants to re-check
+- [Postgres refusal ordering barrier](postgres-refusal-ordering-barrier.md) — the sync_points <= forwarded invariant, the two live gaps (Flush, swallowed COPY-Sync/#128), and four settled rules that look like bugs and must not be undone
 - [MITM tunnel authorization model](mitm-tunnel-authorization-model.md) — shape-3 recognition rides the hudsucker handler clone lineage; host+port both load-bearing for h2
 - [Signed-body detection invariants](signed-body-detection-invariants.md) — over-inclusion in signed_body.rs leaks under --signed-body forward; each detector needs real scheme evidence (X-Amz-Algorithm gate)

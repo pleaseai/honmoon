@@ -109,6 +109,12 @@ fn start_pg_upstream() -> (u16, Receiver<String>) {
                                 .unwrap();
                             vec![b'1', 0, 0, 0, 4]
                         }
+                        // `Sync` ends an extended-protocol batch, and a real
+                        // server answers it with `ReadyForQuery`. Honmoon counts
+                        // it as a sync point a refusal waits behind, so a fake
+                        // that swallowed it would stall every later refusal in
+                        // the session until the ordering bound expired.
+                        b'S' => vec![b'Z', 0, 0, 0, 5, status],
                         _ => continue,
                     };
                     if s.write_all(&reply).is_err() {
