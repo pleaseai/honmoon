@@ -2,3 +2,4 @@
 - [Honmoon PG runtime timeout docs](honmoon_pg_runtime_timeout_docs.md) — runtime timeouts (DRAIN_TIMEOUT, REFUSAL_ORDER_STALL_TIMEOUT) live in ADR-0007, not README; don't flag as missing
 - [ADR-0006 signed-header amendment verified](adr_0006_signed_header_amendment.md) — PR #115 clean doc PR; calibration point, only soft spot is auto-maintained decisions/index.md title
 - [PR #122 hook-salt parity](pr122_hook_salt_parity.md) — issue #98 fix; README + rustdoc verified accurate against hook_salt.rs/HookSalt, 0 findings
+- [PR #146 signed-digest README/CLI stale](pr146_signed_digest_readme_cli_stale.md) — issue #116 fix; ADR-0006 updated correctly, but README.md + honmoon-cli --signed-body help still describe framing-headers-only, now stale

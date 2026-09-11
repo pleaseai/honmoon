@@ -529,8 +529,8 @@ impl HonmoonHandler {
                     tracing::warn!(
                         domain = %host,
                         headers = %signed,
-                        "header-signed request blocked: re-framing the redacted body would \
-                         invalidate its signature"
+                        "header-signed request blocked: replacing the redacted body would \
+                         rewrite or drop those headers and invalidate its signature"
                     );
                     self.state.audit.record(AuditDraft {
                         decision: Decision::Denied,

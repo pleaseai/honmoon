@@ -1335,6 +1335,37 @@ fn a_signed_digest_header_the_request_never_sent_does_not_block() {
     assert_eq!(mappings.unwrap().len(), 1);
 }
 
+// `forward` is the escape hatch for the digest half too, and it is the half
+// that forwards a secret: the client's `Content-MD5` reaches the upstream
+// describing the bytes it still covers, unredacted, rather than being stripped.
+#[test]
+fn a_digest_signed_request_is_forwarded_unredacted_in_forward_mode() {
+    let (upstream, captured) = start_upstream(ResponseMode::Static(b"ok".to_vec()));
+    let (proxy, mappings) = start_proxy_with_signed_body(true, SignedBodyMode::Forward);
+    let body = format!("key={SECRET}");
+    let digest = "Q2hlY2sgSW50ZWdyaXR5IQ==";
+
+    let response = proxy_request(
+        proxy,
+        upstream,
+        body.as_bytes(),
+        &[
+            ("Authorization", SIGV4_SIGNED_DIGEST),
+            ("x-amz-content-sha256", "UNSIGNED-PAYLOAD"),
+            ("Content-MD5", digest),
+        ],
+    );
+    assert!(response.starts_with(b"HTTP/1.1 200"));
+    let forwarded = captured.recv_timeout(Duration::from_secs(5)).unwrap();
+    assert_eq!(forwarded.body, body.as_bytes());
+    assert_eq!(
+        header_value(&forwarded.headers, "content-md5"),
+        Some(digest),
+        "the signed validator is preserved, not stripped"
+    );
+    assert_eq!(mappings.unwrap().len(), 0);
+}
+
 // `forward` is the same escape hatch it is for a body-signed request: the
 // client's bytes and framing headers reach the upstream exactly as signed, and
 // no mapping is recorded for a substitution that never happened.
