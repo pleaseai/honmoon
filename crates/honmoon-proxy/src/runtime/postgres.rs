@@ -167,6 +167,21 @@ struct ClientLink {
     /// and survives the subtraction — inverting the pair and releasing the next
     /// refusal before its own answer.
     forwarded: Arc<AtomicU64>,
+    /// `Flush` (`H`) frames forwarded to the database. Written only by the
+    /// message loop, and only ever raised, for the same reason as
+    /// [`ClientLink::forwarded`].
+    ///
+    /// A `Flush` earns no `ReadyForQuery` — PostgreSQL answers it with whatever
+    /// is already pending — so a pipelining client that drives its batches with
+    /// `Flush` and sends `Sync` only at the end of the pipeline, or never,
+    /// registers nothing above and is not ordered against at all. That is #113.
+    /// Counted separately rather than folded into `forwarded` because the two
+    /// are settled by different observations: a sync point by the
+    /// `ReadyForQuery` that answers it, a flush by the relay running out of
+    /// bytes to relay (see [`ClientLink::flush_drained`]). Sharing one counter
+    /// would let a sync point's answer settle a flush, and a quiet upstream
+    /// settle a sync point the database is still computing.
+    flushes: Arc<AtomicU64>,
     /// What the relay has written to the client so far. A watch rather than
     /// plain counters so a refusal can wait on it without polling.
     delivered: Arc<watch::Sender<Delivered>>,
@@ -209,6 +224,23 @@ struct Delivered {
     /// a database that had stopped answering, and the refusal queued behind it
     /// would be injected into the middle of its result set.
     messages: u64,
+    /// [`ClientLink::flushes`] whose output the relay has seen drained: it
+    /// delivered at least one message that the flush could have produced, and
+    /// then found the upstream socket empty at a message boundary. This is what
+    /// a refusal waits on for a `Flush`-driven batch.
+    ///
+    /// Raised only by [`ClientLink::flush_drained`] and by a stalled wait's
+    /// write-off, never past the `flushes` value the raiser read, so
+    /// `flush_answers <= ClientLink::flushes` holds the same way
+    /// `sync_points <= ClientLink::forwarded` does.
+    ///
+    /// It needs no counterpart to [`Delivered::debt`]. Debt exists because a
+    /// written-off `ReadyForQuery` can still arrive and be counted a second
+    /// time; nothing arrives late to raise this one. A quiet upstream is
+    /// recomputed from `flushes` each time it is observed, so a write-off is
+    /// simply overtaken by the next genuine observation rather than punctured
+    /// by it.
+    flush_answers: u64,
     /// Answers a stalled wait gave up on, and which must therefore be thrown
     /// away rather than counted if the database sends them after all.
     ///
@@ -255,9 +287,11 @@ impl ClientLink {
             writer: Arc::new(Mutex::new(writer)),
             tx_status: Arc::new(AtomicU8::new(STATUS_IDLE)),
             forwarded: Arc::new(AtomicU64::new(0)),
+            flushes: Arc::new(AtomicU64::new(0)),
             delivered: Arc::new(watch::Sender::new(Delivered {
                 sync_points: Some(0),
                 messages: 0,
+                flush_answers: 0,
                 debt: 0,
             })),
             stream_intact: Arc::new(std::sync::atomic::AtomicBool::new(true)),
@@ -292,6 +326,47 @@ impl ClientLink {
     /// write that then fails costs nothing, because the session ends with it.
     fn forwarded_sync_point(&self) {
         self.forwarded.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Record a `Flush` forwarded to the database, which it answers with
+    /// whatever output it already has pending and no `ReadyForQuery` at all.
+    ///
+    /// Counted before the bytes go out, for the reason
+    /// [`ClientLink::forwarded_sync_point`] gives: the relay settles this from
+    /// the other task, and a settlement that beats the count would be read as
+    /// belonging to nothing.
+    ///
+    /// What it costs when it is wrong is the same trade, in the same direction.
+    /// A `Flush` that elicits nothing at all — one sent with no pending output,
+    /// or one the backend ignores because a `COPY` is in progress — is never
+    /// settled, so the next refusal pays one [`REFUSAL_ORDER_STALL_TIMEOUT`] and
+    /// is then written off. Not counting it is the other failure, and it is #113
+    /// itself: the refusal overtakes a response the client has not been sent.
+    fn forwarded_flush(&self) {
+        self.flushes.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Record that the relay has drained the output of every `Flush` forwarded
+    /// up to `drained`, which the caller read from [`ClientLink::flushes`].
+    ///
+    /// Called by the relay when it has delivered at least one message that a
+    /// flush could have produced and then found the upstream socket empty at a
+    /// message boundary — the closest thing a `Flush` has to the
+    /// `ReadyForQuery` that ends a request cycle.
+    ///
+    /// It is closer than "the first message delivered", which is what the
+    /// counter alone would give: the whole of a flushed batch normally reaches
+    /// the relay as one burst, so releasing on its first message leaves the
+    /// refusal racing the rest of the burst for the writer lock. It is still not
+    /// exact, and cannot be — a backend that has emitted a batch's
+    /// `ParseComplete` and gone quiet while it computes the rows is
+    /// indistinguishable on the wire from one that has finished. That
+    /// ambiguity is irreducible without a terminator the frontend can predict,
+    /// which is exactly what `Flush` does not have.
+    fn flush_drained(&self, drained: u64) {
+        self.delivered.send_modify(|delivered| {
+            delivered.flush_answers = delivered.flush_answers.max(drained)
+        });
     }
 
     /// Record one complete backend message written to the client, saying whether
@@ -402,12 +477,22 @@ impl ClientLink {
     /// stopped, since nothing is then left to be ordered against.
     async fn await_forwarded_responses(&self) {
         let expected = self.forwarded.load(Ordering::Relaxed);
+        let expected_flushes = self.flushes.load(Ordering::Relaxed);
         let mut delivered = self.delivered.subscribe();
         loop {
-            let seen = match delivered.borrow_and_update().sync_points {
-                None => return,
-                Some(seen) if seen >= expected => return,
-                Some(seen) => seen,
+            // Both counts must be satisfied: a session can owe the client a
+            // `ReadyForQuery` for a statement it synced and the output of a
+            // batch it only flushed, and either one arriving after the refusal
+            // is the misattribution this barrier exists to prevent.
+            let seen = {
+                let current = delivered.borrow_and_update();
+                match current.sync_points {
+                    None => return,
+                    Some(seen) if seen >= expected && current.flush_answers >= expected_flushes => {
+                        return;
+                    }
+                    Some(seen) => seen,
+                }
             };
             match tokio::time::timeout(REFUSAL_ORDER_STALL_TIMEOUT, delivered.changed()).await {
                 // Something arrived — a row, a `CommandComplete`, the sync point
@@ -456,6 +541,11 @@ impl ClientLink {
                             delivered.debt += expected.saturating_sub(*count);
                             *count = (*count).max(expected);
                         }
+                        // The flush side is written off the same way and for the
+                        // same reason, but carries no debt: nothing arrives late
+                        // to raise it, so there is no second credit to guard
+                        // against. See [`Delivered::flush_answers`].
+                        delivered.flush_answers = delivered.flush_answers.max(expected_flushes);
                     });
                     tracing::warn!(
                         expected,
@@ -566,7 +656,40 @@ async fn relay_backend_messages(
     mut upstream: tokio::net::tcp::OwnedReadHalf,
     link: &ClientLink,
 ) -> RelayEnd {
+    // The flush side of the barrier is settled from here, and only from here,
+    // so its bookkeeping is local: `credited` is the highest
+    // [`ClientLink::flushes`] value already reported through
+    // [`ClientLink::flush_drained`], and `fresh` counts messages delivered since
+    // the last settlement that could belong to a flush's output.
+    let mut credited = 0u64;
+    let mut fresh = 0u64;
+    let mut last_tag = 0u8;
     loop {
+        // A flush is settled between messages, never mid-burst. `fresh > 0`
+        // keeps the settlement behind something the flush could have produced:
+        // an upstream that was already quiet when the `Flush` went out has not
+        // answered it yet, and a batch pipelined behind a slow `Q` must not be
+        // settled by that `Q`'s own answer — which is why a delivered sync point
+        // resets the count below.
+        //
+        // Never probed after a `DataRow` or a `CopyData`. Neither can be the
+        // last message a `Flush` pushes — an `Execute` is terminated by
+        // `CommandComplete`, `EmptyQueryResponse`, `PortalSuspended` or
+        // `ErrorResponse`, and a copy-out by `CopyDone` — so a quiet there means
+        // a backend part-way through a result set, not one that has finished.
+        // Skipping it is both the safe reading and the one that keeps a
+        // streaming batch from paying a peek per row.
+        let owed = link.flushes.load(Ordering::Relaxed);
+        if owed > credited
+            && fresh > 0
+            && !matches!(last_tag, b'D' | b'd')
+            && !upstream_has_pending(&mut upstream).await
+        {
+            credited = owed;
+            fresh = 0;
+            link.flush_drained(owed);
+        }
+
         // Every backend message is `tag(1) | len(4, self-inclusive) | payload`.
         let mut head = [0u8; 5];
         if upstream.read_exact(&mut head).await.is_err() {
@@ -601,6 +724,8 @@ async fn relay_backend_messages(
             // Oversized by construction, so never a `ReadyForQuery` (six bytes):
             // progress for the stall window, never a sync point.
             link.delivered_message(false);
+            fresh += 1;
+            last_tag = head[0];
             continue;
         }
 
@@ -623,7 +748,35 @@ async fn relay_backend_messages(
         // Counted only once the client really has the message: a refusal
         // released mid-write would overtake the very response it waited for.
         link.delivered_message(head[0] == b'Z');
+        last_tag = head[0];
+        if head[0] == b'Z' {
+            // A request cycle just ended, so everything delivered so far is
+            // accounted for by the sync-point count. Anything a still-unsettled
+            // `Flush` is owed comes after this, not before it.
+            fresh = 0;
+        } else {
+            fresh += 1;
+        }
     }
+}
+
+/// Whether the upstream socket has bytes waiting to be read right now.
+///
+/// A peek rather than a read, so the framing loop that follows still sees the
+/// whole message. Polled once and answered either way: a `Pending` peek means
+/// the database has nothing more for the client at this instant, which is the
+/// only signal the wire carries that a `Flush`'s output has been delivered in
+/// full.
+async fn upstream_has_pending(upstream: &mut tokio::net::tcp::OwnedReadHalf) -> bool {
+    std::future::poll_fn(|cx| {
+        let mut byte = [0u8; 1];
+        let mut buf = tokio::io::ReadBuf::new(&mut byte);
+        // An EOF peek reports `Ready`, which is right: nothing is settled here,
+        // and the read below turns the closed socket into the relay's exit —
+        // which releases every waiting refusal outright.
+        std::task::Poll::Ready(upstream.poll_peek(cx, &mut buf).is_ready())
+    })
+    .await
 }
 
 /// Drive the inspected direction: startup negotiation, then the message loop.
@@ -909,6 +1062,13 @@ where
             // before the bytes leave, so the answer cannot beat the count.
             if matches!(tag[0], b'S' | b'F') {
                 link.forwarded_sync_point();
+            } else if tag[0] == b'H' {
+                // `Flush` ends no request cycle and earns no `ReadyForQuery`,
+                // but it is what makes the batch before it reach the client, so
+                // it is what a refusal behind that batch has to wait for. Its
+                // own counter, settled by the relay rather than by a sync point
+                // (#113).
+                link.forwarded_flush();
             }
             upstream.write_all(&tag).await?;
             upstream.write_all(&len_bytes).await?;
@@ -2182,6 +2342,209 @@ mod tests {
         .await
         .expect("the session finished");
         assert!(drain.unwrap());
+    }
+
+    /// The `Bind`/`Execute`/`Flush` tail of an extended-protocol batch driven
+    /// the way a pipelining client drives it: no `Sync`, so the database answers
+    /// with the output the `Flush` pushes and no `ReadyForQuery` at all.
+    fn flush_driven_batch(name: &str) -> Vec<u8> {
+        // `Bind`: unnamed portal, named statement, no formats and no parameters.
+        let mut bind_payload = vec![0u8];
+        bind_payload.extend_from_slice(name.as_bytes());
+        bind_payload.push(0);
+        bind_payload.extend_from_slice(&[0, 0, 0, 0, 0, 0]);
+        let mut frames = vec![b'B'];
+        frames.extend_from_slice(&((4 + bind_payload.len()) as u32).to_be_bytes());
+        frames.extend_from_slice(&bind_payload);
+        // `Execute`: unnamed portal, no row limit.
+        frames.extend_from_slice(&[b'E', 0, 0, 0, 9, 0, 0, 0, 0, 0]);
+        // `Flush`: the whole point — it earns no `ReadyForQuery`.
+        frames.extend_from_slice(&[b'H', 0, 0, 0, 4]);
+        frames
+    }
+
+    /// What a database answers a flushed batch with: `ParseComplete`,
+    /// `BindComplete`, `CommandComplete` — and no `ReadyForQuery`.
+    fn flushed_batch_response() -> Vec<u8> {
+        let mut frames = vec![b'1', 0, 0, 0, 4, b'2', 0, 0, 0, 4];
+        let tag = b"SELECT 1\0";
+        frames.push(b'C');
+        frames.extend_from_slice(&((4 + tag.len()) as u32).to_be_bytes());
+        frames.extend_from_slice(tag);
+        frames
+    }
+
+    #[tokio::test]
+    async fn a_refusal_waits_for_a_batch_the_client_only_flushed() {
+        let state = GatewayState::new(deny_drop_policy());
+        // The pipeline-mode path: `Parse`/`Bind`/`Execute`/`Flush` and no
+        // `Sync`, so the batch earns no `ReadyForQuery` and #112's sync-point
+        // barrier counts nothing for it. The refusal for the statement behind it
+        // would then be injected while the batch's rows are still in flight, and
+        // the client would read honmoon's 42501 against the slot of a statement
+        // the database allowed (#113).
+        let mut frames = parse_frame("stmt", "SELECT 1");
+        frames.extend_from_slice(&flush_driven_batch("stmt"));
+        frames.extend_from_slice(&parse_frame("doomed", "DROP TABLE users"));
+        let mut client = std::io::Cursor::new(frames);
+        let mut upstream: Vec<u8> = Vec::new();
+        let (link, mut peer) = loopback_link().await;
+        let (mut database, _relay) = loopback_relay(link.clone()).await;
+
+        let facts = Facts::default();
+        let session = message_loop(&state, &mut client, &mut upstream, &link, &facts);
+        let client_view = async {
+            let mut early = [0u8; 1];
+            assert!(
+                tokio::time::timeout(
+                    std::time::Duration::from_millis(200),
+                    peer.read_exact(&mut early),
+                )
+                .await
+                .is_err(),
+                "the refusal overtook the flushed batch it was pipelined behind"
+            );
+
+            database.write_all(&flushed_batch_response()).await.unwrap();
+
+            let seen = [
+                read_message_tag(&mut peer).await,
+                read_message_tag(&mut peer).await,
+                read_message_tag(&mut peer).await,
+                read_message_tag(&mut peer).await,
+                read_message_tag(&mut peer).await,
+            ];
+            assert_eq!(
+                seen,
+                [b'1', b'2', b'C', b'E', b'Z'],
+                "the whole flushed batch reaches the client before the refusal"
+            );
+        };
+
+        let (drain, ()) = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            tokio::join!(session, client_view)
+        })
+        .await
+        .expect("the session finished");
+        assert!(drain.unwrap());
+        assert!(
+            !upstream
+                .windows(b"DROP TABLE users".len())
+                .any(|w| w == b"DROP TABLE users"),
+            "the denied statement never reached the database"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_quiet_upstream_does_not_settle_a_flush_the_database_has_not_reached_yet() {
+        // The flush barrier is settled by the upstream falling silent, so it has
+        // to be silence *after* the batch's own output. A batch pipelined behind
+        // a simple query is answered second: the quiet that follows the query's
+        // `ReadyForQuery` says nothing about the batch, and settling the flush
+        // there would release the refusal before the batch reached the client —
+        // #113 again, one message later.
+        let (link, mut peer) = loopback_link().await;
+        let (mut database, _relay) = loopback_relay(link.clone()).await;
+        link.forwarded_sync_point();
+        link.forwarded_flush();
+
+        // The simple query is answered, and the upstream then goes quiet.
+        database.write_all(&query_response()).await.unwrap();
+        assert_eq!(read_message_tag(&mut peer).await, b'C');
+        assert_eq!(read_message_tag(&mut peer).await, b'Z');
+        assert!(
+            tokio::time::timeout(
+                std::time::Duration::from_millis(200),
+                link.await_forwarded_responses(),
+            )
+            .await
+            .is_err(),
+            "the query's own answer settled the flush queued behind it"
+        );
+
+        // Only the batch's own output settles it.
+        database.write_all(&flushed_batch_response()).await.unwrap();
+        tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            link.await_forwarded_responses(),
+        )
+        .await
+        .expect("the batch was delivered, so the refusal is released");
+    }
+
+    #[tokio::test]
+    async fn a_database_quiet_between_rows_has_not_finished_the_batch_it_flushed() {
+        // The flush barrier reads a quiet upstream as "the flushed output is all
+        // delivered", so it must not read one part-way through a result set. No
+        // `Execute` ends on a `DataRow` — `CommandComplete` does — so a backend
+        // that has emitted rows and paused is still working, and settling there
+        // would drop the refusal into the middle of the rows: worse than the
+        // misattribution #101 removed, and the case #112 added the
+        // stall-window-per-message rule for.
+        let (link, mut peer) = loopback_link().await;
+        let (mut database, _relay) = loopback_relay(link.clone()).await;
+        link.forwarded_flush();
+
+        let mut partial = vec![b'1', 0, 0, 0, 4, b'2', 0, 0, 0, 4];
+        partial.extend_from_slice(&[b'D', 0, 0, 0, 11, 0, 1, 0, 0, 0, 1, b'x']);
+        database.write_all(&partial).await.unwrap();
+        for expected in *b"12D" {
+            assert_eq!(read_message_tag(&mut peer).await, expected);
+        }
+        assert!(
+            tokio::time::timeout(
+                std::time::Duration::from_millis(200),
+                link.await_forwarded_responses(),
+            )
+            .await
+            .is_err(),
+            "a pause between rows settled a batch the database is still streaming"
+        );
+
+        // `CommandComplete` really does end it, and then the refusal is released.
+        let tag = b"SELECT 1\0";
+        let mut done = vec![b'C'];
+        done.extend_from_slice(&((4 + tag.len()) as u32).to_be_bytes());
+        done.extend_from_slice(tag);
+        database.write_all(&done).await.unwrap();
+        tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            link.await_forwarded_responses(),
+        )
+        .await
+        .expect("the batch ended, so the refusal is released");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_flush_the_database_never_answers_costs_one_stall_window() {
+        // The bound has to survive the new counter: a `Flush` that elicits
+        // nothing — sent with no pending output, or ignored because a `COPY` is
+        // in progress — is never settled by the relay, and without a write-off
+        // that turns an ordering bug into a hang.
+        let (link, _peer) = loopback_link().await;
+        link.forwarded_flush();
+
+        let started = tokio::time::Instant::now();
+        link.await_forwarded_responses().await;
+        assert_eq!(
+            started.elapsed(),
+            REFUSAL_ORDER_STALL_TIMEOUT,
+            "the wait is bounded by the stall window, not unbounded"
+        );
+        assert_eq!(
+            link.delivered.borrow().flush_answers,
+            1,
+            "the flush that was never answered is written off"
+        );
+
+        // And the write-off is not paid twice for the whole session.
+        let resumed = tokio::time::Instant::now();
+        link.await_forwarded_responses().await;
+        assert_eq!(
+            resumed.elapsed(),
+            std::time::Duration::ZERO,
+            "one stall window for the whole session, not one per refusal"
+        );
     }
 
     /// A connected loopback pair: the end a test drives, and the end handed to
