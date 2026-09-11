@@ -1,0 +1,19 @@
+.claude/agent-memory/review-review-silent-failure-hunter/project_agent_memory_index_129.md
+  s_23314bc1687b8f::t_cdf6984bcd2a51 26-34
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "4a88c949cea7c335e5c90ed84d199fdfa80a1c5a",
+  "prompts": {},
+  "sessions": {
+    "s_23314bc1687b8f": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "6ff32bd2-e0d0-46dd-b1cb-1ffcc5db7869",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
