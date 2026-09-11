@@ -335,9 +335,10 @@ sees `0600` and says nothing.
 produce that. One where the `reason` names a mode it read back is a host where something
 keeps re-loosening the file — a sync agent, a cron `chmod`, a restore that runs on a
 timer — which is itself worth knowing. One where the `reason` says the mode could not be
-read back is a host where the loader cannot see the file's permissions at all, so it can
-neither confirm its own correction nor stop reporting the window it already saw; there
-the fix is to repair that access, not to hunt for a process changing modes.
+read back is a host where the loader read the mode, found it loose, and then could not
+read it back after its own correction — so it cannot confirm the correction took, and
+reports the window it already saw every time; there the fix is to find out why the
+read-back fails, not to hunt for a process changing modes.
 
 **What it does and does not attest.** Both events are raised on a **mode**, never on the
 `chmod` returning an error — a read-only mount fails the call on a file that is already
@@ -386,12 +387,22 @@ it — reaches the same surfaces a fallback key does.
 
 So a hook-side degradation is found by querying the log, not by watching the dashboard.
 
-In practice the condition still reaches the dashboard on any host that runs a gateway,
-because the trigger is shared: both processes read the same `~/.honmoon/hook-salt`, so
-whatever makes it unusable for the hook makes it unusable for the gateway, which then
-records its own event into the ring the dashboard polls. What the dashboard cannot show
-is the hook's *own* records — the per-invocation cardinality, and the hook-specific
-reason. A host running no gateway has the log and the query API only.
+For `hook-salt-fallback` and `hook-salt-exposed` the condition still reaches the dashboard
+on any host that runs a gateway, because the trigger is shared and it persists: both
+processes read the same `~/.honmoon/hook-salt`, so a key the hook cannot persist or a mode
+it cannot restrict is still that way when the gateway starts, and the gateway records its
+own event into the ring the dashboard polls.
+
+**`hook-salt-was-exposed` does not carry that guarantee**, because its trigger is consumed
+by observing it. Both processes run the same loader, and the first of them to reach a loose
+salt tightens it; the other then reads `0600` and records nothing. So if `honmoon hook` ran
+first, the event exists only in the JSONL sink, and a gateway started afterwards shows a
+clean dashboard over a key that was exposed. Query the log for this one — do not wait for a
+pill.
+
+What the dashboard cannot show for any of the three is the hook's *own* records — the
+per-invocation cardinality, and the hook-specific reason. A host running no gateway has the
+log and the query API only.
 
 Pointing both processes at one file is intended: each appends whole lines, and the query
 layer orders by timestamp because ids are process-local.

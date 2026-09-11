@@ -1,6 +1,6 @@
 ---
 name: pr170-hook-salt-was-exposed
-description: PR #170 (issue #143) hook-salt-was-exposed docs — I verified the "two instants" claim as exact and it was false; the TS enumeration-count miss is the transferable check
+description: PR #170 (issue #143) hook-salt-was-exposed docs — universally-quantified claims verified from one branch and found false twice; the reusable check is that a self-clearing trigger breaks prose written for persistent ones
 metadata:
   type: project
 ---
@@ -31,9 +31,27 @@ the provenance is genuinely fine" where only two rules carry `key_source: 'persi
 presence of the same facts: the drift can be a wrong number while both sides name the
 same rules.
 
-**Still true after the fixes:** the README's example `reason` string, the rule-table
-remedies, and the "one event per loose-find" claim all match the implementation (the last
-one now scoped in-PR to where the correction took, since the unconfirmed-read-back arm
-can repeat). No `wiki/` page or other repo doc mentions the salt rule names, so this
-change triggers no `wiki/AGENTS.md` regeneration obligation — re-verified against the
-merged head.
+**A third rule whose trigger self-clears broke two more README claims (both fixed).** The
+page's visibility section promised that a hook-side degradation "still reaches the
+dashboard on any host that runs a gateway, because the trigger is shared" — true for
+`hook-salt-fallback` and `hook-salt-exposed`, whose conditions persist until an operator
+acts, and false for `hook-salt-was-exposed`. Both processes run the same loader
+(`crates/honmoon-cli/src/main.rs:387` calls `hook::machine_key()` at gateway startup), so
+whichever reaches a loose salt first tightens it and the other reads `0600` and records
+nothing: hook-first means the event exists only in the JSONL sink. The other was my own
+new prose describing the unconfirmed arm as a loader that "cannot see the file's
+permissions at all", which the event contradicts — `found_exposure` only emits that
+`reason` when the *pre*-correction read succeeded and was loose.
+
+**The generalisation, and it is the useful part of this note.** When a change adds a
+variant whose trigger is *consumed by observing it*, every surrounding sentence that
+reasons from "the condition is still there when the next process looks" goes stale — and
+those sentences do not mention the new rule by name, so a grep for the rule name misses
+them. Enumerate the prose that argues from persistence, not just the prose that names the
+thing you changed.
+
+**Still true after the fixes:** the README's example `reason` string and the rule-table
+remedies match the implementation, and the "one event per loose-find" claim is scoped
+in-PR to where the correction took. No `wiki/` page or other repo doc mentions the salt
+rule names, so this change triggers no `wiki/AGENTS.md` regeneration obligation —
+re-verified against the final head.
