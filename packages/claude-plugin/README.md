@@ -309,7 +309,9 @@ call on a file that is already `0600`, and a degraded event there would be a fal
 about a correctly-permissioned key. By the same token, its *absence* means the file was
 owner-only when the loader looked, not that it was never readable by anyone else: a
 `chmod` that succeeds closes the window going forward and says nothing about the one
-before it. If you find this event, rotate the salt — delete the file once its
+before it. Nor does it reach past the POSIX mode bits: on macOS an ACL entry
+granting another local user read leaves the mode at `0600`, and this check cannot
+see it. If you find this event, rotate the salt — delete the file once its
 permissions can be fixed and let the next invocation mint a new one.
 
 **Where each event is visible.** The two transports reach different readers, because

@@ -24,10 +24,14 @@ describe('describeFacts', () => {
   })
 
   test('an exposed salt renders its reason, not just a healthy-looking key source', () => {
-    // `hook-salt-exposed` keeps `key_source: 'persisted'` — the bytes really did
-    // come from the salt file — so the line's first half reads healthy on its
-    // own and the reason is the only part carrying the bad news. It has to
-    // survive into what the operator sees (issue #141).
+    // Pins a consumer contract, not a rendering change: `describeFacts` has no
+    // exposure-specific branch and needs none. What changed is the population —
+    // `hook-salt-exposed` puts `key_source: 'persisted'` inside `RedactionFacts`
+    // for the first time, so a value this file previously only ever saw on a
+    // healthy key now arrives on a degraded event. The line's first half
+    // therefore reads healthy on its own, and `reason` is the only part carrying
+    // the bad news. Anything that starts summarising or dropping `reason` breaks
+    // the operator's only signal here (issue #141).
     const exposed: FactsSummary = {
       redaction: {
         key_source: 'persisted',

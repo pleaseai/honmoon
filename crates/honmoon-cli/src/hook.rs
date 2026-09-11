@@ -34,8 +34,8 @@ use serde_json::Value;
 /// Entry point for `honmoon hook`: read stdin, dispatch, write stdout. Never
 /// fails the process for expected error conditions (see module docs).
 ///
-/// `audit_log`, when given, is the JSONL file a fallback machine key is reported
-/// to (see [`record_machine_key_source`]); without it the degradation still only
+/// `audit_log`, when given, is the JSONL file a degraded machine key is reported
+/// to (see [`record_machine_key_status`]); without it the degradation still only
 /// reaches stderr.
 pub fn run(salt_context: Option<&str>, audit_log: Option<&Path>) -> Result<()> {
     let mut input = String::new();
@@ -200,7 +200,7 @@ pub enum MachineKeySource {
     /// transcript. It is also invisible from the outside — placeholders keep
     /// their shape, keep restoring, and two processes that both fall back agree
     /// with each other, so cross-transport parity holds while the property it
-    /// protects is gone. [`record_machine_key_source`] is what makes it visible.
+    /// protects is gone. [`record_machine_key_status`] is what makes it visible.
     Fallback { reason: String },
 }
 
@@ -211,25 +211,60 @@ pub enum MachineKeySource {
 /// can genuinely be the persisted one *and* have been left group/world-readable
 /// (issue #141). Folding exposure into [`MachineKeySource`] would make whichever
 /// variant won the fold false about the other axis.
+/// The fields are private and reachable only through the three constructors
+/// below, so that "a non-persisted key carries no exposure" is enforced rather
+/// than merely documented: [`record_machine_key_status`] matches on the pair and
+/// would otherwise silently drop an exposure some future caller paired with a
+/// [`MachineKeySource::Fallback`].
 pub struct MachineKeyStatus {
-    /// Which key this is.
-    pub source: MachineKeySource,
-    /// `Some(reason)` when the salt file behind a [`MachineKeySource::Persisted`]
-    /// key is readable beyond its owner *after* the loader tried to restrict it,
-    /// `reason` naming the mode observed.
-    ///
-    /// The observed mode is the claim, deliberately, and it is narrower than it
-    /// looks in both directions. A `chmod` that fails is not evidence of
-    /// exposure — a read-only mount refuses the call on a file that is already
-    /// `0600`, and recording that would be a false alarm in the one channel that
-    /// must stay worth reading. A `chmod` that succeeds is not evidence of
-    /// safety either: it closes the window going forward and says nothing about
-    /// who read the file before. So `None` attests "owner-only when the loader
-    /// looked", never "never exposed".
-    pub exposure: Option<String>,
+    source: MachineKeySource,
+    exposure: Option<String>,
 }
 
 impl MachineKeyStatus {
+    /// The key read from `~/.honmoon/hook-salt`, carrying what the loader
+    /// observed about who else can read that file.
+    ///
+    /// `Some(reason)` means the file is readable beyond its owner *after* the
+    /// loader tried to restrict it, `reason` naming the mode observed. That
+    /// claim is deliberately narrow in both directions. A `chmod` that fails is
+    /// not evidence of exposure — a read-only mount refuses the call on a file
+    /// that is already `0600`, and recording that would be a false alarm in the
+    /// one channel that must stay worth reading. A `chmod` that succeeds is not
+    /// evidence of safety either: it closes the window going forward and says
+    /// nothing about who read the file before.
+    ///
+    /// So `None` means only that the loader saw no group/world bits — because
+    /// the file carried none, because there was nothing to inspect (a salt it
+    /// created itself at `0600` on a fresh inode), or, in the narrow case where
+    /// the mode could not be read back at all, because there was nothing to see.
+    /// It never attests that the key was not exposed earlier, and it does not
+    /// reach past the mode bits: an ACL granting another local user read leaves
+    /// the mode at `0600` and is invisible here.
+    fn persisted(exposure: Option<String>) -> Self {
+        Self {
+            source: MachineKeySource::Persisted,
+            exposure,
+        }
+    }
+
+    /// A private random key that never reached disk. There is no salt file this
+    /// process adopted, so there is no mode it could have observed.
+    fn unpersisted(reason: String) -> Self {
+        Self {
+            source: MachineKeySource::Unpersisted { reason },
+            exposure: None,
+        }
+    }
+
+    /// [`FALLBACK_MACHINE_KEY`], for the same reason: no adopted file, no mode.
+    fn fallback(reason: String) -> Self {
+        Self {
+            source: MachineKeySource::Fallback { reason },
+            exposure: None,
+        }
+    }
+
     /// Whether there is anything to record — a key that is not the persisted
     /// one, or a persisted one whose file was readable beyond its owner.
     fn is_degraded(&self) -> bool {
@@ -270,8 +305,9 @@ impl MachineKey {
 /// Falls back to a fixed key if the salt file can't be read/written, which
 /// keeps redaction working and deterministic — only the unforgeability property
 /// is relaxed, and both transports relax it identically. That fail-open contract
-/// is deliberate and unchanged; the returned [`MachineKey::source`] is what lets
-/// a caller record the degradation somewhere durable (issue #131).
+/// is deliberate and unchanged; the [`MachineKeyStatus`] the returned key carries
+/// is what lets a caller record the degradation somewhere durable (issues #131,
+/// #141) — take it with [`MachineKey::into_parts`].
 pub fn machine_key() -> MachineKey {
     machine_key_in(&honmoon_dir())
 }
@@ -286,25 +322,16 @@ fn machine_key_in(dir: &Path) -> MachineKey {
             exposed,
         }) => MachineKey {
             bytes,
-            status: MachineKeyStatus {
-                source: match unpersisted {
-                    Some(reason) => MachineKeySource::Unpersisted { reason },
-                    None => MachineKeySource::Persisted,
-                },
-                exposure: exposed,
+            status: match unpersisted {
+                Some(reason) => MachineKeyStatus::unpersisted(reason),
+                None => MachineKeyStatus::persisted(exposed),
             },
         },
         Err(e) => {
             eprintln!("honmoon hook: using fallback salt ({e:#})");
             MachineKey {
                 bytes: FALLBACK_MACHINE_KEY.to_vec(),
-                status: MachineKeyStatus {
-                    source: MachineKeySource::Fallback {
-                        reason: format!("{e:#}"),
-                    },
-                    // No salt file was adopted, so there is no mode to observe.
-                    exposure: None,
-                },
+                status: MachineKeyStatus::fallback(format!("{e:#}")),
             }
         }
     }
@@ -349,8 +376,10 @@ pub fn record_machine_key_status(
             reason,
         ),
         // A key that never reached disk, and the compiled-in constant, have no
-        // adopted salt file whose mode could have been observed — `exposure` is
-        // `None` on both by construction, which is why these arms ignore it.
+        // adopted salt file whose mode could have been observed. The
+        // constructors are the only way to build a `MachineKeyStatus` and set
+        // `exposure: None` on both, so these arms ignore a field that cannot be
+        // anything else.
         (MachineKeySource::Unpersisted { reason }, _) => (
             honmoon_core::RedactionKeySource::Unpersisted,
             HOOK_SALT_FALLBACK_RULE,
@@ -667,7 +696,7 @@ fn write_secret_file(path: &Path, bytes: &[u8]) -> std::io::Result<Option<String
 
 /// Read `n` bytes from the OS CSPRNG. Uses `/dev/urandom` to avoid pulling in an
 /// RNG crate (the CLI targets Unix data-plane hosts). Guarded `#[cfg(unix)]` to
-/// match `set_permissions_0600` and the `OpenOptionsExt` open modes elsewhere in
+/// match [`restrict_to_owner_only`] and the `OpenOptionsExt` open modes elsewhere in
 /// this file, so non-Unix builds fail explicitly here rather than compiling
 /// cleanly and degrading silently to the fallback key at runtime.
 #[cfg(unix)]
@@ -794,6 +823,10 @@ mod tests {
         );
         assert_ne!(salt.bytes, b"tooshort".to_vec(), "not the corrupt bytes");
         assert!(salt.unpersisted.is_none(), "the rewrite reached disk");
+        assert!(
+            salt.exposed.is_none(),
+            "the overwrite reuses an existing inode, so it answers the exposure              question too — and this one's mode was corrected"
+        );
         // The regenerated salt is itself persisted and stable thereafter.
         assert_eq!(
             salt.bytes,
@@ -1015,6 +1048,41 @@ mod tests {
             redaction.reason.contains(&format!("{mode:04o}")),
             "the recorded reason carries the observed mode: {}",
             redaction.reason
+        );
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
+    fn an_exposed_salt_is_recorded_against_the_gateway_transport_too() {
+        // The gateway reads the same `~/.honmoon/hook-salt` once at startup, so
+        // it observes the same exposure — that is what makes the per-transport
+        // visibility table in the plugin README hold for this rule, and what
+        // lights the dashboard's `Degraded` pill on a host running one. Its call
+        // site is inside `gateway()`, which binds listeners and blocks, so pin
+        // the pair here: the sibling transport test only ever reaches a
+        // *fallback* status, and would not catch a transport dropped on the
+        // exposure arm specifically.
+        let tmp = TempDir::new("exposed-gateway");
+        let _guard = unrestrictable_salt(tmp.path(), true);
+
+        let audit = honmoon_core::AuditLog::new(2);
+        record_machine_key_status(
+            &audit,
+            honmoon_core::RedactionTransport::Gateway,
+            &machine_key_in(tmp.path()).status,
+        )
+        .expect("an in-memory log has no sink to fail");
+        let event = audit.recent(1).remove(0);
+        assert_eq!(event.rule.as_deref(), Some(HOOK_SALT_EXPOSED_RULE));
+        let redaction = event.facts.redaction.expect("redaction facts");
+        assert_eq!(
+            redaction.transport,
+            honmoon_core::RedactionTransport::Gateway,
+            "the gateway's own observation, not one attributed to the hook"
+        );
+        assert_eq!(
+            redaction.key_source,
+            honmoon_core::RedactionKeySource::Persisted
         );
     }
 
@@ -1318,7 +1386,7 @@ mod tests {
 
     #[test]
     fn the_gateway_transport_is_recorded_distinctly_from_the_hook() {
-        // `record_machine_key_source` takes the transport as a parameter, and the
+        // `record_machine_key_status` takes the transport as a parameter, and the
         // gateway's call site is inside `gateway()`, which binds listeners and
         // blocks — so no test reaches it. Pin the value the gateway passes here,
         // so at least a swapped or renamed transport fails a test rather than
