@@ -17,8 +17,11 @@ redaction rewrite re-frames several — but only ever as protocol metadata. No h
 *value* is passed to `detect_spans` or `detect_secrets`.
 
 That leaves **request trailers** — the chunked trailer section, `Trailer: X-Note` plus
-`0\r\nX-Note: <secret>\r\n\r\n` — forwarded to the upstream unscanned, unredacted and unaudited.
-`facts.pii` stays empty, so a `pii.count > 0` rule cannot fire on trailer content.
+`0\r\nX-Note: <secret>\r\n\r\n` — unscanned and unredacted, and on a request honmoon does not
+rewrite, passed to the upstream that way. `facts.pii` stays empty, so a `pii.count > 0` rule cannot
+fire on trailer content, and nothing a *positive* finding would have caused — no deny, no pause, no
+audit attributable to the secret — happens. (An absence rule such as `pii.count == 0` still fires
+and still audits its own verdict; it simply reads the request as clean. See Consequences.)
 
 ### #130 did not create this
 
@@ -112,8 +115,12 @@ content reach the upstream unredacted?". The threat model has one stated boundar
 enumeration that reads as exhaustive and is not.
 
 **What this does not guarantee.** Nothing about the data plane changed. An agent that puts a secret
-in a trailer — or in a header — still reaches the upstream with it, on every one of the four
-branches above.
+in a trailer still reaches the upstream with it on any **pass-through** request — one honmoon does
+not rewrite — across all four branches; when `--redact-secrets` rewrites the body, that trailer is
+dropped instead (the Decision's forwarding note, pinned by
+`a_redacted_body_drops_the_request_trailer`). A secret in a **header** reaches the upstream
+unconditionally: headers survive the rewrite, which re-frames a few of them and strips the stale
+digests but carries the rest through.
 
 **And `pii.count == 0` does not mean "no secrets here".** `eval_program` always binds `pii` with
 its empty default so absence conditions can be written at all, so an unscanned trailer leaves the
