@@ -61,11 +61,14 @@ bun scripts/agent-memory-index.ts --check    # CI gate: every note can supply it
 ```
 
 Quote a `description:` that is anything but plain prose. A plain YAML scalar ends at the first
-` #`, so `description: fixed in PR #155, then do X` is the summary `fixed in PR` to a reader —
-and the index line is built from that. The same goes for one that opens with `[`, `{`, `&`, `*`
-or `!`, or that is entirely a number or a date, since YAML resolves those to something that is
-not text. The generator reports each case instead of guessing, and `--check` fails until the
-description is quoted, so CI catches it rather than a wrong index line reaching the repository.
+` #`, so anything that loads `description: fixed in PR #155, then do X` sees the summary
+`fixed in PR`, while the generator — deliberately not a YAML reader — keeps the whole line. The
+note would then say one thing in its index and another to everything that parses it, and that
+disagreement is what a derived index exists to end. The same split opens for a value beginning
+`[`, `{`, `&`, `*` or `!`, or one that is entirely a number or a date, since YAML resolves those
+to something that is not text. So the generator reports each case rather than picking a side,
+and `--check` fails until the description is quoted — CI catches the disagreement instead of
+letting it reach the repository.
 
 Hand-appending a shared index made every concurrent PR that recorded a memory for the same
 agent collide on one line, and duplicated each claim into a second place that drifted from the

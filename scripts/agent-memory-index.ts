@@ -98,7 +98,7 @@ const TOP_LEVEL_KEY = /^([a-z][\w-]*):[ \t]*(\S.*)?$/i
  * that failing to recognise the header does not fail loudly, it indexes the
  * header text as though the note had written it.
  */
-const BLOCK_SCALAR = /^[|>](?:[1-9][+-]?|[+-][1-9]?)?(?:[ \t]+(?:#.*)?)?$/
+const BLOCK_SCALAR = /^[|>](?:([1-9])[+-]?|[+-]([1-9])?)?(?:[ \t]+(?:#.*)?)?$/
 
 /**
  * The YAML double-quoted escapes that stand for one character.
@@ -326,6 +326,11 @@ export function parseFrontmatter(text: string): Frontmatter {
   const scalars: Record<string, string | undefined> = {}
   const blockScalars = new Set<string>()
   const repeated = new Set<string>()
+  const seen = new Set<string>()
+  // An explicit indentation indicator (`|2`) is a promise the content has to
+  // keep: both readers refuse a block whose lines fall short of it.
+  const blockIndent = new Map<string, number>()
+  const underIndented = new Set<string>()
   let key: string | null = null
 
   for (const line of block[1].split(/\r?\n/)) {
@@ -341,18 +346,29 @@ export function parseFrontmatter(text: string): Frontmatter {
       // would not drift from them — but the author wrote two summaries and one
       // disappeared without a word, and a stricter reader (js-yaml) rejects the
       // note outright. Reported rather than silently overwritten.
-      if (name in scalars) {
+      // Tracked on the key itself, not on whether it produced a value: a first
+      // `description: # todo` never reaches `scalars`, so testing that map left
+      // a repeat after a comment-only occurrence invisible.
+      if (seen.has(name)) {
         repeated.add(name)
       }
+      seen.add(name)
       key = value === undefined || value.startsWith('#') ? null : name
       if (key) {
         // A block-scalar header opens a value the following indented lines
         // carry, so start empty and let the continuation branch fill it. Both
         // `>` and `|` end up folded onto one line, which is all an index line
         // can be.
-        if (BLOCK_SCALAR.test(value)) {
+        const header = BLOCK_SCALAR.exec(value)
+        if (header) {
           scalars[key] = ''
           blockScalars.add(key)
+          const explicit = header[1] ?? header[2]
+          if (explicit !== undefined) {
+            // Top-level frontmatter keys sit at column 0, so the indicator is
+            // the content's required indentation outright.
+            blockIndent.set(key, Number(explicit))
+          }
         }
         else {
           scalars[key] = value
@@ -366,6 +382,10 @@ export function parseFrontmatter(text: string): Frontmatter {
     // inside a folded scalar it is literal text, and these descriptions are full
     // of issue references that a comment-stripping parser would eat.
     if (key && /^[ \t]/.test(line) && line.trim() !== '') {
+      const required = blockIndent.get(key)
+      if (required !== undefined && (/^ */.exec(line)?.[0].length ?? 0) < required) {
+        underIndented.add(key)
+      }
       const soFar = scalars[key] ?? ''
       // ...but only after a *plain* scalar. There an indented `#` opens a
       // comment like any other and both readers drop it, so appending it built
@@ -407,6 +427,10 @@ export function parseFrontmatter(text: string): Frontmatter {
       continue
     }
     const raw = value.trim()
+
+    if (underIndented.has(name)) {
+      problems.push(`\`${name}:\` opens a block scalar with an explicit indentation indicator its content does not meet, which YAML refuses to load — indent the content to match, or drop the indicator`)
+    }
 
     if (repeated.has(name)) {
       problems.push(`\`${name}:\` is given more than once, and YAML requires a mapping key to be unique — keep the one that is the summary and delete the other`)

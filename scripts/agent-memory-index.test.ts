@@ -235,6 +235,47 @@ metadata:
     expect(parseFrontmatter(text)).toMatchObject({ scalars: { description: 'done' }, problems: [] })
   })
 
+  // A block header may carry an explicit indentation indicator, and then the
+  // content must actually meet it: both readers refuse `|2` over a line with
+  // one space. The continuation branch accepted any indentation at all.
+  test('reports block content under an explicit indentation indicator', () => {
+    const text = `---
+name: a-note
+description: |2
+ first
+metadata:
+  type: project
+---
+`
+    expect(parseFrontmatter(text).problems).toEqual([expect.stringContaining('indentation indicator')])
+  })
+
+  test('accepts block content that meets the indicator', () => {
+    const text = `---
+name: a-note
+description: |2
+  first
+metadata:
+  type: project
+---
+`
+    expect(parseFrontmatter(text)).toMatchObject({ scalars: { description: 'first' }, problems: [] })
+  })
+
+  // The first occurrence never reached `scalars` when it had no value, so the
+  // repeat check could not see it and a malformed note passed silently.
+  test('reports a repeat whose first occurrence had no value', () => {
+    const text = `---
+name: a-note
+description: # write this later
+description: real
+metadata:
+  type: project
+---
+`
+    expect(parseFrontmatter(text).problems).toEqual([expect.stringContaining('more than once')])
+  })
+
   // Both readers take the last of a repeated key, so the index would not drift
   // — but the author wrote two summaries and one vanished silently, and YAML
   // requires mapping keys to be unique (js-yaml refuses the document outright).
