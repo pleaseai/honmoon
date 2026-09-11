@@ -177,6 +177,26 @@ struct ClientLink {
 }
 
 /// What the relay has delivered to the client.
+///
+/// # Invariant
+///
+/// `sync_points <= ClientLink::forwarded`, and it holds by construction rather
+/// than by timing. Three things keep it, and an edit that gives up any one of
+/// them breaks the ordering guarantee silently:
+///
+/// 1. `forwarded` only ever rises. Nothing lowers it — a stalled wait closes
+///    its gap by crediting `sync_points` here, never by subtracting there.
+/// 2. `sync_points` rises only under [`ClientLink::delivered_message`]'s clamp
+///    (`< forwarded`) or a write-off's `max(count, expected)`, and `expected`
+///    was itself read from `forwarded`, so neither can exceed it.
+/// 3. Every mutation of this value goes through the one `send_modify`, so the
+///    relay's task and the message loop's cannot interleave inside it.
+///
+/// Invert the pair and a refusal is released before the answer it was waiting
+/// for: the next forwarded statement lifts `forwarded` back to meet an inflated
+/// `sync_points`, the barrier reads itself as already drained, and the local
+/// answer overtakes a response the client has not been sent — which is the
+/// whole of #101.
 #[derive(Clone, Copy)]
 struct Delivered {
     /// `ReadyForQuery` messages written, or `None` once the relay has stopped
