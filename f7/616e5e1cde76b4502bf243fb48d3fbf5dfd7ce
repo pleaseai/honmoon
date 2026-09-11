@@ -1,0 +1,23 @@
+.claude/agent-memory/review-review-security-reviewer/hook-salt-security-model.md
+  s_34f639d2e09b64::t_6b41dfbdf8b27b 60-74
+.claude/agent-memory/review-review-documentation-analyzer/pr142_stale_rename_comment.md
+  s_34f639d2e09b64::t_37789abe825b2e 1-36
+.claude/agent-memory/review-review-documentation-analyzer/MEMORY.md
+  s_34f639d2e09b64::t_e00cd7986c0e98 4
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "f7616e5e1cde76b4502bf243fb48d3fbf5dfd7ce",
+  "prompts": {},
+  "sessions": {
+    "s_34f639d2e09b64": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "deda3644-1fdd-412d-a687-7ecfae2c80b1",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
