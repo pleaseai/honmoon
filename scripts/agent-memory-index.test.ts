@@ -5,6 +5,7 @@ import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
 import {
   agentDirs,
+  EXIT_INVARIANT,
   EXIT_PROBLEMS,
   INDEX_NAME,
   main,
@@ -126,6 +127,7 @@ describe('renderIndex', () => {
       'a#b.md': 'a%23b.md', //        `#` would address a fragment
       'a?b.md': 'a%3Fb.md', //        `?` would start a query
       'a%2Fb.md': 'a%252Fb.md', //    an existing `%` must not read as an escape
+      'review:notes.md': 'review%3Anotes.md', // `review` would read as a scheme
       'two words.md': 'two%20words.md',
     }
     for (const [file, target] of Object.entries(encoded)) {
@@ -314,7 +316,11 @@ describe('main', () => {
         'add',
       ], { cwd: repo })
 
-      expect(main([], join(repo, MEMORY_ROOT), repo)).toBe(EXIT_PROBLEMS)
+      // EXIT_INVARIANT, not EXIT_PROBLEMS: this path writes nothing, so a caller
+      // that carries on from a malformed note must not carry on from this and
+      // call what it has an index.
+      expect(main([], join(repo, MEMORY_ROOT), repo)).toBe(EXIT_INVARIANT)
+      expect(EXIT_INVARIANT).not.toBe(EXIT_PROBLEMS)
       expect(readFileSync(join(repo, index), 'utf8')).toBe('stale hand-written index\n')
     }
     finally {
@@ -356,6 +362,27 @@ describe('parseFrontmatter — quoted scalars', () => {
     // The tab decodes and is then folded with every other whitespace run, which
     // is what keeps an entry to one line; the point here is that it decoded.
     expect(parseFrontmatter(text).description).toBe('a b: "quoted", café, back\\slash')
+  })
+
+  // YAML writes hex escapes in either case; only accepting A-F left `caf\u00e9`
+  // in the index as the eight characters the note had typed.
+  test('decodes hex escapes written in lower case', () => {
+    const text = note('n', 'placeholder').replace(
+      'description: placeholder',
+      String.raw`description: "caf\u00e9 \x0a caf\u00E9"`,
+    )
+    expect(parseFrontmatter(text).description).toBe('café café')
+  })
+
+  // `\U` admits eight digits, so it can name something that is not a code
+  // point. That is a note to report, not a crash that takes every note with it.
+  test('leaves an out-of-range code point alone instead of throwing', () => {
+    const text = note('n', 'placeholder').replace(
+      'description: placeholder',
+      String.raw`description: "over \UFFFFFFFF the end"`,
+    )
+    expect(() => parseFrontmatter(text)).not.toThrow()
+    expect(parseFrontmatter(text).description).toBe(String.raw`over \UFFFFFFFF the end`)
   })
 
   // An escape YAML does not define is invalid YAML, not something to guess at.

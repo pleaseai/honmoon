@@ -17,12 +17,13 @@ scripts:
     # different branch with different notes. Build a fresh one from the notes
     # here. (`mise install` above installs tool versions; the `install` task in
     # mise.toml is a different thing and does not run.)
-    # Exit 2 means the index was written but a note is malformed. That is the one
-    # failure this step tolerates: under `set -e` it would otherwise turn one
+    # Exit 2 means every index was written and a note is malformed. That is the
+    # one failure this step tolerates: under `set -e` it would otherwise turn one
     # incomplete memory note on the branch into a failed worktree setup, and the
     # hard gate for note quality is the `--check` step in CI. Every other
-    # non-zero status — bun missing, git unusable, the directory unwritable —
-    # means no index was produced, and is re-raised rather than swallowed.
+    # non-zero status leaves this worktree with no index and is re-raised — 3 for
+    # a tracked index, which stops the run before it writes anything, and 1 for
+    # bun missing, git unusable or the directory unwritable.
     mise exec -- bun scripts/agent-memory-index.ts || {
       status=$?
       [ "$status" -eq 2 ] || exit "$status"

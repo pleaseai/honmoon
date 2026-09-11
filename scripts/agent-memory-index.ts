@@ -127,10 +127,15 @@ const DOUBLE_QUOTED_ESCAPES: Record<string, string> = {
 /** Resolve the escape sequences of a YAML double-quoted scalar's body. */
 function unescapeDoubleQuoted(body: string): string {
   return body.replace(
-    /\\(x[0-9A-F]{2}|u[0-9A-F]{4}|U[0-9A-F]{8}|[\s\S])/g,
+    /\\(x[0-9A-Fa-f]{2}|u[0-9A-Fa-f]{4}|U[0-9A-Fa-f]{8}|[\s\S])/g,
     (match, escape: string) => {
       if (escape.length > 1) {
-        return String.fromCodePoint(Number.parseInt(escape.slice(1), 16))
+        // `\U` admits eight digits, which reach far past the last code point,
+        // and `String.fromCodePoint` throws on those. A malformed note has to
+        // come back as a reported problem, never as a crash that takes the
+        // whole run — and every other note with it — down with it.
+        const codePoint = Number.parseInt(escape.slice(1), 16)
+        return codePoint <= 0x10FFFF ? String.fromCodePoint(codePoint) : match
       }
       // An escape YAML does not define is invalid YAML rather than something to
       // guess at, so it is left exactly as written instead of being swallowed.
@@ -227,8 +232,9 @@ const ENCODER = new TextEncoder()
  *
  * The label is not the only half that can be truncated, and two different
  * layers can break it. `(`, `)`, `<`, `>` and whitespace end the destination in
- * the *markdown* parse; `#`, `?` and `%` survive that and then carry meaning in
- * the *URL*, where `a#b.md` addresses `a` with a fragment rather than the file.
+ * the *markdown* parse; `#`, `?`, `%` and `:` survive that and then carry
+ * meaning in the *URL*, where `a#b.md` addresses `a` with a fragment rather
+ * than the file, and `review:notes.md` reads `review` as a URI scheme.
  * Percent-encoding covers both, and touches nothing in an ordinary
  * `some_note.md`.
  *
@@ -239,7 +245,7 @@ const ENCODER = new TextEncoder()
  * unescaped, and those are exactly what ends a bare markdown destination.)
  */
 function linkTarget(file: string): string {
-  return file.replace(/[%#?()<>\s]/g, character =>
+  return file.replace(/[%#?:()<>\s]/g, character =>
     Array.from(ENCODER.encode(character), byte =>
       `%${byte.toString(16).toUpperCase().padStart(2, '0')}`).join(''))
 }
@@ -388,29 +394,41 @@ export function rebuild(root: string, options: { check?: boolean } = {}): Result
 }
 
 /**
- * The exit code for a run that completed and reported defects, as opposed to
- * one that could not run at all — which throws, and so exits 1.
+ * The exit code for a run that wrote every index and then reported defects in
+ * the notes behind them.
  *
- * The two have to be distinguishable from a shell: a caller that wants to
- * tolerate "the index is written, but a note is malformed" must not also
- * tolerate "git is missing", and one exit code for both makes `|| true` the
- * only option — the swallow this script exists to argue against.
+ * This is the one failure a caller may reasonably carry on from, so it has to
+ * be distinguishable from the two that follow: one exit code for all of them
+ * makes `|| true` the only option — the swallow this script exists to argue
+ * against. The other two are `EXIT_INVARIANT`, and 1 for a run that could not
+ * happen at all, which an uncaught throw produces.
  */
 export const EXIT_PROBLEMS = 2
 
-function report(problems: string[]): number {
+/**
+ * The exit code for a broken repository invariant — today, an index that is
+ * tracked by git again.
+ *
+ * Separate from `EXIT_PROBLEMS` because **nothing was written**: the run stops
+ * before rebuilding so the tree is left as found, which means a caller that
+ * tolerates a malformed note must not tolerate this one and call the result an
+ * index.
+ */
+export const EXIT_INVARIANT = 3
+
+function report(problems: string[], code: number): number {
   console.error('agent-memory index problems:')
   for (const problem of problems) {
     console.error(`  - ${problem}`)
   }
-  return EXIT_PROBLEMS
+  return code
 }
 
 /**
- * Returns the process exit code: `EXIT_PROBLEMS` when any note cannot be
- * indexed or an index is tracked again, 0 when clean. `root` and `cwd` are
- * defaulted for the CLI and only passed by the tests, which need a checkout of
- * their own.
+ * Returns the process exit code: `EXIT_INVARIANT` when an index is tracked
+ * again (nothing is written), `EXIT_PROBLEMS` when every index was written but
+ * a note cannot supply its line, 0 when clean. `root` and `cwd` are defaulted
+ * for the CLI and only passed by the tests, which need a checkout of their own.
  */
 export function main(argv: string[], root: string = MEMORY_DIR, cwd: string = REPO_ROOT): number {
   const check = argv.includes('--check')
@@ -422,13 +440,13 @@ export function main(argv: string[], root: string = MEMORY_DIR, cwd: string = RE
   if (tracked.length > 0) {
     return report(tracked.map(trackedIndex =>
       `${trackedIndex} is tracked by git — it is generated (issue #129). `
-      + `Run \`git rm --cached ${trackedIndex}\`.`))
+      + `Run \`git rm --cached ${trackedIndex}\`.`), EXIT_INVARIANT)
   }
 
   const { written, problems } = rebuild(root, { check })
 
   if (problems.length > 0) {
-    return report(problems)
+    return report(problems, EXIT_PROBLEMS)
   }
 
   if (check) {
