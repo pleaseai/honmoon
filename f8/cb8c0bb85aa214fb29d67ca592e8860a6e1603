@@ -1,0 +1,21 @@
+scripts/agent-memory-index.test.ts
+  s_23314bc1687b8f::t_dcc4ff6700a865 372-373,375-388
+scripts/agent-memory-index.ts
+  s_23314bc1687b8f::t_dcc4ff6700a865 504-509
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "f8cb8c0bb85aa214fb29d67ca592e8860a6e1603",
+  "prompts": {},
+  "sessions": {
+    "s_23314bc1687b8f": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "6ff32bd2-e0d0-46dd-b1cb-1ffcc5db7869",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
