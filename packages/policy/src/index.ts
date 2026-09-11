@@ -17,7 +17,25 @@ export interface Egress {
 export interface Rule {
   name: string
   endpoint: string
-  /** CEL expression over protocol facts, e.g. `"sql.verb == 'DROP'"`. */
+  /**
+   * CEL expression over protocol facts, e.g. `"sql.verb == 'DROP'"`.
+   *
+   * Must not be blank. A blank condition is not "always" (that is the literal
+   * `"true"`) and not a disabled rule either: the CEL compiler panics on it
+   * rather than returning an error, so `Policy::from_yaml` rejects the whole
+   * policy.
+   *
+   * The JSON Schema rejects exactly the same set. Its `pattern` is not a plain
+   * `\S`: over the whole of Unicode, ECMAScript `\s` differs from Rust's
+   * `char::is_whitespace` in precisely two code points — it omits `U+0085` and
+   * adds `U+FEFF` — so the class corrects for both and the two layers agree
+   * character for character. `policy.schema.test.ts` pins that.
+   *
+   * Neither check validates CEL. A condition can be non-blank and still be
+   * unevaluable — a lone `@`, `§`, or zero-width space compiles to a panic in
+   * the CEL parser (see honmoon issue 154) — so passing this only means the
+   * field is not empty.
+   */
   condition: string
   verdict: Verdict
 }

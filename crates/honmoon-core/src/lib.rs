@@ -180,14 +180,16 @@ pub struct K8sFacts {
 impl Policy {
     /// Parse a policy from YAML.
     ///
-    /// An unusable `endpoints` entry is an error (see
-    /// [`Policy::validate_endpoints`]); an *undefined* endpoint reference and an
+    /// An unusable `endpoints` entry and a rule with a blank `condition` are
+    /// errors (see [`Policy::validate_endpoints`] and
+    /// [`Policy::validate_rules`]); an *undefined* endpoint reference and an
     /// unreachable rule are only warnings (see
     /// [`Policy::warn_undefined_endpoints`] and
     /// [`Policy::warn_shadowed_rules`]).
     pub fn from_yaml(src: &str) -> Result<Self, Error> {
         let policy: Self = serde_yaml::from_str(src).map_err(Error::Parse)?;
         policy.validate_endpoints()?;
+        policy.validate_rules()?;
         policy.warn_undefined_endpoints();
         policy.warn_shadowed_rules();
         Ok(policy)
@@ -214,6 +216,36 @@ impl Policy {
                     second: name.clone(),
                     host: endpoint.host.clone(),
                     port: endpoint.port,
+                });
+            }
+        }
+        Ok(())
+    }
+
+    /// Reject rules whose `condition` is blank.
+    ///
+    /// A blank condition says nothing, and the two things an author might mean
+    /// by it are both unavailable. It is not "always" — that is the literal
+    /// `true` (see [`is_unconditional`]). And it is not a rule switched off
+    /// either: a condition that cannot compile normally declines and lets the
+    /// walk continue, but `Program::compile` does not *return* on a blank
+    /// input, it panics (#151), so the rule would take the decision path down
+    /// at the first request that reached it.
+    ///
+    /// So the policy is unevaluable, and like an unusable `endpoints` entry it
+    /// fails the load, where the author sees it — rather than at request time,
+    /// in production, on whichever request first reaches the rule.
+    ///
+    /// The error carries the rule's position as well as its name. `name` is an
+    /// ordinary field here, not a map key like an endpoint's: nothing requires
+    /// it to be unique or even non-empty, so on its own it can name two rules
+    /// or none.
+    fn validate_rules(&self) -> Result<(), Error> {
+        for (index, rule) in self.rules.iter().enumerate() {
+            if is_blank_condition(&rule.condition) {
+                return Err(Error::BlankRuleCondition {
+                    index,
+                    name: rule.name.clone(),
                 });
             }
         }
@@ -310,12 +342,34 @@ impl Policy {
 /// expression total is not something the loader can do, and a warning that
 /// guessed would teach authors to ignore it.
 ///
-/// An **empty** condition is not unconditional either, despite reading like
-/// one: it is not valid CEL, so the rule can never match — and today it does
-/// not even decline cleanly, because `Program::compile("")` panics instead of
-/// returning an error (tracked in #151). Either way it shadows nothing.
+/// A **blank** condition is not unconditional either, despite reading like
+/// one: it is not valid CEL, so the rule could never match. A loaded policy
+/// never reaches this check carrying one — [`Policy::validate_rules`] refuses
+/// it — but the test stays purely syntactic, so a `Policy` built in code
+/// shadows nothing on a blank condition either.
 fn is_unconditional(condition: &str) -> bool {
     condition.trim() == "true"
+}
+
+/// Whether a condition carries no expression at all.
+///
+/// The one malformed condition the loader recognises, and the one place the
+/// engine departs from "hand it to the compiler and see". Shared so the
+/// load-time rejection and the engine's own guard cannot drift apart: they
+/// must agree on exactly which conditions never reach `Program::compile`.
+///
+/// Whitespace as Rust defines it (`char::is_whitespace`, so `\u{00a0}` and
+/// `\u{3000}` count), and nothing else. It is not a general test for "carries
+/// no expression", because no cheap one exists: `Program::compile` panics on
+/// *any* single character it cannot begin a token with, so `"&&"`, `"@"`,
+/// `"§"`, an emoji and a lone `\u{200b}` all panic exactly as `""` did. The
+/// last of those matters most here — a zero-width space is not
+/// `char::is_whitespace`, so a condition made only of them reads as empty in
+/// an editor, is *not* blank by this test, and still panics. Recognising it
+/// would mean drawing a line the compiler does not draw. That whole class is
+/// #154; this function is only the part of it that is cheap to name.
+pub(crate) fn is_blank_condition(condition: &str) -> bool {
+    condition.trim().is_empty()
 }
 
 /// Whether a rule bound to `pattern` is consulted on every request a rule bound
@@ -341,6 +395,10 @@ pub enum Error {
     Parse(#[from] serde_yaml::Error),
     #[error("endpoint `{name}` has port 0; valid ports are 1-65535")]
     EndpointPortZero { name: String },
+    #[error(
+        "rule `{name}` (rules[{index}]) has a blank `condition`; write `\"true\"` for a rule that always matches"
+    )]
+    BlankRuleCondition { index: usize, name: String },
     #[error(
         "endpoints `{first}` and `{second}` both target {host}:{port}; each target must have one name"
     )]
@@ -469,6 +527,125 @@ endpoints:
         };
         // `endpoints` is a BTreeMap, so the reported order is by name.
         assert_eq!((first.as_str(), second.as_str()), ("k8s-alias", "k8s-prod"));
+    }
+
+    /// A blank condition reads like "no condition", but it is not valid CEL, so
+    /// such a rule matches nothing and shadows nothing.
+    ///
+    /// Built in code rather than parsed: `from_yaml` rejects a blank condition
+    /// outright now (see `rejects_a_rule_with_a_blank_condition`), so this is
+    /// the only shape that still carries one into the shadowing check — and the
+    /// assertion is the same one the `""` case of
+    /// `only_a_literal_true_condition_counts_as_unconditional` used to make.
+    #[test]
+    fn a_blank_condition_does_not_count_as_unconditional() {
+        for condition in ["", " ", "\n"] {
+            let policy = Policy {
+                rules: vec![
+                    Rule {
+                        name: "first".into(),
+                        endpoint: "postgres-prod".into(),
+                        condition: condition.to_string(),
+                        verdict: Verdict::Allow,
+                    },
+                    Rule {
+                        name: "sql-no-prod-drop".into(),
+                        endpoint: "postgres-prod".into(),
+                        condition: "sql.verb == 'DROP'".into(),
+                        verdict: Verdict::Deny,
+                    },
+                ],
+                ..Default::default()
+            };
+
+            assert!(
+                shadowed_names(&policy).is_empty(),
+                "condition {condition:?} must not count as unconditional"
+            );
+        }
+    }
+
+    /// #151: a blank `condition` is not a rule that quietly matches nothing —
+    /// `Program::compile` panics on it rather than returning the `Err` the
+    /// engine degrades on, so the policy is unevaluable and must not load.
+    #[test]
+    fn rejects_a_rule_with_a_blank_condition() {
+        // `"\u00a0"` and `"\u3000"` are whitespace to `char::is_whitespace` but
+        // not to an ASCII test, and they panic in `Program::compile` exactly as
+        // `""` does — so a narrowing of `is_blank_condition` to ASCII would put
+        // the #151 panic back for a condition an author cannot see.
+        for condition in [
+            "\"\"",
+            "\" \"",
+            "\"\\n\"",
+            "\"\\t\\r\\n\"",
+            "\"\\u00a0\"",
+            "\"\\u3000\"",
+        ] {
+            let error = Policy::from_yaml(&format!(
+                "rules:\n  - name: blank\n    endpoint: '*'\n    condition: {condition}\n    verdict: allow\n"
+            ))
+            .expect_err("a blank condition is not evaluable");
+
+            assert!(
+                matches!(&error, Error::BlankRuleCondition { index, name } if *index == 0 && name == "blank"),
+                "condition {condition}: unexpected error: {error}"
+            );
+        }
+
+        // The reported position is the rule's own, not the first rule's.
+        let error = Policy::from_yaml(
+            "rules:\n  - name: ok\n    endpoint: '*'\n    condition: \"true\"\n    verdict: allow\n  - name: blank\n    endpoint: '*'\n    condition: \"\"\n    verdict: allow\n",
+        )
+        .expect_err("a blank condition is not evaluable");
+        assert!(
+            matches!(&error, Error::BlankRuleCondition { index, name } if *index == 1 && name == "blank"),
+            "unexpected error: {error}"
+        );
+    }
+
+    /// The two code points where Rust and the JSON Schema could have drifted.
+    ///
+    /// `is_blank_condition` follows `char::is_whitespace` (Unicode
+    /// `White_Space`); the schema's mirror is an ECMAScript regex, whose `\s`
+    /// differs from that set in exactly these two places — it omits `U+0085`
+    /// and adds `U+FEFF`. The schema corrects for both
+    /// (`packages/policy/src/policy.schema.test.ts` pins its side); this pins
+    /// the side it is mirroring, so a change here cannot silently desync them.
+    #[test]
+    fn the_two_code_points_the_schema_mirror_turns_on() {
+        // `U+0085` (NEXT LINE) is whitespace to Rust, so a condition of only
+        // that is blank and does not load.
+        let error = Policy::from_yaml(
+            "rules:\n  - name: nel\n    endpoint: '*'\n    condition: \"\\u0085\"\n    verdict: allow\n",
+        )
+        .expect_err("U+0085 is whitespace, so the condition is blank");
+        assert!(
+            matches!(&error, Error::BlankRuleCondition { name, .. } if name == "nel"),
+            "unexpected error: {error}"
+        );
+
+        // `U+FEFF` is *not* whitespace to Rust, so a condition of only that is
+        // not blank and does load. It is still unevaluable — it panics in the
+        // CEL parser like any other lone character the lexer cannot start a
+        // token with (#154) — which is precisely why this check does not claim
+        // to be a validity test, only an emptiness one.
+        Policy::from_yaml(
+            "rules:\n  - name: bom\n    endpoint: '*'\n    condition: \"\\ufeff\"\n    verdict: allow\n",
+        )
+        .expect("U+FEFF is not whitespace, so the condition is not blank");
+    }
+
+    /// The load-time check is about a condition with nothing in it, not about
+    /// a condition the loader dislikes: it never inspects CEL syntax.
+    #[test]
+    fn accepts_a_rule_whose_condition_has_content() {
+        for condition in ["\"true\"", "\"sql.verb == 'DROP'\"", "\" true \""] {
+            Policy::from_yaml(&format!(
+                "rules:\n  - name: r\n    endpoint: '*'\n    condition: {condition}\n    verdict: allow\n"
+            ))
+            .unwrap_or_else(|error| panic!("condition {condition} should load: {error}"));
+        }
     }
 
     /// A misspelled key must not silently disable protocol inspection: without
@@ -682,11 +859,10 @@ rules:
 
     /// Only the literal `true` counts. `1 == 1` is always true but the loader
     /// cannot prove that, and a false positive here would teach authors to
-    /// ignore the warning; `""` reads like "no condition" but is not valid
-    /// CEL, so that rule matches nothing and shadows nothing (#151).
+    /// ignore the warning.
     #[test]
     fn only_a_literal_true_condition_counts_as_unconditional() {
-        for condition in ["", "1 == 1", "false", "'true'"] {
+        for condition in ["1 == 1", "false", "'true'"] {
             let policy = Policy::from_yaml(&format!(
                 r#"
 rules:
