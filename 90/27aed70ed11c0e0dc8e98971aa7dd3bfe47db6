@@ -1,0 +1,23 @@
+.please/docs/decisions/0007-inline-postgresql-runtime-semantics.md
+  s_278e684068cde0::t_ecac12cfb48a1a 192-194,247-250
+crates/honmoon-proxy/src/runtime/postgres.rs
+  s_278e684068cde0::t_c1293ee8fcc0f5 2702-2748
+  s_278e684068cde0::t_2653ba1710dcac 805-809,823
+  s_278e684068cde0::t_d74d51ced42211 2699-2701
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "9027aed70ed11c0e0dc8e98971aa7dd3bfe47db6",
+  "prompts": {},
+  "sessions": {
+    "s_278e684068cde0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "f250795b-6e43-4d11-913b-21a295e9f51a",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
