@@ -21,13 +21,25 @@ and simply never evaluate to `Bool(true)`, which is the ordinary no-match path, 
 Which syntax errors land on the panic is an antlr recovery-path property, so the call site cannot
 predict it from the input's shape.
 
+**The class is wider than "malformed CEL", and this is the part that changes review advice.** A
+second probe during #155's review found that `Program::compile` panics on *any single character it
+cannot begin a token with*: `"@"`, `"$"`, `"#"`, `` "`" ``, `"§"`, `"€"`, an emoji, a lone CJK
+character — and, invisibly, `"\u200b"`, `"\ufeff"`, `"\u2060"`, `"\u00ad"`. `"x"` and `"_"`
+compile. So the panicking set is not a list of typos; it is most of the character space.
+
+That is why #155 did **not** extend the blank check to cover zero-width characters even though a
+condition made only of them looks empty in an editor and reproduces the exact #151 crash: they
+panic for the same reason `"@"` does, and neither is whitespace. Folding them in would fix an
+arbitrary slice and read as coverage. If a future reviewer proposes it, this is the answer.
+
 **What is closed.** PR #155 handles the blank class at both ends: `Policy::validate_rules` rejects
 a rule whose `condition` is blank at load (`Error::BlankRuleCondition`), and `compile_condition`
 declines a blank condition before reaching the compiler — the second guard is for a `Policy` built
 in code, since `decide` takes any `&Policy` and the struct is public and `Deserialize`. Both read
 `is_blank_condition`, so the two cannot drift.
 
-**What is open (#154).** Everything else in the panic list. A policy with `condition: "&&"` still
+**What is open (#154).** Everything else in the panic list, including the invisible-character case
+above. A policy with `condition: "&&"` — or with a condition that is one zero-width space — still
 loads cleanly and crashes the decision path at request time.
 
 **How to apply.** Two things to check on this code path:
