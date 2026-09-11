@@ -251,8 +251,9 @@ fn eval_program(program: &Program, facts: &Facts, pii: Option<&PiiFacts>) -> boo
     }
     // Always register `pii` (default = empty) so absence conditions like
     // `pii.count == 0` are expressible, not just `pii.count > 0`.
-    let pii = pii.cloned().unwrap_or_default();
-    if let Ok(value) = cel::to_value(&pii) {
+    let default_pii = PiiFacts::default();
+    let pii = pii.unwrap_or(&default_pii);
+    if let Ok(value) = cel::to_value(pii) {
         ctx.add_variable_from_value("pii", value);
     }
 
@@ -364,7 +365,9 @@ mod tests {
     #[test]
     fn a_blank_condition_declines_instead_of_panicking() {
         // Unicode whitespace included: `trim` treats it as blank, so the guard
-        // must too — `Program::compile` panics on it just as it does on `""`.
+        // must too. On `cel` 0.14 `Program::compile` returns `Err` on it just as
+        // it does on `""`, so what the guard buys here is the blank-specific
+        // message, not a crash that would otherwise happen.
         for condition in ["", " ", "\n", "\t\r\n", "\u{00a0}", "\u{3000}"] {
             let policy = Policy {
                 rules: vec![Rule {

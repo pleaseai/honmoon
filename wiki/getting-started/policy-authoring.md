@@ -281,7 +281,7 @@ http.method == 'POST' && http.body_size > 10485760
 Honmoon is designed to **fail closed**: a rule whose condition fails to compile, or references a
 fact that has not been populated, simply **does not match** — it can never turn a `deny` into an
 `allow`. Combined with the `deny`-by-default egress verdict, an absent or broken rule is always
-the safe outcome ([engine.rs:35-37](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/engine.rs#L35-L37), [engine.rs:167-209](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/engine.rs#L167-L209)).
+the safe outcome ([engine.rs:51-53](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/engine.rs#L51-L53), [engine.rs:183-226](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/engine.rs#L183-L226)).
 
 Read "fails to compile" there literally: the CEL compiler **returns an error**, Honmoon logs a
 warning naming the rule, and the rule goes inert. It cannot match, so the `deny`-by-default egress

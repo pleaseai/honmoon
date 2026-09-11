@@ -969,8 +969,9 @@ flowchart TB
 <!-- Sources: ARCHITECTURE.md:30-49, crates/honmoon-cli/src/main.rs:9-11, crates/honmoon-mgmt/src/lib.rs:25-27 -->
 
 The critical invariant: **`honmoon-core` is transport-agnostic.** It has no `tokio` or
-networking dependency — its `Cargo.toml` pulls only `serde`, `serde_json`, `serde_yaml`,
-`thiserror`, `time`, `tracing`, and `cel`. The proxy feeds it `Facts` and consumes a `Verdict`. This is
+networking dependency — its `Cargo.toml` pulls parsing and policy crates such as `serde`,
+`serde_yaml`, `cel`, `regex`, and `sqlparser`, and nothing that opens a socket. The proxy feeds it
+`Facts` and consumes a `Verdict`. This is
 what lets the entire policy engine be unit-tested with zero I/O
 ([ARCHITECTURE.md:47-48](https://github.com/pleaseai/honmoon/blob/main/ARCHITECTURE.md#L47-L48), [tech-stack.md:18-19](https://github.com/pleaseai/honmoon/blob/main/.please/docs/knowledge/tech-stack.md#L18-L19)).
 
@@ -2843,7 +2844,7 @@ http.method == 'POST' && http.body_size > 10485760
 Honmoon is designed to **fail closed**: a rule whose condition fails to compile, or references a
 fact that has not been populated, simply **does not match** — it can never turn a `deny` into an
 `allow`. Combined with the `deny`-by-default egress verdict, an absent or broken rule is always
-the safe outcome ([engine.rs:35-37](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/engine.rs#L35-L37), [engine.rs:167-209](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/engine.rs#L167-L209)).
+the safe outcome ([engine.rs:51-53](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/engine.rs#L51-L53), [engine.rs:183-226](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/engine.rs#L183-L226)).
 
 Read "fails to compile" there literally: the CEL compiler **returns an error**, Honmoon logs a
 warning naming the rule, and the rule goes inert. It cannot match, so the `deny`-by-default egress
