@@ -1,0 +1,19 @@
+crates/honmoon-cli/tests/hook_transports.rs
+  s_c4758cf40f67ff::t_92233c6a358159 11-12,50-60,64-81,84-90,92-95,122,178-179,188-189,192-217
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "3d4f40fc2bbbb094ad0d4d48653d5cc2da577e91",
+  "prompts": {},
+  "sessions": {
+    "s_c4758cf40f67ff": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "5eee7cb5-9641-48c8-be75-ad8db0bdac05",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
