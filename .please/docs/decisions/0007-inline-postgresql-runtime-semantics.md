@@ -109,6 +109,104 @@ that fails to parse: it is refused rather than forwarded blind.
   the hostname into the handshake where the `endpoints` lookup above happens. A client that reads
   neither proxy variable — `psql` among them — reaches nothing under `run` at all, which is
   ADR-0005's fail-closed default rather than a gap in this one.
+- **A local answer is injected in request order, not just on a frame boundary.** Honmoon writes
+  its `ErrorResponse`/`ReadyForQuery` into a stream the upstream→client relay is writing at the
+  same time. Framing that injection is not enough on its own: a client that pipelines
+  `SELECT pg_sleep(1); DROP TABLE users;` would read the refusal for the `DROP` before the
+  `SELECT`'s response and attribute the 42501 to the statement that in fact succeeded — a firewall
+  telling the truth about the wrong query. So the runtime counts **sync points**: the completed
+  startup handshake, then every `Q`, `Sync` and `FunctionCall` it forwards, each of which the
+  database answers with exactly one `ReadyForQuery`. A refusal waits until the relay has delivered
+  that many before it takes the writer lock — and waits *before* taking it, because the relay needs
+  the same lock to deliver the responses being waited for. A refused statement adds no sync point
+  of its own: nothing was forwarded, and honmoon supplies that `ReadyForQuery` itself, so the two
+  counts stay in step. Two consequences follow:
+  - **A refusal is no faster than the statements queued in front of it.** Refusing the second half
+    of a pipelined pair means waiting out the first half's query. That is the point — the client
+    asked in that order — but it makes a denial's latency a property of the client's own pipeline
+    rather than of the policy engine.
+  - **What is bounded is the stall, not the wait.** Every **backend message** that reaches the
+    client buys another full 30-second window — the rows of a long result set included, not only
+    the `ReadyForQuery` a refusal is actually waiting for. A database working steadily through a
+    slow statement is therefore never cut off however long that statement runs; counting only sync
+    points would have made a query streaming rows for longer than the window indistinguishable from
+    one that had stopped, and injected the refusal into the middle of its result set. Only a pipeline that stops moving expires — which is
+    what the two ways the count can go wrong look like from here: a database that stopped
+    answering, and a sync point the backend swallowed (PostgreSQL ignores `Sync` while a `COPY` is
+    in progress, so the `Sync` honmoon counted is never answered). An unbounded wait would cost the
+    client its answer altogether, which is worse than the misattribution this removes, so the
+    runtime warns and injects. It also **writes the missing answers off** rather than leaving the
+    counters skewed: they only rise, so a gap left in place would make every later refusal on that
+    connection pay the bound again for the rest of the session. The write-off closes the gap by
+    crediting the delivered count, never by lowering the forwarded one — the two are written by
+    different tasks, and lowering the forwarded side leaves a window in which an answer delivered
+    concurrently is credited against the old, higher value and survives the subtraction, inverting
+    the pair and releasing the next refusal early. Crediting instead keeps both counters under the
+    single watch update the relay also writes through, so `sync_points <= forwarded` holds by
+    construction rather than by timing. The bounded quantity is the delivered `ReadyForQuery`
+    count specifically; the watched value's other field counts every backend message of any kind
+    and routinely runs far ahead of it, since one query's sync point can carry thousands of rows.
+  - **A written-off answer that arrives after all is discarded, and that has to be tracked rather
+    than inferred.** The credit a write-off takes is a fiction the database can still puncture, and
+    comparing a late answer against the forwarded count does not catch it: any statement forwarded
+    in the meantime has raised that ceiling, so the stale answer fits under it and is credited to a
+    slot it does not own — releasing the refusal queued behind *that* statement before its response
+    exists, which is this defect again by a longer route. So each written-off answer is remembered
+    as **debt**, in the same watched value as the counters. PostgreSQL answers in order, so the next
+    `ReadyForQuery` after a write-off belongs to the oldest unanswered statement — a written-off
+    one — and it pays down a unit of debt instead of advancing the count. Once the debt is clear,
+    answers advance the count again, so a statement forwarded after a write-off is still released by
+    its own answer rather than paying the bound a second time.
+
+    **This costs a sync point that can never be answered its one-time price.** A `Sync` swallowed
+    during copy-in is written off like any other, but no late answer for it will ever arrive, so the
+    debt it records is paid down by the *next* statement's genuine `ReadyForQuery` instead. The
+    accounting stays one behind from then on and every later refusal on that connection pays a stall
+    window, not just the first. The two cases are indistinguishable on the wire — "an answer arrived
+    after a write-off, with another statement forwarded in between" is what both look like, and
+    which one it is depends on whether a *second* answer is still coming, which is unknowable at the
+    moment the choice has to be made. Resolving it the other way means crediting an answer that may
+    belong to an earlier statement, which releases a refusal ahead of its response and is the defect
+    this whole section exists to remove. So the ambiguity is resolved toward waiting: the failure is
+    latency, never ordering. Removing the cost needs the runtime to know a `Sync` was swallowed,
+    which means tracking copy-in mode across the two tasks — a mechanism this ADR does not have. For the same reason a sync point is
+    counted **before** the frame that earns it is forwarded, never after: a fast database can have
+    its `ReadyForQuery` relayed to the client before the forwarding task runs its next line, and
+    the discard above would then throw away a perfectly good answer as an over-count, leaving the
+    counters a permanent one apart. Counting early cannot be wrong — a sync point recorded for a
+    write that then fails costs nothing, because the session ends with that write.
+  - **A batch driven by `Flush` is not ordered at all.** `Flush` makes the backend emit what it has
+    buffered — `ParseComplete`, `BindComplete`, rows, `CommandComplete` — with no `ReadyForQuery`,
+    so it is not a sync point and honmoon counts nothing for it. A client using libpq pipeline mode
+    can therefore still read a refusal ahead of an earlier batch's responses, exactly as it did
+    before this barrier. The protocol offers no marker for "the backend has finished flushing", so
+    counting cannot close this the way it closes `Sync`; it is recorded here rather than implied
+    away, and tracked separately.
+  - **A relay that stops partway through a message writes nothing more.** The client is left
+    holding a frame header whose payload never arrived, so its stream is already desynchronised and
+    it would read an injected `ErrorResponse` as that payload's remainder. The barrier is still
+    released — the session is ending — but the answer is suppressed: a truncated connection is what
+    the corruption already guaranteed, and adding bytes only makes the truncation unreadable. The
+    suppression is decided **under the client-writer lock**, not before it: the relay marks the
+    stream unframed while it still holds that lock, and a refusal already queued behind the failing
+    write reads the flag only once it gets in. Checking on the way in instead would let a refusal
+    that passed the check a moment before the relay's write failed acquire the lock afterwards and
+    append itself to the partial frame — the corruption the check exists to prevent, by a narrower
+    path.
+  - **A relay that stops on a message boundary releases the wait immediately.** Once the upstream→client task has ended,
+    no further `ReadyForQuery` can arrive and there is nothing left to order against. The wait
+    therefore ends the moment the relay does, so the refusal is written on a client socket that is
+    still healthy — rather than being cancelled unwritten when the relay's exit ends the session,
+    which would hand the client the unexplained reset this whole answer exists to avoid. Releasing
+    the wait is only half of that: the same exit also readies the future the runtime races the
+    message loop against, so the race is **biased** toward the loop. Otherwise the two become
+    ready together and an unbiased choice discards the refusal about half the time, which is the
+    reset again by a narrower path.
+  - **The abandoned-hold courtesy notice budgets ordering and writing apart.** That notice already
+    runs under a 5-second bound so a half-closed client cannot pin the session. The same half-close
+    is what stalls the ordering wait, so the wait is capped at a 1-second slice of that budget and
+    the rest is reserved for the write: a stalled pipeline costs the notice its ordering, never the
+    notice itself.
 - **A held statement is watched for its client's disconnect.** A `pause` verdict holds the
   statement mid-stream, which parks the client-read side of the session inside the `select!` the
   runtime races against its upstream relay — so a client that leaves completes neither arm and used

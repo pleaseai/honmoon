@@ -209,10 +209,11 @@ signature covers.** When a request's authentication covers its payload — AWS S
 request hashed the payload, RFC 9421 message signatures or draft-cavage signatures over a body
 digest — honmoon holds no signing credentials and cannot re-sign the rewritten body, so the
 upstream would reject it with an opaque signature error. The same applies when the signature
-covers a header that rewriting the body has to re-frame: replacing the payload rewrites
-`Content-Length` and drops `Content-Encoding`/`Transfer-Encoding`, and an AWS SDK upload lists
-`content-length` in `SignedHeaders` even when `UNSIGNED-PAYLOAD` leaves the body itself
-redactable. By default such a request is refused locally with `403`, an `X-Honmoon-Reason:
+covers a header that replacing the payload has to change: the rewrite re-frames `Content-Length`,
+drops `Content-Encoding`/`Transfer-Encoding`, and strips the stale body digests
+(`Content-MD5`, `Digest`, `Content-Digest`, `Repr-Digest`). An AWS SDK upload lists
+`content-length` in `SignedHeaders` even when `UNSIGNED-PAYLOAD` leaves the body itself redactable,
+and an S3 upload may list `content-md5` the same way. By default such a request is refused locally with `403`, an `X-Honmoon-Reason:
 signed-body-redaction` header (`signed-header-redaction` for the header case), and an
 explanation:
 
@@ -227,8 +228,8 @@ honmoon gateway --config policies/agent.yaml --tls-intercept --redact-secrets \
 
 Bearer tokens, Basic auth, and API keys authenticate the caller rather than the bytes, so requests
 carrying them are redacted normally — as are SigV4 uploads that declare
-`x-amz-content-sha256: UNSIGNED-PAYLOAD` and whose `SignedHeaders` list leaves the framing headers
-alone. A presigned URL is in the same group unless it also declares a *signed* payload — a real
+`x-amz-content-sha256: UNSIGNED-PAYLOAD` and whose `SignedHeaders` list leaves alone every header
+the rewrite would change. A presigned URL is in the same group unless it also declares a *signed* payload — a real
 SHA-256, or a `STREAMING-AWS4-…` per-chunk marker, in the `x-amz-content-sha256` header (or, when it
 sends none, in the `X-Amz-Content-Sha256` query parameter presigning hoists that header into): on
 its own its signature covers the request and the headers it names, not the uploaded bytes. So is a

@@ -26,6 +26,13 @@ const SIGV4_SIGNED_FRAMING: &str = "AWS4-HMAC-SHA256 \
      Credential=AKIA/20260907/us-east-1/s3/aws4_request, \
      SignedHeaders=content-encoding;content-length;host;x-amz-date, Signature=abc";
 
+/// A SigV4 credential whose `SignedHeaders` list covers a body-digest header
+/// the rewrite strips — and none of the framing headers it re-frames — which is
+/// the `Content-MD5` shape of an S3 upload.
+const SIGV4_SIGNED_DIGEST: &str = "AWS4-HMAC-SHA256 \
+     Credential=AKIA/20260907/us-east-1/s3/aws4_request, \
+     SignedHeaders=content-md5;host;x-amz-date, Signature=abc";
+
 /// A presigned SigV4 request target: the signature lives in the query string
 /// rather than in an `Authorization` header.
 const PRESIGNED_TARGET: &str = "/submit?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential=AKIA&X-Amz-Expires=60\
@@ -37,6 +44,8 @@ const MAX_BODY: usize = 2 * 1024 * 1024;
 struct CapturedRequest {
     headers: String,
     body: Vec<u8>,
+    /// The chunked trailer section, as received (empty when none was sent).
+    trailers: String,
 }
 
 enum ResponseMode {
@@ -67,6 +76,16 @@ fn read_request(stream: &mut TcpStream) -> CapturedRequest {
     };
     let headers =
         String::from_utf8(received[..header_end].to_vec()).expect("ASCII request headers");
+    if header_value(&headers, "transfer-encoding")
+        .is_some_and(|value| value.to_ascii_lowercase().contains("chunked"))
+    {
+        let (body, trailers) = read_chunked(stream, &mut received, header_end);
+        return CapturedRequest {
+            headers,
+            body,
+            trailers,
+        };
+    }
     let content_length = headers
         .lines()
         .find_map(|line| {
@@ -87,6 +106,67 @@ fn read_request(stream: &mut TcpStream) -> CapturedRequest {
     CapturedRequest {
         headers,
         body: received[header_end..header_end + content_length].to_vec(),
+        trailers: String::new(),
+    }
+}
+
+/// Decode a chunked request body starting at `pos`, returning the body bytes
+/// and the trailer section that followed the terminating zero-length chunk.
+fn read_chunked(
+    stream: &mut TcpStream,
+    received: &mut Vec<u8>,
+    mut pos: usize,
+) -> (Vec<u8>, String) {
+    let mut body = Vec::new();
+    loop {
+        let (size_line, next) = read_line(stream, received, pos);
+        pos = next;
+        let size =
+            usize::from_str_radix(size_line.split(';').next().expect("chunk size").trim(), 16)
+                .expect("hex chunk size");
+        if size == 0 {
+            break;
+        }
+        fill_to(stream, received, pos + size + 2);
+        body.extend_from_slice(&received[pos..pos + size]);
+        pos += size + 2;
+    }
+    let mut trailers = String::new();
+    loop {
+        let (line, next) = read_line(stream, received, pos);
+        pos = next;
+        if line.is_empty() {
+            break;
+        }
+        trailers.push_str(&line);
+        trailers.push_str("\r\n");
+    }
+    (body, trailers)
+}
+
+/// Read one CRLF-terminated line at `pos`, pulling more bytes as needed.
+/// Returns the line without its terminator and the offset just past it.
+fn read_line(stream: &mut TcpStream, received: &mut Vec<u8>, pos: usize) -> (String, usize) {
+    let mut buffer = [0u8; 4096];
+    loop {
+        if let Some(offset) = received[pos..].windows(2).position(|w| w == b"\r\n") {
+            let line =
+                String::from_utf8(received[pos..pos + offset].to_vec()).expect("ASCII chunk line");
+            return (line, pos + offset + 2);
+        }
+        let read = stream.read(&mut buffer).expect("read upstream chunk");
+        assert!(read > 0, "request ended mid-chunk");
+        received.extend_from_slice(&buffer[..read]);
+    }
+}
+
+/// Read until `received` holds at least `want` bytes.
+fn fill_to(stream: &mut TcpStream, received: &mut Vec<u8>, want: usize) {
+    let mut buffer = [0u8; 4096];
+    while received.len() < want {
+        let read = stream.read(&mut buffer).expect("read upstream chunk");
+        assert!(read > 0, "request ended mid-chunk");
+        received.extend_from_slice(&buffer[..read]);
     }
 }
 
@@ -898,6 +978,41 @@ fn signed_body_request_with_secret_is_forwarded_unredacted_in_forward_mode() {
     assert_eq!(mappings.unwrap().len(), 0);
 }
 
+// RFC 9421 lets the `Content-Digest` a signature covers ride in a trailer
+// rather than a header. Buffering the body for the PII scan must hand that
+// trailer back, or `forward` mode forwards a request the client never signed
+// and earns the upstream signature rejection the mode exists to avoid (#82).
+#[test]
+fn signed_body_request_keeps_its_digest_trailer_in_forward_mode() {
+    let (upstream, captured) = start_upstream(ResponseMode::Static(b"ok".to_vec()));
+    let (proxy, mappings) = start_proxy_with_signed_body(true, SignedBodyMode::Forward);
+    let body = format!("key={SECRET}");
+    let digest = "sha-256=:ZGlnZXN0LW92ZXItdGhlLXNpZ25lZC1ib2R5:";
+
+    let request = format!(
+        "POST http://127.0.0.1:{upstream}/submit HTTP/1.1\r\n\
+         Host: 127.0.0.1:{upstream}\r\n\
+         Signature-Input: sig1=(\"@method\" \"content-digest\")\r\n\
+         Signature: sig1=:c2lnbmF0dXJl:\r\n\
+         Trailer: Content-Digest\r\n\
+         Transfer-Encoding: chunked\r\n\
+         Connection: close\r\n\r\n\
+         {:x}\r\n{body}\r\n0\r\nContent-Digest: {digest}\r\n\r\n",
+        body.len()
+    );
+    let response = raw_proxy_request(proxy, request.as_bytes());
+    assert!(response.starts_with(b"HTTP/1.1 200"));
+
+    let forwarded = captured.recv_timeout(Duration::from_secs(5)).unwrap();
+    assert_eq!(forwarded.body, body.as_bytes());
+    assert_eq!(
+        header_value(&forwarded.trailers, "content-digest"),
+        Some(digest),
+        "the signed digest trailer must reach the upstream"
+    );
+    assert_eq!(mappings.unwrap().len(), 0);
+}
+
 // The `identity` negotiation must not leak onto the common 'signed request,
 // nothing to redact' path either: the client's `Accept-Encoding` may be one of
 // the headers it signed.
@@ -1154,6 +1269,100 @@ fn unsigned_payload_upload_signing_content_encoding_is_blocked_by_default() {
     assert!(text.contains("content-length"));
     assert!(text.contains("content-encoding"));
     assert!(captured.recv_timeout(Duration::from_millis(250)).is_err());
+    assert_eq!(mappings.unwrap().len(), 0);
+}
+
+// The rewrite strips the stale body-digest validators as well as re-framing,
+// and `UNSIGNED-PAYLOAD` keeps the body-signed branch from firing — so a SigV4
+// upload that lists `content-md5` in `SignedHeaders` would have that header
+// removed under a signature covering it. Stripping a signed header breaks the
+// signature exactly as re-framing one does, so it takes the same decision.
+#[test]
+fn unsigned_payload_upload_signing_content_md5_is_blocked_by_default() {
+    let (upstream, captured) = start_upstream(ResponseMode::Static(b"ok".to_vec()));
+    let (proxy, mappings) = start_proxy(true);
+    let body = format!("key={SECRET}");
+
+    let response = proxy_request(
+        proxy,
+        upstream,
+        body.as_bytes(),
+        &[
+            ("Authorization", SIGV4_SIGNED_DIGEST),
+            ("x-amz-content-sha256", "UNSIGNED-PAYLOAD"),
+            ("Content-MD5", "Q2hlY2sgSW50ZWdyaXR5IQ=="),
+        ],
+    );
+    let headers = response_headers(&response);
+    assert!(response.starts_with(b"HTTP/1.1 403"));
+    assert_eq!(
+        header_value(&headers, "x-honmoon-reason"),
+        Some("signed-header-redaction")
+    );
+    let reason = String::from_utf8(response_body(&response)).unwrap();
+    assert!(reason.contains("content-md5"), "{reason}");
+    // The credential does not cover `Content-Length`, so the re-framing the
+    // rewrite would do is not what breaks this signature.
+    assert!(!reason.contains("content-length"), "{reason}");
+    assert!(reason.contains("--signed-body forward"));
+    assert!(captured.recv_timeout(Duration::from_millis(250)).is_err());
+    assert_eq!(mappings.unwrap().len(), 0);
+}
+
+// Only the digest headers the request actually carries count. A `SignedHeaders`
+// list may name a header the client never sent, and the rewrite cannot break
+// what it does not strip — refusing on that would cost a `403` for nothing.
+#[test]
+fn a_signed_digest_header_the_request_never_sent_does_not_block() {
+    let (upstream, captured) = start_upstream(ResponseMode::Static(b"ok".to_vec()));
+    let (proxy, mappings) = start_proxy(true);
+    let body = format!("key={SECRET}");
+
+    let response = proxy_request(
+        proxy,
+        upstream,
+        body.as_bytes(),
+        &[
+            ("Authorization", SIGV4_SIGNED_DIGEST),
+            ("x-amz-content-sha256", "UNSIGNED-PAYLOAD"),
+        ],
+    );
+    assert!(response.starts_with(b"HTTP/1.1 200"));
+    let forwarded = captured.recv_timeout(Duration::from_secs(5)).unwrap();
+    let text = String::from_utf8(forwarded.body).unwrap();
+    assert!(!text.contains(SECRET));
+    assert!(text.contains("<<hs:"));
+    assert_eq!(mappings.unwrap().len(), 1);
+}
+
+// `forward` is the escape hatch for the digest half too, and it is the half
+// that forwards a secret: the client's `Content-MD5` reaches the upstream
+// describing the bytes it still covers, unredacted, rather than being stripped.
+#[test]
+fn a_digest_signed_request_is_forwarded_unredacted_in_forward_mode() {
+    let (upstream, captured) = start_upstream(ResponseMode::Static(b"ok".to_vec()));
+    let (proxy, mappings) = start_proxy_with_signed_body(true, SignedBodyMode::Forward);
+    let body = format!("key={SECRET}");
+    let digest = "Q2hlY2sgSW50ZWdyaXR5IQ==";
+
+    let response = proxy_request(
+        proxy,
+        upstream,
+        body.as_bytes(),
+        &[
+            ("Authorization", SIGV4_SIGNED_DIGEST),
+            ("x-amz-content-sha256", "UNSIGNED-PAYLOAD"),
+            ("Content-MD5", digest),
+        ],
+    );
+    assert!(response.starts_with(b"HTTP/1.1 200"));
+    let forwarded = captured.recv_timeout(Duration::from_secs(5)).unwrap();
+    assert_eq!(forwarded.body, body.as_bytes());
+    assert_eq!(
+        header_value(&forwarded.headers, "content-md5"),
+        Some(digest),
+        "the signed validator is preserved, not stripped"
+    );
     assert_eq!(mappings.unwrap().len(), 0);
 }
 

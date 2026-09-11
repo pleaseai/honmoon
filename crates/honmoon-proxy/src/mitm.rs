@@ -49,8 +49,8 @@ use hudsucker::{Body, HttpContext, HttpHandler, RequestOrResponse};
 
 use crate::approval::{HoldOutcome, hold};
 use crate::body::{
-    Buffered, MAX_INSPECT_BODY, StrictDecode, buffer_up_to, decode_strict, detokenizing_body,
-    prefixed_body, utf8_prefix,
+    Buffered, MAX_INSPECT_BODY, StrictDecode, buffer_up_to, buffered_body, decode_strict,
+    detokenizing_body, prefixed_body, utf8_prefix,
 };
 use crate::gateway::{
     GatewayState, InterceptPolicy, PiiMode, SignedBodyMode, authority_port, canonical_host,
@@ -500,16 +500,16 @@ impl HonmoonHandler {
         let length = bytes.len();
 
         // SigV4 and its peers sign *headers* even when the payload is out of
-        // the signature (`UNSIGNED-PAYLOAD`), and re-framing the rewritten body
-        // changes headers a `SignedHeaders` list routinely names — an AWS SDK
-        // upload signs `content-length`. Breaking the signature that way earns
-        // the same opaque upstream rejection as rewriting a signed body, so it
-        // takes the same `--signed-body` decision. Only the headers this
-        // rewrite would actually change are asked about: a signed
+        // the signature (`UNSIGNED-PAYLOAD`), and the rewrite changes headers a
+        // `SignedHeaders` list routinely names — an AWS SDK upload signs
+        // `content-length`, an S3 upload `content-md5`. Breaking the signature
+        // that way earns the same opaque upstream rejection as rewriting a
+        // signed body, so it takes the same `--signed-body` decision. Only the
+        // headers this rewrite would actually change are asked about: a signed
         // `Content-Encoding` the request never sent, or a signed
         // `Content-Length` the redacted body happens to match, survives it.
-        let reframed = reframed_headers(request.headers(), length);
-        let broken = signed_headers_among(request.headers(), request.uri(), &reframed);
+        let rewritten = rewritten_headers(request.headers(), length);
+        let broken = signed_headers_among(request.headers(), request.uri(), &rewritten);
         if !broken.is_empty() {
             let signed = broken
                 .iter()
@@ -529,8 +529,8 @@ impl HonmoonHandler {
                     tracing::warn!(
                         domain = %host,
                         headers = %signed,
-                        "header-signed request blocked: re-framing the redacted body would \
-                         invalidate its signature"
+                        "header-signed request blocked: replacing the redacted body would \
+                         rewrite or drop those headers and invalidate its signature"
                     );
                     self.state.audit.record(AuditDraft {
                         decision: Decision::Denied,
@@ -552,6 +552,11 @@ impl HonmoonHandler {
             "request body redacted"
         );
 
+        // `Full` has no trailers, and here that is the point: the rewrite
+        // replaces the payload, so any digest the client computed over the
+        // original bytes is stale whether it rode in a header or a trailer.
+        // Dropping the trailer frame is the same fail-safe choice as stripping
+        // `BODY_DIGEST_HEADERS` below.
         *request.body_mut() = Body::from(Full::new(bytes));
         request.headers_mut().insert(
             header::CONTENT_LENGTH,
@@ -614,21 +619,28 @@ impl HonmoonHandler {
         // `MAX_INSPECT_BODY` through un-inspected so a large upload can't
         // exhaust memory. Unknown-length bodies (e.g. chunked) are buffered up
         // to the same cap — omitting `Content-Length` must not skip the scan.
+        //
+        // Both buffered paths rebuild the body with `buffered_body` rather than
+        // `Full`, which has no trailers: the client's trailer frame has to reach
+        // the upstream leg intact, because a body signature can cover a
+        // `Content-Digest` sent there and `--signed-body forward` promises to
+        // reproduce the request as signed.
         let (new_body, scanned, body_size) = match content_length {
             Some(len) if len <= MAX_INSPECT_BODY => match body.collect().await {
                 Ok(collected) => {
+                    let trailers = collected.trailers().cloned();
                     let bytes = collected.to_bytes();
                     let size = bytes.len() as i64;
-                    (Body::from(Full::new(bytes.clone())), Some(bytes), size)
+                    (buffered_body(bytes.clone(), trailers), Some(bytes), size)
                 }
                 // Failing to read the *client's* body is a client-side error.
                 Err(_) => return status_response(StatusCode::BAD_REQUEST),
             },
             Some(len) => (body, None, len as i64),
             None => match buffer_up_to(body, MAX_INSPECT_BODY).await {
-                Ok(Buffered::Complete(bytes)) => {
+                Ok(Buffered::Complete { bytes, trailers }) => {
                     let size = bytes.len() as i64;
-                    (Body::from(Full::new(bytes.clone())), Some(bytes), size)
+                    (buffered_body(bytes.clone(), trailers), Some(bytes), size)
                 }
                 // Over the cap — forward the buffered prefix plus the rest of
                 // the stream untouched, unscanned (same as an over-cap
@@ -1136,15 +1148,15 @@ fn redact_json_with_spans(
     }
 }
 
-/// A `403` explaining that redaction cannot re-frame a request whose signature
-/// covers the framing headers the rewrite has to change — the header-signed
-/// counterpart of [`signed_body_response`].
+/// A `403` explaining that redaction cannot rewrite a request whose signature
+/// covers headers the rewrite has to change — the header-signed counterpart of
+/// [`signed_body_response`].
 fn signed_headers_response(signed: &str) -> RequestOrResponse {
     let reason = format!(
-        "honmoon: this request's signature covers {signed}, and wire redaction would rewrite \
-         those headers to re-frame the redacted body; the upstream would reject the forwarded \
-         request. Remove the sensitive value, or run the gateway with --signed-body forward to \
-         send it unredacted.\n"
+        "honmoon: this request's signature covers {signed}, and wire redaction would rewrite or \
+         drop those headers when it replaces the redacted body; the upstream would reject the \
+         forwarded request. Remove the sensitive value, or run the gateway with --signed-body \
+         forward to send it unredacted.\n"
     );
     let length = reason.len();
     Response::builder()
@@ -1158,6 +1170,26 @@ fn signed_headers_response(signed: &str) -> RequestOrResponse {
         ))))
         .expect("static response is valid")
         .into()
+}
+
+/// Every header replacing the body with `new_length` bytes of redacted text
+/// would change on the wire: the framing headers [`reframed_headers`] re-frames,
+/// plus the [`BODY_DIGEST_HEADERS`] the strip loop removes as stale validators
+/// of the old bytes.
+///
+/// This is the decision input, not the strip list — the two stay deliberately
+/// distinct. The rewrite strips every `BODY_DIGEST_HEADERS` name unconditionally,
+/// because removing one the request never sent costs nothing; asking whether a
+/// *signature* covers an absent header would cost a `403`, since no signature is
+/// broken by stripping a header that was never there.
+fn rewritten_headers(headers: &header::HeaderMap, new_length: usize) -> Vec<header::HeaderName> {
+    let mut rewritten = reframed_headers(headers, new_length);
+    rewritten.extend(
+        BODY_DIGEST_HEADERS
+            .into_iter()
+            .filter(|name| headers.contains_key(name)),
+    );
+    rewritten
 }
 
 /// Which of [`REWRITTEN_FRAMING_HEADERS`] replacing the body with `new_length`
@@ -1405,6 +1437,46 @@ mod tests {
         assert_eq!(reframed_headers(&repeated, 12), [header::CONTENT_LENGTH]);
     }
 
+    /// The rewrite strips the body-digest validators as well as re-framing, so
+    /// they belong in the decision — but only the ones the request carries: a
+    /// signature naming a digest header the client never sent is not broken by
+    /// a strip that removes nothing.
+    #[test]
+    fn carried_body_digest_headers_join_the_reframed_ones() {
+        let mut headers = header::HeaderMap::new();
+        headers.insert(header::CONTENT_LENGTH, "12".parse().expect("length"));
+        assert!(
+            rewritten_headers(&headers, 12).is_empty(),
+            "a same-size redaction with no digest header changes nothing"
+        );
+
+        headers.insert(
+            header::HeaderName::from_static("content-md5"),
+            "stale".parse().expect("digest"),
+        );
+        assert_eq!(
+            rewritten_headers(&headers, 12),
+            [header::HeaderName::from_static("content-md5")],
+            "a carried digest header is stripped even when nothing is re-framed"
+        );
+        assert_eq!(
+            rewritten_headers(&headers, 20),
+            [
+                header::CONTENT_LENGTH,
+                header::HeaderName::from_static("content-md5")
+            ]
+        );
+
+        // Reads from the constant the strip loop itself iterates, so a
+        // validator added there is covered here without editing this test.
+        let mut every = header::HeaderMap::new();
+        every.insert(header::CONTENT_LENGTH, "12".parse().expect("length"));
+        for name in BODY_DIGEST_HEADERS {
+            every.insert(name, "stale".parse().expect("digest"));
+        }
+        assert_eq!(rewritten_headers(&every, 12), BODY_DIGEST_HEADERS);
+    }
+
     #[test]
     fn request_port_falls_back_to_the_scheme_default() {
         let with_authority_port = Request::builder()
@@ -1543,5 +1615,44 @@ mod tests {
             &compressed[..],
             "forwarded body must stay encoded"
         );
+    }
+
+    /// HTTP/1.1 forbids trailers alongside a declared `Content-Length`, but
+    /// HTTP/2 allows them and hudsucker negotiates h2 over an intercepted
+    /// tunnel — so this arm buffers with `collect()` for real h2 traffic and
+    /// has to hand the trailers back, exactly as the chunked arm does.
+    #[tokio::test]
+    async fn forwarded_body_keeps_trailers_on_the_content_length_path() {
+        let policy =
+            honmoon_core::Policy::from_yaml("egress:\n  default: allow\n").expect("policy");
+        let handler = HonmoonHandler::new(GatewayState::new(policy));
+
+        let payload = hudsucker::hyper::body::Bytes::from_static(b"key=value");
+        let mut sent = hudsucker::hyper::HeaderMap::new();
+        sent.insert(
+            "content-digest",
+            header::HeaderValue::from_static("sha-256=:ZGlnZXN0:"),
+        );
+        let req = Request::builder()
+            .method("POST")
+            .uri("https://localhost/submit")
+            .header(header::CONTENT_LENGTH, payload.len().to_string())
+            .body(buffered_body(payload.clone(), Some(sent.clone())))
+            .expect("build request");
+
+        let RequestOrResponse::Request(forwarded) = handler.inspect_body(req, HTTPS_PORT).await
+        else {
+            panic!("detect-only inspection must forward the request");
+        };
+        let collected = forwarded
+            .into_body()
+            .collect()
+            .await
+            .expect("collect forwarded body");
+        assert_eq!(
+            collected.trailers().cloned().expect("trailers preserved"),
+            sent
+        );
+        assert_eq!(&collected.to_bytes()[..], &payload[..]);
     }
 }
