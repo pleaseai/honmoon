@@ -7,3 +7,4 @@
 - [PR #147 ADR-0007 Flush amended](pr147_adr0007_flush_amended.md) — barrier PRs must amend ADR-0007 in-PR (est. by #112 history, met by #147); check this file when postgres.rs barrier changes
 - [PR #152 shadowed-rule empty-condition claim](pr152_shadowed_rule_warning_empty_condition.md) — wiki says empty CEL condition "matches nothing"; actually Program::compile("") panics (verified), contradicting page's own Fail-closed section
 - [PR #137 Decision::Degraded](pr137_degraded_decision_variant.md) — README/rustdoc/TS accurate; the wiki Decision-enum tables + roadmap "every verdict" staleness was caught in review and fixed before merge
+- [PR #150 ADR-0009 body-only contract](pr150_adr0009_body_only_contract.md) — issue #133; my pass returned 0 findings and was WRONG — later reviewers found repeated defect classes over many rounds. Check absolute claims, enumeration drift, fail-open groupings and completeness claims first

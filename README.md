@@ -204,6 +204,60 @@ bodies whose declared `Content-Encoding` cannot be decoded, and partial uploads 
 — except when the request's authentication signs headers or binds the body, since `Accept-Encoding`
 may itself be signed; those responses may arrive compressed and are then left as they are).
 
+One further case is *partial* rather than fail-open: in an `application/json` body, PII in an
+**unquoted numeric value** is skipped by the rewrite so the output stays valid JSON. The rest of
+the body is redacted, that value reaches the upstream verbatim, and a `warn` names how many spans
+were skipped. Unlike the header-shaped fields below it was scanned — it counts toward `pii.count`,
+it is audited, and `--pii-mode block` can deny on it.
+
+A further case is *quiet*: the redaction floor is MEDIUM (`DEFAULT_MIN_PII_SEVERITY`), so a finding
+below it — a bare IPv4 address is the standing example — is detected and deliberately left in
+place. When it is a body's only finding, nothing is rewritten and **no redaction `warn` is
+logged**, because nothing failed. Lower the floor if you want those redacted.
+
+**Those are the cases where honmoon tries to rewrite and cannot, or chooses not to. They are not
+the only way content reaches the upstream unredacted, and this list does not claim to be
+exhaustive.** Inspection covers request **bodies** only: header and
+trailer values are never scanned for PII or secrets and never redacted — including a secret placed
+in a chunked trailer (`Trailer: X-Note` followed by `0\r\nX-Note: <secret>`). Unlike the *loud*
+redaction cases above, no `warn` is logged about their contents: header-shaped fields were never in
+scope, so there is nothing to fail — the scan is not failing open, it never applied. Two of those
+warns are triggered by a header — `Content-Range`'s presence, an unparseable
+`Content-Encoding` — but each reports a skipped *body* rewrite, not an unscanned header value.
+
+**`pii.count` stays `0`, and that cuts both ways.** No rule that requires a *positive* finding can
+fire on trailer content — `pii.count > 0`, or a `pii.types` match — so such a rule never denies,
+pauses, or audits it. But the engine always binds `pii` with its empty default precisely so that
+absence conditions work, so an **absence** rule does fire, and treats the request as clean: a
+`pii.count == 0 -> allow` rule allows a request whose trailer carries a secret, and a matching
+`deny`/`pause` records an audit like any other verdict. Write content rules against positive
+findings, and do not read `pii.count == 0` as "no secrets in this request".
+
+Whether a trailer then *reaches* the upstream is a separate question, and not one this contract
+answers. On a pass-through request it is replayed — subject to the upstream leg's framing carrying
+trailers at all (see issue #136). When redaction rewrites the body, the replacement carries no
+trailer frame and the client's trailers are dropped instead (deliberately: a digest over the
+original bytes is stale either way; the stale `Trailer:` header that drop leaves behind is
+issue #135). The same rewrite strips the body-digest headers (`Digest`, `Content-Digest`,
+`Content-MD5`, `Repr-Digest`) and re-frames `Content-Length`/`Content-Encoding`/
+`Transfer-Encoding`, and carries the client's other headers through — with one exception that is
+not the rewrite's: whenever `--redact-secrets` is on, the proxy replaces `Accept-Encoding` with
+`identity` on every forwarded request, unless the request's authentication signs headers or binds
+the body (the detokenization note above). **None of those cases scans a header or trailer value** —
+which is the only part this contract covers. The rewrite is of course *driven* by body inspection;
+what never happens is a detector running over a header or a trailer.
+
+This whole section is about **intercepted** requests. Traffic that takes the raw tunnel — SOCKS5
+to a non-PostgreSQL destination, or CONNECT without `--tls-intercept` — is gated on `domain` and
+inspected not at all, bodies included (see "SOCKS5 and inline PostgreSQL inspection" above).
+
+**There is no content-level lever for this surface.** `egress.default: deny` narrows *which hosts*
+an agent can reach and is worth keeping, but it scans nothing: an allow-listed destination — the
+API the agent exists to call — still receives header and trailer content unexamined, which is
+where an exfiltration attempt would send it. Treat header-shaped fields as uncontrolled rather
+than as covered by the body scan. See
+[ADR-0009](.please/docs/decisions/0009-body-only-inspection-contract.md).
+
 **Signed requests are the exception that fails closed when redaction would change what the
 signature covers.** When a request's authentication covers its payload — AWS SigV4 whose canonical
 request hashed the payload, RFC 9421 message signatures or draft-cavage signatures over a body

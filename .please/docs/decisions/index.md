@@ -12,3 +12,4 @@
 | [0006](0006-signed-body-requests-under-wire-redaction.md) | Body-signed requests under wire redaction | 2026-09-07 | Accepted |
 | [0007](0007-inline-postgresql-runtime-semantics.md) | Inline PostgreSQL runtime semantics | 2026-09-08 | Accepted |
 | [0008](0008-parse-sql-with-postgresql-grammar.md) | Classify SQL with PostgreSQL's grammar, not a token heuristic | 2026-09-08 | Accepted |
+| [0009](0009-body-only-inspection-contract.md) | Request inspection covers bodies only; header-shaped fields are out of contract | 2026-09-11 | Accepted |

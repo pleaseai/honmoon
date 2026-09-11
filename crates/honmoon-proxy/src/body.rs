@@ -6,7 +6,7 @@
 //! inspection or rewriting; the response adapter restores known placeholders
 //! without buffering the upstream stream.
 //!
-//! Two invariants hold throughout:
+//! Three invariants hold throughout:
 //! - **Bounded memory**: no more than [`MAX_INSPECT_BODY`] bytes are ever
 //!   buffered, and inflation reads at most one byte past that cap (only to
 //!   detect overflow), so a large upload — or a decompression bomb — can't
@@ -16,6 +16,18 @@
 //!   to scanning its raw bytes rather than skipping the scan — a plaintext body
 //!   claiming to be compressed must not evade detection, and genuinely
 //!   compressed bytes harmlessly fail the UTF-8 check downstream.
+//! - **Bodies only**: the helpers here produce *body* bytes for inspection.
+//!   Trailers are carried through this module to be replayed on the
+//!   pass-through path, but carrying is not scanning — trailer and header
+//!   values are never scanned for PII or secrets, never passed to a detector
+//!   and never redacted anywhere in the pipeline. (Headers *are* read, for
+//!   framing, decoding and signature metadata — that is metadata handling, not
+//!   detection.) Whether a
+//!   carried trailer survives is a separate, conditional matter: a wire
+//!   redaction rewrite replaces the body with `Full`, which has no trailer
+//!   frame, so the client's trailers are dropped there (see
+//!   `mitm::HonmoonHandler::forwarded_request`). See
+//!   `.please/docs/decisions/0009-body-only-inspection-contract.md`.
 
 use std::borrow::Cow;
 use std::io::Read;
@@ -167,6 +179,18 @@ pub(crate) enum Buffered {
 /// the client sent, and a signature can cover a `Content-Digest` carried there.
 /// The overflow path needs no such care — trailers arrive after the last data
 /// frame, so they are still unread in `rest`.
+///
+/// Kept for *forwarding*, not for inspection: the returned `trailers` are
+/// handed back to be replayed upstream and never scanned. Replayed on the
+/// pass-through path only — a wire-redaction rewrite replaces the body with
+/// `Full`, which carries no trailer frame, so these are dropped there
+/// (deliberately; see `forwarded_request`). Note the asymmetry that
+/// makes widening the scan here unsound — this is one of only two places a
+/// trailer materializes at all (the other is `inspect_body`'s
+/// `Content-Length <= MAX_INSPECT_BODY` branch, which collects them separately),
+/// so a scan added here would cover the unknown-length within-cap path alone and
+/// silently miss both over-cap ones, whose trailers stay unread in `rest`
+/// (ADR-0009).
 pub(crate) async fn buffer_up_to(
     mut body: Body,
     limit: usize,
