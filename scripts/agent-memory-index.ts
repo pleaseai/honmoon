@@ -243,7 +243,7 @@ const NON_STRING_SCALAR = new RegExp(`^(?:${[
 ].join('|')})$`, 'i')
 
 /** A leading YAML node indicator, which makes the rest a decoration, not text. */
-const NODE_INDICATOR = /^([&*!]|[?-](?=[ \t]|$))/
+const NODE_INDICATOR = /^([&*!@`]|[?-](?=[ \t]|$))/
 const INDICATOR_NAMES: Record<string, string> = {
   '&': 'anchor',
   '*': 'alias',
@@ -253,6 +253,11 @@ const INDICATOR_NAMES: Record<string, string> = {
   // mapping key — neither of which a value may be.
   '?': 'mapping key',
   '-': 'sequence entry',
+  // Reserved: YAML gives `@` and a backtick no meaning at the head of a scalar
+  // and refuses the document rather than guessing one. Only at the head, so
+  // `mail me @ home` is untouched.
+  '@': 'reserved indicator',
+  '`': 'reserved indicator',
 }
 
 /**
@@ -341,6 +346,7 @@ export function parseFrontmatter(text: string): Frontmatter {
   const blockIndent = new Map<string, number>()
   const underIndented = new Set<string>()
   const tabIndented = new Set<string>()
+  const afterClose = new Set<string>()
   const badHeader = new Set<string>()
   let key: string | null = null
 
@@ -400,13 +406,35 @@ export function parseFrontmatter(text: string): Frontmatter {
     // inside a folded scalar it is literal text, and these descriptions are full
     // of issue references that a comment-stripping parser would eat.
     if (key && /^[ \t]/.test(line) && line.trim() !== '') {
-      // A tab cannot provide YAML indentation anywhere — not before a plain
-      // continuation and not inside a block scalar — so a tab-indented line is
-      // a document neither reader will load, and folding it silently published
-      // an index entry for a note nothing can read.
-      if (/^[ \t]*\t/.test(line)) {
+      const soFarRaw = (scalars[key] ?? '').trim()
+      const quoted = /^['"]/.test(soFarRaw)
+      const plainScalar = !blockScalars.has(key) && !quoted
+
+      // A tab is forbidden where indentation goes, and only there. Leading one
+      // is always wrong — both readers refuse it. Past a block scalar's indent
+      // it is ordinary content and both keep it, so rejecting `  \tfoo` was a
+      // valid note failing CI. In a plain continuation the readers split —
+      // pyyaml refuses the document, Bun.YAML folds the tab in — and a value
+      // that depends on which reader loads it is exactly the drift to report.
+      if (plainScalar ? /\t/.test(line) : /^\t/.test(line)) {
         tabIndented.add(key)
         continue
+      }
+
+      // A quoted scalar that has already closed is finished. A comment may
+      // still follow it — YAML drops that — but content cannot: it lands where
+      // a key is expected and neither reader will parse it.
+      if (quoted && (DOUBLE_QUOTED.test(soFarRaw) || SINGLE_QUOTED.test(soFarRaw))) {
+        if (!line.trim().startsWith('#')) {
+          afterClose.add(key)
+        }
+        continue
+      }
+
+      // Without an explicit indicator the first content line sets the block's
+      // indentation, and every later line has to hold it.
+      if (blockScalars.has(key) && !blockIndent.has(key)) {
+        blockIndent.set(key, /^ */.exec(line)?.[0].length ?? 0)
       }
       const required = blockIndent.get(key)
       if (required !== undefined && (/^ */.exec(line)?.[0].length ?? 0) < required) {
@@ -455,7 +483,11 @@ export function parseFrontmatter(text: string): Frontmatter {
     const raw = value.trim()
 
     if (tabIndented.has(name)) {
-      problems.push(`\`${name}:\` is continued by a tab-indented line, and YAML does not accept a tab as indentation — indent with spaces`)
+      problems.push(`\`${name}:\` is continued by a line holding a tab where YAML reads indentation — indent with spaces, and keep tabs out of a plain scalar, which not every reader will load`)
+    }
+
+    if (afterClose.has(name)) {
+      problems.push(`\`${name}:\` continues after its closing quote, and YAML expects a key there rather than more text — fold the remainder inside the quotes`)
     }
 
     if (badHeader.has(name)) {

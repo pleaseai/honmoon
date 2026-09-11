@@ -235,6 +235,90 @@ metadata:
     expect(parseFrontmatter(text)).toMatchObject({ scalars: { description: 'done' }, problems: [] })
   })
 
+  // A tab is only forbidden where indentation goes. Past the required indent of
+  // a block scalar it is ordinary content, and both readers keep it.
+  test('keeps a tab that falls after block indentation', () => {
+    const text = `---
+name: a-note
+description: |
+  \tfoo
+metadata:
+  type: project
+---
+`
+    expect(parseFrontmatter(text).problems).toEqual([])
+  })
+
+  // In a plain continuation the readers disagree — pyyaml refuses the document,
+  // Bun.YAML folds the tab in — which is the drift this reader reports.
+  test('reports a tab inside a plain continuation', () => {
+    const text = `---
+name: a-note
+description: first
+  second\tthird
+metadata:
+  type: project
+---
+`
+    expect(parseFrontmatter(text).problems).toEqual([expect.stringContaining('tab')])
+  })
+
+  // Without an explicit indicator the first content line sets the indentation,
+  // and a later line under it ends the scalar where YAML expects a key.
+  test('reports block content under the inferred indentation', () => {
+    const text = `---
+name: a-note
+description: >
+  first
+ second
+metadata:
+  type: project
+---
+`
+    expect(parseFrontmatter(text).problems).toEqual([expect.stringContaining('indent')])
+  })
+
+  test('accepts block content that holds the inferred indentation', () => {
+    const text = `---
+name: a-note
+description: >
+  first
+  second
+metadata:
+  type: project
+---
+`
+    expect(parseFrontmatter(text)).toMatchObject({ scalars: { description: 'first second' }, problems: [] })
+  })
+
+  // `@` and a backtick are reserved: YAML defines no meaning for them at the
+  // head of a scalar, so both readers refuse the document outright.
+  test('reports a description opening with a reserved indicator', () => {
+    for (const value of ['@summary', '`summary`']) {
+      const text = note('a-note', 'placeholder').replace('description: placeholder', `description: ${value}`)
+      expect(parseFrontmatter(text).problems).not.toEqual([])
+    }
+  })
+
+  test('leaves a reserved character alone away from the head', () => {
+    const text = note('a-note', 'placeholder').replace('description: placeholder', 'description: mail me @ home')
+    expect(parseFrontmatter(text).problems).toEqual([])
+  })
+
+  // Once the quote closes, the scalar is finished: a further content line is a
+  // key YAML cannot parse. A further *comment* line is still fine.
+  test('reports content after a closed quoted scalar', () => {
+    const text = `---
+name: a-note
+description: "done" # note
+  junk
+metadata:
+  type: project
+---
+`
+    expect(parseFrontmatter(text).problems).not.toEqual([])
+  })
+
   // A tab cannot provide YAML indentation at all, so a tab-continued scalar is
   // a document neither reader will load — and this one folded it silently.
   test('reports a tab used as indentation', () => {
