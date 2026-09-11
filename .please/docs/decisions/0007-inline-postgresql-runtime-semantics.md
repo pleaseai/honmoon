@@ -140,7 +140,12 @@ that fails to parse: it is refused rather than forwarded blind.
     that connection pay the bound again for the rest of the session. An answer written off and then
     delivered after all is discarded rather than credited — counting it would push the delivered
     count past the forwarded one and release the *next* refusal before its own answer, giving up
-    the ordering the write-off exists to keep affordable.
+    the ordering the write-off exists to keep affordable. For the same reason a sync point is
+    counted **before** the frame that earns it is forwarded, never after: a fast database can have
+    its `ReadyForQuery` relayed to the client before the forwarding task runs its next line, and
+    the discard above would then throw away a perfectly good answer as an over-count, leaving the
+    counters a permanent one apart. Counting early cannot be wrong — a sync point recorded for a
+    write that then fails costs nothing, because the session ends with that write.
   - **A batch driven by `Flush` is not ordered at all.** `Flush` makes the backend emit what it has
     buffered — `ParseComplete`, `BindComplete`, rows, `CommandComplete` — with no `ReadyForQuery`,
     so it is not a sync point and honmoon counts nothing for it. A client using libpq pipeline mode
@@ -152,7 +157,13 @@ that fails to parse: it is refused rather than forwarded blind.
     holding a frame header whose payload never arrived, so its stream is already desynchronised and
     it would read an injected `ErrorResponse` as that payload's remainder. The barrier is still
     released — the session is ending — but the answer is suppressed: a truncated connection is what
-    the corruption already guaranteed, and adding bytes only makes the truncation unreadable.
+    the corruption already guaranteed, and adding bytes only makes the truncation unreadable. The
+    suppression is decided **under the client-writer lock**, not before it: the relay marks the
+    stream unframed while it still holds that lock, and a refusal already queued behind the failing
+    write reads the flag only once it gets in. Checking on the way in instead would let a refusal
+    that passed the check a moment before the relay's write failed acquire the lock afterwards and
+    append itself to the partial frame — the corruption the check exists to prevent, by a narrower
+    path.
   - **A relay that stops on a message boundary releases the wait immediately.** Once the upstream→client task has ended,
     no further `ReadyForQuery` can arrive and there is nothing left to order against. The wait
     therefore ends the moment the relay does, so the refusal is written on a client socket that is
