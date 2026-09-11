@@ -1,0 +1,34 @@
+packages/policy/schema/policy.schema.json
+  s_ba86f3571c6961::t_83bc0ae4ce843b 56-57
+packages/policy/tsconfig.json
+  s_ba86f3571c6961::t_7c3486e666d016 8
+packages/policy/src/index.ts
+  s_ba86f3571c6961::t_83bc0ae4ce843b 28-37
+packages/policy/src/policy.schema.test.ts
+  s_ba86f3571c6961::t_8e901cda83f6f9 3-8,10,12-13,15-17,21,33,59-61,63-65,72,76-80,82-85,89-91,99-101,103-104
+  s_ba86f3571c6961::t_b97ff0b17119a8 67,69,71,74,93,95,97
+  s_ba86f3571c6961::t_8d1a7317d3b996 68,70,73,75,92,94,96,98
+  s_ba86f3571c6961::t_7c3486e666d016 1-2,9,11,14,18-20,22-32,34-58,62,66,81,86-88,102
+crates/honmoon-core/src/lib.rs
+  s_ba86f3571c6961::t_da7433617dedea 607-638
+packages/policy/package.json
+  s_ba86f3571c6961::t_7c3486e666d016 17
+bun.lock
+  s_ba86f3571c6961::t_97ffa0666f0b58 96,1050-1051,1100-1101
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "ae10620a33013098113ea74ecb9959fe767e0c81",
+  "prompts": {},
+  "sessions": {
+    "s_ba86f3571c6961": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "e42ea197-011f-45b6-813f-ce39685a04a8",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
