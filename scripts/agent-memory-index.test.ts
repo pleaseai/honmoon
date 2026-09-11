@@ -235,6 +235,59 @@ metadata:
     expect(parseFrontmatter(text)).toMatchObject({ scalars: { description: 'done' }, problems: [] })
   })
 
+  // A comment line is dropped before it is ever measured: a tab inside one is
+  // not indentation, and pyyaml loads this note as `first`.
+  test('keeps a tab inside a comment following a plain scalar', () => {
+    const text = `---
+name: a-note
+description: first
+  # note\twith tab
+metadata:
+  type: project
+---
+`
+    expect(parseFrontmatter(text)).toMatchObject({ scalars: { description: 'first' }, problems: [] })
+  })
+
+  // ...but a comment line that *starts* with a tab still puts one where the
+  // indentation goes, which YAML refuses.
+  test('reports a comment line indented with a tab', () => {
+    const text = `---
+name: a-note
+description: first
+\t# note
+metadata:
+  type: project
+---
+`
+    expect(parseFrontmatter(text).problems).toEqual([expect.stringContaining('tab')])
+  })
+
+  // `%` opens a directive, and `,`, `]`, `}` close flow collections that were
+  // never opened. pyyaml refuses all four; Bun.YAML refuses `%` and disagrees
+  // on the rest, which is reason to report either way.
+  test('reports a description opening with a flow or directive indicator', () => {
+    for (const value of ['%summary', ',summary', ']summary', '}summary']) {
+      const text = note('a-note', 'placeholder').replace('description: placeholder', `description: ${value}`)
+      expect(parseFrontmatter(text).problems).not.toEqual([])
+    }
+  })
+
+  test('leaves those characters alone away from the head', () => {
+    for (const value of ['50% faster', 'a, b', 'x] y', 'p} q']) {
+      const text = note('a-note', 'placeholder').replace('description: placeholder', `description: ${value}`)
+      expect(parseFrontmatter(text).problems).toEqual([])
+    }
+  })
+
+  // YAML separates an inline comment with a space or tab, not with any
+  // whitespace JavaScript happens to recognise: both readers refuse a no-break
+  // space there, while `\s` accepted it and indexed the note as valid.
+  test('reports a non-ASCII space before an inline comment', () => {
+    const text = note('a-note', 'placeholder').replace('description: placeholder', 'description: "done"\u00A0# note')
+    expect(parseFrontmatter(text).problems).not.toEqual([])
+  })
+
   // A tab is only forbidden where indentation goes. Past the required indent of
   // a block scalar it is ordinary content, and both readers keep it.
   test('keeps a tab that falls after block indentation', () => {

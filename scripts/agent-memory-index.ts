@@ -243,7 +243,7 @@ const NON_STRING_SCALAR = new RegExp(`^(?:${[
 ].join('|')})$`, 'i')
 
 /** A leading YAML node indicator, which makes the rest a decoration, not text. */
-const NODE_INDICATOR = /^([&*!@`]|[?-](?=[ \t]|$))/
+const NODE_INDICATOR = /^([&*!@`%,\]}]|[?-](?=[ \t]|$))/
 const INDICATOR_NAMES: Record<string, string> = {
   '&': 'anchor',
   '*': 'alias',
@@ -258,6 +258,12 @@ const INDICATOR_NAMES: Record<string, string> = {
   // `mail me @ home` is untouched.
   '@': 'reserved indicator',
   '`': 'reserved indicator',
+  // `%` opens a directive, and these close a flow collection that was never
+  // opened. Head-only, so `50% faster` and `a, b` are ordinary text.
+  '%': 'directive indicator',
+  ',': 'flow separator',
+  ']': 'flow sequence end',
+  '}': 'flow mapping end',
 }
 
 /**
@@ -271,8 +277,8 @@ const INDICATOR_NAMES: Record<string, string> = {
  * group is YAML's inline comment — which is only a comment out here, never
  * inside the quotes, where these descriptions keep their issue references.
  */
-const DOUBLE_QUOTED = /^"((?:[^"\\]|\\[\s\S])*)"(?:\s+#.*)?$/
-const SINGLE_QUOTED = /^'((?:[^']|'')*)'(?:\s+#.*)?$/
+const DOUBLE_QUOTED = /^"((?:[^"\\]|\\[\s\S])*)"(?:[ \t]+#.*)?$/
+const SINGLE_QUOTED = /^'((?:[^']|'')*)'(?:[ \t]+#.*)?$/
 
 function unquote(value: string, onInvalid: (problem: string) => void): string {
   // A plain scalar cannot begin with a quote, so one that does is a quoted
@@ -410,13 +416,27 @@ export function parseFrontmatter(text: string): Frontmatter {
       const quoted = /^['"]/.test(soFarRaw)
       const plainScalar = !blockScalars.has(key) && !quoted
 
-      // A tab is forbidden where indentation goes, and only there. Leading one
-      // is always wrong — both readers refuse it. Past a block scalar's indent
-      // it is ordinary content and both keep it, so rejecting `  \tfoo` was a
-      // valid note failing CI. In a plain continuation the readers split —
-      // pyyaml refuses the document, Bun.YAML folds the tab in — and a value
-      // that depends on which reader loads it is exactly the drift to report.
-      if (plainScalar ? /\t/.test(line) : /^\t/.test(line)) {
+      // A tab is forbidden where indentation goes, and only there. A leading one
+      // is always wrong, whatever follows it — both readers refuse it.
+      if (/^\t/.test(line)) {
+        tabIndented.add(key)
+        continue
+      }
+
+      // A comment after a plain scalar is dropped before anything measures it,
+      // so a tab *inside* one is not indentation and does not make the note
+      // unreadable — pyyaml loads it fine. Checking the tab first rejected a
+      // valid note over text YAML had already discarded.
+      if (plainScalar && line.trim().startsWith('#')) {
+        continue
+      }
+
+      // Past a block scalar's indent a tab is ordinary content and both readers
+      // keep it, so rejecting `  \tfoo` was a valid note failing CI. In a plain
+      // continuation the readers split — pyyaml refuses the document, Bun.YAML
+      // folds the tab in — and a value that depends on which reader loads it is
+      // exactly the drift this reports.
+      if (plainScalar && /\t/.test(line)) {
         tabIndented.add(key)
         continue
       }
@@ -441,16 +461,6 @@ export function parseFrontmatter(text: string): Frontmatter {
         underIndented.add(key)
       }
       const soFar = scalars[key] ?? ''
-      // ...but only after a *plain* scalar. There an indented `#` opens a
-      // comment like any other and both readers drop it, so appending it built
-      // `first # note` for the ` #` check to reject — a valid note failing CI
-      // over text YAML had already discarded. Inside a block scalar, and
-      // inside a quoted one still waiting for its closing quote, the same `#`
-      // is literal content: skipping it there dropped what the note said and
-      // left the quote unterminated.
-      if (!blockScalars.has(key) && !/^['"]/.test(soFar.trim()) && line.trim().startsWith('#')) {
-        continue
-      }
       // Inside a double-quoted scalar a trailing backslash escapes the line
       // break itself: YAML drops the break *and* the indentation and joins with
       // nothing, where every other continuation joins with a space. Folding
