@@ -62,7 +62,9 @@ bun scripts/agent-memory-index.ts --check    # CI gate: every note can supply it
 
 Hand-appending a shared index made every concurrent PR that recorded a memory for the same
 agent collide on one line, and duplicated each claim into a second place that drifted from the
-note (issue #129). A `SessionStart` hook rebuilds the index, so a fresh clone gets one.
+note (issue #129). `mise run install` rebuilds the indexes, and `.worktreeinclude` carries them
+into a new worktree. A checkout that has done neither still has every note — it is missing the
+table of contents, not the memory, until the next rebuild.
 
 ## Code Style
 

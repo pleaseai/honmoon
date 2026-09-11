@@ -16,7 +16,11 @@
  *     both sides — so a careless resolve deletes a note's pointer silently.
  *   - The hook duplicated the note's own `description:`, so one claim lived in
  *     three places (note body, frontmatter, index line) and correcting one left
- *     two. That has shipped a wrong claim to future agents at least once.
+ *     two. Both copies have shipped a claim the other contradicted: the index
+ *     lines for `project_flush_refusal_barrier_pg113` and
+ *     `project_signed_body_framing_headers_83` each described a gap their own
+ *     note said was closed (see the commit that folded the hooks into the
+ *     descriptions, and the discussion on the issue).
  *
  * Deriving the file removes both classes: it is generated, git-ignored, and the
  * `description:` is the single source of the index text. The notes themselves
@@ -25,9 +29,7 @@
  * Usage:
  *   bun scripts/agent-memory-index.ts           # rewrite every index
  *   bun scripts/agent-memory-index.ts --check   # verify only, write nothing (CI)
- *   bun scripts/agent-memory-index.ts --quiet    # suppress per-file output (hooks)
  */
-import { execFileSync } from 'node:child_process'
 import { existsSync, readdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import process from 'node:process'
@@ -71,8 +73,16 @@ export interface NoteEntry {
 }
 
 const FRONTMATTER = /^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/
-// `(\S.*)?` rather than `(.*)` so the value cannot start with the whitespace
-// the preceding `[ \t]*` also matches — the two would otherwise be ambiguous.
+// Two separate reasons the value group is spelled `(\S.*)?` and not `(.*)`,
+// both load-bearing and neither obvious:
+//   - the `?` is what makes a bare `metadata:` capture `undefined` instead of
+//     `''`, which is how `parseFrontmatter` below tells a nested-mapping opener
+//     apart from a scalar whose value is empty. Verified: with `(.*)` the group
+//     captures `''` for `metadata:` and the distinction is gone.
+//   - `\S` keeps the value class disjoint from the `[ \t]*` before it, so the
+//     two cannot match the same character and the match stays linear
+//     (eslint `regexp/no-super-linear-backtracking`). It does *not* affect what
+//     is captured — `[ \t]*` is greedy, so `(.*)?` captures the same text.
 const TOP_LEVEL_KEY = /^([a-z][\w-]*):[ \t]*(\S.*)?$/i
 
 /**
@@ -100,13 +110,13 @@ function unquote(value: string): string {
  * indented lines as a folded continuation, which is how a long `description:`
  * wraps.
  */
-export function parseFrontmatter(text: string): Record<string, string> {
+export function parseFrontmatter(text: string): Record<string, string | undefined> {
   const block = FRONTMATTER.exec(text)
   if (!block) {
     return {}
   }
 
-  const scalars: Record<string, string> = {}
+  const scalars: Record<string, string | undefined> = {}
   let key: string | null = null
 
   for (const line of block[1].split(/\r?\n/)) {
@@ -122,15 +132,27 @@ export function parseFrontmatter(text: string): Record<string, string> {
     // An indented line continues the previous non-empty scalar, or belongs to a
     // nested mapping we do not care about.
     if (key && line.trim() !== '') {
-      scalars[key] = `${scalars[key]} ${line.trim()}`
+      scalars[key] = `${scalars[key] ?? ''} ${line.trim()}`
     }
   }
 
-  for (const name of Object.keys(scalars)) {
-    scalars[name] = unquote(scalars[name].trim()).replace(/\s+/g, ' ').trim()
+  for (const [name, value] of Object.entries(scalars)) {
+    scalars[name] = unquote((value ?? '').trim()).replace(/\s+/g, ' ').trim()
   }
 
   return scalars
+}
+
+/**
+ * Escape the characters that would end a markdown link label early.
+ *
+ * `name:` is free text an agent wrote, and a `]` in it would truncate the
+ * pointer line into something that no longer resolves to the note. Only the
+ * label needs this: the `description:` that follows sits outside any link
+ * construct, where a bare parenthesis is just a parenthesis.
+ */
+function escapeLabel(text: string): string {
+  return text.replace(/([[\]\\])/g, '\\$1')
 }
 
 /** Reduce one note file to its index entry. */
@@ -166,7 +188,7 @@ export function noteEntry(file: string, text: string): NoteEntry {
 export function renderIndex(entries: NoteEntry[]): string {
   const lines = [...entries]
     .sort((a, b) => (a.file < b.file ? -1 : a.file > b.file ? 1 : 0))
-    .map(entry => `- [${entry.name}](${entry.file}) — ${
+    .map(entry => `- [${escapeLabel(entry.name)}](${entry.file}) — ${
       entry.description || '(no description — add one to this note\'s frontmatter)'
     }`)
 
@@ -196,18 +218,26 @@ export function readNotes(dir: string): NoteEntry[] {
  * Index files that are still tracked by git.
  *
  * This is the invariant the fix rests on: an index that re-enters the index
- * (git's, that is) brings the whole conflict class back with it, and nothing
- * else in the repo would notice.
+ * (git's, that is) brings the whole conflict class back with it, and no other
+ * check in the repo reads that file. So an empty result has to mean the
+ * invariant was checked and holds, never that checking failed — see the spawn
+ * below, which raises rather than answering `[]` on a git it could not run.
  */
 export function trackedIndexFiles(cwd: string = REPO_ROOT): string[] {
-  let tracked: string
-  try {
-    tracked = execFileSync('git', ['ls-files', '--', MEMORY_ROOT], { cwd, encoding: 'utf8' })
+  // Spawned the way `scripts/bump-version.ts` shells out to cargo, and checked
+  // the same way — on the exit code. Only "not a work tree" may answer `[]`:
+  // that is the value meaning *the invariant holds*, so a git that failed for
+  // any other reason (missing binary, unreadable index, a sandbox that blocks
+  // it) must raise rather than report an all-clear nobody verified.
+  const listed = Bun.spawnSync(['git', 'ls-files', '--', MEMORY_ROOT], { cwd })
+  if (!listed.success) {
+    const stderr = listed.stderr.toString()
+    if (/not a git repository/i.test(stderr)) {
+      return []
+    }
+    throw new Error(`git ls-files failed (exit ${listed.exitCode}): ${stderr.trim()}`)
   }
-  catch {
-    return [] // not a git checkout (or no git): nothing to assert
-  }
-  return tracked.split('\n').filter(path => path.endsWith(`/${INDEX_NAME}`))
+  return listed.stdout.toString().split('\n').filter(path => path.endsWith(`/${INDEX_NAME}`))
 }
 
 interface Result {
@@ -247,12 +277,16 @@ export function rebuild(root: string, options: { check?: boolean } = {}): Result
   return { written, problems }
 }
 
-function main(argv: string[]): number {
+/**
+ * Returns the process exit code: non-zero when any note cannot be indexed, or
+ * when an index is tracked again. `root` and `cwd` are defaulted for the CLI
+ * and only passed by the tests, which need a checkout of their own.
+ */
+export function main(argv: string[], root: string = MEMORY_DIR, cwd: string = REPO_ROOT): number {
   const check = argv.includes('--check')
-  const quiet = argv.includes('--quiet')
-  const { written, problems } = rebuild(MEMORY_DIR, { check })
+  const { written, problems } = rebuild(root, { check })
 
-  for (const tracked of trackedIndexFiles()) {
+  for (const tracked of trackedIndexFiles(cwd)) {
     problems.push(
       `${tracked} is tracked by git — it is generated (issue #129). `
       + `Run \`git rm --cached ${tracked}\`.`,
@@ -267,13 +301,11 @@ function main(argv: string[]): number {
     return 1
   }
 
-  if (!quiet) {
-    if (check) {
-      console.log(`agent-memory index: ${written.length} file(s) would be rewritten, no problems`)
-    }
-    else {
-      console.log(`agent-memory index: rebuilt ${written.length} file(s)`)
-    }
+  if (check) {
+    console.log(`agent-memory index: ${written.length} file(s) would be rewritten, no problems`)
+  }
+  else {
+    console.log(`agent-memory index: rebuilt ${written.length} file(s)`)
   }
 
   return 0

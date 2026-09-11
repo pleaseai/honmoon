@@ -1,3 +1,4 @@
+import { execFileSync } from 'node:child_process'
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -5,7 +6,9 @@ import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
 import {
   agentDirs,
   INDEX_NAME,
+  main,
   MEMORY_DIR,
+  MEMORY_ROOT,
   noteEntry,
   parseFrontmatter,
   readNotes,
@@ -152,6 +155,87 @@ describe('rebuild', () => {
       expect.stringContaining('some-agent/broken.md'),
       expect.stringContaining('some-agent/broken.md'),
     ])
+  })
+})
+
+describe('trackedIndexFiles', () => {
+  let repo: string
+
+  beforeEach(() => {
+    repo = mkdtempSync(join(tmpdir(), 'agent-memory-repo-'))
+    execFileSync('git', ['init', '-q'], { cwd: repo })
+    mkdirSync(join(repo, MEMORY_ROOT, 'some-agent'), { recursive: true })
+  })
+
+  afterEach(() => rmSync(repo, { recursive: true, force: true }))
+
+  function commit(...paths: string[]): void {
+    execFileSync('git', ['add', '--', ...paths], { cwd: repo })
+    execFileSync('git', [
+      '-c',
+      'user.email=test@example.com',
+      '-c',
+      'user.name=test',
+      'commit',
+      '-q',
+      '-m',
+      'add',
+    ], { cwd: repo })
+  }
+
+  // The negative case below is the state the repository is meant to stay in, so
+  // on its own it would pass just as happily against a function that can never
+  // find anything. This is the half that shows it detects one.
+  test('finds a committed index', () => {
+    const index = join(MEMORY_ROOT, 'some-agent', INDEX_NAME)
+    writeFileSync(join(repo, index), '- [n](n.md) — a hand-appended entry\n')
+    commit(index)
+    expect(trackedIndexFiles(repo)).toEqual([index])
+  })
+
+  test('ignores the notes themselves — only the index is derived', () => {
+    const path = join(MEMORY_ROOT, 'some-agent', 'n.md')
+    writeFileSync(join(repo, path), note('n', 'a note'))
+    commit(path)
+    expect(trackedIndexFiles(repo)).toEqual([])
+  })
+
+  test('answers empty outside a work tree, where there is nothing to assert', () => {
+    const bare = mkdtempSync(join(tmpdir(), 'not-a-repo-'))
+    try {
+      expect(trackedIndexFiles(bare)).toEqual([])
+    }
+    finally {
+      rmSync(bare, { recursive: true, force: true })
+    }
+  })
+})
+
+describe('main', () => {
+  let root: string
+
+  beforeEach(() => {
+    root = mkdtempSync(join(tmpdir(), 'agent-memory-main-'))
+    mkdirSync(join(root, 'some-agent'))
+  })
+
+  afterEach(() => rmSync(root, { recursive: true, force: true }))
+
+  test('exits 0 and writes when every note can supply a line', () => {
+    writeFileSync(join(root, 'some-agent', 'first.md'), note('first', 'the first note'))
+    expect(main([], root, root)).toBe(0)
+    expect(readFileSync(join(root, 'some-agent', INDEX_NAME), 'utf8')).toContain('- [first](first.md)')
+  })
+
+  test('exits 1 when a note cannot supply a line', () => {
+    writeFileSync(join(root, 'some-agent', 'broken.md'), 'no frontmatter\n')
+    expect(main([], root, root)).toBe(1)
+  })
+
+  test('--check exits 0 without writing', () => {
+    writeFileSync(join(root, 'some-agent', 'first.md'), note('first', 'the first note'))
+    expect(main(['--check'], root, root)).toBe(0)
+    expect(() => readFileSync(join(root, 'some-agent', INDEX_NAME))).toThrow()
   })
 })
 

@@ -8,17 +8,5 @@
     "research@passionfactory": true,
     "deep-wiki@skills": true,
     "plannotator@passionfactory": true
-  },
-  "hooks": {
-    "SessionStart": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "bun \"$CLAUDE_PROJECT_DIR/scripts/agent-memory-index.ts\" --quiet || true"
-          }
-        ]
-      }
-    ]
   }
 }
