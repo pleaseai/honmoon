@@ -3,3 +3,4 @@
 - [signed-body-sigv4-narrowing](signed_body_sigv4_narrowing.md) — issue #81's narrowing makes Some(AwsSigV4) always imply authentication_signs_headers=true, so the deleted bare_payload_hash keeps-Accept-Encoding test tested a now-unreachable state, not a real coverage loss.
 - [content-length-trailers-h2](content_length_trailers_h2.md) — inspect_body's Content-Length+trailers branch is h2-reachable, not dead; body.rs's scripted_body helper makes it cheaply unit-testable.
 - [rewritten-headers-generic-dispatch](rewritten_headers_generic_dispatch.md) — mitm.rs signed-headers Forward/Block arms don't branch on header name; per-variant integration tests are low-marginal-value once one instance + an exhaustive unit test exist.
+- [shadowed_rules self-shadow and attribution](shadowed_rules_self_shadow_gap.md) — an unconditional rule can itself be shadowed, and attribution goes to the *first* shadower; both pinned by a test, don't "clean up" either

@@ -5,3 +5,4 @@
 - [MITM tunnel authorization model](mitm-tunnel-authorization-model.md) — shape-3 recognition rides the hudsucker handler clone lineage; host+port both load-bearing for h2
 - [Signed-body detection invariants](signed-body-detection-invariants.md) — over-inclusion in signed_body.rs leaks under --signed-body forward; each detector needs real scheme evidence (X-Amz-Algorithm gate)
 - [Request trailer plumbing](request-trailer-plumbing.md) — what bounds the trailer HeaderMap after #82, which paths forward vs drop trailers, and that trailers are never scanned
+- [Policy YAML trust boundary](policy-yaml-trust-boundary.md) — policy YAML is trusted local author input (file-only load, mgmt API is GET-only); do not flag author-controlled strings in from_yaml warnings
