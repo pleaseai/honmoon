@@ -429,7 +429,9 @@ fn explain_refusal(path: &Path, e: std::io::Error) -> std::io::Error {
     std::io::Error::new(
         std::io::ErrorKind::InvalidInput,
         format!(
-            "audit log {} was refused with ELOOP: the audit sink is opened with              O_NOFOLLOW, so a symlink as the final path component is refused (a              symlink loop in a parent directory reports the same error)",
+            "audit log {} was refused with ELOOP: the audit sink is opened with O_NOFOLLOW, \
+             so a symlink as the final path component is refused (a symlink loop in a \
+             parent directory reports the same error)",
             path.display()
         ),
     )
@@ -706,7 +708,7 @@ mod tests {
         // failed for an unrelated reason, which would not prove `O_NOFOLLOW` is
         // what is doing the work.
         assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput, "{err}");
-        assert!(err.to_string().contains("O_NOFOLLOW"), "{err}");
+        assert!(err.to_string().contains("opened with O_NOFOLLOW"), "{err}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -724,7 +726,7 @@ mod tests {
         let Err(err) = AuditLog::with_file(4, &link) else {
             panic!("a dangling symlinked sink must be refused");
         };
-        assert!(err.to_string().contains("O_NOFOLLOW"), "{err}");
+        assert!(err.to_string().contains("opened with O_NOFOLLOW"), "{err}");
         assert!(
             !elsewhere.exists(),
             "the refused open must not have created the link's target"
