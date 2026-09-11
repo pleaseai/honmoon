@@ -1029,6 +1029,7 @@ dependencies = [
  "cel-interpreter",
  "codspeed-divan-compat",
  "hmac",
+ "libc",
  "percent-encoding",
  "regex",
  "serde",
