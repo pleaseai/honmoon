@@ -445,6 +445,21 @@ describe('parseFrontmatter — quoted scalars', () => {
     expect(parseFrontmatter(withComment('"the text" # a trailing note')).problems).toEqual([])
   })
 
+  // `&`, `*` and `!` cannot begin a plain scalar, so a value starting with one
+  // is a decoration this reader does not resolve — and keeping it would put the
+  // decoration in the index where the note's value is the text after it.
+  test('reports an anchor, alias or tag instead of indexing the decoration', () => {
+    const cases: Record<string, string> = {
+      '&summary concrete summary': 'anchor',
+      '*summary': 'alias',
+      '!!str concrete summary': 'tag',
+    }
+    for (const [value, name] of Object.entries(cases)) {
+      const text = note('n', 'placeholder').replace('description: placeholder', `description: ${value}`)
+      expect(parseFrontmatter(text).problems).toEqual([expect.stringContaining(name)])
+    }
+  })
+
   // YAML drops an escaped line break *and* the indentation after it, where
   // every other continuation joins with a space.
   test('joins an escaped line break with nothing, not a space', () => {

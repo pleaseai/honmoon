@@ -171,6 +171,10 @@ function unescapeDoubleQuoted(body: string, onInvalid: (escape: string) => void)
  * The memory tool writes plain scalars, but a `description:` containing `": "`
  * has to be quoted to stay valid YAML, so both forms must round-trip.
  */
+/** A leading YAML node indicator, which makes the rest a decoration, not text. */
+const NODE_INDICATOR = /^([&*!])/
+const INDICATOR_NAMES: Record<string, string> = { '&': 'anchor', '*': 'alias', '!': 'tag' }
+
 /**
  * A whole double- or single-quoted scalar, with the body captured.
  *
@@ -206,6 +210,18 @@ function unquote(value: string, onInvalid: (problem: string) => void): string {
       return value
     }
     return body.replace(/''/g, '\'')
+  }
+
+  // `&`, `*` and `!` are node indicators, not text: a plain scalar cannot begin
+  // with one, so a value that does is an anchor, an alias or a tag. Keeping the
+  // decoration as the index text would put `&summary concrete summary` in the
+  // index where the note's value is `concrete summary`, and an alias cannot be
+  // resolved here at all without carrying an anchor table — which is a YAML
+  // parser, and this deliberately is not one. Reported rather than guessed at.
+  const indicator = NODE_INDICATOR.exec(value)?.[1]
+  if (indicator !== undefined) {
+    onInvalid(`starts with the YAML ${INDICATOR_NAMES[indicator]} indicator \`${indicator}\`, which this reader does not resolve — write the value as a plain, quoted or block scalar`)
+    return value
   }
 
   return value
