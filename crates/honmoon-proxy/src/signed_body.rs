@@ -13,9 +13,8 @@
 //! body-signed would strand ordinary API traffic unredacted.
 //!
 //! The same line runs one step further in: a presigned URL proves a *request*
-//! was signed, and a payload hash (`x-amz-content-sha256`, header or presigned
-//! query parameter) proves a body was hashed, without either proving that a
-//! signature covers the bytes. Neither counts alone — see
+//! was signed, and a payload hash proves a body was hashed, without either
+//! proving that a signature covers the bytes. Neither counts alone — see
 //! `aws_sigv4_signs_body` below.
 
 use std::collections::HashSet;
@@ -216,9 +215,10 @@ fn is_sigv4_authorization(value: &str) -> bool {
 /// - A presigned `X-Amz-Algorithm=AWS4-…` query parameter authenticates the
 ///   *request*, not the upload: a standard S3 presigned URL puts
 ///   `UNSIGNED-PAYLOAD` in its canonical request, so nothing binds the bytes
-///   unless the request also declares a signed payload — in the
-///   `x-amz-content-sha256` header, or in the `X-Amz-Content-Sha256` query
-///   parameter presigning moves a signed header to.
+///   unless the request also declares a signed payload in the
+///   `x-amz-content-sha256` header — or, when it sends no such header, in the
+///   `X-Amz-Content-Sha256` query parameter presigning hoists that header
+///   into. The precedence is on [`payload_hash_declarations`].
 ///
 /// Neither a presigned query parameter nor a bare `x-amz-content-sha256`
 /// counts on its own. Both used to: a presigned upload carrying a secret was
@@ -231,26 +231,49 @@ fn is_sigv4_authorization(value: &str) -> bool {
 /// under redaction exactly as any scheme this module does not recognize already
 /// does. See ADR-0006.
 fn aws_sigv4_signs_body(headers: &HeaderMap, uri: &Uri) -> bool {
-    // An opt-out in *any* carrier wins: a request that declares its payload
-    // unsigned anywhere is redactable, which is the fail-safe direction.
-    if payload_hash_values(headers, uri).any(declares_unsigned_payload) {
+    let presigned = sigv4_presigned_query(uri);
+    let declared = payload_hash_declarations(headers, uri, presigned);
+    if declared.iter().copied().any(declares_unsigned_payload) {
         return false;
     }
     if header_str(headers, &header::AUTHORIZATION).is_some_and(is_sigv4_authorization) {
         return true;
     }
-    sigv4_presigned_query(uri) && payload_hash_values(headers, uri).any(declares_signed_payload)
+    presigned && declared.iter().copied().any(declares_signed_payload)
 }
 
-/// Every payload hash the request declares, from both carriers a signer uses:
-/// the `x-amz-content-sha256` header (every field value, so a duplicate cannot
-/// hide the one that matters) and the `X-Amz-Content-Sha256` query parameter,
-/// which is where presigning puts a header it signs.
-fn payload_hash_values<'a>(
+/// What the request declares about its payload hash, read from the carrier the
+/// verifier actually reads.
+///
+/// The `x-amz-content-sha256` header is that carrier and is authoritative: it
+/// is the value a signer hashes into the canonical request, so a query
+/// parameter must not be able to contradict it — letting a crafted
+/// `?X-Amz-Content-Sha256=UNSIGNED-PAYLOAD` downgrade a header-signed upload
+/// would redact a body its signature does covers and break it upstream. Every
+/// field value counts, so a duplicate header cannot hide the one that matters.
+///
+/// The query parameter is consulted only when the header is absent *and* the
+/// request is presigned, because that is the one case where it is the signer's
+/// own declaration rather than a bare query argument: presigning hoists the
+/// `x-amz-…` headers it signs into the query string, so a presigned upload
+/// that bound its payload may carry the hash there and send no header at all.
+/// Reading it keeps that upload from being redacted into an opaque upstream
+/// signature failure; ignoring it would be the `UNSIGNED-PAYLOAD` conclusion
+/// for a request that declared the opposite.
+fn payload_hash_declarations<'a>(
     headers: &'a HeaderMap,
     uri: &'a Uri,
-) -> impl Iterator<Item = &'a str> + 'a {
-    header_values(headers, &X_AMZ_CONTENT_SHA256).chain(query_values(uri, "X-Amz-Content-Sha256"))
+    presigned: bool,
+) -> Vec<&'a str> {
+    let from_header: Vec<&str> = header_values(headers, &X_AMZ_CONTENT_SHA256)
+        .filter(|value| !value.is_empty())
+        .collect();
+    if !from_header.is_empty() || !presigned {
+        return from_header;
+    }
+    query_values(uri, "X-Amz-Content-Sha256")
+        .filter(|value| !value.is_empty())
+        .collect()
 }
 
 /// Whether an `x-amz-content-sha256` value declares the payload explicitly out
@@ -790,17 +813,63 @@ mod tests {
         );
     }
 
-    /// The opt-out is read from the query carrier as well, and an opt-out in
-    /// either carrier wins — the redactable answer is the fail-safe one.
+    /// A hoisted opt-out is read like a header one when there is no header to
+    /// read — which is the only case the query carrier speaks for.
     #[test]
-    fn query_unsigned_payload_marker_leaves_the_body_uncovered() {
-        let presigned = "https://s3.amazonaws.com/b/k?X-Amz-Algorithm=AWS4-HMAC-SHA256\
-                         &X-Amz-Content-Sha256=UNSIGNED-PAYLOAD";
-        assert_eq!(scheme(&[], presigned), None, "query marker alone");
+    fn hoisted_unsigned_payload_marker_leaves_the_body_uncovered() {
         assert_eq!(
-            scheme(&[("x-amz-content-sha256", &"a".repeat(64))], presigned),
+            scheme(
+                &[],
+                "https://s3.amazonaws.com/b/k?X-Amz-Algorithm=AWS4-HMAC-SHA256\
+                 &X-Amz-Content-Sha256=UNSIGNED-PAYLOAD"
+            ),
+            None
+        );
+    }
+
+    /// The header is the carrier the verifier reads, so a query parameter
+    /// cannot contradict it in either direction. Were it able to, an appended
+    /// `?X-Amz-Content-Sha256=UNSIGNED-PAYLOAD` would have a signed body
+    /// redacted and broken upstream.
+    #[test]
+    fn a_query_payload_hash_never_overrides_the_header() {
+        let hex_sha256 = "a".repeat(64);
+        assert_eq!(
+            scheme(
+                &[("x-amz-content-sha256", hex_sha256.as_str())],
+                "https://s3.amazonaws.com/b/k?X-Amz-Algorithm=AWS4-HMAC-SHA256\
+                 &X-Amz-Content-Sha256=UNSIGNED-PAYLOAD"
+            ),
+            Some(SignedBodyScheme::AwsSigV4),
+            "header hash against a query opt-out"
+        );
+        assert_eq!(
+            scheme(
+                &[("x-amz-content-sha256", "UNSIGNED-PAYLOAD")],
+                &format!(
+                    "https://s3.amazonaws.com/b/k?X-Amz-Algorithm=AWS4-HMAC-SHA256\
+                     &X-Amz-Content-Sha256={hex_sha256}"
+                )
+            ),
             None,
-            "query marker against a header hash"
+            "header opt-out against a query hash"
+        );
+    }
+
+    /// Hoisting is a presigning behavior, so the query carrier is read only on
+    /// a presigned request: on a header-signed one, a query parameter of that
+    /// name is a bare query argument the verifier never reads as the payload
+    /// hash, and must not turn a body-signed request into a redactable one.
+    #[test]
+    fn a_query_payload_hash_is_ignored_on_a_header_signed_request() {
+        let auth = "AWS4-HMAC-SHA256 Credential=AKIA/20260907/us-east-1/s3/aws4_request, \
+                    SignedHeaders=host;x-amz-date, Signature=abc";
+        assert_eq!(
+            scheme(
+                &[("authorization", auth)],
+                "https://s3.amazonaws.com/b/k?X-Amz-Content-Sha256=UNSIGNED-PAYLOAD"
+            ),
+            Some(SignedBodyScheme::AwsSigV4)
         );
     }
 

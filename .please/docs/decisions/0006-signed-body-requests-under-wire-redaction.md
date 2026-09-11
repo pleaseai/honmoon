@@ -78,9 +78,16 @@ long-lived secrets.
     parameter authenticates the request and the headers its `X-Amz-SignedHeaders` list names, not
     the bytes.
 
-  The payload hash is read from both carriers a signer uses — the `x-amz-content-sha256` header
-  (every field value) and the `X-Amz-Content-Sha256` query parameter presigning moves a signed
-  header into — because a presigned upload that binds its payload may carry the hash in either.
+  The `x-amz-content-sha256` header is the authoritative carrier of that declaration — it is the
+  value a signer hashes into the canonical request — and every field value of it counts. The
+  `X-Amz-Content-Sha256` query parameter is read only when the request sends no such header *and*
+  is presigned: presigning hoists the `x-amz-…` headers it signs into the query string, so a
+  presigned upload that bound its payload may carry the hash there and send no header at all, and
+  ignoring it would reach the `UNSIGNED-PAYLOAD` conclusion for a request that declared the
+  opposite. A query parameter never contradicts the header, in either direction — otherwise an
+  appended `?X-Amz-Content-Sha256=UNSIGNED-PAYLOAD` would have a signed body redacted and broken
+  upstream, and on a header-signed request that parameter is a bare query argument the verifier
+  never reads as the payload hash.
 
   **Exception:** `UNSIGNED-PAYLOAD` or `STREAMING-UNSIGNED-PAYLOAD…` declares the body explicitly
   out of the signature and wins over either carrier and either signal, so those stay redactable.

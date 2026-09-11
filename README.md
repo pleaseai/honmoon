@@ -229,10 +229,11 @@ Bearer tokens, Basic auth, and API keys authenticate the caller rather than the 
 carrying them are redacted normally — as are SigV4 uploads that declare
 `x-amz-content-sha256: UNSIGNED-PAYLOAD` and whose `SignedHeaders` list leaves the framing headers
 alone. A presigned URL is in the same group unless it also declares a *signed* payload — a real
-SHA-256, or a `STREAMING-AWS4-…` per-chunk marker, in the `x-amz-content-sha256` header or the
-`X-Amz-Content-Sha256` query parameter: on its own its signature covers the request and the headers
-it names, not the uploaded bytes. So is a bare payload hash with no AWS authentication on the
-request — that is an integrity check, not a signature. The covered list is parsed rather than assumed, and only headers the rewrite would actually
+SHA-256, or a `STREAMING-AWS4-…` per-chunk marker, in the `x-amz-content-sha256` header (or, when it
+sends none, in the `X-Amz-Content-Sha256` query parameter presigning hoists that header into): on
+its own its signature covers the request and the headers it names, not the uploaded bytes. So is a
+bare payload hash with no AWS authentication on the request — that is an integrity check, not a
+signature. The covered list is parsed rather than assumed, and only headers the rewrite would actually
 change count. A signed request with nothing to redact is always forwarded untouched. See [ADR-0006](.please/docs/decisions/0006-signed-body-requests-under-wire-redaction.md).
 
 ### What `honmoon run` enforces, and what it costs
