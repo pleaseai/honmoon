@@ -204,6 +204,52 @@ metadata:
     expect(parseFrontmatter(text)).toMatchObject({ scalars: { description: 'first' }, problems: [] })
   })
 
+  // The comment skip above is for *plain* scalars only. Inside a quoted one a
+  // `#` is literal, and both readers fold this to `first # still text`, so
+  // skipping the line there dropped real content and left the quote unclosed.
+  test('keeps a # line continuing a quoted scalar', () => {
+    for (const quote of ['"', '\'']) {
+      const text = `---
+name: a-note
+description: ${quote}first
+  # still text${quote}
+metadata:
+  type: project
+---
+`
+      expect(parseFrontmatter(text)).toMatchObject({ scalars: { description: 'first # still text' }, problems: [] })
+    }
+  })
+
+  // ...and a quoted scalar that already closed on its own line is followed by a
+  // real comment, which YAML drops.
+  test('drops a comment after a closed quoted scalar', () => {
+    const text = `---
+name: a-note
+description: "done"
+  # note
+metadata:
+  type: project
+---
+`
+    expect(parseFrontmatter(text)).toMatchObject({ scalars: { description: 'done' }, problems: [] })
+  })
+
+  // Both readers take the last of a repeated key, so the index would not drift
+  // — but the author wrote two summaries and one vanished silently, and YAML
+  // requires mapping keys to be unique (js-yaml refuses the document outright).
+  test('reports an indexed key given more than once', () => {
+    const text = `---
+name: a-note
+description: first
+description: second
+metadata:
+  type: project
+---
+`
+    expect(parseFrontmatter(text).problems).toEqual([expect.stringContaining('more than once')])
+  })
+
   // Block scalar content is literal: a leading `&`, `!` or quote is text, not
   // scalar syntax, so it must not be run through the quoted-scalar reader.
   test('keeps block scalar content literal', () => {

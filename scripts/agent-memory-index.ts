@@ -325,6 +325,7 @@ export function parseFrontmatter(text: string): Frontmatter {
   const problems: string[] = []
   const scalars: Record<string, string | undefined> = {}
   const blockScalars = new Set<string>()
+  const repeated = new Set<string>()
   let key: string | null = null
 
   for (const line of block[1].split(/\r?\n/)) {
@@ -335,6 +336,14 @@ export function parseFrontmatter(text: string): Frontmatter {
       // Capturing the comment as the value is how `description: # write this
       // later` reached an index as though it were the summary, when what the
       // note actually has is no description at all.
+      // YAML requires mapping keys to be unique. pyyaml and Bun.YAML both take
+      // the last of a repeat rather than refusing the document, so the index
+      // would not drift from them — but the author wrote two summaries and one
+      // disappeared without a word, and a stricter reader (js-yaml) rejects the
+      // note outright. Reported rather than silently overwritten.
+      if (name in scalars) {
+        repeated.add(name)
+      }
       key = value === undefined || value.startsWith('#') ? null : name
       if (key) {
         // A block-scalar header opens a value the following indented lines
@@ -357,14 +366,17 @@ export function parseFrontmatter(text: string): Frontmatter {
     // inside a folded scalar it is literal text, and these descriptions are full
     // of issue references that a comment-stripping parser would eat.
     if (key && /^[ \t]/.test(line) && line.trim() !== '') {
-      // ...but only inside a block scalar. After a plain one an indented `#`
-      // opens a comment like any other, and both readers drop it: appending it
-      // built `first # note`, which the ` #` check below then rejected — a
-      // valid note failing CI over text YAML had already discarded.
-      if (!blockScalars.has(key) && line.trim().startsWith('#')) {
+      const soFar = scalars[key] ?? ''
+      // ...but only after a *plain* scalar. There an indented `#` opens a
+      // comment like any other and both readers drop it, so appending it built
+      // `first # note` for the ` #` check to reject — a valid note failing CI
+      // over text YAML had already discarded. Inside a block scalar, and
+      // inside a quoted one still waiting for its closing quote, the same `#`
+      // is literal content: skipping it there dropped what the note said and
+      // left the quote unterminated.
+      if (!blockScalars.has(key) && !/^['"]/.test(soFar.trim()) && line.trim().startsWith('#')) {
         continue
       }
-      const soFar = scalars[key] ?? ''
       // Inside a double-quoted scalar a trailing backslash escapes the line
       // break itself: YAML drops the break *and* the indentation and joins with
       // nothing, where every other continuation joins with a space. Folding
@@ -395,6 +407,10 @@ export function parseFrontmatter(text: string): Frontmatter {
       continue
     }
     const raw = value.trim()
+
+    if (repeated.has(name)) {
+      problems.push(`\`${name}:\` is given more than once, and YAML requires a mapping key to be unique — keep the one that is the summary and delete the other`)
+    }
 
     // In a plain scalar — and only there — whitespace followed by `#` starts a
     // comment, so YAML reads `fixed in PR #155, so do X` as `fixed in PR`. This
