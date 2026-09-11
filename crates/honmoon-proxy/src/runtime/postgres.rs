@@ -19,6 +19,16 @@
 //! normal permission error and the session stays usable — closing the socket
 //! would surface as an unexplained connection reset.
 //!
+//! That answer is injected into a stream the relay is writing at the same time,
+//! so it is *ordered* as well as framed: honmoon counts the sync points it
+//! forwards and holds the refusal until the relay has delivered the database's
+//! `ReadyForQuery` for each of them. Without that barrier a refusal for a
+//! pipelined statement would land in front of the response to the statement
+//! before it, and the client would attribute the error to the wrong query. What
+//! the barrier cannot order is a batch the client drove with `Flush` instead of
+//! `Sync`: those responses are answered by no `ReadyForQuery`, so there is
+//! nothing to count and nothing to wait for (see [ADR-0007]).
+//!
 //! A statement held for approval is held *mid-stream*, so the hold also watches
 //! the client socket for the disconnect that would otherwise let a human approve
 //! a statement for a client that had already left. See [`HeldReader`].
@@ -26,7 +36,7 @@
 //! [ADR-0007]: ../../../../.please/docs/decisions/0007-inline-postgresql-runtime-semantics.md
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU8, Ordering};
+use std::sync::atomic::{AtomicU8, AtomicU64, Ordering};
 
 use honmoon_core::{
     AuditDraft, Decision, Facts, FactsSummary, SqlFacts, Verdict, decide_explained,
@@ -36,7 +46,7 @@ use honmoon_core::{
 };
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::TcpStream;
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, watch};
 
 use crate::approval::{HoldOutcome, hold_until};
 use crate::gateway::GatewayState;
@@ -89,6 +99,18 @@ const MAX_HELD_PIPELINE: usize = MAX_BUFFERED_BACKEND_MESSAGE;
 /// session and its upstream connection open for good.
 const ABANDONED_NOTICE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
+/// The slice of [`ABANDONED_NOTICE_TIMEOUT`] that courtesy answer may spend
+/// being *ordered* rather than written.
+///
+/// [`refuse`] waits for the database's earlier answers before it injects, and
+/// on this path the conditions that produced the abandoned hold are the same
+/// ones that stall that wait — the client half-closed, so the relay may be
+/// blocked writing to a socket nobody is draining. Spending the whole budget
+/// there would lose the notice altogether, which is the truncated connection
+/// this answer exists to prevent. So ordering gets a slice and the write keeps
+/// the rest: a stalled pipeline costs the notice its ordering, never the notice.
+const ABANDONED_NOTICE_ORDER_BUDGET: std::time::Duration = std::time::Duration::from_secs(1);
+
 /// How long the upstream→client relay is given to deliver the database's last
 /// response after the client stopped sending. Bounded so a server that never
 /// closes its half cannot pin the connection open.
@@ -100,22 +122,352 @@ const DRAIN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 /// held in memory whole.
 const MAX_BUFFERED_BACKEND_MESSAGE: usize = 64 * 1024;
 
+/// How long the pipeline may go **without delivering anything** before a
+/// waiting refusal gives up on being ordered and injects its answer anyway.
+///
+/// This bounds the stall, not the whole wait: every response that reaches the
+/// client buys another full window, so a database working steadily through a
+/// slow statement is never cut off no matter how long the statement runs. Only
+/// a pipeline that stops moving altogether expires — which is what the two ways
+/// the count can be wrong look like from here: a database that stopped
+/// answering, and a sync point the backend swallowed (see
+/// [`ClientLink::forwarded_sync_point`]). An unbounded wait would cost the
+/// client its answer entirely; injecting late and saying so degrades to exactly
+/// the ordering honmoon had before this barrier existed.
+const REFUSAL_ORDER_STALL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
 /// A client writer shared between the refusal path and the upstream→client copy
 /// task. That task writes one **complete** backend message per lock acquisition,
 /// so an injected `ErrorResponse` can only ever land on a message boundary,
-/// never inside a server frame. It does not order the refusal against responses
-/// the client has not read yet — only framing is guarded here.
+/// never inside a server frame. Ordering the refusal *behind* the responses the
+/// client has not received yet is a separate guarantee, made by
+/// [`ClientLink::await_forwarded_responses`] before this lock is taken.
 type ClientWriter = Arc<Mutex<tokio::net::tcp::OwnedWriteHalf>>;
 
-/// The client-facing side of a session: the shared writer, plus the transaction
+/// The client-facing side of a session: the shared writer, the transaction
 /// status byte (`I`/`T`/`E`) carried by the last `ReadyForQuery` the upstream
-/// sent. A refusal echoes that status instead of always claiming idle — after an
-/// allowed `BEGIN` the upstream really is in a transaction, and a driver told
-/// otherwise makes transaction-bound decisions on a wrong state.
+/// sent, and the sync-point counters an injected refusal waits behind.
+///
+/// A refusal echoes the transaction status instead of always claiming idle —
+/// after an allowed `BEGIN` the upstream really is in a transaction, and a
+/// driver told otherwise makes transaction-bound decisions on a wrong state.
 #[derive(Clone)]
 struct ClientLink {
     writer: ClientWriter,
     tx_status: Arc<AtomicU8>,
+    /// Sync points forwarded to the database, each of which it answers with
+    /// exactly one `ReadyForQuery`: the `StartupMessage`, then every `Q`,
+    /// `Sync` and `FunctionCall`. Written only by the message loop.
+    ///
+    /// Only ever raised. A stalled wait closes its gap by crediting
+    /// [`Delivered::sync_points`] instead of lowering this, so that
+    /// `sync_points <= forwarded` holds by construction: the two are mutated
+    /// from different tasks, and lowering this one leaves a window in which an
+    /// answer delivered concurrently is credited against the old, higher value
+    /// and survives the subtraction — inverting the pair and releasing the next
+    /// refusal before its own answer.
+    forwarded: Arc<AtomicU64>,
+    /// What the relay has written to the client so far. A watch rather than
+    /// plain counters so a refusal can wait on it without polling.
+    delivered: Arc<watch::Sender<Delivered>>,
+    /// Whether the client's byte stream is still framed. Cleared when the relay
+    /// dies partway through writing a backend message, which is the one state in
+    /// which injecting a refusal would corrupt rather than explain.
+    stream_intact: Arc<std::sync::atomic::AtomicBool>,
+}
+
+/// What the relay has delivered to the client.
+///
+/// # Invariant
+///
+/// `sync_points <= ClientLink::forwarded`, and it holds by construction rather
+/// than by timing. Three things keep it, and an edit that gives up any one of
+/// them breaks the ordering guarantee silently:
+///
+/// 1. `forwarded` only ever rises. Nothing lowers it — a stalled wait closes
+///    its gap by crediting `sync_points` here, never by subtracting there.
+/// 2. `sync_points` rises only under [`ClientLink::delivered_message`]'s clamp
+///    (`< forwarded`) or a write-off's `max(count, expected)`, and `expected`
+///    was itself read from `forwarded`, so neither can exceed it.
+/// 3. Every mutation of this value goes through the one `send_modify`, so the
+///    relay's task and the message loop's cannot interleave inside it.
+///
+/// Invert the pair and a refusal is released before the answer it was waiting
+/// for: the next forwarded statement lifts `forwarded` back to meet an inflated
+/// `sync_points`, the barrier reads itself as already drained, and the local
+/// answer overtakes a response the client has not been sent — which is the
+/// whole of #101.
+#[derive(Clone, Copy)]
+struct Delivered {
+    /// `ReadyForQuery` messages written, or `None` once the relay has stopped
+    /// and no further one can arrive. This is what a refusal waits on.
+    sync_points: Option<u64>,
+    /// Complete backend messages written, of any kind. Never compared against
+    /// anything — only watched for change, so that the rows of a slow query
+    /// count as progress and hold the stall window open. Without it a query
+    /// streaming `DataRow`s for longer than the window would look identical to
+    /// a database that had stopped answering, and the refusal queued behind it
+    /// would be injected into the middle of its result set.
+    messages: u64,
+    /// Answers a stalled wait gave up on, and which must therefore be thrown
+    /// away rather than counted if the database sends them after all.
+    ///
+    /// A write-off credits [`Delivered::sync_points`] for answers the client
+    /// never received, so that later refusals are not made to pay the stall
+    /// bound again. That credit is a fiction, and the database can still
+    /// puncture it: PostgreSQL answers in order, so the next `ReadyForQuery`
+    /// after a write-off belongs to the oldest unanswered statement — one that
+    /// was written off. Counting it would advance `sync_points` into the slot of
+    /// a *later* statement whose answer has not arrived, releasing a refusal
+    /// queued behind that one ahead of its response, which is #101 again.
+    /// Carrying the count here lets each such answer be matched to the write-off
+    /// it belongs to and discarded.
+    ///
+    /// # The case this gets wrong, and why it is still the right way round
+    ///
+    /// A sync point that can never be answered — a `Sync` swallowed during
+    /// copy-in — is written off like any other, and the debt it records is then
+    /// paid down by the *next* statement's real `ReadyForQuery`. The accounting
+    /// stays one behind from there, so every later refusal on the connection
+    /// pays a stall window rather than only the first.
+    ///
+    /// This is not fixable by counting. The two cases look identical on the
+    /// wire — an answer arriving after a write-off with a further statement
+    /// forwarded in between — and telling them apart means knowing whether a
+    /// *second* answer is still coming, which is unknowable at the moment the
+    /// choice must be made. Resolving it the other way (credit the answer,
+    /// carry no debt) is exactly the design this replaced: a late answer for an
+    /// earlier statement is credited to a later statement's slot and the refusal
+    /// behind that one is released before its response exists. So the ambiguity
+    /// is resolved toward waiting. The failure here is latency; the failure
+    /// there is #101.
+    ///
+    /// Removing the cost needs the runtime to know the `Sync` was swallowed,
+    /// which means tracking copy-in mode from the relay — which only the relay
+    /// sees the `CopyInResponse` for — back into the message loop. That is a
+    /// mechanism, not a tweak, and it is filed separately.
+    debt: u64,
+}
+
+impl ClientLink {
+    fn new(writer: tokio::net::tcp::OwnedWriteHalf) -> Self {
+        Self {
+            writer: Arc::new(Mutex::new(writer)),
+            tx_status: Arc::new(AtomicU8::new(STATUS_IDLE)),
+            forwarded: Arc::new(AtomicU64::new(0)),
+            delivered: Arc::new(watch::Sender::new(Delivered {
+                sync_points: Some(0),
+                messages: 0,
+                debt: 0,
+            })),
+            stream_intact: Arc::new(std::sync::atomic::AtomicBool::new(true)),
+        }
+    }
+
+    /// Record a frame forwarded to the database that it will answer with a
+    /// `ReadyForQuery`.
+    ///
+    /// Overcounting stalls a refusal; undercounting lets one overtake a
+    /// response, which is the defect this exists to prevent. So a message whose
+    /// sync point is uncertain is counted — `Sync` among them, which PostgreSQL
+    /// ignores (and therefore never answers) while a `COPY` is in progress.
+    ///
+    /// Be clear about what that costs, because it is more than one stall. A
+    /// point that is merely slow costs [`REFUSAL_ORDER_STALL_TIMEOUT`] once and
+    /// is then settled. A point that can *never* be answered is written off like
+    /// any other, but the debt that write-off records is paid down by the next
+    /// statement's genuine answer rather than by a late one of its own, so the
+    /// accounting stays one behind and **every** later refusal on the connection
+    /// pays a stall window too. The trade is still the right way round — the
+    /// failure is latency, never a refusal overtaking a response — but it is a
+    /// recurring cost, not a one-time one. See [`Delivered::debt`].
+    ///
+    /// Called *before* the bytes are written upstream, never after. A fast
+    /// database on a multi-threaded runtime can have its `ReadyForQuery` relayed
+    /// to the client before the forwarding task runs its next line, and the
+    /// clamp in [`ClientLink::delivered_message`] would then discard that answer
+    /// as an over-count — leaving the counters skewed by one and making the next
+    /// refusal wait out the whole stall window for a response the client already
+    /// has. Counting first cannot be too early: a sync point recorded for a
+    /// write that then fails costs nothing, because the session ends with it.
+    fn forwarded_sync_point(&self) {
+        self.forwarded.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Record one complete backend message written to the client, saying whether
+    /// it was the `ReadyForQuery` that ends a request cycle.
+    ///
+    /// Every message counts as progress and restarts the stall window; only a
+    /// sync point advances what a refusal is waiting for. Both are published in
+    /// one update so a waiter is woken once — and every read of the counters
+    /// happens inside that update, so nothing here can interleave with the
+    /// write-off in [`ClientLink::await_forwarded_responses`].
+    fn delivered_message(&self, sync_point: bool) {
+        let forwarded = &self.forwarded;
+        self.delivered.send_modify(|delivered| {
+            delivered.messages += 1;
+            if !sync_point {
+                return;
+            }
+            let Some(count) = delivered.sync_points.as_mut() else {
+                return;
+            };
+            if delivered.debt > 0 {
+                // PostgreSQL answers in order, so this is the oldest statement
+                // still unanswered — and a debt means the oldest ones were
+                // written off. Their credit was already taken; taking it twice
+                // would advance the count into a later statement's slot and
+                // release the refusal queued behind *that* one early.
+                delivered.debt -= 1;
+                return;
+            }
+            // Never count past what was forwarded. In ordinary operation this
+            // cannot bind — every `ReadyForQuery` answers a sync point counted
+            // before the frame that earns it goes out — so it stands as a guard
+            // against a backend that sends more of them than it was asked for,
+            // not as part of the arithmetic. Read inside the update rather than
+            // before it, so there is no staleness left for a reader to reason
+            // about.
+            if *count < forwarded.load(Ordering::Relaxed) {
+                *count += 1;
+            }
+        });
+    }
+
+    /// Record that the relay has stopped, releasing every refusal waiting for a
+    /// `ReadyForQuery` that can no longer arrive.
+    ///
+    /// Without this a refusal parked on the barrier would simply be **cancelled**
+    /// when the relay's exit completes [`run_postgres`]'s `select!`, and a client
+    /// whose own socket is still perfectly healthy would read an unexplained
+    /// close instead of its `42501` — the outcome ADR-0007 wrote this answer to
+    /// prevent. Ordering is meaningless once nothing is left to be ordered
+    /// against, so the wait ends and the answer goes out.
+    fn relay_finished(&self) {
+        self.delivered
+            .send_modify(|delivered| delivered.sync_points = None);
+    }
+
+    /// Record that the relay stopped **partway through a backend message**.
+    ///
+    /// The client already holds a frame header whose payload never arrived, so
+    /// its stream is desynchronised and nothing honmoon writes can be read as a
+    /// message any more: an injected `ErrorResponse` would be consumed as the
+    /// rest of that frame. So the barrier is released — the session is ending
+    /// and there is no reason to hold it — but the answer itself is suppressed.
+    /// The client gets a truncated connection, which the corruption already
+    /// guaranteed; adding bytes to it only makes the truncation harder to read.
+    fn relay_desynchronised(&self) {
+        self.desynchronise();
+        self.relay_finished();
+    }
+
+    /// Mark the client's byte stream unframed, without touching the barrier.
+    ///
+    /// Called by the relay while it still holds the writer lock, so that a
+    /// refusal already queued *at* that lock sees the cleared flag when it gets
+    /// in rather than the value it read on the way past.
+    ///
+    /// Both halves of that matter, and neither is sufficient alone. Checking
+    /// [`ClientLink::can_inject`] only on the way in lets a refusal that passed
+    /// it a moment before the relay's write failed acquire the lock afterwards
+    /// and append itself to the partial frame. But *also* checking after the
+    /// lock is not enough while the flag is cleared after the guard is dropped:
+    /// a refusal arriving in that gap acquires the lock cleanly and still reads
+    /// `stream_intact` as true. Only making the state change atomic with the
+    /// lock that guards the stream closes it — which is why there is one check,
+    /// under the lock, and no cheap early bail-out to reinstate.
+    fn desynchronise(&self) {
+        self.stream_intact
+            .store(false, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// Whether a refusal can still be written as a message the client will
+    /// parse as one.
+    fn can_inject(&self) -> bool {
+        self.stream_intact
+            .load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// Wait until the client has received the database's answer to every
+    /// statement already forwarded on its behalf.
+    ///
+    /// This is the ordering barrier a locally injected answer sits behind. It
+    /// deliberately runs *before* the writer lock is taken: the relay needs that
+    /// lock to deliver the very responses being waited for, so holding it here
+    /// would deadlock the session instead of ordering it.
+    ///
+    /// Returns immediately when the pipeline is already drained — the common
+    /// case, a client that waits for each answer — and when the relay has
+    /// stopped, since nothing is then left to be ordered against.
+    async fn await_forwarded_responses(&self) {
+        let expected = self.forwarded.load(Ordering::Relaxed);
+        let mut delivered = self.delivered.subscribe();
+        loop {
+            let seen = match delivered.borrow_and_update().sync_points {
+                None => return,
+                Some(seen) if seen >= expected => return,
+                Some(seen) => seen,
+            };
+            match tokio::time::timeout(REFUSAL_ORDER_STALL_TIMEOUT, delivered.changed()).await {
+                // Something arrived — a row, a `CommandComplete`, the sync point
+                // itself. It may not be enough yet, but the pipeline is moving,
+                // so the stall budget starts over.
+                Ok(Ok(())) => {}
+                // Every sender is gone. Unreachable while this `ClientLink` is
+                // alive, since it owns one — but proceeding in silence would
+                // turn a later ownership change into a lost ordering guarantee
+                // with nothing in the log to find it by.
+                Ok(Err(_)) => {
+                    tracing::warn!(
+                        expected,
+                        delivered = seen,
+                        "the delivered-response watch closed while a refusal waited on it"
+                    );
+                    return;
+                }
+                Err(_) => {
+                    // Not one byte of any backend message for a whole window:
+                    // the missing answers are not late, they are not coming.
+                    // Write the gap off so the rest of the session is ordered
+                    // against what actually arrives — the counters only rise, so
+                    // leaving the skew in place would make every later refusal
+                    // on this connection pay this bound again.
+                    //
+                    // The gap is closed by crediting what was delivered, never
+                    // by lowering what was forwarded: `forwarded` is written by
+                    // this task and read by the relay's, so lowering it leaves a
+                    // window in which an answer delivered concurrently is
+                    // credited against the old, higher value and survives the
+                    // subtraction. Crediting here instead puts both counters
+                    // under the one `send_modify` the relay also writes through,
+                    // which leaves no interleaving to reason about — and the
+                    // count is read from inside that update rather than from the
+                    // `seen` sampled before the wait, so an answer that landed
+                    // while the timeout was resolving is accounted for rather
+                    // than double-counted.
+                    //
+                    // What is credited is owed back: each written-off answer is
+                    // remembered as debt so that, if it turns up after all, it
+                    // is discarded rather than advancing the count into a later
+                    // statement's slot.
+                    self.delivered.send_modify(|delivered| {
+                        if let Some(count) = delivered.sync_points.as_mut() {
+                            delivered.debt += expected.saturating_sub(*count);
+                            *count = (*count).max(expected);
+                        }
+                    });
+                    tracing::warn!(
+                        expected,
+                        delivered = seen,
+                        "no database response for the whole stall window; the refusal may \
+                         reach the client out of statement order"
+                    );
+                    return;
+                }
+            }
+        }
+    }
 }
 
 /// Run the PostgreSQL runtime over an established client/upstream pair.
@@ -130,15 +482,21 @@ pub async fn run_postgres(
 ) -> std::io::Result<()> {
     let (mut client_read, client_write) = client.into_split();
     let (upstream_read, mut upstream_write) = upstream.into_split();
-    let link = ClientLink {
-        writer: Arc::new(Mutex::new(client_write)),
-        tx_status: Arc::new(AtomicU8::new(STATUS_IDLE)),
-    };
+    let link = ClientLink::new(client_write);
 
     let mut downstream = tokio::spawn(upstream_to_client(upstream_read, link.clone()));
 
     let mut client_sent_everything = false;
     let outcome = tokio::select! {
+        // Poll the message loop first. When the relay's exit releases a refusal
+        // that was waiting to be ordered behind it, both arms become ready in
+        // the same wake-up — and an unbiased `select!` would pick between them
+        // at random, dropping the loop half the time before it writes the `42501`
+        // it had just been cleared to send. Biased, the loop takes the lock and
+        // writes (neither yields once the relay is gone: it released the lock on
+        // its way out) and the session ends on the very next poll. Nothing is
+        // starved: the arm below is still reached the moment the loop is pending.
+        biased;
         result = client_to_upstream(
             state,
             &mut client_read,
@@ -180,16 +538,45 @@ pub async fn run_postgres(
 /// locked chunks would let an `ErrorResponse` land inside a server frame and
 /// desynchronise the client. Each message is written under a single lock, and
 /// every `ReadyForQuery` publishes its transaction status for [`refuse`].
-async fn upstream_to_client(mut upstream: tokio::net::tcp::OwnedReadHalf, link: ClientLink) {
+async fn upstream_to_client(upstream: tokio::net::tcp::OwnedReadHalf, link: ClientLink) {
+    // Whatever ended the relay — the upstream's EOF, a frame it could no longer
+    // trust, a client socket that stopped accepting writes — no further
+    // `ReadyForQuery` can reach the client now. Say so, so a refusal waiting to
+    // be ordered behind one writes its answer instead of being cancelled
+    // unwritten when this task's exit tears the session down.
+    match relay_backend_messages(upstream, &link).await {
+        RelayEnd::BetweenMessages => link.relay_finished(),
+        RelayEnd::MidMessage => link.relay_desynchronised(),
+    }
+}
+
+/// Where the relay stopped, which decides whether a refusal released by its
+/// exit can still be written as a message the client will parse as one.
+enum RelayEnd {
+    /// On a message boundary. Everything the client received it received whole.
+    BetweenMessages,
+    /// Partway through writing a backend message, so the client holds a frame
+    /// header whose payload never arrived.
+    MidMessage,
+}
+
+/// The relay's message loop, split out so every way it can end reports where it
+/// stopped to [`upstream_to_client`] above exactly once.
+async fn relay_backend_messages(
+    mut upstream: tokio::net::tcp::OwnedReadHalf,
+    link: &ClientLink,
+) -> RelayEnd {
     loop {
         // Every backend message is `tag(1) | len(4, self-inclusive) | payload`.
         let mut head = [0u8; 5];
         if upstream.read_exact(&mut head).await.is_err() {
-            return;
+            return RelayEnd::BetweenMessages;
         }
         let len = u32::from_be_bytes([head[1], head[2], head[3], head[4]]) as usize;
         if len < 4 {
-            return; // malformed framing; the stream is no longer trustworthy
+            // Malformed framing; the stream is no longer trustworthy. Nothing of
+            // this message reached the client, so what it already has is whole.
+            return RelayEnd::BetweenMessages;
         }
         let payload_len = len - 4;
 
@@ -202,23 +589,40 @@ async fn upstream_to_client(mut upstream: tokio::net::tcp::OwnedReadHalf, link: 
                     .await
                     .is_err()
             {
-                return;
+                // The header may already be on the client's socket with only
+                // part of its payload behind it — `write_all` can fail after a
+                // partial write, and the copy fails mid-payload by definition.
+                // Marked while the lock is still held, so a refusal waiting for
+                // it cannot get in before the flag it checks is cleared.
+                link.desynchronise();
+                return RelayEnd::MidMessage;
             }
+            drop(writer);
+            // Oversized by construction, so never a `ReadyForQuery` (six bytes):
+            // progress for the stall window, never a sync point.
+            link.delivered_message(false);
             continue;
         }
 
         let mut payload = vec![0u8; payload_len];
         if upstream.read_exact(&mut payload).await.is_err() {
-            return;
+            return RelayEnd::BetweenMessages;
         }
         // `ReadyForQuery` is the only message that states the transaction status.
         if head[0] == b'Z' && !payload.is_empty() {
             link.tx_status.store(payload[0], Ordering::Relaxed);
         }
-        let mut writer = link.writer.lock().await;
-        if writer.write_all(&head).await.is_err() || writer.write_all(&payload).await.is_err() {
-            return;
+        {
+            let mut writer = link.writer.lock().await;
+            if writer.write_all(&head).await.is_err() || writer.write_all(&payload).await.is_err() {
+                // Still under the lock: see the oversized branch above.
+                link.desynchronise();
+                return RelayEnd::MidMessage;
+            }
         }
+        // Counted only once the client really has the message: a refusal
+        // released mid-write would overtake the very response it waited for.
+        link.delivered_message(head[0] == b'Z');
     }
 }
 
@@ -284,6 +688,13 @@ where
                 writer.write_all(b"N").await?;
             }
             PROTOCOL_V3 => {
+                // However many authentication round trips follow, the database
+                // ends the handshake with exactly one `ReadyForQuery`. Counting
+                // it keeps a refusal for a statement the client pipelined behind
+                // its startup packet from overtaking the handshake itself —
+                // counted before the packet goes out, since the answer can beat
+                // this task back.
+                link.forwarded_sync_point();
                 upstream.write_all(&head).await?;
                 copy_exact(client, upstream, remaining).await?;
                 return Ok(true);
@@ -489,6 +900,16 @@ where
         if !matches!(tag[0], b'Q' | b'P') {
             // Not a statement-bearing message (`Bind`, `Execute`, `CopyData`, …).
             // Streamed without buffering — `CopyData` can be arbitrarily large.
+            // `Sync` ends an extended-protocol batch and `FunctionCall` is a
+            // request cycle of its own; each earns one `ReadyForQuery`. Nothing
+            // else does. `Bind` and `Execute` are acknowledged immediately
+            // (`BindComplete`, then the rows and `CommandComplete`) but end no
+            // cycle, `Terminate` is answered with nothing at all, and what only
+            // this counter tracks is the cycle-ending `ReadyForQuery`. Counted
+            // before the bytes leave, so the answer cannot beat the count.
+            if matches!(tag[0], b'S' | b'F') {
+                link.forwarded_sync_point();
+            }
             upstream.write_all(&tag).await?;
             upstream.write_all(&len_bytes).await?;
             copy_exact(&mut client_reader, upstream, payload_len).await?;
@@ -543,6 +964,15 @@ where
 
         match decide(state, facts, sql, link, &mut client_reader).await? {
             Disposition::Forward => {
+                // A simple query is its own request cycle. A `Parse` is
+                // acknowledged at once with `ParseComplete`, but its batch does
+                // not end until the client's `Sync` — which is counted where
+                // that `Sync` is forwarded, not here. Counted before the write,
+                // so a database that answers immediately cannot have its
+                // `ReadyForQuery` discarded as an over-count.
+                if tag[0] == b'Q' {
+                    link.forwarded_sync_point();
+                }
                 upstream.write_all(&tag).await?;
                 upstream.write_all(&len_bytes).await?;
                 upstream.write_all(&payload).await?;
@@ -682,14 +1112,23 @@ where
                     // Bounded: a client that half-closed and then stopped
                     // reading would otherwise block this write — directly, or on
                     // the writer lock the relay holds while blocked on the same
-                    // socket — and the session would never end at all.
-                    let _ = tokio::time::timeout(
-                        ABANDONED_NOTICE_TIMEOUT,
-                        refuse(
+                    // socket — and the session would never end at all. Ordering
+                    // takes only a slice of that budget rather than going
+                    // through `refuse`: the same half-close that ended the hold
+                    // is what stalls the pipeline, so spending the whole budget
+                    // on the wait would leave nothing for the answer itself.
+                    let _ = tokio::time::timeout(ABANDONED_NOTICE_TIMEOUT, async {
+                        let _ = tokio::time::timeout(
+                            ABANDONED_NOTICE_ORDER_BUDGET,
+                            link.await_forwarded_responses(),
+                        )
+                        .await;
+                        write_refusal(
                             link,
                             "honmoon: connection ended while the statement was held for approval",
-                        ),
-                    )
+                        )
+                        .await
+                    })
                     .await;
                     return Ok(Disposition::ClientGone);
                 }
@@ -726,9 +1165,39 @@ fn record(
 /// the session open. The `ReadyForQuery` reports the transaction status honmoon
 /// last saw upstream, so a refusal inside an open transaction does not tell the
 /// client it is idle.
+///
+/// The answer is injected in PostgreSQL request order: it waits for the database
+/// to finish answering the statements the client sent before this one, so a
+/// client that pipelined `SELECT pg_sleep(1); DROP TABLE users;` reads the
+/// `SELECT`'s response first and attributes the `42501` to the statement it
+/// belongs to.
 async fn refuse(link: &ClientLink, message: &str) -> std::io::Result<()> {
-    let status = link.tx_status.load(Ordering::Relaxed);
+    link.await_forwarded_responses().await;
+    write_refusal(link, message).await
+}
+
+/// Write the `ErrorResponse`/`ReadyForQuery` pair, without ordering it.
+///
+/// Split from [`refuse`] for the one caller that has to budget the two phases
+/// separately — see [`ABANDONED_NOTICE_ORDER_BUDGET`]. Every other refusal goes
+/// through [`refuse`] and is ordered.
+async fn write_refusal(link: &ClientLink, message: &str) -> std::io::Result<()> {
     let mut writer = link.writer.lock().await;
+    if !link.can_inject() {
+        // The relay died partway through a backend message, so the client is
+        // holding a frame header whose payload never came. It would read these
+        // bytes as that payload's remainder, turning a truncated connection into
+        // a corrupted one. Say nothing; the session is ending either way.
+        //
+        // Checked here rather than on the way in: the relay clears the flag
+        // while it still holds this lock, so a refusal that queued behind its
+        // failing write has to see the cleared value, not the one that was true
+        // when it started waiting.
+        return Ok(());
+    }
+    // Read after any wait and under the lock, so the status echoed back is the
+    // one from the last `ReadyForQuery` the client actually received.
+    let status = link.tx_status.load(Ordering::Relaxed);
     writer.write_all(&error_response(message)).await?;
     writer.write_all(&[b'Z', 0, 0, 0, 5, status]).await
 }
@@ -820,11 +1289,72 @@ mod tests {
         let addr = listener.local_addr().unwrap();
         let (client, accepted) = tokio::join!(TcpStream::connect(addr), listener.accept());
         let (_read, write) = client.unwrap().into_split();
-        let link = ClientLink {
-            writer: Arc::new(Mutex::new(write)),
-            tx_status: Arc::new(AtomicU8::new(STATUS_IDLE)),
-        };
-        (link, accepted.unwrap().0)
+        (ClientLink::new(write), accepted.unwrap().0)
+    }
+
+    /// Spawn the upstream→client relay over a loopback pair, returning the
+    /// socket that stands in for the database. Writing a backend message to it
+    /// is how a test decides *when* the client is answered.
+    async fn loopback_relay(link: ClientLink) -> (TcpStream, tokio::task::JoinHandle<()>) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let (database, accepted) = tokio::join!(TcpStream::connect(addr), listener.accept());
+        // The relay only ever reads; dropping the write half just half-closes a
+        // direction nothing in these tests uses.
+        let (read, _write) = accepted.unwrap().0.into_split();
+        (
+            database.unwrap(),
+            tokio::spawn(upstream_to_client(read, link)),
+        )
+    }
+
+    /// Read one whole backend message off the client socket, returning its tag.
+    /// Deliberately unbounded: every caller states its own deadline, and an
+    /// inner timer of its own would be the first to fire under a paused clock.
+    async fn read_message_tag(peer: &mut TcpStream) -> u8 {
+        let mut head = [0u8; 5];
+        peer.read_exact(&mut head)
+            .await
+            .expect("the client is answered");
+        let len = u32::from_be_bytes([head[1], head[2], head[3], head[4]]) as usize;
+        let mut payload = vec![0u8; len - 4];
+        peer.read_exact(&mut payload).await.unwrap();
+        head[0]
+    }
+
+    /// A policy that denies every `DROP`.
+    fn deny_drop_policy() -> honmoon_core::Policy {
+        honmoon_core::Policy::from_yaml(
+            "egress:\n  default: allow\nrules:\n  - name: no-drop\n    endpoint: '*'\n    condition: \"sql.verb == 'DROP'\"\n    verdict: deny\n",
+        )
+        .expect("valid policy")
+    }
+
+    /// What a database answers a `Q` with: `CommandComplete` + `ReadyForQuery`.
+    fn query_response() -> Vec<u8> {
+        let tag = b"SELECT 1\0";
+        let mut frames = vec![b'C'];
+        frames.extend_from_slice(&((4 + tag.len()) as u32).to_be_bytes());
+        frames.extend_from_slice(tag);
+        frames.extend_from_slice(&[b'Z', 0, 0, 0, 5, b'I']);
+        frames
+    }
+
+    /// The pipelined pair the client sends in the ordering tests: an allowed
+    /// statement the database is still working on, then a denied one.
+    fn pipelined_select_then_drop() -> Vec<u8> {
+        let mut frames = simple_query("SELECT pg_sleep(1)");
+        frames.extend_from_slice(&simple_query("DROP TABLE users"));
+        frames
+    }
+
+    /// A `P` (Parse) frame carrying `query`, as the client puts it on the wire.
+    fn parse_frame(name: &str, query: &str) -> Vec<u8> {
+        let payload = parse_payload(name, query);
+        let mut frame = vec![b'P'];
+        frame.extend_from_slice(&((4 + payload.len()) as u32).to_be_bytes());
+        frame.extend_from_slice(&payload);
+        frame
     }
 
     fn startup_packet(code: u32, body: &[u8]) -> Vec<u8> {
@@ -1173,6 +1703,598 @@ mod tests {
         assert!(
             !frame_query(b'P', &parse_payload("", "DROP TABLE users"))
                 .is_some_and(is_uninspectable_statement)
+        );
+    }
+
+    #[tokio::test]
+    async fn a_refusal_waits_for_the_response_to_a_statement_already_forwarded() {
+        let state = GatewayState::new(deny_drop_policy());
+        // The `SELECT` is forwarded and the database is still working on it when
+        // the `DROP` is refused. Injecting straight away would put honmoon's
+        // 42501 in front of the `SELECT`'s response, and the client would
+        // attribute the error to the statement it already had answered (#101).
+        let mut client = std::io::Cursor::new(pipelined_select_then_drop());
+        let mut upstream: Vec<u8> = Vec::new();
+        let (link, mut peer) = loopback_link().await;
+        let (mut database, _relay) = loopback_relay(link.clone()).await;
+
+        let facts = Facts::default();
+        let session = message_loop(&state, &mut client, &mut upstream, &link, &facts);
+        let client_view = async {
+            let mut early = [0u8; 1];
+            assert!(
+                tokio::time::timeout(
+                    std::time::Duration::from_millis(200),
+                    peer.read_exact(&mut early),
+                )
+                .await
+                .is_err(),
+                "the refusal overtook the response to the statement before it"
+            );
+
+            // Only now does the database answer the `SELECT`.
+            database.write_all(&query_response()).await.unwrap();
+
+            let seen = [
+                read_message_tag(&mut peer).await,
+                read_message_tag(&mut peer).await,
+                read_message_tag(&mut peer).await,
+                read_message_tag(&mut peer).await,
+            ];
+            assert_eq!(
+                seen,
+                [b'C', b'Z', b'E', b'Z'],
+                "the client reads the two answers in the order it asked the questions"
+            );
+        };
+
+        let (drain, ()) = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            tokio::join!(session, client_view)
+        })
+        .await
+        .expect("the session finished");
+        assert!(
+            drain.unwrap(),
+            "the client sent everything it had and the session ended cleanly"
+        );
+        assert!(
+            !upstream
+                .windows(b"DROP TABLE users".len())
+                .any(|w| w == b"DROP TABLE users"),
+            "waiting for the earlier response must not forward the denied statement"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_silent_database_costs_one_stall_window_and_is_then_written_off() {
+        let state = GatewayState::new(deny_drop_policy());
+        // Sitting behind an earlier response must not become a way to lose the
+        // refusal altogether: the relay is alive but the database says nothing,
+        // so the `SELECT`'s `ReadyForQuery` never arrives and the wait expires.
+        // The answer that never came is then written off — the counters are
+        // monotonic, so leaving the skew would make the *second* `DROP` pay the
+        // same window again, and every refusal after it for the whole session.
+        let mut frames = pipelined_select_then_drop();
+        frames.extend_from_slice(&simple_query("DROP TABLE accounts"));
+        let mut client = std::io::Cursor::new(frames);
+        let mut upstream: Vec<u8> = Vec::new();
+        let (link, mut peer) = loopback_link().await;
+        let (_database, _relay) = loopback_relay(link.clone()).await;
+
+        let started = tokio::time::Instant::now();
+        let facts = Facts::default();
+        let session = message_loop(&state, &mut client, &mut upstream, &link, &facts);
+        let client_view = async {
+            for _ in 0..2 {
+                assert_eq!(
+                    read_message_tag(&mut peer).await,
+                    b'E',
+                    "a silent database costs the refusal its ordering, never the client its answer"
+                );
+                assert_eq!(read_message_tag(&mut peer).await, b'Z');
+            }
+        };
+
+        let (drain, ()) = tokio::join!(session, client_view);
+        assert!(drain.unwrap(), "the session survives the late refusals");
+        assert_eq!(
+            started.elapsed(),
+            REFUSAL_ORDER_STALL_TIMEOUT,
+            "one stall window for the whole session, not one per refusal"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_pipeline_that_keeps_moving_never_hits_the_stall_bound() {
+        // The bound is on the stall, not on the wait. Two answers are owed and
+        // each arrives just inside a window, so every delivery buys another one
+        // and the barrier releases on the second answer instead of expiring —
+        // a database working steadily through a statement that outlives one
+        // window is ordered properly rather than cut off.
+        //
+        // Driven straight against the link: a real socket in the wait path
+        // would let the paused clock jump to the stall deadline before the
+        // relay's read completes, and the test would measure the bound it is
+        // meant to prove is not reached.
+        let (link, _peer) = loopback_link().await;
+        link.forwarded_sync_point();
+        link.forwarded_sync_point();
+        let step = REFUSAL_ORDER_STALL_TIMEOUT - std::time::Duration::from_secs(5);
+
+        let started = tokio::time::Instant::now();
+        let answers = async {
+            for _ in 0..2 {
+                tokio::time::sleep(step).await;
+                link.delivered_message(true);
+            }
+        };
+        tokio::join!(link.await_forwarded_responses(), answers);
+
+        assert_eq!(
+            started.elapsed(),
+            2 * step,
+            "the wait ended on the last answer, not on the stall bound"
+        );
+        assert_eq!(
+            link.forwarded.load(Ordering::Relaxed),
+            2,
+            "nothing was written off — every answer arrived"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn rows_streaming_out_of_a_slow_query_hold_the_stall_window_open() {
+        // Only `ReadyForQuery` advances what a refusal waits *for*, but every
+        // backend message is progress. A query streaming `DataRow`s for longer
+        // than the window is a database working, not one that stopped — and
+        // treating it as stopped would inject the refusal into the middle of
+        // that result set, which is worse than the misattribution #101 removed.
+        let (link, _peer) = loopback_link().await;
+        link.forwarded_sync_point();
+        let step = REFUSAL_ORDER_STALL_TIMEOUT - std::time::Duration::from_secs(5);
+
+        let started = tokio::time::Instant::now();
+        let answers = async {
+            // Two windows' worth of rows, and only then the sync point.
+            for _ in 0..2 {
+                tokio::time::sleep(step).await;
+                link.delivered_message(false);
+            }
+            tokio::time::sleep(step).await;
+            link.delivered_message(true);
+        };
+        tokio::join!(link.await_forwarded_responses(), answers);
+
+        assert_eq!(started.elapsed(), 3 * step, "rows counted as progress");
+        assert_eq!(
+            link.forwarded.load(Ordering::Relaxed),
+            1,
+            "a working database is never written off"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn an_answer_written_off_and_then_delivered_late_is_not_counted_twice() {
+        // A write-off credits the delivered count for an answer the client
+        // never got. If the answer then turns up, counting it as well would
+        // take that credit twice and release the *next* refusal before its own
+        // answer — losing the ordering the write-off was only meant to make
+        // affordable.
+        let (link, _peer) = loopback_link().await;
+        link.forwarded_sync_point();
+        link.await_forwarded_responses().await;
+        assert_eq!(
+            link.forwarded.load(Ordering::Relaxed),
+            1,
+            "a write-off never lowers what was forwarded"
+        );
+        assert_eq!(
+            (
+                link.delivered.borrow().sync_points,
+                link.delivered.borrow().debt
+            ),
+            (Some(1), 1),
+            "the answer that never came was credited, and remembered as owed"
+        );
+
+        // The database was slow, not silent: the answer arrives after all.
+        link.delivered_message(true);
+        assert_eq!(
+            (
+                link.delivered.borrow().sync_points,
+                link.delivered.borrow().debt
+            ),
+            (Some(1), 0),
+            "a late answer to a written-off statement is discarded, not credited"
+        );
+
+        // So the next statement's refusal still waits for its own answer.
+        link.forwarded_sync_point();
+        assert!(
+            tokio::time::timeout(
+                REFUSAL_ORDER_STALL_TIMEOUT / 2,
+                link.await_forwarded_responses(),
+            )
+            .await
+            .is_err(),
+            "the refusal after a write-off is still ordered behind its own answer"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_late_written_off_answer_does_not_release_a_refusal_behind_a_later_query() {
+        // The dangerous shape is a write-off, *then* another query, *then* the
+        // written-off answer. Matching that answer against what was forwarded
+        // is not enough — the later query raised that ceiling, so the stale
+        // answer fits under it and is credited to a slot it does not own,
+        // releasing the refusal queued behind the later query before the
+        // database has answered it. That is #101, reached the long way round.
+        let (link, _peer) = loopback_link().await;
+
+        // Query A goes out and is never answered.
+        link.forwarded_sync_point();
+        link.await_forwarded_responses().await;
+
+        // Query B goes out while A is still owed.
+        link.forwarded_sync_point();
+        // A's answer finally arrives — B's has not.
+        link.delivered_message(true);
+
+        assert!(
+            tokio::time::timeout(
+                REFUSAL_ORDER_STALL_TIMEOUT / 2,
+                link.await_forwarded_responses(),
+            )
+            .await
+            .is_err(),
+            "a written-off statement's late answer does not answer for the statement after it"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_query_forwarded_after_a_write_off_is_still_released_by_its_own_answer() {
+        // The other half of the same rule, and the easy thing to break while
+        // fixing the first: discarding late answers must not leave the barrier
+        // permanently one short, or every refusal for the rest of the session
+        // pays the stall bound again — which is what the write-off exists to
+        // prevent.
+        let (link, _peer) = loopback_link().await;
+
+        link.forwarded_sync_point();
+        link.await_forwarded_responses().await;
+        link.forwarded_sync_point();
+        // A's late answer is discarded against the debt, then B's own answers B.
+        link.delivered_message(true);
+        link.delivered_message(true);
+
+        let started = tokio::time::Instant::now();
+        link.await_forwarded_responses().await;
+        assert_eq!(
+            started.elapsed(),
+            std::time::Duration::ZERO,
+            "the statement after a write-off is released by its own answer, at once"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_relay_that_dies_mid_message_suppresses_the_refusal_rather_than_corrupting_it() {
+        // The client holds a frame header whose payload never arrived, so its
+        // stream is already desynchronised: it would read an injected
+        // `ErrorResponse` as that payload's remainder. A truncated connection is
+        // the honest outcome; adding bytes to it makes the truncation unreadable.
+        let (link, mut peer) = loopback_link().await;
+        link.relay_desynchronised();
+
+        write_refusal(&link, "honmoon: denied by policy")
+            .await
+            .unwrap();
+
+        drop(link);
+        let mut trailing = Vec::new();
+        peer.read_to_end(&mut trailing).await.unwrap();
+        assert!(
+            trailing.is_empty(),
+            "nothing may follow a partial frame, got {trailing:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_refusal_queued_at_the_writer_lock_sees_the_stream_break_under_it() {
+        // The mid-frame check has to happen *inside* the writer lock. A refusal
+        // that passes it on the way in, then waits for the lock the relay is
+        // holding while its own write fails, would otherwise append itself to
+        // the partial frame the relay just left behind.
+        let (link, mut peer) = loopback_link().await;
+        let held = Arc::clone(&link.writer).lock_owned().await;
+
+        let refusing = tokio::spawn({
+            let link = link.clone();
+            async move { write_refusal(&link, "honmoon: denied by policy").await }
+        });
+        // Current-thread runtime: one yield is enough to run the task up to the
+        // point where it blocks on the lock, which is its first await.
+        tokio::task::yield_now().await;
+
+        // The relay's write fails partway through a frame and it marks the
+        // stream unframed before letting go of the lock.
+        link.desynchronise();
+        drop(held);
+        refusing.await.unwrap().unwrap();
+
+        drop(link);
+        let mut trailing = Vec::new();
+        peer.read_to_end(&mut trailing).await.unwrap();
+        assert!(
+            trailing.is_empty(),
+            "a refusal that was already waiting for the lock must still be suppressed, \
+             got {trailing:?}"
+        );
+    }
+
+    /// An upstream that answers the instant a byte reaches it, by recording the
+    /// `ReadyForQuery` the relay would have delivered. This is the interleaving
+    /// a fast database on a multi-threaded runtime produces: the answer can be
+    /// on the client's socket before the forwarding task runs its next line.
+    struct AnswersBeforeTheWriteReturns {
+        link: ClientLink,
+        answered: bool,
+    }
+
+    impl AsyncWrite for AnswersBeforeTheWriteReturns {
+        fn poll_write(
+            mut self: std::pin::Pin<&mut Self>,
+            _cx: &mut std::task::Context<'_>,
+            buf: &[u8],
+        ) -> std::task::Poll<std::io::Result<usize>> {
+            if !self.answered {
+                self.answered = true;
+                self.link.delivered_message(true);
+            }
+            std::task::Poll::Ready(Ok(buf.len()))
+        }
+
+        fn poll_flush(
+            self: std::pin::Pin<&mut Self>,
+            _cx: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<std::io::Result<()>> {
+            std::task::Poll::Ready(Ok(()))
+        }
+
+        fn poll_shutdown(
+            self: std::pin::Pin<&mut Self>,
+            _cx: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<std::io::Result<()>> {
+            std::task::Poll::Ready(Ok(()))
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn an_answer_that_beats_the_forward_being_recorded_is_not_discarded() {
+        // Sync points are counted before the bytes go out precisely so this
+        // ordering is impossible. Counting afterwards lets the clamp in
+        // `delivered_message` read a stale `forwarded` and throw the answer
+        // away, and the counters stay one apart for the rest of the session —
+        // every later refusal then waits out the whole stall window for a
+        // response the client is already holding.
+        let (link, _peer) = loopback_link().await;
+        let mut client = std::io::Cursor::new(startup_packet(PROTOCOL_V3, b"user\0pg\0\0"));
+        let mut upstream = AnswersBeforeTheWriteReturns {
+            link: link.clone(),
+            answered: false,
+        };
+
+        assert!(startup(&mut client, &mut upstream, &link).await.unwrap());
+
+        let started = tokio::time::Instant::now();
+        link.await_forwarded_responses().await;
+        assert_eq!(
+            started.elapsed(),
+            std::time::Duration::ZERO,
+            "the handshake was answered, so nothing is owed and the refusal waits for nothing"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_relay_that_stops_releases_the_refusal_waiting_behind_it() {
+        let state = GatewayState::new(deny_drop_policy());
+        // The database goes away while the refusal is queued behind its answer.
+        // Nothing is left to order against, so the wait must end at once: a
+        // refusal still parked here is cancelled unwritten when the relay's exit
+        // ends the session, and a client whose own socket is fine reads an
+        // unexplained close instead of its 42501 (ADR-0007).
+        let mut client = std::io::Cursor::new(pipelined_select_then_drop());
+        let mut upstream: Vec<u8> = Vec::new();
+        let (link, mut peer) = loopback_link().await;
+        let (database, _relay) = loopback_relay(link.clone()).await;
+
+        let facts = Facts::default();
+        let session = message_loop(&state, &mut client, &mut upstream, &link, &facts);
+        let client_view = async {
+            // Nothing may arrive while the database is merely quiet...
+            let mut early = [0u8; 1];
+            assert!(
+                tokio::time::timeout(
+                    std::time::Duration::from_millis(200),
+                    peer.read_exact(&mut early),
+                )
+                .await
+                .is_err(),
+                "the refusal overtook the response to the statement before it"
+            );
+            // ...but the moment the database is gone, the answer goes out.
+            drop(database);
+            assert_eq!(read_message_tag(&mut peer).await, b'E');
+            assert_eq!(read_message_tag(&mut peer).await, b'Z');
+        };
+
+        let (drain, ()) = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            tokio::join!(session, client_view)
+        })
+        .await
+        .expect("the refusal is written as soon as the relay ends, not after the stall bound");
+        assert!(drain.unwrap());
+    }
+
+    #[tokio::test]
+    async fn a_refusal_waits_for_an_extended_protocol_batch_ended_by_sync() {
+        let state = GatewayState::new(deny_drop_policy());
+        // The path every driver using prepared statements takes. `Parse` earns
+        // no `ReadyForQuery` of its own — the batch's `Sync` does — so the
+        // refusal has to wait behind the `Sync`, not behind the `Parse`.
+        let mut frames = parse_frame("stmt", "SELECT 1");
+        frames.extend_from_slice(&[b'S', 0, 0, 0, 4]);
+        frames.extend_from_slice(&simple_query("DROP TABLE users"));
+        let mut client = std::io::Cursor::new(frames);
+        let mut upstream: Vec<u8> = Vec::new();
+        let (link, mut peer) = loopback_link().await;
+        let (mut database, _relay) = loopback_relay(link.clone()).await;
+
+        let facts = Facts::default();
+        let session = message_loop(&state, &mut client, &mut upstream, &link, &facts);
+        let client_view = async {
+            let mut early = [0u8; 1];
+            assert!(
+                tokio::time::timeout(
+                    std::time::Duration::from_millis(200),
+                    peer.read_exact(&mut early),
+                )
+                .await
+                .is_err(),
+                "the refusal overtook the batch it was pipelined behind"
+            );
+
+            // `ParseComplete`, then the `Sync`'s `ReadyForQuery`.
+            database.write_all(&[b'1', 0, 0, 0, 4]).await.unwrap();
+            database.write_all(&[b'Z', 0, 0, 0, 5, b'I']).await.unwrap();
+
+            let seen = [
+                read_message_tag(&mut peer).await,
+                read_message_tag(&mut peer).await,
+                read_message_tag(&mut peer).await,
+                read_message_tag(&mut peer).await,
+            ];
+            assert_eq!(seen, [b'1', b'Z', b'E', b'Z']);
+        };
+
+        let (drain, ()) = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            tokio::join!(session, client_view)
+        })
+        .await
+        .expect("the session finished");
+        assert!(drain.unwrap());
+    }
+
+    /// A connected loopback pair: the end a test drives, and the end handed to
+    /// the code under test.
+    async fn socket_pair() -> (TcpStream, TcpStream) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let (near, accepted) = tokio::join!(TcpStream::connect(addr), listener.accept());
+        (near.unwrap(), accepted.unwrap().0)
+    }
+
+    #[tokio::test]
+    async fn an_upstream_that_closes_mid_refusal_still_lets_the_client_be_told() {
+        let state = GatewayState::new(deny_drop_policy());
+        // The whole session, not just the message loop: the relay's exit both
+        // releases the waiting refusal *and* completes the future `run_postgres`
+        // races the loop against, so the two become ready together. An unbiased
+        // `select!` drops the loop half the time and the client — whose own
+        // socket is fine — reads an unexplained close instead of its 42501,
+        // which is the outcome ADR-0007 wrote the injected answer to prevent.
+        let (mut client, client_end) = socket_pair().await;
+        let (upstream_end, mut database) = socket_pair().await;
+
+        let session = tokio::spawn(async move {
+            run_postgres(&state, client_end, upstream_end, Facts::default()).await
+        });
+
+        client
+            .write_all(&startup_packet(PROTOCOL_V3, b"user\0me\0\0"))
+            .await
+            .unwrap();
+        // Answer the handshake, so the only response still owed is the SELECT's.
+        let mut startup_seen = vec![0u8; 13];
+        database.read_exact(&mut startup_seen).await.unwrap();
+        database.write_all(&[b'Z', 0, 0, 0, 5, b'I']).await.unwrap();
+        assert_eq!(read_message_tag(&mut client).await, b'Z');
+
+        // Pipeline an allowed statement the database never answers, then a
+        // denied one, and drop the database while the refusal waits behind it.
+        client
+            .write_all(&pipelined_select_then_drop())
+            .await
+            .unwrap();
+        let mut forwarded = vec![0u8; simple_query("SELECT pg_sleep(1)").len()];
+        database.read_exact(&mut forwarded).await.unwrap();
+        drop(database);
+
+        let told = async {
+            assert_eq!(read_message_tag(&mut client).await, b'E');
+            assert_eq!(read_message_tag(&mut client).await, b'Z');
+        };
+        tokio::time::timeout(std::time::Duration::from_secs(10), told)
+            .await
+            .expect("the client is told why its statement was refused");
+
+        session.await.unwrap().unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_refusal_waits_for_the_startup_handshake_it_was_pipelined_behind() {
+        let state = GatewayState::new(deny_drop_policy());
+        // A client that puts a statement on the wire behind its startup packet
+        // without waiting to be authenticated. The handshake ends in exactly one
+        // `ReadyForQuery`, so the refusal belongs behind it — injecting first
+        // would answer a statement before the session it runs in exists.
+        let mut frames = startup_packet(PROTOCOL_V3, b"user\0me\0\0");
+        frames.extend_from_slice(&simple_query("DROP TABLE users"));
+        let mut client = std::io::Cursor::new(frames);
+        let mut upstream: Vec<u8> = Vec::new();
+        let (link, mut peer) = loopback_link().await;
+        let (mut database, _relay) = loopback_relay(link.clone()).await;
+
+        let facts = Facts::default();
+        let session = client_to_upstream(&state, &mut client, &mut upstream, &link, &facts);
+        let client_view = async {
+            let mut early = [0u8; 1];
+            assert!(
+                tokio::time::timeout(
+                    std::time::Duration::from_millis(200),
+                    peer.read_exact(&mut early),
+                )
+                .await
+                .is_err(),
+                "the refusal overtook the handshake it was pipelined behind"
+            );
+
+            // `AuthenticationOk`, then the handshake's `ReadyForQuery`.
+            database
+                .write_all(&[b'R', 0, 0, 0, 8, 0, 0, 0, 0])
+                .await
+                .unwrap();
+            database.write_all(&[b'Z', 0, 0, 0, 5, b'I']).await.unwrap();
+
+            let seen = [
+                read_message_tag(&mut peer).await,
+                read_message_tag(&mut peer).await,
+                read_message_tag(&mut peer).await,
+                read_message_tag(&mut peer).await,
+            ];
+            assert_eq!(seen, [b'R', b'Z', b'E', b'Z']);
+        };
+
+        let (drain, ()) = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            tokio::join!(session, client_view)
+        })
+        .await
+        .expect("the session finished");
+        assert!(drain.unwrap());
+        assert!(
+            !upstream
+                .windows(b"DROP TABLE users".len())
+                .any(|w| w == b"DROP TABLE users"),
+            "the denied statement never reached the database"
         );
     }
 
