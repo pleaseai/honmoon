@@ -231,15 +231,20 @@ fn is_sigv4_authorization(value: &str) -> bool {
 /// under redaction exactly as any scheme this module does not recognize already
 /// does. See ADR-0006.
 fn aws_sigv4_signs_body(headers: &HeaderMap, uri: &Uri) -> bool {
-    let presigned = sigv4_presigned_query(uri);
+    let header_signed =
+        header_str(headers, &header::AUTHORIZATION).is_some_and(is_sigv4_authorization);
+    // The hoisted query declaration speaks only for a request whose *only*
+    // SigV4 evidence is the presigned query. A header-signed credential carries
+    // its own payload hash in its canonical request, so a query argument — even
+    // one the credential signs — must not be able to contradict it: reading
+    // `X-Amz-Content-Sha256=UNSIGNED-PAYLOAD` off a request that also carries
+    // an `AWS4-…` `Authorization` would redact a body that signature binds.
+    let presigned = !header_signed && sigv4_presigned_query(uri);
     let declared = payload_hash_declarations(headers, uri, presigned);
     if declared.iter().copied().any(declares_unsigned_payload) {
         return false;
     }
-    if header_str(headers, &header::AUTHORIZATION).is_some_and(is_sigv4_authorization) {
-        return true;
-    }
-    presigned && declared.iter().copied().any(declares_signed_payload)
+    header_signed || (presigned && declared.iter().copied().any(declares_signed_payload))
 }
 
 /// What the request declares about its payload hash, read from the carrier the
@@ -303,11 +308,18 @@ const STREAMING_SIGNED_PAYLOAD_MARKERS: [&str; 4] = [
 /// markers never reach here — [`declares_unsigned_payload`] rejects them
 /// first.
 fn declares_signed_payload(hash: &str) -> bool {
-    let hex_sha256 = hash.len() == 64 && hash.bytes().all(|b| b.is_ascii_hexdigit());
-    hex_sha256
+    is_hex_payload_hash(hash)
         || STREAMING_SIGNED_PAYLOAD_MARKERS
             .iter()
             .any(|marker| hash.eq_ignore_ascii_case(marker))
+}
+
+/// Whether an `x-amz-content-sha256` value is a hex SHA-256 of the payload —
+/// the half of [`declares_signed_payload`] that binds the bytes on its own,
+/// without a SigV4 signature to give it meaning. The length is checked because
+/// a short hex string is not a SHA-256.
+fn is_hex_payload_hash(hash: &str) -> bool {
+    hash.len() == 64 && hash.bytes().all(|b| b.is_ascii_hexdigit())
 }
 
 /// Whether the request carries SigV4 authentication at all — header-signed
@@ -462,7 +474,12 @@ fn is_body_digest_header(name: &str) -> bool {
 /// signature can name it in its covered list with no AWS authentication on the
 /// request at all. Its value decides: a `STREAMING-UNSIGNED-PAYLOAD…` or
 /// `UNSIGNED-PAYLOAD` marker is signed but binds nothing, so that request stays
-/// redactable.
+/// redactable — and so does a `STREAMING-AWS4-…` marker, which counts only on
+/// the SigV4 path. Those markers describe a body bound by *chunk* signatures
+/// derived from a SigV4 seed signature, a construct that does not exist outside
+/// SigV4, so a message signature over the header value says nothing about the
+/// bytes. Only the hash form binds them on its own, which is why this reads
+/// [`is_hex_payload_hash`] rather than [`declares_signed_payload`].
 ///
 /// It is *not* in `BODY_DIGEST_HEADERS`, which is the set the rewrite strips:
 /// honmoon leaves this header as the client sent it, because for a SigV4
@@ -477,7 +494,7 @@ fn signature_over_header_binds_body(headers: &HeaderMap, name: &str) -> bool {
         return true;
     }
     name.eq_ignore_ascii_case(X_AMZ_CONTENT_SHA256.as_str())
-        && header_values(headers, &X_AMZ_CONTENT_SHA256).any(declares_signed_payload)
+        && header_values(headers, &X_AMZ_CONTENT_SHA256).any(is_hex_payload_hash)
 }
 
 /// Whether the parenthesised component list of a `Signature-Input` member —
@@ -840,6 +857,31 @@ mod tests {
         );
     }
 
+    /// The per-chunk markers are SigV4's own construct — the body is bound by
+    /// chunk signatures derived from a SigV4 seed signature, which a message
+    /// signature over the header value says nothing about. Only the hash form
+    /// binds bytes on its own, so only it counts here.
+    #[test]
+    fn message_signature_over_a_streaming_marker_leaves_the_body_uncovered() {
+        for marker in STREAMING_SIGNED_PAYLOAD_MARKERS {
+            assert_eq!(
+                scheme(
+                    &[
+                        (
+                            "signature-input",
+                            r#"sig1=("@method" "x-amz-content-sha256");created=1618884473"#
+                        ),
+                        ("signature", "sig1=:abc:"),
+                        ("x-amz-content-sha256", marker),
+                    ],
+                    "https://storage.example.com/b/k"
+                ),
+                None,
+                "{marker}"
+            );
+        }
+    }
+
     /// draft-cavage reaches the same conclusion through its `headers=` list.
     #[test]
     fn cavage_signature_over_a_payload_hash_signs_the_body() {
@@ -967,13 +1009,22 @@ mod tests {
     fn a_query_payload_hash_is_ignored_on_a_header_signed_request() {
         let auth = "AWS4-HMAC-SHA256 Credential=AKIA/20260907/us-east-1/s3/aws4_request, \
                     SignedHeaders=host;x-amz-date, Signature=abc";
-        assert_eq!(
-            scheme(
-                &[("authorization", auth)],
-                "https://s3.amazonaws.com/b/k?X-Amz-Content-Sha256=UNSIGNED-PAYLOAD"
-            ),
-            Some(SignedBodyScheme::AwsSigV4)
-        );
+        for query in [
+            "X-Amz-Content-Sha256=UNSIGNED-PAYLOAD",
+            // An `X-Amz-Algorithm` alongside the credential must not make the
+            // query declaration speak for the request either: the credential's
+            // own canonical request carries the payload hash.
+            "X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Content-Sha256=UNSIGNED-PAYLOAD",
+        ] {
+            assert_eq!(
+                scheme(
+                    &[("authorization", auth)],
+                    &format!("https://s3.amazonaws.com/b/k?{query}")
+                ),
+                Some(SignedBodyScheme::AwsSigV4),
+                "{query}"
+            );
+        }
     }
 
     /// A payload hash is an integrity header, not a signature: with no SigV4

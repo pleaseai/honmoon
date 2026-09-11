@@ -81,13 +81,16 @@ long-lived secrets.
   The `x-amz-content-sha256` header is the authoritative carrier of that declaration — it is the
   value a signer hashes into the canonical request — and every field value of it counts. The
   `X-Amz-Content-Sha256` query parameter is read only when the request sends no such header *and*
-  is presigned: presigning hoists the `x-amz-…` headers it signs into the query string, so a
+  is presigned **and carries no `AWS4-…` `Authorization`**: presigning hoists the `x-amz-…` headers
+  it signs into the query string, so a
   presigned upload that bound its payload may carry the hash there and send no header at all, and
   ignoring it would reach the `UNSIGNED-PAYLOAD` conclusion for a request that declared the
   opposite. A query parameter never contradicts the header, in either direction — otherwise an
   appended `?X-Amz-Content-Sha256=UNSIGNED-PAYLOAD` would have a signed body redacted and broken
   upstream, and on a header-signed request that parameter is a bare query argument the verifier
-  never reads as the payload hash.
+  never reads as the payload hash — and a header-signed credential carries its own payload hash in
+  its canonical request, so a query argument cannot speak for it even when the credential signs that
+  argument.
 
   **Exception:** `UNSIGNED-PAYLOAD` or `STREAMING-UNSIGNED-PAYLOAD…` declares the body explicitly
   out of the signature and wins over either carrier and either signal, so those stay redactable.
@@ -104,7 +107,10 @@ long-lived secrets.
   `headers="…"` parameter (tolerating whitespace around `=`) names a body-digest header.
 
 **A signature over `x-amz-content-sha256` counts for those two schemes too**, when that header
-carries a real payload hash (#81). The value is a hash of the bytes, so signing it binds the body
+carries a hex SHA-256 payload hash (#81). The `STREAMING-AWS4-…` markers do not count here, only on
+the SigV4 path: they describe a body bound by *chunk* signatures derived from a SigV4 seed
+signature, a construct that does not exist outside SigV4, so a message signature over that header
+value fixes a string and binds no bytes. The value is a hash of the bytes, so signing it binds the body
 exactly as signing `Content-Digest` does, and the scheme that signs it need not be SigV4 — an RFC
 9421 or draft-cavage covered list can name it on a request with no AWS authentication at all. The
 same header carrying `UNSIGNED-PAYLOAD` or `STREAMING-UNSIGNED-PAYLOAD…` is signed but binds
