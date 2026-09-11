@@ -1820,6 +1820,102 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_refusal_queued_at_the_writer_lock_sees_the_stream_break_under_it() {
+        // The mid-frame check has to happen *inside* the writer lock. A refusal
+        // that passes it on the way in, then waits for the lock the relay is
+        // holding while its own write fails, would otherwise append itself to
+        // the partial frame the relay just left behind.
+        let (link, mut peer) = loopback_link().await;
+        let held = Arc::clone(&link.writer).lock_owned().await;
+
+        let refusing = tokio::spawn({
+            let link = link.clone();
+            async move { write_refusal(&link, "honmoon: denied by policy").await }
+        });
+        // Current-thread runtime: one yield is enough to run the task up to the
+        // point where it blocks on the lock, which is its first await.
+        tokio::task::yield_now().await;
+
+        // The relay's write fails partway through a frame and it marks the
+        // stream unframed before letting go of the lock.
+        link.desynchronise();
+        drop(held);
+        refusing.await.unwrap().unwrap();
+
+        drop(link);
+        let mut trailing = Vec::new();
+        peer.read_to_end(&mut trailing).await.unwrap();
+        assert!(
+            trailing.is_empty(),
+            "a refusal that was already waiting for the lock must still be suppressed, \
+             got {trailing:?}"
+        );
+    }
+
+    /// An upstream that answers the instant a byte reaches it, by recording the
+    /// `ReadyForQuery` the relay would have delivered. This is the interleaving
+    /// a fast database on a multi-threaded runtime produces: the answer can be
+    /// on the client's socket before the forwarding task runs its next line.
+    struct AnswersBeforeTheWriteReturns {
+        link: ClientLink,
+        answered: bool,
+    }
+
+    impl AsyncWrite for AnswersBeforeTheWriteReturns {
+        fn poll_write(
+            mut self: std::pin::Pin<&mut Self>,
+            _cx: &mut std::task::Context<'_>,
+            buf: &[u8],
+        ) -> std::task::Poll<std::io::Result<usize>> {
+            if !self.answered {
+                self.answered = true;
+                self.link.delivered_message(true);
+            }
+            std::task::Poll::Ready(Ok(buf.len()))
+        }
+
+        fn poll_flush(
+            self: std::pin::Pin<&mut Self>,
+            _cx: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<std::io::Result<()>> {
+            std::task::Poll::Ready(Ok(()))
+        }
+
+        fn poll_shutdown(
+            self: std::pin::Pin<&mut Self>,
+            _cx: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<std::io::Result<()>> {
+            std::task::Poll::Ready(Ok(()))
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn an_answer_that_beats_the_forward_being_recorded_is_not_discarded() {
+        // Sync points are counted before the bytes go out precisely so this
+        // ordering is impossible. Counting afterwards lets the clamp in
+        // `delivered_message` read a stale `forwarded` and throw the answer
+        // away, and the counters stay one apart for the rest of the session —
+        // every later refusal then waits out the whole stall window for a
+        // response the client is already holding.
+        let (link, _peer) = loopback_link().await;
+        let mut client = std::io::Cursor::new(startup_packet(PROTOCOL_V3, b"user\0pg\0\0"));
+        let mut upstream = AnswersBeforeTheWriteReturns {
+            link: link.clone(),
+            answered: false,
+        };
+
+        assert!(startup(&mut client, &mut upstream, &link).await.unwrap());
+
+        let started = tokio::time::Instant::now();
+        link.await_forwarded_responses().await;
+        assert_eq!(
+            started.elapsed(),
+            std::time::Duration::ZERO,
+            "the handshake was answered, so nothing is owed and the refusal waits for nothing"
+        );
+    }
+
+    #[tokio::test]
     async fn a_relay_that_stops_releases_the_refusal_waiting_behind_it() {
         let state = GatewayState::new(deny_drop_policy());
         // The database goes away while the refusal is queued behind its answer.
