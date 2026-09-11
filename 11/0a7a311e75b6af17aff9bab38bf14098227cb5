@@ -1,0 +1,25 @@
+.please/docs/decisions/0009-body-only-inspection-contract.md
+  s_e38385e01b84cf::t_d7d028cf81d617 56-58,116-124
+README.md
+  s_e38385e01b84cf::t_d7d028cf81d617 211-220
+crates/honmoon-proxy/tests/redaction.rs
+  s_e38385e01b84cf::t_01f018a6bc1f55 1082-1115
+crates/honmoon-proxy/src/mitm.rs
+  s_e38385e01b84cf::t_d7d028cf81d617 584-588
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "110a7a311e75b6af17aff9bab38bf14098227cb5",
+  "prompts": {},
+  "sessions": {
+    "s_e38385e01b84cf": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "678fcee7-0bf2-4f0a-a4b0-121c1a922537",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
