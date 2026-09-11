@@ -1,0 +1,30 @@
+crates/honmoon-proxy/src/signed_body.rs
+  s_ac8e9c2c2a5dd9::t_908cf8b87dde8f 860-884,1012-1027
+  s_ac8e9c2c2a5dd9::t_dab599f69f8f2d 234-242,247,311,317-324,477-482,497
+.please/docs/decisions/0006-signed-body-requests-under-wire-redaction.md
+  s_c4758cf40f67ff::t_d867e22429c5b2 84-85,91-93,110-113
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "2af0aae1616716b49eebe1b241f9fb15cbd06dc3",
+  "prompts": {},
+  "sessions": {
+    "s_ac8e9c2c2a5dd9": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "c5df1453-9dba-4555-8d69-a50e1fe4d62b",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    },
+    "s_c4758cf40f67ff": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "5eee7cb5-9641-48c8-be75-ad8db0bdac05",
+        "model": "unknown"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
