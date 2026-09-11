@@ -229,7 +229,13 @@ const YAML_12_NUMBER = String.raw`[-+]?0o[0-7]+|[-+]?\d+(?:\.\d*)?(?:e[-+]?\d+)?
  * text — and only a plain one, since `"null"` is genuinely the string.
  */
 const NON_STRING_SCALAR = new RegExp(`^(?:${[
-  String.raw`~|null|true|false|yes|no|on|off`,
+  // `y` and `n` are in YAML 1.1's `bool` type alongside `yes`/`no`/`on`/`off`,
+  // though neither pyyaml nor Bun.YAML resolves them — pyyaml documents the
+  // deviation. Listed anyway, because the two costs are not symmetric: naming
+  // one reports a description that is the single letter `y`, which no summary
+  // is, while omitting one ships an index line the note's frontmatter does not
+  // yield to a reader that follows the type.
+  String.raw`[~yn]|null|true|false|yes|no|on|off`,
   YAML_11_INT,
   YAML_11_FLOAT,
   YAML_12_NUMBER,

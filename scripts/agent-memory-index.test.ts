@@ -84,7 +84,7 @@ metadata:
   // it made a note with no summary list as though the comment were the summary.
   test('treats a comment-only value as no value at all', () => {
     const { scalars, problems } = parseFrontmatter(`---
-name: n
+name: a-note
 description: # write this later
 metadata:
   type: project
@@ -92,7 +92,7 @@ metadata:
 `)
     expect(scalars.description).toBeUndefined()
     expect(noteEntry('n.md', `---
-name: n
+name: a-note
 description: # write this later
 metadata:
   type: project
@@ -105,7 +105,7 @@ metadata:
   // `fixed in PR #155, so do X` as `fixed in PR` — this reader keeps the line,
   // and the two disagreeing about one claim is the drift the index exists to end.
   test('reports an unquoted value whose text YAML would cut at a comment', () => {
-    const text = note('n', 'placeholder').replace(
+    const text = note('a-note', 'placeholder').replace(
       'description: placeholder',
       'description: fixed in PR #155, so do X',
     )
@@ -118,7 +118,7 @@ metadata:
   test('accepts the quoted form, and a `#` with no space before it', () => {
     const quoted = [String.raw`'fixed in PR #155, so do X'`, String.raw`"fixed in PR #155, so do X"`]
     for (const value of [...quoted, 'covers (#154) fully']) {
-      const text = note('n', 'placeholder').replace('description: placeholder', `description: ${value}`)
+      const text = note('a-note', 'placeholder').replace('description: placeholder', `description: ${value}`)
       expect(parseFrontmatter(text).problems).toEqual([])
     }
   })
@@ -126,7 +126,7 @@ metadata:
   // Inside a block scalar `#` is literal, so the report must not fire there.
   test('does not report a `#` inside a block scalar, where it is literal', () => {
     expect(parseFrontmatter(`---
-name: n
+name: a-note
 description: >
   fixed in PR #155, so do X
 metadata:
@@ -140,8 +140,8 @@ metadata:
   test('reports a value YAML resolves to something that is not text', () => {
     // `1e3` is a string under YAML 1.1 and the number 1000 under 1.2's core
     // schema — two readers disagreeing is reason to report, not to pick a side.
-    for (const value of ['null', '~', 'true', 'no', '42', '3.14', '.inf', '1e3', '-1E3']) {
-      const text = note('n', 'placeholder').replace('description: placeholder', `description: ${value}`)
+    for (const value of ['null', '~', 'true', 'no', '42', '3.14', '.inf', '1e3', '-1E3', 'y', 'N']) {
+      const text = note('a-note', 'placeholder').replace('description: placeholder', `description: ${value}`)
       expect(parseFrontmatter(text).problems).toEqual([expect.stringContaining('rather than text')])
     }
   })
@@ -152,7 +152,7 @@ metadata:
   // for the reason `1e3` is — the two readers disagree about the same bytes.
   test('reports the YAML 1.1 number spellings 1.2 leaves as text', () => {
     for (const value of ['1_000', '0xDE_AD', '0b1_01', '01_7', '+1_0', '100_', '1_0.5', '12:00', '190:20:30', '12:00.5', '2026-09-12', '2026-9-1t10:00:00.5-05:00']) {
-      const text = note('n', 'placeholder').replace('description: placeholder', `description: ${value}`)
+      const text = note('a-note', 'placeholder').replace('description: placeholder', `description: ${value}`)
       expect(parseFrontmatter(text).problems).toEqual([expect.stringContaining('rather than text')])
     }
   })
@@ -166,14 +166,14 @@ metadata:
   // whole file unreadable rather than merely misread.
   test('reports a plain description holding a mapping separator', () => {
     for (const value of ['summary: detail', 'summary:']) {
-      const text = note('n', 'placeholder').replace('description: placeholder', `description: ${value}`)
+      const text = note('a-note', 'placeholder').replace('description: placeholder', `description: ${value}`)
       expect(parseFrontmatter(text).problems).toEqual([expect.stringContaining('mapping')])
     }
   })
 
   // A colon only opens a mapping when a space or the line end follows it.
   test('leaves a colon alone where YAML does', () => {
-    const text = note('n', 'placeholder').replace('description: placeholder', 'description: ratio 3:1 and summary:detail')
+    const text = note('a-note', 'placeholder').replace('description: placeholder', 'description: ratio 3:1 and summary:detail')
     expect(parseFrontmatter(text).problems).toEqual([])
   })
 
@@ -183,7 +183,7 @@ metadata:
   // it cannot be encoded as UTF-8. Bun.YAML rejects the input outright.
   test('reports a double-quoted escape naming a surrogate code point', () => {
     for (const value of [String.raw`"\uD800"`, String.raw`"\U0000DFFF"`]) {
-      const text = note('n', 'placeholder').replace('description: placeholder', `description: ${value}`)
+      const text = note('a-note', 'placeholder').replace('description: placeholder', `description: ${value}`)
       expect(parseFrontmatter(text).problems).toEqual([expect.stringContaining('surrogate')])
     }
   })
@@ -194,7 +194,7 @@ metadata:
   // failing CI on a comment YAML had already discarded.
   test('drops a comment line following a plain scalar', () => {
     const text = `---
-name: n
+name: a-note
 description: first
   # note
 metadata:
@@ -209,7 +209,7 @@ metadata:
   test('keeps block scalar content literal', () => {
     for (const [content, expected] of [['&notanchor', '&notanchor'], ['"not quoted"', '"not quoted"'], ['!tag', '!tag']]) {
       const text = `---
-name: n
+name: a-note
 description: |
   ${content}
 metadata:
@@ -225,7 +225,7 @@ metadata:
   // over a value the index never renders.
   test('ignores top-level fields the index does not read', () => {
     const text = `---
-name: n
+name: a-note
 description: a summary
 version: 2
 tags: [a, b]
@@ -236,14 +236,14 @@ tags: [a, b]
 
   test('reports a flow collection used as a description', () => {
     for (const value of ['[summary]', '{summary: text}']) {
-      const text = note('n', 'placeholder').replace('description: placeholder', `description: ${value}`)
+      const text = note('a-note', 'placeholder').replace('description: placeholder', `description: ${value}`)
       expect(parseFrontmatter(text).problems).toEqual([expect.stringContaining('not text')])
     }
   })
 
   test('leaves text alone even when it opens with such a word', () => {
     for (const value of ['null and more', '42 ways to fail', String.raw`"null"`, String.raw`'42'`]) {
-      const text = note('n', 'placeholder').replace('description: placeholder', `description: ${value}`)
+      const text = note('a-note', 'placeholder').replace('description: placeholder', `description: ${value}`)
       expect(parseFrontmatter(text).problems).toEqual([])
     }
   })
@@ -278,7 +278,7 @@ describe('noteEntry', () => {
   })
 
   test('reports a missing description, because the index text now comes from it', () => {
-    const entry = noteEntry('n.md', '---\nname: n\n---\n\nbody\n')
+    const entry = noteEntry('n.md', '---\nname: a-note\n---\n\nbody\n')
     expect(entry.problems).toEqual([
       expect.stringContaining('`description:`'),
     ])
@@ -316,10 +316,10 @@ describe('renderIndex', () => {
       'two words.md': 'two%20words.md',
     }
     for (const [file, target] of Object.entries(encoded)) {
-      expect(renderIndex([noteEntry(file, note('n', 'a note'))])).toContain(`](${target})`)
+      expect(renderIndex([noteEntry(file, note('a-note', 'a note'))])).toContain(`](${target})`)
     }
     // An ordinary name is untouched — encoding is not applied blindly.
-    expect(renderIndex([noteEntry('plain_note.md', note('n', 'a note'))]))
+    expect(renderIndex([noteEntry('plain_note.md', note('a-note', 'a note'))]))
       .toContain('](plain_note.md)')
   })
 
@@ -327,7 +327,7 @@ describe('renderIndex', () => {
   // encoding the code unit of a non-breaking space would emit `%A0`, which is
   // not the byte sequence the path is made of.
   test('encodes non-ASCII whitespace as UTF-8 bytes, not code units', () => {
-    expect(renderIndex([noteEntry('a\u00A0b.md', note('n', 'a note'))]))
+    expect(renderIndex([noteEntry('a\u00A0b.md', note('a-note', 'a note'))]))
       .toContain('](a%C2%A0b.md)')
   })
 
@@ -337,8 +337,8 @@ describe('renderIndex', () => {
   })
 
   test('still lists a note with no description, so nothing becomes unreachable', () => {
-    const line = renderIndex([noteEntry('n.md', '---\nname: n\n---\n\nbody\n')])
-    expect(line).toContain('- [n](n.md) — (no description')
+    const line = renderIndex([noteEntry('n.md', '---\nname: a-note\n---\n\nbody\n')])
+    expect(line).toContain('- [a-note](n.md) — (no description')
   })
 })
 
@@ -427,7 +427,7 @@ describe('trackedIndexFiles', () => {
 
   test('ignores the notes themselves — only the index is derived', () => {
     const path = join(MEMORY_ROOT, 'some-agent', 'n.md')
-    writeFileSync(join(repo, path), note('n', 'a note'))
+    writeFileSync(join(repo, path), note('a-note', 'a note'))
     commit(path)
     expect(trackedIndexFiles(repo)).toEqual([])
   })
@@ -554,7 +554,7 @@ describe('parseFrontmatter — quoted scalars', () => {
   // Unescaping only `\"` and `\\` left a literal `\n` in the index where the
   // note's own frontmatter said a line break.
   test('decodes the escapes of a double-quoted description', () => {
-    const text = note('n', 'placeholder').replace(
+    const text = note('a-note', 'placeholder').replace(
       'description: placeholder',
       String.raw`description: "a\tb: \"quoted\", caf\u00E9, back\\slash"`,
     )
@@ -566,7 +566,7 @@ describe('parseFrontmatter — quoted scalars', () => {
   // YAML writes hex escapes in either case; only accepting A-F left `caf\u00e9`
   // in the index as the eight characters the note had typed.
   test('decodes hex escapes written in lower case', () => {
-    const text = note('n', 'placeholder').replace(
+    const text = note('a-note', 'placeholder').replace(
       'description: placeholder',
       String.raw`description: "caf\u00e9 \x0a caf\u00E9"`,
     )
@@ -576,7 +576,7 @@ describe('parseFrontmatter — quoted scalars', () => {
   // `\U` admits eight digits, so it can name something that is not a code
   // point. That is a note to report, not a crash that takes every note with it.
   test('leaves an out-of-range code point alone instead of throwing', () => {
-    const text = note('n', 'placeholder').replace(
+    const text = note('a-note', 'placeholder').replace(
       'description: placeholder',
       String.raw`description: "over \UFFFFFFFF the end"`,
     )
@@ -591,7 +591,7 @@ describe('parseFrontmatter — quoted scalars', () => {
 
   // An escape YAML does not define is invalid YAML, not something to guess at.
   test('leaves an undefined escape exactly as written', () => {
-    const text = note('n', 'placeholder').replace(
+    const text = note('a-note', 'placeholder').replace(
       'description: placeholder',
       String.raw`description: "a\qb"`,
     )
@@ -606,7 +606,7 @@ describe('parseFrontmatter — quoted scalars', () => {
     // The third and fourth end with a quote character that closes nothing: it
     // is escaped. `endsWith` cannot tell those from a terminator.
     for (const broken of ['"unfinished', '\'unfinished', String.raw`"unfinished \"`, '"', String.raw`"a\"`]) {
-      const text = note('n', 'placeholder').replace('description: placeholder', `description: ${broken}`)
+      const text = note('a-note', 'placeholder').replace('description: placeholder', `description: ${broken}`)
       expect(parseFrontmatter(text).problems).toEqual([expect.stringContaining('never closes it')])
     }
   })
@@ -619,7 +619,7 @@ describe('parseFrontmatter — quoted scalars', () => {
   test('describes a malformed scalar as the kind it actually is', () => {
     const report = (value: string): string =>
       parseFrontmatter(`---
-name: n
+name: a-note
 description: ${value}
 metadata:
   type: project
@@ -642,7 +642,7 @@ metadata:
   // which is what these descriptions are full of.
   test('accepts a quoted scalar followed by an inline comment', () => {
     const withComment = (value: string): string =>
-      note('n', 'placeholder').replace('description: placeholder', `description: ${value}`)
+      note('a-note', 'placeholder').replace('description: placeholder', `description: ${value}`)
 
     expect(parseFrontmatter(withComment('"the text" # a trailing note')).scalars.description)
       .toBe('the text')
@@ -663,7 +663,7 @@ metadata:
       '!!str concrete summary': 'tag',
     }
     for (const [value, name] of Object.entries(cases)) {
-      const text = note('n', 'placeholder').replace('description: placeholder', `description: ${value}`)
+      const text = note('a-note', 'placeholder').replace('description: placeholder', `description: ${value}`)
       expect(parseFrontmatter(text).problems).toEqual([expect.stringContaining(name)])
     }
   })
@@ -672,7 +672,7 @@ metadata:
   // every other continuation joins with a space.
   test('joins an escaped line break with nothing, not a space', () => {
     const { scalars, problems } = parseFrontmatter(`---
-name: n
+name: a-note
 description: "one\\
   two"
 metadata:
@@ -687,7 +687,7 @@ metadata:
   // folds with a space like any other.
   test('still folds with a space after an escaped backslash', () => {
     const { scalars } = parseFrontmatter(`---
-name: n
+name: a-note
 description: "one\\\\
   two"
 metadata:
@@ -700,7 +700,7 @@ metadata:
   // A note whose frontmatter this reader and the real one may read differently
   // has to fail the gate, not list with text neither of them agreed on.
   test('an undefined escape makes the note fail --check', () => {
-    const text = note('n', 'placeholder').replace(
+    const text = note('a-note', 'placeholder').replace(
       'description: placeholder',
       String.raw`description: "a\qb"`,
     )
@@ -712,7 +712,7 @@ describe('noteEntry — one line per entry', () => {
   // An index entry is one line of a markdown list. A decoded `\n` would split
   // the item and orphan everything after it, so the flattening is structural.
   test('flattens a description that decodes to more than one line', () => {
-    const text = note('n', 'placeholder').replace(
+    const text = note('a-note', 'placeholder').replace(
       'description: placeholder',
       String.raw`description: "first\nsecond   third"`,
     )
@@ -727,7 +727,7 @@ describe('rebuild — the index file itself', () => {
   beforeEach(() => {
     root = mkdtempSync(join(tmpdir(), 'agent-memory-symlink-'))
     mkdirSync(join(root, 'some-agent'))
-    writeFileSync(join(root, 'some-agent', 'n.md'), note('n', 'a note'))
+    writeFileSync(join(root, 'some-agent', 'n.md'), note('a-note', 'a note'))
   })
 
   afterEach(() => rmSync(root, { recursive: true, force: true }))
@@ -777,7 +777,7 @@ describe('rebuild — the index file itself', () => {
   // disk by then.
   test('writes no index at all when any agent refuses', () => {
     mkdirSync(join(root, 'z-agent'))
-    writeFileSync(join(root, 'z-agent', 'n.md'), note('n', 'a note'))
+    writeFileSync(join(root, 'z-agent', 'n.md'), note('a-note', 'a note'))
     symlinkSync(join(root, 'elsewhere.txt'), join(root, 'z-agent', INDEX_NAME))
 
     const { written } = rebuild(root)
