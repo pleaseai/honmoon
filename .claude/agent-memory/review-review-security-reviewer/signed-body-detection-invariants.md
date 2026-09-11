@@ -29,6 +29,14 @@ genuine scheme evidence, not a single attacker-placeable token.
 is a bypass. Also check that the set the rewrite mutates (`REWRITTEN_FRAMING_HEADERS`,
 `BODY_DIGEST_HEADERS`) is exactly the set detection asks about.
 
+**Decision input vs. strip list (#116, PR #146):** `mitm::rewritten_headers` = `reframed_headers`
+(framing headers the rewrite *would actually change*) + the `BODY_DIGEST_HEADERS` the request
+*carries* (`headers.contains_key`). The strip loop removes every `BODY_DIGEST_HEADERS` name
+unconditionally, but the decision must gate on carriage: refusing over a signature naming a header
+the client never sent would be a `403` for a strip that removes nothing. Only SigV4 with
+`UNSIGNED-PAYLOAD` reaches this branch over a digest — an RFC 9421 / cavage signature over a digest
+header is body-signed and takes the earlier branch.
+
 Known non-security gaps (compat, not leaks): `x-amz-content-sha256` is read via `header_str`, i.e.
 only the first field value; and a payload hash carried as a *query* parameter on a presigned URL is
 not considered, so such a body is redacted and the upstream rejects it.
