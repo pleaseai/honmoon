@@ -120,15 +120,27 @@ sentence has been wrong, so it is enumerated instead:
 
 | Field | Scanned for PII or secrets? | Does it reach the upstream? |
 | --- | --- | --- |
-| Request body | Yes, within the 2 MiB cap and the fail-open cases above | Rewritten when redaction fires |
+| Request body | Yes — but only one that is buffered within the 2 MiB cap, decodes within it, and is UTF-8 text (see the note below) | Rewritten when redaction fires |
 | Ordinary header (`X-Note:`) | **Never** | Yes |
 | Body-digest header (`Digest`, `Content-Digest`, `Content-MD5`, `Repr-Digest`) | **Never** | Stripped when the body is redacted |
 | Framing header (`Content-Length`, `Content-Encoding`, `Transfer-Encoding`) | **Never** — read as metadata only | Re-framed when the body is redacted |
 | Request trailer | **Never** | Only on a pass-through request, and only where the upstream leg's framing carries trailers at all (see issue #136) |
 
+**The body row's "yes" is itself conditional**, and the four fail-open cases above are not scanned
+alternatives to it — three of them mean no finding is possible at all. An over-cap body never
+reaches the scanner (`scanned` is `None`); a decoded body that overflows the cap is discarded
+rather than judged on a truncated prefix (`StrictDecode::Overflow` → `inspected: None`); a
+non-UTF-8 body is handed to the scanner but `utf8_prefix` yields no text. In all three `pii` ends
+up empty, so `pii.count > 0` cannot block them any more than it can block a trailer — the `warn` is
+the only thing that marks them. The one genuine exception is an **undecodable `Content-Encoding`**,
+which falls back to scanning the raw bytes (deliberately, so a plaintext body cannot evade the scan
+by claiming to be compressed); that one is a redaction fail-open, not an inspection skip.
+
 **Only the middle column is this ADR's contract.** The right-hand column is transport behaviour that
-varies with the redaction path and the upstream protocol; it is recorded so that nobody reads the
-middle column as a delivery guarantee, which is the error this document kept making about itself.
+varies with the redaction path and the upstream protocol, and it presupposes `--redact-secrets`:
+without it no rewrite happens, so nothing is stripped or re-framed and a trailer rides through on
+every branch. It is recorded so that nobody reads the middle column as a delivery guarantee, which
+is the error this document kept making about itself.
 
 **And `pii.count == 0` does not mean "no secrets here".** `eval_program` always binds `pii` with
 its empty default so absence conditions can be written at all, so an unscanned trailer leaves the
