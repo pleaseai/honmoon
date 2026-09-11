@@ -168,21 +168,43 @@ function unescapeDoubleQuoted(body: string, onInvalid: (escape: string) => void)
  * The memory tool writes plain scalars, but a `description:` containing `": "`
  * has to be quoted to stay valid YAML, so both forms must round-trip.
  */
+/**
+ * A whole double- or single-quoted scalar, with the body captured.
+ *
+ * Matched as a unit rather than tested with `startsWith`/`endsWith`, which
+ * cannot see either end of the interesting cases: `"unfinished \"` *ends* with
+ * a quote that is escaped and therefore closes nothing, while a valid
+ * `"text" # note` does not end with one at all. Consuming the body as "not the
+ * quote, or an escape and whatever it escapes" settles both, and the trailing
+ * group is YAML's inline comment — which is only a comment out here, never
+ * inside the quotes, where these descriptions keep their issue references.
+ */
+const DOUBLE_QUOTED = /^"((?:[^"\\]|\\[\s\S])*)"(?:\s+#.*)?$/
+const SINGLE_QUOTED = /^'((?:[^']|'')*)'(?:\s+#.*)?$/
+
 function unquote(value: string, onInvalid: (problem: string) => void): string {
-  for (const quote of ['"', '\'']) {
-    if (!value.startsWith(quote)) {
-      continue
-    }
-    // A plain scalar cannot begin with a quote, so one that does is a quoted
-    // scalar — and if it does not close, the note's YAML does not parse at all.
-    // Returning it raw would list the note as though it were fine.
-    if (value.length < 2 || !value.endsWith(quote)) {
-      onInvalid(`opens with ${quote} and never closes it, so the frontmatter is not valid YAML`)
+  // A plain scalar cannot begin with a quote, so one that does is a quoted
+  // scalar, and one that does not parse as a whole quoted scalar is a note
+  // whose YAML does not load. Returning it raw would list it as though it were
+  // fine.
+  if (value.startsWith('"')) {
+    const body = DOUBLE_QUOTED.exec(value)?.[1]
+    if (body === undefined) {
+      onInvalid('opens with " and never closes it, so the frontmatter is not valid YAML')
       return value
     }
-    const body = value.slice(1, -1)
-    return quote === '"' ? unescapeDoubleQuoted(body, onInvalid) : body.replace(/''/g, '\'')
+    return unescapeDoubleQuoted(body, onInvalid)
   }
+
+  if (value.startsWith('\'')) {
+    const body = SINGLE_QUOTED.exec(value)?.[1]
+    if (body === undefined) {
+      onInvalid('opens with \' and never closes it, so the frontmatter is not valid YAML')
+      return value
+    }
+    return body.replace(/''/g, '\'')
+  }
+
   return value
 }
 

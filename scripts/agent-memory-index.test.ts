@@ -407,10 +407,28 @@ describe('parseFrontmatter — quoted scalars', () => {
   // A quote that never closes is not a plain scalar — the note's YAML does not
   // parse at all, so listing it as though it were fine hides that.
   test('reports a quoted scalar that never closes', () => {
-    for (const broken of ['"unfinished', '\'unfinished', '"']) {
+    // The third and fourth end with a quote character that closes nothing: it
+    // is escaped. `endsWith` cannot tell those from a terminator.
+    for (const broken of ['"unfinished', '\'unfinished', String.raw`"unfinished \"`, '"', String.raw`"a\"`]) {
       const text = note('n', 'placeholder').replace('description: placeholder', `description: ${broken}`)
       expect(parseFrontmatter(text).problems).toEqual([expect.stringContaining('never closes it')])
     }
+  })
+
+  // Valid YAML: the comment is outside the quotes. Rejecting it would fail a
+  // note that loads perfectly well — and `#` inside the quotes stays literal,
+  // which is what these descriptions are full of.
+  test('accepts a quoted scalar followed by an inline comment', () => {
+    const withComment = (value: string): string =>
+      note('n', 'placeholder').replace('description: placeholder', `description: ${value}`)
+
+    expect(parseFrontmatter(withComment('"the text" # a trailing note')).scalars.description)
+      .toBe('the text')
+    expect(parseFrontmatter(withComment('\'the text\' # a trailing note')).scalars.description)
+      .toBe('the text')
+    expect(parseFrontmatter(withComment('"see #129 for why" # a trailing note')).scalars.description)
+      .toBe('see #129 for why')
+    expect(parseFrontmatter(withComment('"the text" # a trailing note')).problems).toEqual([])
   })
 
   // YAML drops an escaped line break *and* the indentation after it, where
