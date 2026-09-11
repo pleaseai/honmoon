@@ -219,8 +219,8 @@ logged**, because nothing failed. Lower the floor if you want those redacted.
 the only way content reaches the upstream unredacted, and this list does not claim to be
 exhaustive.** Inspection covers request **bodies** only: header and
 trailer values are never scanned for PII or secrets and never redacted — including a secret placed
-in a chunked trailer (`Trailer: X-Note` followed by `0\r\nX-Note: <secret>`). Unlike every
-redaction case above, no `warn` is logged about their contents: header-shaped fields were never in
+in a chunked trailer (`Trailer: X-Note` followed by `0\r\nX-Note: <secret>`). Unlike the *loud*
+redaction cases above, no `warn` is logged about their contents: header-shaped fields were never in
 scope, so there is nothing to fail — the scan is not failing open, it never applied. Two of those
 warns are triggered by a header — `Content-Range`'s presence, an unparseable
 `Content-Encoding` — but each reports a skipped *body* rewrite, not an unscanned header value.

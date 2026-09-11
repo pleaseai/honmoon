@@ -20,8 +20,10 @@ That leaves **request trailers** — the chunked trailer section, `Trailer: X-No
 `0\r\nX-Note: <secret>\r\n\r\n` — unscanned and unredacted, and on a request honmoon does not
 rewrite, passed to the upstream that way. `facts.pii` stays empty, so a `pii.count > 0` rule cannot
 fire on trailer content, and nothing a *positive* finding would have caused — no deny, no pause, no
-audit attributable to the secret — happens. (An absence rule such as `pii.count == 0` still fires
-and still audits its own verdict; it simply reads the request as clean. See Consequences.)
+audit attributable to the secret — happens. (An absence rule such as `pii.count == 0` still fires;
+it simply reads the request as clean. A matching `deny`/`pause` records its verdict like any other,
+while a matching `allow` stays unaudited, since `inspect_body` records a clean Allow only when
+`pii.count > 0`. See Consequences.)
 
 ### #130 did not create this
 

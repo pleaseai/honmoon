@@ -22,7 +22,9 @@ never signed and the upstream rejected the signature.
   trailers are never scanned or redacted. Trailer content is therefore an unscanned egress channel,
   but only at parity with request headers, which were already unscanned. **ADR-0009 (#133, accepted
   2026-09-11) makes this the stated contract**: bodies only, header-shaped fields out of scope,
-  silent (no warn, no audit, `pii.count` stays 0), pinned by
+  silent (no warn about their contents, `pii.count` stays 0, and no audit *attributable to a
+  positive finding* — an absence rule `pii.count == 0 -> deny`/`pause` does match a trailer-only
+  secret and does record its verdict; only a clean `allow` stays unaudited), pinned by
   `trailer_content_is_outside_the_inspection_contract` in `tests/redaction.rs`. Treat a future
   "scan the trailers" change as a deliberate contract change, not a bug fix. Two caveats the ADR
   states more strongly than the code supports: redacting a trailer is only blocked for *signed*
