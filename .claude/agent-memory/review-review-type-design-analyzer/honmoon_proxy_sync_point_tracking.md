@@ -22,13 +22,35 @@ one type.
 holds.** It used to be written *and* read only from `client_to_upstream`, so
 same-task program order was the whole argument. That stopped being true when
 `delivered_message` began reading it (inside its `send_modify`) to clamp the
-sync-point count — the relay's task reads it now. `Relaxed` is still correct,
-but because nothing is published *through* it: it carries no pointer or payload
-whose visibility another thread depends on, so no happens-before edge is needed.
-And because it only ever rises, a stale read is always **low**, which makes the
-clamp decline an increment rather than allow a bad one — the safe direction. If
-a future edit ever publishes data alongside it, or makes it non-monotonic, that
-argument dies with the change.
+sync-point count — the relay's task reads it now. `Relaxed` is still correct, but the
+reasons are not co-equal and it matters which one you are relying on.
+
+**The load-bearing reason: `forwarded` only ever rises.** `Relaxed` gives
+atomicity and per-location modification order, not a happens-before edge, so the
+relay may read a stale value. Because the counter is monotonic, a stale read is
+always *low*, and a low read makes the clamp `*count < forwarded` **decline** an
+increment where it might otherwise allow one. Declining costs a stall; allowing
+costs the ordering guarantee. That is the same safe-direction argument as the
+rest of the design, and it stands on its own.
+
+**A supporting reason: nothing is published *through* it.** It carries no
+pointer or payload whose visibility another thread depends on, so no
+acquire/release edge is needed to transfer data. Note what this does and does
+not establish — it says an edge is unnecessary, not that the relay sees the
+latest value. On its own it is not enough.
+
+**A practical reinforcement that is not part of the argument:** between the
+increment and the relay's read sit two syscalls, the wire, and the database's
+own turnaround, which supply synchronisation far stronger than the atomic would.
+True today, but an argument from the environment rather than from the memory
+model — a refactor that moves the increment, or a test harness that
+short-circuits the loopback, removes it without touching this line. Do not lean
+on it.
+
+So: if a future edit makes `forwarded` non-monotonic, the real argument is gone
+and `Relaxed` must be revisited — not because of data visibility, but because a
+stale read would then be able to err high. Anyone reaching for `Acquire`/`Release`
+"to be safe" should know that is what they would be replacing.
 
 **Known gap (reported, moderate confidence, not critical)**: the invariant is
 now *stated* — a `# Invariant` section on `Delivered` names it as
