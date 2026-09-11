@@ -72,8 +72,9 @@ flowchart TB
 <!-- Sources: ARCHITECTURE.md:30-49, crates/honmoon-cli/src/main.rs:9-11, crates/honmoon-mgmt/src/lib.rs:25-27 -->
 
 The critical invariant: **`honmoon-core` is transport-agnostic.** It has no `tokio` or
-networking dependency — its `Cargo.toml` pulls only `serde`, `serde_json`, `serde_yaml`,
-`thiserror`, `time`, `tracing`, and `cel-interpreter`. The proxy feeds it `Facts` and consumes a `Verdict`. This is
+networking dependency — its `Cargo.toml` pulls parsing and policy crates such as `serde`,
+`serde_yaml`, `cel`, `regex`, and `sqlparser`, and nothing that opens a socket. The proxy feeds it
+`Facts` and consumes a `Verdict`. This is
 what lets the entire policy engine be unit-tested with zero I/O
 ([ARCHITECTURE.md:47-48](https://github.com/pleaseai/honmoon/blob/main/ARCHITECTURE.md#L47-L48), [tech-stack.md:18-19](https://github.com/pleaseai/honmoon/blob/main/.please/docs/knowledge/tech-stack.md#L18-L19)).
 

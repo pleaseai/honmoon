@@ -84,7 +84,7 @@ case-insensitive on both sides ([engine.rs:56-64](https://github.com/pleaseai/ho
 The `*.suffix` form matches the bare `suffix` **and** any `*.suffix` subdomain
 ([engine.rs:59-60](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/engine.rs#L59-L60)).
 Within the egress block, **deny wins over allow**, and an unmatched domain falls through to
-`egress.default` ([engine.rs:30-45](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/engine.rs#L30-L45)):
+`egress.default` ([engine.rs:147-162](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/engine.rs#L147-L162)):
 
 ```mermaid
 flowchart TD
@@ -178,7 +178,7 @@ error** — the policy is rejected outright
 
 Each rule binds a [CEL](https://github.com/google/cel-spec) condition to a named `endpoint`.
 Rules are evaluated **in order**; the first rule whose endpoint matches and whose condition
-evaluates to `true` wins ([engine.rs:19-28](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/engine.rs#L19-L28)).
+evaluates to `true` wins ([engine.rs:100-136](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/engine.rs#L100-L136)).
 If no rule matches, the egress block decides.
 
 | Rule field | Meaning | Example | Source |
@@ -235,11 +235,10 @@ Two details worth knowing when you read (or don't read) that warning:
 
 ::: danger Never leave `condition` blank
 `condition: ""` is not a way to say "always", and it is not a safe no-op either. A blank string
-is not valid CEL, so the rule could never match — and it does not even decline the way
-[Fail-closed semantics](#fail-closed-semantics) below describes, because `Program::compile("")`
-panics instead of returning an error. So Honmoon refuses to load a policy containing one, rather
-than crashing on the first request that reaches the rule
-([#151](https://github.com/pleaseai/honmoon/issues/151)):
+carries no expression, so the rule can never match — it would sit in your policy looking active
+while doing nothing, and an inert rule is indistinguishable from a rule that simply did not match.
+So Honmoon refuses to load a policy containing one, where you see it, rather than letting it go
+unnoticed in production ([#151](https://github.com/pleaseai/honmoon/issues/151)):
 
 ```
 Error: rule `blank` (rules[0]) has a blank `condition`; write `"true"` for a rule that always matches
@@ -247,8 +246,9 @@ Error: rule `blank` (rules[0]) has a blank `condition`; write `"true"` for a rul
 
 Whitespace does not help — `" "`, `"\n"` and a non-breaking or ideographic space are rejected the
 same way. A condition made only of **zero-width** characters is not, though: it looks empty in an
-editor but is not whitespace, so it loads and then crashes like any other unparseable condition
-(see [Fail-closed semantics](#fail-closed-semantics)). Give every rule a real condition; write
+editor but is not whitespace, so it loads, and the CEL compiler then rejects it like any other
+unparseable condition — the rule declines and the egress default answers (see
+[Fail-closed semantics](#fail-closed-semantics)). Give every rule a real condition; write
 `"true"` when you mean always.
 :::
 
@@ -281,32 +281,30 @@ http.method == 'POST' && http.body_size > 10485760
 Honmoon is designed to **fail closed**: a rule whose condition fails to compile, or references a
 fact that has not been populated, simply **does not match** — it can never turn a `deny` into an
 `allow`. Combined with the `deny`-by-default egress verdict, an absent or broken rule is always
-the safe outcome ([engine.rs:35-37](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/engine.rs#L35-L37), [engine.rs:167-209](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/engine.rs#L167-L209)).
+the safe outcome ([engine.rs:51-53](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/engine.rs#L51-L53), [engine.rs:183-226](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/engine.rs#L183-L226)).
 
-Read "fails to compile" there literally: it means the CEL compiler **returned an error**. Not
-every malformed condition does. Some panic instead, and a panic is not a rule that fails closed —
-it is a crash on the decision path. Two limits follow, and both are in the compiler rather than
-in Honmoon:
+Read "fails to compile" there literally: the CEL compiler **returns an error**, Honmoon logs a
+warning naming the rule, and the rule goes inert. It cannot match, so the `deny`-by-default egress
+verdict answers instead.
 
-- A **blank** condition panics, and Honmoon catches that case at the only point where it can:
-  `Policy::from_yaml` refuses to load a policy containing one, so it never reaches evaluation.
+This used to carry an exception worth knowing about. On the previous CEL crate a whole class of
+malformed condition **panicked** rather than returning an error — crashing the decision path
+instead of failing closed — and the class was wide: any single character the lexer could not begin
+a token with, including invisible ones such as `U+200B` or a stray byte-order mark that render as
+nothing in an editor. That was tracked as
+[#154](https://github.com/pleaseai/honmoon/issues/154) and is **fixed**: every one of those inputs
+now returns an error and declines like any other unparseable condition.
+
+Two things still hold, and both are worth keeping in mind when authoring:
+
+- A **blank** condition is rejected at load. `Policy::from_yaml` refuses a policy containing one,
+  because a rule with no expression can never match and would sit in your policy looking active.
   See [Rule order and unreachable rules](#rule-order-and-unreachable-rules) above.
-- **Other** malformed conditions panic the same way and are *not* detected at load. A rule
-  carrying one loads cleanly and crashes the decision path when a request reaches it. Tracked in
-  [#154](https://github.com/pleaseai/honmoon/issues/154). The compiler panics on any single
-  character it cannot begin a token with, so this covers far more than obvious typos like `"&&"`
-  or `")"`: an unterminated string literal, a condition that is only a comment, a stray `"@"` or
-  `"§"`, and — the one to watch — a condition made only of **zero-width** characters such as
-  `U+200B` or a stray byte-order mark. That last one renders as an empty box or as nothing at all,
-  so it reads exactly like the blank condition caught above while being, to the compiler, an
-  ordinary unparseable one.
-
-  Honmoon does not extend the blank check to cover it, because the line would be arbitrary:
-  `U+200B` panics for the same reason `"@"` does, and neither is whitespace. Separating either
-  from valid CEL without compiling it means parsing CEL.
-
-  Most syntax errors *do* return an error and do fail closed — `"(true"` and `"a[]"`, for
-  instance — but do not rely on it: give every rule a condition you have seen evaluate.
+- **Neither the loader nor the JSON Schema validates CEL.** A non-blank condition that is not a
+  valid expression — `"&&"`, a stray `"@"`, a condition made only of zero-width characters — loads
+  cleanly, and you find out it is inert from a warning in the log rather than from a load failure.
+  It fails closed, but it is not doing what you wrote it to do. Give every rule a condition you
+  have seen evaluate.
 
 ```mermaid
 sequenceDiagram
@@ -329,7 +327,7 @@ sequenceDiagram
 
 This behavior is locked by tests: `unknown_fact_reference_does_not_match` proves a condition
 referencing an unpopulated `sql` fact falls through to the egress default
-([engine.rs:372-380](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/engine.rs#L372-L380)).
+([engine.rs:464-472](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/engine.rs#L464-L472)).
 
 ## Validating a policy
 

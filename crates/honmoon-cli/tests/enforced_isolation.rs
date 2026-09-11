@@ -240,7 +240,7 @@ fn read_report(path: &Path) -> String {
     let deadline = Instant::now() + Duration::from_secs(30);
     while Instant::now() < deadline {
         // Nested rather than a let-chain: those need Rust 1.88 and the
-        // workspace declares `rust-version = "1.85"`.
+        // workspace declares `rust-version = "1.86"`.
         if let Ok(text) = std::fs::read_to_string(path) {
             if text.contains("exit=") {
                 return text;

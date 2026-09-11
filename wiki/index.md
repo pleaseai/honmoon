@@ -95,7 +95,7 @@ flowchart LR
 
 | Layer | Technology | Why |
 |-------|-----------|-----|
-| Data plane | **Rust** (edition 2024), `tokio`, `cel-interpreter` | Wire-level proxy + parsers; performance & memory safety critical |
+| Data plane | **Rust** (edition 2024), `tokio`, `cel` | Wire-level proxy + parsers; performance & memory safety critical |
 | Control plane | **TypeScript on Bun** | CLI, policy validation, management/audit API |
 | Dashboard | **React 19 + Vite + Tailwind** | SPA embedded into the Rust binary via `rust-embed`, served by `honmoon-mgmt` |
 | Policy | **YAML + JSON Schema + CEL** | Declarative egress; portable CEL conditions for protocol rules |

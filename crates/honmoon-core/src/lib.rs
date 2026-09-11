@@ -227,14 +227,17 @@ impl Policy {
     /// A blank condition says nothing, and the two things an author might mean
     /// by it are both unavailable. It is not "always" — that is the literal
     /// `true` (see [`is_unconditional`]). And it is not a rule switched off
-    /// either: a condition that cannot compile normally declines and lets the
-    /// walk continue, but `Program::compile` does not *return* on a blank
-    /// input, it panics (#151), so the rule would take the decision path down
-    /// at the first request that reached it.
+    /// either: switching a rule off is something a policy has no spelling for,
+    /// so a blank condition reads as an authoring slip rather than an
+    /// intention. It carries no expression, so it can never match and the rule
+    /// sits in the policy looking active while doing nothing.
     ///
-    /// So the policy is unevaluable, and like an unusable `endpoints` entry it
-    /// fails the load, where the author sees it — rather than at request time,
-    /// in production, on whichever request first reaches the rule.
+    /// So it fails the load, like an unusable `endpoints` entry, where the
+    /// author sees it — rather than going unnoticed in production because an
+    /// inert rule and a rule that simply did not match look identical.
+    /// (It was originally rejected because `Program::compile` panicked on it
+    /// rather than returning — #151. `cel` 0.14 returns `Err`, and the
+    /// rejection stands on the reason above.)
     ///
     /// The error carries the rule's position as well as its name. `name` is an
     /// ordinary field here, not a map key like an endpoint's: nothing requires
@@ -359,15 +362,14 @@ fn is_unconditional(condition: &str) -> bool {
 /// must agree on exactly which conditions never reach `Program::compile`.
 ///
 /// Whitespace as Rust defines it (`char::is_whitespace`, so `\u{00a0}` and
-/// `\u{3000}` count), and nothing else. It is not a general test for "carries
-/// no expression", because no cheap one exists: `Program::compile` panics on
-/// *any* single character it cannot begin a token with, so `"&&"`, `"@"`,
-/// `"§"`, an emoji and a lone `\u{200b}` all panic exactly as `""` did. The
-/// last of those matters most here — a zero-width space is not
-/// `char::is_whitespace`, so a condition made only of them reads as empty in
-/// an editor, is *not* blank by this test, and still panics. Recognising it
-/// would mean drawing a line the compiler does not draw. That whole class is
-/// #154; this function is only the part of it that is cheap to name.
+/// `\u{3000}` count), and nothing else. It is deliberately not a general test
+/// for "carries no expression": since the move to `cel` 0.14 the compiler
+/// returns `Err` for the wider malformed set that used to panic here — `"&&"`,
+/// `"@"`, `"§"`, an emoji, a lone `\u{200b}` — so there is nothing left for a
+/// pre-check to rescue, and widening this one to chase that set would mean
+/// drawing a line the compiler does not draw. It stays because blank is the
+/// case worth its own message, not because blank is the case that would crash.
+/// The panic class it was written against is #154.
 pub(crate) fn is_blank_condition(condition: &str) -> bool {
     condition.trim().is_empty()
 }
@@ -565,15 +567,17 @@ endpoints:
         }
     }
 
-    /// #151: a blank `condition` is not a rule that quietly matches nothing —
-    /// `Program::compile` panics on it rather than returning the `Err` the
-    /// engine degrades on, so the policy is unevaluable and must not load.
+    /// #151: a blank `condition` is not a rule that quietly matches nothing.
+    /// It carries no expression, so it can never match and the rule is inert —
+    /// an author error the loader should say out loud rather than accept.
+    /// (It was originally rejected because `Program::compile` panicked on it;
+    /// `cel` 0.14 returns `Err` instead, and the rejection stays on the reason
+    /// above.)
     #[test]
     fn rejects_a_rule_with_a_blank_condition() {
         // `"\u00a0"` and `"\u3000"` are whitespace to `char::is_whitespace` but
-        // not to an ASCII test, and they panic in `Program::compile` exactly as
-        // `""` does — so a narrowing of `is_blank_condition` to ASCII would put
-        // the #151 panic back for a condition an author cannot see.
+        // not to an ASCII test — so a narrowing of `is_blank_condition` to
+        // ASCII would let a condition an author cannot see load as a live rule.
         for condition in [
             "\"\"",
             "\" \"",
@@ -626,10 +630,11 @@ endpoints:
         );
 
         // `U+FEFF` is *not* whitespace to Rust, so a condition of only that is
-        // not blank and does load. It is still unevaluable — it panics in the
-        // CEL parser like any other lone character the lexer cannot start a
-        // token with (#154) — which is precisely why this check does not claim
-        // to be a validity test, only an emptiness one.
+        // not blank and does load. It is still unevaluable — the CEL compiler
+        // rejects it like any other lone character the lexer cannot start a
+        // token with (#154), so the rule declines at request time — which is
+        // precisely why this check does not claim to be a validity test, only
+        // an emptiness one.
         Policy::from_yaml(
             "rules:\n  - name: bom\n    endpoint: '*'\n    condition: \"\\ufeff\"\n    verdict: allow\n",
         )

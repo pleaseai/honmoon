@@ -19,8 +19,8 @@ networking dependency by design ([lib.rs:1-4](https://github.com/pleaseai/honmoo
 | `Egress` | struct | default + allow/deny domain lists | [lib.rs:36-60](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/lib.rs#L36-L60) |
 | `Rule` | struct | endpoint + CEL condition + verdict | [lib.rs:62-70](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/lib.rs#L62-L70) |
 | `Facts` | struct | domain + endpoint + http/sql/k8s facts | [lib.rs:79-91](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/lib.rs#L79-L91) |
-| `decide_explained()` | fn | The decision algorithm → `Outcome{verdict, rule}` | [engine.rs:38-53](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/engine.rs#L38-L53) |
-| `decide()` | fn | Thin wrapper returning just the `Verdict` | [engine.rs:22-24](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/engine.rs#L22-L24) |
+| `decide_explained()` | fn | The decision algorithm → `Outcome{verdict, rule}` | [engine.rs:54-69](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/engine.rs#L54-L69) |
+| `decide()` | fn | Thin wrapper returning just the `Verdict` | [engine.rs:38-40](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/engine.rs#L38-L40) |
 | `matches_domain()` | fn | Wildcard domain matcher | [engine.rs:81-89](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/engine.rs#L81-L89) |
 
 ## The model
@@ -75,7 +75,7 @@ core entry point is `decide_explained`, which returns an `Outcome { verdict, rul
 `verdict` plus the **name of the rule that fired** (or `None` for an egress-list decision). This
 is what the audit log records so a human can see *why* a request was held or blocked. `decide()`
 remains as a thin wrapper for callers that only need the verdict
-([engine.rs:7-53](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/engine.rs#L7-L53)).
+([engine.rs:23-69](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/engine.rs#L23-L69)).
 
 1. Protocol-aware **rules are evaluated in order**. The first rule whose `endpoint` matches and
    whose CEL `condition` evaluates to `true` wins and returns its verdict.
@@ -132,7 +132,7 @@ The test `egress_allow_deny_and_default` locks all four cases, including "deny w
 ## CEL evaluation
 
 A rule's condition is a [CEL](https://github.com/google/cel-spec) expression compiled and
-executed by `cel-interpreter`. `eval_condition` builds a `Context`, injects whichever protocol
+executed by `cel`. `eval_condition` builds a `Context`, injects whichever protocol
 facts are present as variables (`http`, `sql`, `k8s`), and runs the program. **Only `Ok(Bool(true))`
 counts as a match** — every other outcome (compile error, runtime error, non-bool, `false`)
 means "no match" ([engine.rs:66-91](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/engine.rs#L66-L91)).
@@ -142,7 +142,7 @@ sequenceDiagram
   autonumber
   participant D as decide
   participant EC as eval_condition
-  participant CEL as cel_interpreter
+  participant CEL as cel
   D->>EC: condition + facts
   EC->>CEL: Program::compile(condition)
   alt compile error
@@ -156,7 +156,7 @@ sequenceDiagram
 ```
 <!-- Sources: crates/honmoon-core/src/engine.rs:66-91 -->
 
-Each fact sub-struct derives `Serialize`, and `cel_interpreter::to_value` converts it into a CEL
+Each fact sub-struct derives `Serialize`, and `cel::to_value` converts it into a CEL
 value bound under its name — so `http.method`, `sql.verb`, and `k8s.resource` are addressable in
 conditions exactly as written in the YAML ([lib.rs:92-119](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/lib.rs#L92-L119), [engine.rs:73-89](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/engine.rs#L73-L89)).
 
