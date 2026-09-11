@@ -1,6 +1,6 @@
 ---
 name: project-hook-salt-parity-98
-description: PR #122 (hook_salt.rs, issue #98) — reviewed clean; wire-vs-hook salt now intentionally diverges by default and only hook transports need to agree
+description: 'PR #122 (hook_salt.rs, issue #98) — reviewed clean; wire-vs-hook salt now intentionally diverges by default and only hook transports need to agree'
 metadata:
   type: project
 ---

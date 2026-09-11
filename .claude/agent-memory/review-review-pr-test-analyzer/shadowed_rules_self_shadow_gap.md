@@ -1,6 +1,6 @@
 ---
 name: shadowed-rules-self-shadow-gap
-description: honmoon-core's shadowed_rules() (issue #95) reports an unconditional rule as shadowed by an earlier one, and attributes to the *first* shadower — both pinned by a test in PR #152, so do not "clean up" either
+description: 'honmoon-core''s shadowed_rules() (issue #95) reports an unconditional rule as shadowed by an earlier one, and attributes to the *first* shadower — both pinned by a test in PR #152, so do not "clean up" either'
 metadata:
   type: project
 ---

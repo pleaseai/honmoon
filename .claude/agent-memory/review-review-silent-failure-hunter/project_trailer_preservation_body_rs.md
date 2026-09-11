@@ -1,6 +1,6 @@
 ---
 name: project-trailer-preservation-body-rs
-description: PR #130 (issue #82) trailer-preservation review in body.rs/mitm.rs — two low-risk edge cases to recheck if this code is touched again: a dead-code frame-kind drop, and HeaderMap::extend overwriting rather than merging
+description: 'PR #130 (issue #82) trailer-preservation review in body.rs/mitm.rs — two low-risk edge cases to recheck if this code is touched again: a dead-code frame-kind drop, and HeaderMap::extend overwriting rather than merging'
 metadata:
   type: project
 ---

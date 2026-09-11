@@ -1,6 +1,6 @@
 ---
 name: pr152-shadowed-rule-warning-empty-condition
-description: policy-authoring.md's blank-CEL-condition claim has been wrong twice; Policy::validate_rules rejects a blank condition at load (PR #155), so do not flag the page for missing a request-time crash — check the claim against where Program::compile is actually called, and treat the 11 other conditions that still panic (#154) as the open gap
+description: 'policy-authoring.md''s blank-CEL-condition claim has been wrong twice; Policy::validate_rules rejects a blank condition at load (PR #155), so do not flag the page for missing a request-time crash — check the claim against where Program::compile is actually called, and treat the 11 other conditions that still panic (#154) as the open gap'
 metadata:
   type: project
 ---

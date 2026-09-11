@@ -1,6 +1,6 @@
 ---
 name: project-flush-refusal-barrier-pg113
-description: PR #113 postgres.rs flush-answer barrier — sound design (the EOF/error-as-pending peek is safe via relay_finished); the write-off logging gap it found was fixed in-PR
+description: 'PR #113 postgres.rs flush-answer barrier — sound design (the EOF/error-as-pending peek is safe via relay_finished); the write-off logging gap it found was fixed in-PR'
 metadata:
   type: project
 ---

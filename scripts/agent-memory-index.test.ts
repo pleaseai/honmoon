@@ -80,6 +80,61 @@ metadata:
     }
   })
 
+  // YAML gives `key: # text` a null value — the remainder is a comment. Capturing
+  // it made a note with no summary list as though the comment were the summary.
+  test('treats a comment-only value as no value at all', () => {
+    const { scalars, problems } = parseFrontmatter(`---
+name: n
+description: # write this later
+metadata:
+  type: project
+---
+`)
+    expect(scalars.description).toBeUndefined()
+    expect(noteEntry('n.md', `---
+name: n
+description: # write this later
+metadata:
+  type: project
+---
+`).problems).toEqual([expect.stringContaining('no `description:`')])
+    expect(problems).toEqual([])
+  })
+
+  // ` #` starts a comment inside a plain scalar, so YAML reads
+  // `fixed in PR #155, so do X` as `fixed in PR` — this reader keeps the line,
+  // and the two disagreeing about one claim is the drift the index exists to end.
+  test('reports an unquoted value whose text YAML would cut at a comment', () => {
+    const text = note('n', 'placeholder').replace(
+      'description: placeholder',
+      'description: fixed in PR #155, so do X',
+    )
+    expect(parseFrontmatter(text).problems)
+      .toEqual([expect.stringContaining('YAML reads as the start of a comment')])
+  })
+
+  // The fix the report asks for has to actually clear it, and `(#154)` — no space
+  // before the `#` — is not a comment and must not be reported.
+  test('accepts the quoted form, and a `#` with no space before it', () => {
+    const quoted = [String.raw`'fixed in PR #155, so do X'`, String.raw`"fixed in PR #155, so do X"`]
+    for (const value of [...quoted, 'covers (#154) fully']) {
+      const text = note('n', 'placeholder').replace('description: placeholder', `description: ${value}`)
+      expect(parseFrontmatter(text).problems).toEqual([])
+    }
+  })
+
+  // Inside a block scalar `#` is literal, so the report must not fire there.
+  test('does not report a `#` inside a block scalar, where it is literal', () => {
+    expect(parseFrontmatter(`---
+name: n
+description: >
+  fixed in PR #155, so do X
+metadata:
+  type: project
+---
+`)).toMatchObject({ scalars: { description: 'fixed in PR #155, so do X' }, problems: [] })
+  })
+
   test('unquotes a scalar that had to be quoted to stay valid YAML', () => {
     expect(parseFrontmatter(`---
 description: "note: a colon forces quoting"

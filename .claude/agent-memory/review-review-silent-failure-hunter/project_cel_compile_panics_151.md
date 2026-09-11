@@ -1,6 +1,6 @@
 ---
 name: project-cel-compile-panics-151
-description: honmoon-core rule conditions — Program::compile panics on any single character it cannot start a token with (`@`, `§`, emoji, zero-width) instead of returning Err, so compile_condition's Err arm is not the full failure mode; blank is handled (PR #155) and the rest is open (#154) — do not propose folding zero-width characters into the blank check, nor catch_unwind, nor compile-at-load, since all three are answered there
+description: 'honmoon-core rule conditions — Program::compile panics on any single character it cannot start a token with (`@`, `§`, emoji, zero-width) instead of returning Err, so compile_condition''s Err arm is not the full failure mode; blank is handled (PR #155) and the rest is open (#154) — do not propose folding zero-width characters into the blank check, nor catch_unwind, nor compile-at-load, since all three are answered there'
 metadata:
   type: project
 ---

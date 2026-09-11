@@ -1,6 +1,6 @@
 ---
 name: repo-committed-hook-exec-surface
-description: A repo-committed Claude Code hook that invokes a tracked script is an RCE surface — the hook config is reviewed once, the script it runs stays mutable; honmoon proposed one in PR #156 and dropped it for that reason, so the repo currently has none
+description: 'A repo-committed Claude Code hook that invokes a tracked script is an RCE surface — the hook config is reviewed once, the script it runs stays mutable; honmoon proposed one in PR #156 and dropped it for that reason, so the repo currently has none'
 metadata:
   type: project
 ---

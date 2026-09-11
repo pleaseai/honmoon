@@ -1,6 +1,6 @@
 ---
 name: pr147-adr0007-flush-amended
-description: ADR-0007's Flush bullet was amended in PR #147, as the convention established by #112's history requires — the #147 gap itself is closed; keep checking barrier PRs against this file when postgres.rs barrier code changes
+description: 'ADR-0007''s Flush bullet was amended in PR #147, as the convention established by #112''s history requires — the #147 gap itself is closed; keep checking barrier PRs against this file when postgres.rs barrier code changes'
 metadata:
   type: project
 ---

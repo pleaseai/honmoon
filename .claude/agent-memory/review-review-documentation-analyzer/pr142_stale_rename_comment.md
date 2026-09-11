@@ -1,6 +1,6 @@
 ---
 name: pr142-stale-rename-comment
-description: PR #142 (issue #141 exposed-salt detection) hook-salt doc review — one stale cross-reference from a rename, since fixed; the reusable lesson is to grep the old name file-wide on any rename
+description: 'PR #142 (issue #141 exposed-salt detection) hook-salt doc review — one stale cross-reference from a rename, since fixed; the reusable lesson is to grep the old name file-wide on any rename'
 metadata:
   type: project
 ---

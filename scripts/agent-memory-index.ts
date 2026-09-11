@@ -250,19 +250,30 @@ export function parseFrontmatter(text: string): Frontmatter {
 
   const problems: string[] = []
   const scalars: Record<string, string | undefined> = {}
+  const blockScalars = new Set<string>()
   let key: string | null = null
 
   for (const line of block[1].split(/\r?\n/)) {
     const top = TOP_LEVEL_KEY.exec(line)
     if (top) {
       const [, name, value] = top
-      key = value === undefined ? null : name
+      // `key: # text` is a key with a *comment*, and YAML gives it a null value.
+      // Capturing the comment as the value is how `description: # write this
+      // later` reached an index as though it were the summary, when what the
+      // note actually has is no description at all.
+      key = value === undefined || value.startsWith('#') ? null : name
       if (key) {
         // A block-scalar header opens a value the following indented lines
         // carry, so start empty and let the continuation branch fill it. Both
         // `>` and `|` end up folded onto one line, which is all an index line
         // can be.
-        scalars[key] = BLOCK_SCALAR.test(value) ? '' : value
+        if (BLOCK_SCALAR.test(value)) {
+          scalars[key] = ''
+          blockScalars.add(key)
+        }
+        else {
+          scalars[key] = value
+        }
       }
       continue
     }
@@ -294,7 +305,19 @@ export function parseFrontmatter(text: string): Frontmatter {
   // becomes a newline once `unquote` has decoded it. Folding here means no
   // description can split its own list item, whatever notation wrote it.
   for (const [name, value] of Object.entries(scalars)) {
-    scalars[name] = unquote((value ?? '').trim(), escape =>
+    const raw = (value ?? '').trim()
+
+    // In a plain scalar — and only there — whitespace followed by `#` starts a
+    // comment, so YAML reads `fixed in PR #155, so do X` as `fixed in PR`. This
+    // reader keeps the whole line, and that difference is the drift the derived
+    // index exists to end: the note would say one thing here and another to the
+    // reader that loads it. Reported rather than truncated, because the text
+    // after the `#` is what the author meant; quoting the value keeps it.
+    if (!blockScalars.has(name) && !raw.startsWith('"') && !raw.startsWith('\'') && /[ \t]#/.test(raw)) {
+      problems.push(`\`${name}:\` is unquoted and contains \` #\`, which YAML reads as the start of a comment — quote the value so it survives`)
+    }
+
+    scalars[name] = unquote(raw, escape =>
       problems.push(`\`${name}:\` is double-quoted and holds \`${escape}\`, which YAML does not define — this reader keeps it literally, the reader that loads the note may not`))
       .replace(/\s+/g, ' ')
       .trim()

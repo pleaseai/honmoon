@@ -1,6 +1,6 @@
 ---
 name: request-trailer-plumbing
-description: Trailer handling in honmoon-proxy body.rs/mitm.rs after #82 — what bounds the trailer HeaderMap, which paths forward vs drop trailers, and what is (not) scanned
+description: 'Trailer handling in honmoon-proxy body.rs/mitm.rs after #82 — what bounds the trailer HeaderMap, which paths forward vs drop trailers, and what is (not) scanned'
 metadata:
   type: project
 ---

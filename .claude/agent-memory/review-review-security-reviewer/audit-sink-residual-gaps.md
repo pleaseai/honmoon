@@ -1,6 +1,6 @@
 ---
 name: audit-sink-residual-gaps
-description: The three residual gaps in the audit-sink open after #138 — symlinked parent (#160), pre-existing mode and the hard-link/hostile-pre-creation bypass (both #161) — all documented in-code; verify the list still has all three rather than re-reporting them as unnamed
+description: 'The three residual gaps in the audit-sink open after #138 — symlinked parent (#160), pre-existing mode and the hard-link/hostile-pre-creation bypass (both #161) — all documented in-code; verify the list still has all three rather than re-reporting them as unnamed'
 metadata:
   type: project
 ---

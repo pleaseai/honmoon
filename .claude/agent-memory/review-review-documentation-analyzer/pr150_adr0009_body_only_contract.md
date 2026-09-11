@@ -1,6 +1,6 @@
 ---
 name: pr150_adr0009_body_only_contract
-description: PR #150 (issue #133) added ADR-0009 + a README section stating request inspection covers bodies only; my pass returned 0 findings and was WRONG — check absolute claims, enumeration drift, fail-open groupings and completeness claims first
+description: 'PR #150 (issue #133) added ADR-0009 + a README section stating request inspection covers bodies only; my pass returned 0 findings and was WRONG — check absolute claims, enumeration drift, fail-open groupings and completeness claims first'
 metadata:
   type: project
 ---
