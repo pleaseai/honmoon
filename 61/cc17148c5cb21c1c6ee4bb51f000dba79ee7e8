@@ -1,0 +1,21 @@
+.claude/agent-memory/review-review-documentation-analyzer/pr142_stale_rename_comment.md
+  s_34f639d2e09b64::t_3ba686fda429de 3,16-29
+.claude/agent-memory/review-review-documentation-analyzer/MEMORY.md
+  s_34f639d2e09b64::t_3ba686fda429de 4
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "61cc17148c5cb21c1c6ee4bb51f000dba79ee7e8",
+  "prompts": {},
+  "sessions": {
+    "s_34f639d2e09b64": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "deda3644-1fdd-412d-a687-7ecfae2c80b1",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
