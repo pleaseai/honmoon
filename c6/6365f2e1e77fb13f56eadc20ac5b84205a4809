@@ -1,0 +1,35 @@
+scripts/agent-memory-index.test.ts
+  s_23314bc1687b8f::t_a79b5355d039b1 1,175-182
+  s_23314bc1687b8f::t_996e6e9f55c6e6 9,11,161-174,183-196,200-240
+  s_23314bc1687b8f::t_afd13c20b9e737 197-199
+  s_23314bc1687b8f::t_2c9dd9b6c8bfea 241
+scripts/agent-memory-index.ts
+  s_23314bc1687b8f::t_996e6e9f55c6e6 280-285,287,289
+  s_23314bc1687b8f::t_28c8c601295ff5 19-23,76-85,221-224
+  s_23314bc1687b8f::t_376de352feaa78 147,149-152,154-155,191
+  s_23314bc1687b8f::t_6c230099f4a584 113,119,135,139-140,146,148,153,156-157,227-238,240,304-308
+.claude/agent-memory/review-review-silent-failure-hunter/project_agent_memory_index_129.md
+  s_23314bc1687b8f::t_87a49b27cc7b8b 1-2,4-7
+  s_23314bc1687b8f::t_92828678d5a65f 3,8-29
+.claude/agent-memory/review-review-security-reviewer/session-start-hook-exec-surface.md
+  s_23314bc1687b8f::t_92828678d5a65f 2-3,8-30
+  s_23314bc1687b8f::t_b8c47b7a845292 1,4-7
+AGENTS.md
+  s_23314bc1687b8f::t_92828678d5a65f 65-67
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "c66365f2e1e77fb13f56eadc20ac5b84205a4809",
+  "prompts": {},
+  "sessions": {
+    "s_23314bc1687b8f": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "6ff32bd2-e0d0-46dd-b1cb-1ffcc5db7869",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
