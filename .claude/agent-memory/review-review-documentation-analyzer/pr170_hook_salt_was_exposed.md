@@ -1,6 +1,6 @@
 ---
 name: pr170-hook-salt-was-exposed
-description: PR #170 (issue #143) hook-salt-was-exposed docs — universally-quantified claims verified from one branch and found false twice; the reusable check is that a self-clearing trigger breaks prose written for persistent ones
+description: PR #170 (issue #143) hook-salt-was-exposed docs — a single "reaches the dashboard on any host" guarantee took four rounds of valid findings, one unstated deployment premise each; narrow the claim rather than add qualifiers
 metadata:
   type: project
 ---
@@ -31,24 +31,41 @@ the provenance is genuinely fine" where only two rules carry `key_source: 'persi
 presence of the same facts: the drift can be a wrong number while both sides name the
 same rules.
 
-**A third rule whose trigger self-clears broke two more README claims (both fixed).** The
-page's visibility section promised that a hook-side degradation "still reaches the
-dashboard on any host that runs a gateway, because the trigger is shared" — true for
-`hook-salt-fallback` and `hook-salt-exposed`, whose conditions persist until an operator
-acts, and false for `hook-salt-was-exposed`. Both processes run the same loader
-(`crates/honmoon-cli/src/main.rs:387` calls `hook::machine_key()` at gateway startup), so
-whichever reaches a loose salt first tightens it and the other reads `0600` and records
-nothing: hook-first means the event exists only in the JSONL sink. The other was my own
-new prose describing the unconfirmed arm as a loader that "cannot see the file's
-permissions at all", which the event contradicts — `found_exposure` only emits that
-`reason` when the *pre*-correction read succeeded and was loose.
+**The visibility paragraph took four rounds of valid findings, and that is the datapoint.**
+It promised that a hook-side degradation "still reaches the dashboard on any host that runs
+a gateway, because the trigger is shared". Each round removed one unstated premise from that
+one sentence:
 
-**The generalisation, and it is the useful part of this note.** When a change adds a
-variant whose trigger is *consumed by observing it*, every surrounding sentence that
-reasons from "the condition is still there when the next process looks" goes stale — and
-those sentences do not mention the new rule by name, so a grep for the rule name misses
-them. Enumerate the prose that argues from persistence, not just the prose that names the
-thing you changed.
+1. It is false for `hook-salt-was-exposed`, whose trigger is *consumed by observing it*.
+   Both processes run the same loader (`crates/honmoon-cli/src/main.rs:387` calls
+   `hook::machine_key()` at gateway startup), so a correction that lands first leaves the
+   other reading `0600` and recording nothing — the event then exists only in the JSONL sink.
+2. My replacement described the unconfirmed arm as a loader that "cannot see the file's
+   permissions at all", which the event itself contradicts: `found_exposure` emits that
+   `reason` only when the *pre*-correction read succeeded and was loose.
+3. "Both processes read the same `~/.honmoon/hook-salt`" is a premise, not a fact.
+   `honmoon_dir()` (`hook.rs:124`) resolves each process's own `HOME`, else a CWD-relative
+   `.honmoon` — the page documents this under "different key bytes break parity" and the new
+   paragraph had asserted straight past it.
+4. "The first to reach it tightens it" serialises an unsynchronised pair. `restrict_to_owner_only`
+   stats *before* it chmods, so two overlapping loaders both observe the loose mode and both
+   record; the witness claim has to be bounded on completion, not on start order.
+
+**Two generalisations, and they are the useful part of this note.**
+
+*On what to grep for.* When a change adds a variant whose trigger is consumed by observing
+it, every surrounding sentence that reasons from "the condition is still there when the next
+process looks" goes stale — and those sentences do not mention the new rule by name, so a
+grep for the rule name misses them. Enumerate the prose that argues from persistence, not
+just the prose that names the thing you changed.
+
+*On when to stop qualifying.* Rounds 2-4 were all defects in prose written to fix the
+previous round, each a real false claim and each found only after the fix shipped. That is
+the [[docs_completeness_claim_unbounded_review]] shape: a sentence asserting a guarantee
+over "any host" invites one valid finding per round, because every unstated deployment
+premise is a counterexample. Adding a fifth qualifier is the wrong move — narrow what the
+sentence claims (name the deployment it holds for and defer to the limitation section)
+instead of enumerating the ways it fails.
 
 **Still true after the fixes:** the README's example `reason` string and the rule-table
 remedies match the implementation, and the "one event per loose-find" claim is scoped
