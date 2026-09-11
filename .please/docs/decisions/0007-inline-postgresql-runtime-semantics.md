@@ -175,13 +175,90 @@ that fails to parse: it is refused rather than forwarded blind.
     the discard above would then throw away a perfectly good answer as an over-count, leaving the
     counters a permanent one apart. Counting early cannot be wrong — a sync point recorded for a
     write that then fails costs nothing, because the session ends with that write.
-  - **A batch driven by `Flush` is not ordered at all.** `Flush` makes the backend emit what it has
-    buffered — `ParseComplete`, `BindComplete`, rows, `CommandComplete` — with no `ReadyForQuery`,
-    so it is not a sync point and honmoon counts nothing for it. A client using libpq pipeline mode
-    can therefore still read a refusal ahead of an earlier batch's responses, exactly as it did
-    before this barrier. The protocol offers no marker for "the backend has finished flushing", so
-    counting cannot close this the way it closes `Sync`; it is recorded here rather than implied
-    away, and tracked separately.
+  - **A batch driven by `Flush` is ordered against a quiet upstream, not against a marker.**
+    `Flush` makes the backend emit what it has buffered — `ParseComplete`, `BindComplete`, rows,
+    `CommandComplete` — with no `ReadyForQuery`, so it is not a sync point. This ADR originally
+    recorded that as unclosable and left such a batch unordered entirely, which meant a client
+    using libpq pipeline mode read a refusal ahead of an earlier batch's responses exactly as it
+    did before the barrier existed. #113 closed it, and this entry is amended rather than removed
+    because what replaced it is weaker than the `Sync` guarantee and the difference matters.
+
+    `Flush` frames are counted in a second counter of their own, and settled from the relay rather
+    than by any frontend-predictable marker: a flush is drained once the relay has delivered a
+    message the flush could have produced and then finds the upstream socket carrying nothing more
+    at a message boundary. "Could have produced" is decided by excluding the backend messages that
+    can never be the *last* of a flush's output — rows and copy data, the asynchronous
+    `NoticeResponse`/`NotificationResponse`/`ParameterStatus` that a statement can emit while it is
+    still running, the `ParameterDescription`/`RowDescription` that answer a `Describe` (a backend
+    that has planned a query and not yet produced a row pauses right after `RowDescription`), and
+    the messages that open or punctuate a copy. The list
+    names what cannot end a batch rather than what always does, because the two ways of being wrong
+    are not equal: a message wrongly treated as terminal releases a refusal into the middle of a
+    statement's output, and one wrongly treated as non-terminal costs a stall window. The two counters stay separate because they are settled by different
+    observations — one counter would let a sync point's answer settle a flush, and a quiet upstream
+    settle a sync point the database is still computing.
+
+    **A sync point settles the flushes that preceded it.** `ReadyForQuery` proves every frame
+    before its `Sync` has been processed and its output emitted, so it subsumes every `Flush`
+    already outstanding and is a stronger settlement than the quiet. It has to be, too: a batch
+    ending `Flush`/`Sync` — what a libpq pipeline does at `PQpipelineSync()`, the commonest
+    pipeline shape there is — comes back as one burst, so the relay sees no quiet before the `Z`
+    and would otherwise leave that flush outstanding for a whole stall window. The count is
+    snapshotted when the sync point is forwarded rather than read when its answer lands, because a
+    `Flush` sent *after* a `Sync` is not answered by that `Sync`'s `ReadyForQuery`.
+
+    Such an answer also discharges any write-off debt standing for the flushes it covers. The debt
+    exists to absorb the quiet a written-off flush's late output would produce, and a
+    `ReadyForQuery` proving that output was emitted also resets the relay's freshness count — so no
+    such quiet can still be coming, and the next one belongs to a later batch and has to credit it.
+    Leaving the debt standing would make that batch pay a stall window for output the client
+    already has. Only the portion the answer proves is retired, because write-offs stack: a second
+    batch can be written off before the first sync point is answered, and that answer then speaks
+    for the earlier flush alone. Debt is always owed for the most recent credits — a write-off
+    raises the counter and the debt together — so everything below the line they leave was
+    genuinely observed, and the answer retires however far its coverage reaches past that line.
+
+    **One quiet settles one flush, never every flush outstanding.** A quiet cannot say how many
+    flushes it drained, and the two readings fail in opposite directions. A client may legitimately
+    flush mid-batch (`Parse`/`Bind`/`Flush`/`Execute`/`Flush`, which is what `PQsendFlushRequest`
+    is for), and there the backend answers the first flush and then goes quiet computing the
+    `Execute`: crediting both flushes releases the refusal ahead of the rows, which is the defect
+    this section exists to remove. Crediting one is wrong only when two batches' output reaches the
+    relay as a single uninterrupted burst, and costs the next refusal one stall window before the
+    write-off. The ambiguity is resolved toward waiting, for the same reason it is everywhere else
+    here: the failure is latency, never ordering.
+
+    **A written-off flush is owed back, exactly as a written-off answer is.** The flush counter is
+    written off by a stalled wait like the sync one, and carries its own debt for the same reason.
+    Recomputing what is owed from the flush count at each observation is what makes the debt
+    necessary rather than what removes the need for it: the batch a wait gave up on can still
+    produce its output afterwards, and by then the client may have sent another flushed batch, so
+    the quiet behind that late output fits under the raised ceiling and is credited to a batch the
+    database is still computing — releasing the refusal queued behind *that* one ahead of its rows,
+    which is this defect again by the same longer route the sync side already guards. So each
+    written-off flush is remembered, and the next quiet pays down a unit of debt instead of
+    advancing the count. The two debts are counted separately: crossing them would let a late
+    `ReadyForQuery` discharge a flush's write-off, or a quiet discharge a statement's.
+
+    This inherits the sync side's one-time price too. A flush whose output never comes leaves its
+    debt standing, and the next genuine quiet pays that down rather than crediting itself, so the
+    accounting stays one behind from there and every later refusal on the connection pays a stall
+    window instead of only the first. The two cases are indistinguishable on the wire for the same
+    reason they are on the sync side, and the ambiguity is resolved the same way.
+
+    **What it still does not guarantee.** A burst split across TCP segments can leave the socket
+    momentarily empty part-way through one batch's output, and a quiet read there settles that
+    batch early. In the other direction, a batch whose output genuinely ends on an excluded message
+    — a bare `Describe` of a row-returning statement, ending on `RowDescription` — is never settled
+    by a quiet and costs the next refusal one stall window, or none at all when a `Sync` follows and
+    answers for it. A `Flush` that elicits nothing at all — sent with no pending output, or ignored
+    because a `COPY` is in progress — is never settled by the relay and costs the next refusal one
+    `REFUSAL_ORDER_STALL_TIMEOUT` before being written off, which a client can make itself pay
+    repeatedly by sending a lone `Flush` before each denied statement. Closing the first needs the
+    relay to wait out a grace period on every quiet: a second timing constant and a latency floor
+    under every flush-driven refusal, which is a mechanism rather than a tweak and is tracked
+    separately. Neither residual can forward a denied statement, and neither escapes the stall
+    bound.
   - **A relay that stops partway through a message writes nothing more.** The client is left
     holding a frame header whose payload never arrived, so its stream is already desynchronised and
     it would read an injected `ErrorResponse` as that payload's remainder. The barrier is still

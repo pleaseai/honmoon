@@ -2,6 +2,9 @@
 - [Honmoon PG runtime timeout docs](honmoon_pg_runtime_timeout_docs.md) — runtime timeouts (DRAIN_TIMEOUT, REFUSAL_ORDER_STALL_TIMEOUT) live in ADR-0007, not README; don't flag as missing
 - [ADR-0006 signed-header amendment verified](adr_0006_signed_header_amendment.md) — PR #115 clean doc PR; calibration point, only soft spot is auto-maintained decisions/index.md title
 - [PR #122 hook-salt parity](pr122_hook_salt_parity.md) — issue #98 fix; README + rustdoc verified accurate against hook_salt.rs/HookSalt, 0 findings
+- [PR #142 stale rename comment](pr142_stale_rename_comment.md) — issue #141; a rename left the old fn name in untouched doc prose (since fixed); grep the old name file-wide on any rename
 - [PR #146 signed-digest README/CLI stale](pr146_signed_digest_readme_cli_stale.md) — issue #116 fix; ADR-0006 updated correctly, but README.md + honmoon-cli --signed-body help still describe framing-headers-only, now stale
+- [PR #147 ADR-0007 Flush amended](pr147_adr0007_flush_amended.md) — barrier PRs must amend ADR-0007 in-PR (est. by #112 history, met by #147); check this file when postgres.rs barrier changes
 - [PR #152 shadowed-rule empty-condition claim](pr152_shadowed_rule_warning_empty_condition.md) — wiki says empty CEL condition "matches nothing"; actually Program::compile("") panics (verified), contradicting page's own Fail-closed section
-- [PR #150 ADR-0009 body-only contract](pr150_adr0009_body_only_contract.md) — issue #133; my pass returned 0 findings and was WRONG — later reviewers found 5 classes of defect. Check absolute claims, enumeration drift, and fail-open groupings first
+- [PR #137 Decision::Degraded](pr137_degraded_decision_variant.md) — README/rustdoc/TS accurate; the wiki Decision-enum tables + roadmap "every verdict" staleness was caught in review and fixed before merge
+- [PR #150 ADR-0009 body-only contract](pr150_adr0009_body_only_contract.md) — issue #133; my pass returned 0 findings and was WRONG — later reviewers found repeated defect classes over many rounds. Check absolute claims, enumeration drift, fail-open groupings and completeness claims first

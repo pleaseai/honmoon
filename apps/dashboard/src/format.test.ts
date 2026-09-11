@@ -23,6 +23,26 @@ describe('describeFacts', () => {
     expect(describeFacts(both)).toBe('redaction key: unpersisted (gateway) — lost publish race')
   })
 
+  test('an exposed salt renders its reason, not just a healthy-looking key source', () => {
+    // Pins a consumer contract, not a rendering change: `describeFacts` has no
+    // exposure-specific branch and needs none. What changed is the population —
+    // `hook-salt-exposed` puts `key_source: 'persisted'` inside `RedactionFacts`
+    // for the first time, so a value this file previously only ever saw on a
+    // healthy key now arrives on a degraded event. The line's first half
+    // therefore reads healthy on its own, and `reason` is the only part carrying
+    // the bad news. Anything that starts summarising or dropping `reason` breaks
+    // the operator's only signal here (issue #141).
+    const exposed: FactsSummary = {
+      redaction: {
+        key_source: 'persisted',
+        transport: 'hook',
+        reason: 'salt file /home/a/.honmoon/hook-salt is readable beyond its owner (mode 0644) and could not be restricted to 0600',
+      },
+    }
+    expect(describeFacts(exposed)).toContain('mode 0644')
+    expect(describeFacts(exposed)).toContain('could not be restricted')
+  })
+
   test('falls back to request facts, then to a dash', () => {
     expect(describeFacts({ domain: 'evil.com' })).toBe('evil.com')
     expect(describeFacts({})).toBe('—')

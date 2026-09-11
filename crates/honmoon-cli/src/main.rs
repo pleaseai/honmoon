@@ -157,13 +157,18 @@ enum Command {
         /// Append security degradations to this JSONL audit log — the same file
         /// `honmoon gateway --audit-log` writes and `@honmoon/api` queries.
         ///
-        /// Only a degradation is recorded here, never a per-invocation verdict:
-        /// today that is a fallback machine key, which leaves placeholders
-        /// forgeable by anyone (issue #131) while looking identical from the
-        /// outside. Unset, that degradation reaches stderr alone — which a
-        /// non-interactive hook process discards. Set it through the
-        /// environment: the plugin's dispatcher runs `honmoon hook` with no
-        /// arguments.
+        /// Only a degradation is recorded here, never a per-invocation verdict.
+        /// Today that is one of three, and they lose different guarantees: the
+        /// key is the constant compiled into the binary, so anyone can forge
+        /// placeholders (issue #131); the key is random and private but never
+        /// reached disk, so it stays unforgeable while placeholders stop being
+        /// stable across turns and transports (issues #20, #98); or the key is
+        /// the persisted one and its salt file is accessible beyond its owner
+        /// (issue #141). The event's `rule` and `key_source` say which. All
+        /// three look identical from the outside. Unset, they reach stderr
+        /// alone — which a non-interactive hook process discards. Set it
+        /// through the environment: the plugin's dispatcher runs `honmoon hook`
+        /// with no arguments.
         #[arg(long, value_name = "FILE", env = "HONMOON_AUDIT_LOG")]
         audit_log: Option<PathBuf>,
     },
@@ -359,9 +364,10 @@ fn gateway(args: GatewayArgs) -> Result<()> {
 
     // Wire redaction is process-scoped — the proxy sees connections, not agent
     // sessions — so it always keys on the configured context.
-    // Provenance outlives the bytes: the key is consumed into the hook salt
-    // below, but where it came from is recorded only once startup has succeeded.
-    let (machine_key, key_source) = hook::machine_key().into_parts();
+    // The key's status outlives its bytes: the key is consumed into the hook
+    // salt below, but where it came from — and who else can read it — is
+    // recorded only once startup has succeeded.
+    let (machine_key, key_status) = hook::machine_key().into_parts();
     let wire_salt = honmoon_core::derive_hook_salt(
         &machine_key,
         hook_salt_context.as_deref().unwrap_or(DEFAULT_SALT_CONTEXT),
@@ -407,10 +413,10 @@ fn gateway(args: GatewayArgs) -> Result<()> {
     // that died on a taken port having minted nothing at all. The key is read once
     // per process and shared by wire redaction and the management hook endpoint,
     // so this single record covers every placeholder the process goes on to mint.
-    if let Err(e) = hook::record_machine_key_source(
+    if let Err(e) = hook::record_machine_key_status(
         &audit,
         honmoon_core::RedactionTransport::Gateway,
-        &key_source,
+        &key_status,
     ) {
         tracing::warn!(error = %e, "could not record the degraded redaction key in the audit log");
     }

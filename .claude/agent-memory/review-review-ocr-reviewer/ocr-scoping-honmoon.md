@@ -18,7 +18,14 @@ cancellation, collections/perf, API design, macros, and security-sensitive input
 
 Expect these under the excluded-paths list rather than the reviewable ledger, all as
 `unsupported_ext`: `Cargo.lock`, `mise.lock`, and the project docs (ADRs, README,
-`docs/roadmap.md`, `wiki/*`). That is normal, not a warning.
+`docs/roadmap.md`, `wiki/*`). That is normal, not a warning. `.claude/agent-memory/**/*.md`
+notes are excluded the same way — a workspace-mode change touching only these notes previews
+as 0/N reviewable. When the dispatching task explicitly asks for a content review of such
+notes (e.g. verifying review-agent memory claims against `origin/main` after a correction
+commit), still load and review them by hand via `git diff`/`git show` and report findings in
+the normal schema — don't let the 0-reviewable ocr result stand in for the actual review the
+caller asked for; just note in the summary that ocr itself excluded every file as
+`unsupported_ext`.
 
 For a stacked-PR review where the caller passes `REVIEW_BASE_REF` (e.g.
 `origin/amondnet/issue-85-endpoints-k8s-facts` for issue-86 built on issue-85), use
