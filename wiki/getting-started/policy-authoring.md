@@ -84,7 +84,7 @@ case-insensitive on both sides ([engine.rs:56-64](https://github.com/pleaseai/ho
 The `*.suffix` form matches the bare `suffix` **and** any `*.suffix` subdomain
 ([engine.rs:59-60](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/engine.rs#L59-L60)).
 Within the egress block, **deny wins over allow**, and an unmatched domain falls through to
-`egress.default` ([engine.rs:46-61](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/engine.rs#L46-L61)):
+`egress.default` ([engine.rs:147-162](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/engine.rs#L147-L162)):
 
 ```mermaid
 flowchart TD
@@ -178,7 +178,7 @@ error** — the policy is rejected outright
 
 Each rule binds a [CEL](https://github.com/google/cel-spec) condition to a named `endpoint`.
 Rules are evaluated **in order**; the first rule whose endpoint matches and whose condition
-evaluates to `true` wins ([engine.rs:35-44](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/engine.rs#L35-L44)).
+evaluates to `true` wins ([engine.rs:100-136](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/engine.rs#L100-L136)).
 If no rule matches, the egress block decides.
 
 | Rule field | Meaning | Example | Source |
