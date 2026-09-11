@@ -1,0 +1,21 @@
+.claude/agent-memory/review-review-documentation-analyzer/pr137_degraded_decision_variant.md
+  s_6eafee1f39ff31::t_83537625684eb1 3
+.claude/agent-memory/review-review-pr-test-analyzer/main_rs_gateway_untestable.md
+  s_6eafee1f39ff31::t_83537625684eb1 19-26
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "8c6def344df0c06d690bb1b22bbe4e07a5753618",
+  "prompts": {},
+  "sessions": {
+    "s_6eafee1f39ff31": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "ef7227cc-7b83-4783-b04d-4349ac4c0afc",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
