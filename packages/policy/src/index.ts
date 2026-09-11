@@ -95,11 +95,15 @@ export interface K8sFacts {
  * on a `degraded` event.
  *
  * Two independent things can be wrong with that key, and the event's `rule` says
- * which: `hook-salt-fallback` for a key that is not the persisted one,
- * `hook-salt-exposed` for a key that *is* the persisted one but whose file was
- * left readable beyond its owner and could not be restricted to `0600`. So do
- * not read `key_source: 'persisted'` here as healthy — exposure is a different
- * axis from provenance, and on that rule the provenance is genuinely fine.
+ * which: `hook-salt-fallback` for a key that is not the persisted one, or one of
+ * two exposure rules for a key that *is* the persisted one but whose file was
+ * readable beyond its owner — `hook-salt-exposed` when it still is after the
+ * loader tried to restrict it, `hook-salt-was-exposed` when the loader found it
+ * that way and the restriction took. Those two are split because their remedies
+ * are: a file that is loose now can be tightened, while one that was is a key
+ * that may already be copied. So do not read `key_source: 'persisted'` here as
+ * healthy — exposure is a different axis from provenance, and on all three of
+ * those rules the provenance is genuinely fine.
  */
 export interface RedactionFacts {
   /**
@@ -107,8 +111,9 @@ export interface RedactionFacts {
    * unforgeable, but never reached disk, so placeholders stop being stable
    * across turns; `fallback` is the public compiled-in constant, where
    * unforgeability is gone rather than weakened. `persisted` appears on the
-   * `hook-salt-exposed` rule, where the bytes came from the salt file as usual
-   * but that file is readable by other local users.
+   * `hook-salt-exposed` and `hook-salt-was-exposed` rules, where the bytes came
+   * from the salt file as usual but that file is — or was, until the loader
+   * tightened it — readable by other local users.
    */
   key_source: 'persisted' | 'unpersisted' | 'fallback'
   /**
@@ -118,7 +123,9 @@ export interface RedactionFacts {
   transport: 'hook' | 'gateway'
   /**
    * What the loader observed, in its own words: why the persisted key was
-   * unavailable, or the mode a salt file it could not restrict was left with.
+   * unavailable, or the modes it saw on a salt file readable beyond its owner —
+   * the one it was left with under `hook-salt-exposed`, the one it was found with
+   * under `hook-salt-was-exposed`.
    */
   reason: string
 }

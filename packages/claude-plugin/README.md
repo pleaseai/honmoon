@@ -274,19 +274,21 @@ never per-invocation verdicts, so a healthy host leaves the file untouched: an e
 appearing there at all is the signal.
 
 Two independent things can be wrong with the key, so `rule` says which one this event
-is about:
+is about — and the exposure half splits again, because a window still open and a window
+already closed need opposite responses:
 
-| `rule` | What went wrong |
-| --- | --- |
-| `hook-salt-fallback` | the key in use is **not** the persisted one; `key_source` says what that cost |
-| `hook-salt-exposed` | the key **is** the persisted one, but its file is readable by other local users and the loader could not restrict it to `0600` |
+| `rule` | What went wrong | What to do |
+| --- | --- | --- |
+| `hook-salt-fallback` | the key in use is **not** the persisted one; `key_source` says what that cost | fix what stopped the loader reading or writing `~/.honmoon/hook-salt` |
+| `hook-salt-exposed` | the key **is** the persisted one, but its file is readable by other local users and the loader could not restrict it to `0600` | tighten the file — the loader already tried and could not |
+| `hook-salt-was-exposed` | the key **is** the persisted one, and the loader *found* its file readable by other local users before successfully restricting it to `0600` | nothing left to tighten: rotate, per the suspicion rule below |
 
 On the fallback rule, `key_source` says which guarantee was lost, because they are not
 the same failure:
 
 | `key_source` | Key | What is lost |
 | --- | --- | --- |
-| `persisted` | the random secret at `~/.honmoon/hook-salt` | nothing about the key's provenance — this value appears only under `hook-salt-exposed` |
+| `persisted` | the random secret at `~/.honmoon/hook-salt` | nothing about the key's provenance — this value appears only under the two exposure rules |
 | `unpersisted` | random and private, but never reached disk | byte-stable placeholders across turns and transports (#20, #98). Still unforgeable |
 | `fallback` | the constant compiled into the binary | unforgeability, entirely — the key is published in this repository |
 
@@ -303,37 +305,60 @@ the mode observed:
 salt file /home/a/.honmoon/hook-salt is readable by other local users (mode 0644) and could not be restricted to 0600
 ```
 
-The event fires on **any** permission beyond the owner, not only a read bit — a salt
+Both events fire on **any** permission beyond the owner, not only a read bit — a salt
 another local user can write is a key they can *replace* with one they chose — and the
 `reason` names which access was observed rather than assuming the worst of them.
 
-Note what that event does and does not attest. It is raised on the **mode read back
-after** the attempt, not on the `chmod` returning an error — a read-only mount fails the
-call on a file that is already `0600`, and a degraded event there would be a false alarm
-about a correctly-permissioned key. By the same token, its *absence* means the file was
-owner-only when the loader looked, not that it was never readable by anyone else: a
-`chmod` that succeeds closes the window going forward and says nothing about the one
-before it. Nor does it reach past the POSIX mode bits: on macOS an ACL entry
-granting another local user read leaves the mode at `0600`, and this check cannot
-see it.
+**Tightening the mode does not un-publish the key.** Where the `chmod` *does* take, the
+loader has closed the window going forward and learnt nothing about the one before it.
+Whoever the old mode admitted may already hold a copy of those bytes, and that copy still
+mints every placeholder from here on. `hook-salt-was-exposed` is that case, and its
+`reason` names both modes:
 
-**So honmoon reports currently-observable exposure only, and cannot attest history.**
-A clean log is not a clean bill of health for this key. The loader learns a mode at
-the instant it looks, never how long the file carried it — a `0600` salt today may
-have been `0644` last week, and no number of stats would tell you. That limit is
-worth knowing because the two cases need *different* responses: for a key that is
-exposed **now**, tightening the mode is the fix, which is what the loader already
-tries; for a key that **was** exposed, tightening it is not, because the bytes are
-already out and only regenerating the salt helps. honmoon raises no event for the
-second case today ([#143](https://github.com/pleaseai/honmoon/issues/143) tracks
-whether it should), so if you have reason to think the file was ever readable by
-another local user — a restored backup, a shared home, a permissive umask — rotate
-on that suspicion rather than waiting for a signal that will not come.
+```
+salt file /home/a/.honmoon/hook-salt was readable by other local users (mode 0644) when the loader read it and is now mode 0600
+```
+
+**Expect this one on a healthy host, once.** A restored backup, a `cp -p` from an old
+machine, a permissive umask on a file created before honmoon tightened it — each of those
+is a legitimate, non-malicious way to arrive at a loose salt, and each now raises an
+event. That is deliberate: there is no way to tell those apart from the malicious case by
+looking at the mode, which is why the record exists rather than a judgement. It is one
+event per loose-find, not one per invocation: the correction took, so the next loader
+sees `0600` and says nothing. A host emitting this repeatedly is a host where something
+keeps re-loosening the file, which is itself worth knowing.
+
+**What it does and does not attest.** Both events are raised on a **mode**, never on the
+`chmod` returning an error — a read-only mount fails the call on a file that is already
+`0600`, and a degraded event there would be a false alarm about a correctly-permissioned
+key. Neither reaches past the POSIX mode bits: on macOS an ACL entry granting another
+local user read leaves the mode at `0600`, and this check cannot see it. And neither is a
+claim that anyone *did* read the file — only that the mode allowed it.
+
+**honmoon attests the two instants the loader looked, and nothing before them.** A clean
+log is still not a clean bill of health for this key. The loader now reads the mode both
+before and after its correction, so a file that is loose when honmoon runs is reported
+either way; but it learns a mode at those instants only, never how long the file carried
+it. A salt that was `0644` last week and `0600` at both of today's observations is
+indistinguishable here from one that was never loose, and no number of stats would tell
+you. So if you have reason to think the file was readable by another local user at a time
+honmoon was not running — a restored backup you have since tightened by hand, a shared
+home, a period before the plugin was installed — rotate on that suspicion rather than
+waiting for a signal that cannot come.
+
+**Rotation is yours to trigger, not honmoon's.** The loader does not mint a new salt when
+it finds a loose one, because it cannot tell a single-user laptop restoring its own backup
+from a shared host where someone really did read the file — and rotating costs something
+real in both cases: placeholders for the same secret change at that moment, so an
+in-flight session's transcript stops matching its earlier turns and the two transports
+disagree until the gateway restarts, which is exactly the byte-stability #20 and #98 are
+about. The record gives you the input; the decision needs what you know and honmoon does
+not. Note also what rotation does not buy: the turns already redacted under the old key
+stay confirmable against it, so rotating protects the session's future, not its past.
 
 To rotate: delete `~/.honmoon/hook-salt` once its permissions can be fixed and let the
-next invocation mint a new one. Placeholders for the same secret change at that point,
-so an in-flight session's transcript stops matching earlier turns — losing the
-byte-stability #20 and #98 are about. Rotate between sessions where you can.
+next invocation mint a new one. Rotate between sessions where you can, for the reason
+above.
 
 **Where each event is visible.** The two transports reach different readers, because
 the gateway's management API (`/api/audit`, which the embedded dashboard polls) serves
