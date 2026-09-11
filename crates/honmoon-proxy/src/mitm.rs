@@ -576,6 +576,19 @@ impl HonmoonHandler {
     /// Scan a request body for PII. Detect mode audits findings and forwards;
     /// block mode enforces the resulting policy verdict inline.
     ///
+    /// **Bodies only.** Everything the scan sees derives from `scanned`, which
+    /// is set exclusively from the collected or buffered body bytes. Header and
+    /// trailer values are never inspected, never redacted, and are forwarded
+    /// verbatim — `facts.pii` stays empty for them, so no `pii.*` rule can fire
+    /// on a secret placed in a chunked trailer. That is the stated contract, not
+    /// an oversight, and it is silent by design: unlike the over-cap, non-UTF-8,
+    /// undecodable-encoding and `Content-Range` cases below, nothing was
+    /// attempted, so there is no fail-open `warn` to log. Do not widen the scan
+    /// to header-shaped fields without revisiting
+    /// `.please/docs/decisions/0009-body-only-inspection-contract.md` — trailers
+    /// are visible on the buffered branches only, and redacting one would break
+    /// the byte fidelity `--signed-body forward` promises (ADR-0006).
+    ///
     /// `port` is the port the client actually dialed (the tunnel's CONNECT port
     /// for an inner request), which is what an `endpoints` entry matches on.
     async fn inspect_body(&self, req: Request<Body>, port: u16) -> RequestOrResponse {

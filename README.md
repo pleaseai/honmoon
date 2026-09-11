@@ -204,6 +204,16 @@ bodies whose declared `Content-Encoding` cannot be decoded, and partial uploads 
 — except when the request's authentication signs headers or binds the body, since `Accept-Encoding`
 may itself be signed; those responses may arrive compressed and are then left as they are).
 
+**Those four are the cases where honmoon tries to rewrite and cannot. They are not the only way
+content reaches the upstream unredacted.** Inspection covers request **bodies** only: header and
+trailer values are never scanned for PII or secrets, never redacted, and are forwarded verbatim —
+including a secret placed in a chunked trailer (`Trailer: X-Note` followed by
+`0\r\nX-Note: <secret>`). Unlike the four fail-open cases above, this is silent: no `warn`, no
+audit record, and `pii.count` stays `0`, so no `pii.*` rule can fire on it. Header-shaped fields
+were never in scope, so there is nothing to fail — the scan is not failing open, it never applied.
+Constrain that surface with `egress.default: deny` so only allow-listed hosts are reachable at all.
+See [ADR-0009](.please/docs/decisions/0009-body-only-inspection-contract.md).
+
 **Signed requests are the exception that fails closed when redaction would change what the
 signature covers.** When a request's authentication covers its payload — AWS SigV4 whose canonical
 request hashed the payload, RFC 9421 message signatures or draft-cavage signatures over a body

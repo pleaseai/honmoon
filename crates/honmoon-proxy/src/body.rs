@@ -16,6 +16,11 @@
 //!   to scanning its raw bytes rather than skipping the scan — a plaintext body
 //!   claiming to be compressed must not evade detection, and genuinely
 //!   compressed bytes harmlessly fail the UTF-8 check downstream.
+//! - **Bodies only**: the helpers here produce *body* bytes for inspection.
+//!   Trailers are carried through this module so the upstream receives the
+//!   request the client sent, but carrying is not scanning — trailer and header
+//!   values are never inspected or redacted anywhere in the pipeline. See
+//!   `.please/docs/decisions/0009-body-only-inspection-contract.md`.
 
 use std::borrow::Cow;
 use std::io::Read;
@@ -167,6 +172,12 @@ pub(crate) enum Buffered {
 /// the client sent, and a signature can cover a `Content-Digest` carried there.
 /// The overflow path needs no such care — trailers arrive after the last data
 /// frame, so they are still unread in `rest`.
+///
+/// Kept for *forwarding*, not for inspection: the returned `trailers` are
+/// replayed to the upstream verbatim and never scanned. Note the asymmetry that
+/// makes widening the scan here unsound — this branch is the only one that
+/// materializes trailers at all, so a scan added here would cover the buffered
+/// paths and silently miss both over-cap ones (ADR-0009).
 pub(crate) async fn buffer_up_to(
     mut body: Body,
     limit: usize,
