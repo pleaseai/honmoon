@@ -215,11 +215,12 @@ given, verbatim. Verified on 2.1.263 — the module's engine call returns an emp
 verdict and the transcript carries one set of placeholders. Drop the `hooks` key
 from `hooks/hooks.json` to run the module alone.
 
-That holds for `transport: "http"` as well **when both processes read the same
-`~/.honmoon/hook-salt`** — that file is the machine secret keying the HMAC, and
-each process resolves it from its own `HOME`. Running the gateway as the same user
-on the same host as the agent, the co-located deployment the `hookUrl` example
-above describes, is the usual way that condition is met, not the condition itself.
+That holds for `transport: "http"` as well **when both transports derive from the
+same machine key** — the random secret in `~/.honmoon/hook-salt` that keys the HMAC
+behind every placeholder. What has to match is the key bytes; where they are stored
+only matters in so far as it decides which bytes each process gets. Two processes
+on one host reading one `$HOME/.honmoon/hook-salt` read the same bytes, which is
+how the co-located deployment the `hookUrl` example above describes satisfies it.
 Both transports then derive the salt from the payload's `session_id` under that
 shared key, so one secret mints one `<<hs:…>>` token per session whichever layer
 saw it: a `Bash` result redacted by the command hook and a `WebFetch` result
@@ -229,18 +230,20 @@ context instead of the session, so either leave it unset or pin the command hook
 to the same value (`honmoon hook --salt-context`, or `HONMOON_HOOK_SALT_CONTEXT`
 in their environment).
 
-**Known limitation — the two sides can read different salt files.** `honmoon hook`
-reads the agent process's `$HOME/.honmoon/hook-salt`; the management endpoint reads
-the gateway process's. Those differ across hosts and across users, and they differ
-for the *same* user whenever `HOME` does — a service unit with its own
-`Environment=HOME=`, a `sudo` that resets it, a container sharing the host's UID
-namespace. (A process with no `HOME` at all falls back to a `.honmoon` relative to
-its working directory, which differs again.) Different files mean different keys,
-so the same `session_id` mints different placeholders and the parity above does not
-hold. Matching `--hook-salt-context` values do **not** close it: the context is
-mixed into an HMAC the machine key keys, so mismatched keys stay mismatched. Until
-the key can be shared explicitly (#126), give both processes the same `HOME`, or
-keep `transport: "process"`.
+**Known limitation — different key bytes break parity.** Each process reads its own
+`$HOME/.honmoon/hook-salt`, so anything that leaves those two reads holding
+different bytes breaks the parity above. It happens on separate hosts; in a
+container with its own filesystem, where an identical `HOME` path still names a
+different file; under a different user; and for the same user whenever `HOME`
+differs — a service unit with its own `Environment=HOME=`, or a `sudo` that resets
+it. (A process with no `HOME` reads a `.honmoon` relative to its working
+directory.) Those are examples of one condition, not a list to check off: different
+key bytes, so the same `session_id` mints different placeholders. Matching
+`--hook-salt-context` values do **not** close any of them — the context is mixed
+into an HMAC the machine key keys, so mismatched keys stay mismatched. Until the key
+can be supplied explicitly (#126), the only way to get parity is for both
+transports to read one key, which today means one host and one file; otherwise keep
+`transport: "process"`.
 
 ### Typings
 
