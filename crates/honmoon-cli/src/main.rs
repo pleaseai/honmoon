@@ -964,20 +964,44 @@ fn load_policy(path: &Path) -> Result<Policy> {
 ///
 /// No verdict moves: every shape named here fails [`Policy::from_yaml`] as
 /// well, so the two paths refuse the same files and only the message differs.
+/// That is a claim about this function, so it is checked rather than asserted —
+/// `a_file_that_is_not_a_policy_is_named_rather_than_quoted` runs the gateway
+/// over the same file, and it caught this over-refusing a tagged mapping once
+/// already.
 ///
 /// It is a bound, not a blanket. A *mapping* carrying a long string still
 /// reaches serde's quoting (`version: "<…>"`) — but that is a file shaped like
 /// a policy, and the value quoted is the author's own field, which is the
 /// diagnosis they need.
 fn not_a_policy_document(src: &str) -> Option<&'static str> {
+    match serde_yaml::from_str::<serde_yaml::Value>(src) {
+        Ok(value) => shape_unfit_for_a_policy(&value),
+        // Not a YAML document at all. serde's own syntax diagnostic is the
+        // useful one here — it carries a line and column and quotes only the
+        // token it stopped on — so this defers to the loader rather than
+        // replacing it.
+        Err(_) => None,
+    }
+}
+
+/// The recursive half of [`not_a_policy_document`], split out for the tag.
+///
+/// A tag does not change what a document *is*. serde looks straight through it
+/// — `!Foo {version: 1}` deserializes as the mapping underneath, and the loader
+/// accepts it — so refusing every tagged node would refuse a policy the gateway
+/// runs, which is the drift this command exists to rule out, pointing the other
+/// way. Recursion is bounded by the parsed value: YAML gives a node one tag.
+fn shape_unfit_for_a_policy(value: &serde_yaml::Value) -> Option<&'static str> {
     use serde_yaml::Value;
 
-    match serde_yaml::from_str::<Value>(src) {
-        Ok(Value::Mapping(_) | Value::Null) | Err(_) => None,
-        Ok(Value::Sequence(_)) => Some("a list"),
-        Ok(Value::String(_)) => Some("plain text"),
-        Ok(Value::Bool(_) | Value::Number(_)) => Some("a single value"),
-        Ok(Value::Tagged(_)) => Some("a tagged value"),
+    match value {
+        // A mapping is a policy's shape; null is an empty document, which is a
+        // valid policy with every field at its default.
+        Value::Mapping(_) | Value::Null => None,
+        Value::Sequence(_) => Some("a list"),
+        Value::String(_) => Some("plain text"),
+        Value::Bool(_) | Value::Number(_) => Some("a single value"),
+        Value::Tagged(tagged) => shape_unfit_for_a_policy(&tagged.value),
     }
 }
 

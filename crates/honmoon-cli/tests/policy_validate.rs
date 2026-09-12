@@ -354,6 +354,19 @@ fn a_file_that_is_not_a_policy_is_named_rather_than_quoted() {
             "the gateway refuses this file too, so the guard only changes the wording"
         );
     }
+
+    // The other edge of the same claim, and the one that caught a real bug: a
+    // *tag* does not change what a document is. serde looks through it, so the
+    // loader accepts `!Foo {version: 1}` — and a guard that refused every
+    // tagged node would refuse a policy the gateway runs, which is this
+    // command's worst failure wearing the opposite sign.
+    let tagged = home.write_policy("tagged.yaml", "!Foo {version: 1}\n");
+    let output = run(&home, &["policy", "validate", tagged.to_str().unwrap()]);
+    assert!(
+        output.status.success(),
+        "a tagged mapping is a mapping — the loader takes it, so this must too; got: {}",
+        stderr(&output)
+    );
 }
 
 /// The refusal side of parity is the easy half. This is the other one, and it is
