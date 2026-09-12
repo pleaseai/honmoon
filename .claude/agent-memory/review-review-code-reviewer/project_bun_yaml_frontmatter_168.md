@@ -1,6 +1,6 @@
 ---
 name: bun-yaml-frontmatter-reader-168
-description: 'scripts/agent-memory-index.ts reads note frontmatter with Bun.YAML after PR #203 (issue #168) — Bun.YAML does not implement YAML''s c-printable set (it refuses only U+0000) and its SyntaxError carries no position into the YAML, so those two gaps are filled in the script and must survive an edit; the silent discards are recovered by differential probes, whose mask must neutralise everything the unmasking makes parseable (a comment holding `: ` broke this once) and whose stand-ins are searched for rather than fixed (a fixed one needs a collision guard, and that guard is a fail-open) and whose candidate nomination must admit every spelling the parser collapses to one key (`"description":`, `? description`, flow style); the pyyaml-divergence checks were dropped deliberately, so a finding that this reader and a stricter one disagree about a tab, a line separator or a YAML 1.1 type is answered by that decision, not by a new rule'
+description: 'scripts/agent-memory-index.ts reads note frontmatter with Bun.YAML after PR #203 (issue #168) — Bun.YAML does not implement YAML''s c-printable set (it refuses only U+0000) and its SyntaxError carries no position into the YAML, so those two gaps are filled in the script and must survive an edit; every question must be asked in the parser''s terms and a fragment that must be decided from the source is handed back to the parser (a quoted key token is a YAML document, so reading it says which key it is) — all four review findings on the PR were the one mistake of reasoning about source spelling where the parser reads resolved values; the silent discards are recovered by differential probes, whose mask must neutralise everything the unmasking makes parseable (a comment holding `: ` broke this once) and whose stand-ins are searched for rather than fixed (a fixed one needs a collision guard, and that guard is a fail-open) and whose candidate nomination must admit every spelling the parser collapses to one key (`"description":`, `? description`, flow style); the pyyaml-divergence checks were dropped deliberately, so a finding that this reader and a stricter one disagree about a tab, a line separator or a YAML 1.1 type is answered by that decision, not by a new rule'
 metadata:
   type: project
 ---
@@ -60,6 +60,25 @@ exact defect class this change exists to remove**, found in review of #203 and f
 
 The general shape: a differential probe's skip-on-refusal path is only safe while the doctoring
 cannot itself cause the refusal. Check what the mask *creates*, not only what it removes.
+
+## The one mistake all four review findings were
+
+Four separate findings landed on #203, from four reviewers, and every one is the same error:
+**reasoning about the source spelling where the parser reasons about the resolved value.**
+
+| Written against the source | What the parser actually reads |
+| --- | --- |
+| mask the `#`, leave the rest of the line | the unmasked comment text is now YAML, and a `: ` in it refuses |
+| match the key by the name `description` | `"descrip\u0074ion":` is the same key once escapes decode |
+| pick a stand-in absent from the source text | `"quoted \uE000 # x"` has no PUA character in the source and one in the value |
+| report that no stand-in is left | nothing was going to be masked; there was no `#` |
+
+The reader is a parser now, so **every question has to be asked in the parser's terms**. When
+something must still be decided from the source, the way to do it is to hand that fragment back to
+the parser rather than to interpret it: a quoted key token is itself a YAML document, so
+`readYaml('"descrip\u0074ion"')` returns `description` and no escape table is written here. That
+move is available more often than it looks, and it is what keeps this file from growing a scanner
+back one rule at a time.
 
 Both stand-ins are private-use code points **searched for in the note** rather than fixed, and
 the duplicate probe's key is suffixed until it is absent. A fixed sentinel needs a "does the note
