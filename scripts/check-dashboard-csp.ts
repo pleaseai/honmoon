@@ -106,18 +106,39 @@ const JAVASCRIPT_URL = /^\s*javascript:/i
 /** A character reference inside an attribute value: `&#x73;`, `&#115;`, `&amp;`. */
 const CHAR_REF = /&(?:#x([0-9a-f]+)|#(\d+)|([a-z][a-z0-9]*));?/gi
 
-/** The named references that can appear in a scheme or in one that hides a scheme. */
+/**
+ * The named references that can carry, hide, or sit inside a scheme or authority.
+ *
+ * Deliberately not the full HTML table — that is ~2200 entries and would be a
+ * dependency. It does not have to be complete, because a name that is *not*
+ * here is reported rather than passed through: see {@link UNKNOWN_REF}.
+ */
 const NAMED_REFS: Record<string, string> = {
   amp: '&',
-  colon: ':',
-  lt: '<',
-  gt: '>',
-  quot: '"',
+  AMP: '&',
   apos: '\'',
-  tab: '\t',
-  newline: '\n',
+  colon: ':',
+  gt: '>',
+  GT: '>',
+  lt: '<',
+  LT: '<',
   NewLine: '\n',
+  num: '#',
+  period: '.',
+  quot: '"',
+  QUOT: '"',
+  sol: '/',
+  Tab: '\t',
 }
+
+/**
+ * A named reference {@link NAMED_REFS} does not cover, left in place by the decode.
+ *
+ * The `;` is required, so an ordinary query separator (`?a=1&b=2`) is not read
+ * as one — the four legacy names a browser honours unterminated (`&amp`, `&lt`,
+ * `&gt`, `&quot`) cannot spell a scheme or an authority, so nothing hides there.
+ */
+const UNKNOWN_REF = /&[a-z][a-z0-9]*;/i
 
 /**
  * An attribute value as the *browser* sees it, not as the file spells it.
@@ -131,17 +152,29 @@ const NAMED_REFS: Record<string, string> = {
  * DOM, not a second reference, so decoding twice would invent a finding.
  * Control characters are dropped because a browser strips them from a scheme
  * (`java\tscript:` navigates), which is the other half of the same evasion.
+ *
+ * A name outside {@link NAMED_REFS} is left as written, which the caller then
+ * reports — the table's gaps have to fail the build rather than pass it, the
+ * same stance the unreadable-`<script>` rule takes above.
  */
+function fromCodePoint(code: number): string {
+  // What a browser does with one the spec calls out: `&#0;`, a lone surrogate,
+  // and anything past the last plane all parse to U+FFFD. `fromCodePoint`
+  // throws a `RangeError` on each, which in CI is a stack trace where a finding
+  // belongs — and the shell that produced it goes unchecked either way.
+  if (code === 0 || code > 0x10FFFF || (code >= 0xD800 && code <= 0xDFFF)) {
+    return '\uFFFD'
+  }
+  return String.fromCodePoint(code)
+}
+
 export function decodeAttr(value: string): string {
   return value
     .replace(CHAR_REF, (whole, hex, dec, name) => {
-      if (hex !== undefined) {
-        return String.fromCodePoint(Number.parseInt(hex, 16))
+      if (hex !== undefined || dec !== undefined) {
+        return fromCodePoint(Number.parseInt(hex ?? dec, hex === undefined ? 10 : 16))
       }
-      if (dec !== undefined) {
-        return String.fromCodePoint(Number.parseInt(dec, 10))
-      }
-      return NAMED_REFS[name] ?? NAMED_REFS[name.toLowerCase()] ?? whole
+      return NAMED_REFS[name] ?? whole
     })
     // eslint-disable-next-line no-control-regex -- stripping them is the point
     .replace(/[\u0000-\u0020\u007F]/g, c => (c === ' ' ? ' ' : ''))
@@ -230,6 +263,13 @@ export function checkShell(html: string, shell: string): Problem[] {
     for (const [attr, name, doubleQuoted, singleQuoted, bare] of attrs.matchAll(URL_ATTR)) {
       const raw = doubleQuoted ?? singleQuoted ?? bare ?? ''
       const url = decodeAttr(raw)
+      if (UNKNOWN_REF.test(url)) {
+        note(
+          `<${element}> carries a character reference this check cannot decode, so it cannot `
+          + `tell where the URL points — refusing to pass on it: ${attr}`,
+        )
+        continue
+      }
       if (JAVASCRIPT_URL.test(url)) {
         note(`<${element}> carries a javascript: URL, which \`script-src 'self'\` refuses: ${attr}`)
         continue

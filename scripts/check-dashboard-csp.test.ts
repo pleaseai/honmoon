@@ -152,6 +152,45 @@ describe('checkShell', () => {
     expect(details(hidden)).toEqual([expect.stringContaining('javascript: URL')])
   })
 
+  // `&sol;` is `/`, so this is a protocol-relative URL to a browser.
+  test('a named reference hiding the authority slashes still fails', () => {
+    const hidden = BUILT_SHELL.replace(
+      '<div id="root">',
+      '<link rel="stylesheet" href="&sol;&sol;cdn.example/x.css"><div id="root">',
+    )
+    expect(details(hidden)).toEqual([expect.stringContaining('<link> loads from off this origin')])
+  })
+
+  // `&b=2` is a query separator, not a reference — requiring the `;` is what
+  // keeps this rule from failing the build over an ordinary working link.
+  test('a query separator is not read as a character reference', () => {
+    const query = BUILT_SHELL.replace(
+      '<div id="root">',
+      '<a href="/audit?from=1&to=2&kind=deny">a</a><div id="root">',
+    )
+    expect(details(query)).toEqual([])
+  })
+
+  // The table is a subset on purpose, so its gaps have to fail rather than pass.
+  test('a reference the table does not cover is refused, not passed through', () => {
+    const unknown = BUILT_SHELL.replace(
+      '<div id="root">',
+      '<link rel="stylesheet" href="/assets/&hellip;.css"><div id="root">',
+    )
+    expect(details(unknown)).toEqual([expect.stringContaining('cannot decode')])
+  })
+
+  // `String.fromCodePoint` throws on each of these, which in CI is a stack
+  // trace where a finding belongs — and the shell goes unchecked either way.
+  test.each([
+    ['past the last plane', 'a&#x110000;b'],
+    ['a lone surrogate', 'a&#xD800;b'],
+    ['a null reference', 'a&#0;b'],
+  ])('a malformed numeric reference (%s) does not crash the check', (_label, href) => {
+    const malformed = BUILT_SHELL.replace('<div id="root">', `<a href="${href}">a</a><div id="root">`)
+    expect(details(malformed)).toEqual([])
+  })
+
   // `&amp;#x73;` is the literal text `&#x73;` in the DOM, not a second
   // reference — decoding twice would invent a finding on a working link.
   test('a doubly-escaped reference is text, not a scheme', () => {

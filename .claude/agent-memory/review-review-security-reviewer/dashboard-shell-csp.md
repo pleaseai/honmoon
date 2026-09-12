@@ -78,6 +78,15 @@ them (`java&#x73;cript:`, `javascript&colon;`, an embedded tab) before the schem
 three were misses fixed under review, so do not re-report them. Decoding is deliberately one pass:
 `&amp;#x73;` is literal text in the DOM, and a second pass would invent a finding on a working link.
 
+**`NAMED_REFS` is a deliberate subset and its gaps are closed by `UNKNOWN_REF`, not by growing it.**
+A name the table does not cover is left in place and then *reported* — "cannot decode, refusing to
+pass" — the same stance as the unreadable-`<script>` rule, so a finding of the form "the table is
+missing `&<name>;`" is answered by that rule rather than by an edit. The `;` is required there so an
+ordinary query separator (`?a=1&b=2`) is not read as a reference; the four legacy names a browser
+honours unterminated cannot spell a scheme or an authority. Malformed numeric references
+(`&#x110000;`, a lone surrogate, `&#0;`) decode to U+FFFD as the spec says rather than throwing —
+a `RangeError` in CI is a stack trace where a finding belongs, and leaves the shell unchecked.
+
 **An external `<a href>` is deliberately NOT a finding** and re-reporting it is wrong: CSP governs
 what the document fetches, not where a link takes the reader, so failing CI over a working link
 would be the checker's own "a CSP that breaks the dashboard is worse than none". Four reviewers
