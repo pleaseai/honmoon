@@ -1958,9 +1958,15 @@ gateway prints, the same click as a first sign-in
 ([lib.rs:420-451](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-mgmt/src/lib.rs#L420-L451)).
 
 <span class="status-caveat">Residual</span> — the secret is script-readable where the old cookie was
-`HttpOnly`, so a script injection in this origin could exfiltrate a replayable credential rather
-than only act while the page is open; the bundle is first-party and embedded, and the shell is
-served `frame-ancestors 'none'`. Revocation is still rotating the token, as it is for the bearer.
+`HttpOnly`, so a script injection in this origin could act as the operator while the page is open.
+What that would cost is bounded rather than open-ended: the shell is served `default-src 'none'`
+with `script-src 'self'` and `connect-src 'self'`, so only the bundle this origin served runs and a
+credential a script did read has nowhere to send itself, while `frame-ancestors 'none'` and
+`X-Frame-Options: DENY` stay as they were
+([lib.rs:682-771](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-mgmt/src/lib.rs#L682-L771)).
+No such injection is known — the bundle is first-party and embedded, and the views render API data
+as text — so the policy bounds the blast radius of one that does not exist rather than closing one
+that does. Revocation is still rotating the token, as it is for the bearer.
 
 One careful detail: the SPA fallback **refuses to mask an unmatched `/api/...` path as `200 text/html`**
 — those 404 honestly, so a failed management action is never hidden behind the dashboard shell
