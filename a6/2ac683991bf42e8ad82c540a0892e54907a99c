@@ -1,0 +1,19 @@
+crates/honmoon-cli/tests/policy_validate.rs
+  s_74bdd8db3220da::t_3081f75ca3de3d 120-121,126-138,427
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "a62ac683991bf42e8ad82c540a0892e54907a99c",
+  "prompts": {},
+  "sessions": {
+    "s_74bdd8db3220da": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a2a7decf-3c3f-4518-856f-e78017aab857",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
