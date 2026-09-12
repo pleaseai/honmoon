@@ -171,6 +171,7 @@ plugin works unchanged on older Claude Code versions.
 | Prompt PII floor | Severity **3** (high) — `handle_user_prompt_submit` | Severity **2** — the prompt is scanned as tool output, so medium-severity PII (email, phone) is rewritten too |
 | Tool output | `Read`, `Bash`, `Grep` | `Read`, `Bash`, `Grep` **and `WebFetch`** |
 | Engine unreachable | **Fails open** (the tool call proceeds unredacted) | **Fails closed**: the tool result is denied (`honmoon: redaction engine unavailable (…); tool output withheld`) and the prompt is dropped. Set `failMode: "open"` for the old behavior |
+| Degradation the audit log refused | `systemMessage` on the hook response, shown to you | The same line, shown as a `$.ui.log` transcript line; the verdict beside it is applied unchanged |
 | Transport | `honmoon hook` subprocess | `honmoon hook` subprocess, or HTTP to the management API |
 
 Only the `Read` result variants the detectors can read are rewritten: `text` and
@@ -274,8 +275,10 @@ never per-invocation verdicts, so a healthy host leaves the file untouched: an e
 appearing there at all is the signal. If the configured file refuses the record — a
 symlink or FIFO planted at that path, an unwritable directory — the hook carries the
 same `rule` / `key_source` / `reason` back to Claude Code as a `systemMessage`, which is
-shown to you and not added to the model's context. That message is the only trace of
-that degradation, so treat one as a reason to fix the log path (#165).
+shown to you and not added to the model's context (the function-hooks module below
+shows it as a `$.ui.log` transcript line, which is likewise not sent to the model). That
+message is the only trace of that degradation, so treat one as a reason to fix the log
+path (#165).
 
 Two independent things can be wrong with the key, so `rule` says which one this event
 is about — and the exposure half splits again, because a window still open and a window
@@ -417,9 +420,9 @@ layer orders by timestamp because ids are process-local.
 **Pick a path on a different filesystem from `~/.honmoon` where you can.** The
 conditions that make the salt unwritable — a read-only filesystem, a full disk, an
 unwritable `HOME` — can equally stop the audit log from being opened or appended to.
-`honmoon hook` reports that on stderr and carries on (reporting a degradation must
-never become one), but stderr is the channel this setting exists to stop relying on,
-so a correlated failure leaves the degradation unrecorded.
+`honmoon hook` carries on (reporting a degradation must never become one) and falls
+back to the `systemMessage` described above, so a correlated failure leaves the
+degradation visible to whoever is driving the session but recorded nowhere durable.
 
 **Getting one key onto both sides.** Co-located processes sharing a `HOME` read one
 file and need nothing. Anywhere else — separate hosts, containers, different users
