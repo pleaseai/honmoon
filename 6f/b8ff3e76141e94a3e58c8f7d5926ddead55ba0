@@ -1,0 +1,32 @@
+wiki/llms-full.txt
+  s_b100dddae62eec::t_b02a57916bf064 3010-3012,3015,3018-3024
+  s_b100dddae62eec::t_9aa51a85f97668 1275,1299,1334,1347,2967,3046
+wiki/deep-dive/policy-engine.md
+  s_b100dddae62eec::t_d43b43cc41d069 140
+  s_b100dddae62eec::t_6963c7050a5957 164,199
+  s_b100dddae62eec::t_f590406d81944c 212
+crates/honmoon-core/src/engine.rs
+  s_b100dddae62eec::t_670fcd2ddfe8c0 873-909
+  s_b100dddae62eec::t_69e313a2d46bbd 299-313,682-685
+crates/honmoon-core/src/lib.rs
+  s_b100dddae62eec::t_10d5e43ff2875c 498-515,519,915-917
+wiki/getting-started/policy-authoring.md
+  s_b100dddae62eec::t_6963c7050a5957 286,365
+  s_b100dddae62eec::t_a7744d549b98a7 329-331,334,337-343
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "6fb8ff3e76141e94a3e58c8f7d5926ddead55ba0",
+  "prompts": {},
+  "sessions": {
+    "s_b100dddae62eec": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d8a23aa2-ca49-436c-826f-804953b513b9",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
