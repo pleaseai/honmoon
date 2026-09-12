@@ -1,0 +1,20 @@
+crates/honmoon-cli/src/mgmt_token.rs
+  s_d720448ec7c988::t_5d43a05c49ff3e 134,175-241,449-468
+  s_d720448ec7c988::t_0ae07876339190 133
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "e08a2eb1c605c276694cd034aefd9ae43cf3bc33",
+  "prompts": {},
+  "sessions": {
+    "s_d720448ec7c988": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "069c4824-e961-4929-8157-1ff587135fd5",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
