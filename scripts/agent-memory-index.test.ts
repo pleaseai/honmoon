@@ -916,6 +916,24 @@ description: second`)
     expect(parseFrontmatter(explicit).problems).toEqual([expect.stringContaining('more than once')])
   })
 
+  // The probe key is picked against the resolved keys as well as the source,
+  // because those differ: `"agent-memory-index-duplicate-probe":` is
+  // invisible to `source.includes` and is that key once the parser decodes it.
+  // With it already at the root, `key in probed.document` stops meaning "the
+  // rename put it there", and a nomination landing in a block scalar or a
+  // nested mapping — creating no root key at all — reads as a duplicate.
+  test('does not report a duplicate when a key decodes to the probe name', () => {
+    const probe = `"\\u0061gent-memory-index-duplicate-probe": value`
+    const cases = [
+      `description: |\n  a line with "description": inside`,
+      `description: >\n  a line with "description": inside`,
+      `description: real\nmetadata:\n  "description": nested`,
+    ]
+    for (const value of cases) {
+      expect(parseFrontmatter(`---\nname: a-note\n${value}\n${probe}\n---\n`).problems).toEqual([])
+    }
+  })
+
   // ...and a value that merely wraps onto a line reading like the key is not a
   // repeat. The nomination is deliberately wide, so the parser is what rules.
   test('does not call a wrapped value that reads like the key a repeat', () => {

@@ -255,10 +255,19 @@ function probeCharacters(source: string, mapping: Mapping): [string, string] | u
  * key to while the parser is asked whether that key was written twice. Suffixed
  * until it is absent, for the same reason the probe characters are searched
  * for: a name that collides must not read as "nothing to check here".
+ *
+ * Absent from the *resolved keys* as well as the source text, and for the same
+ * reason the mask characters are: those differ. A note can spell a top-level
+ * key `"agent-memory-index-duplicate-probe":`, which no `source.includes`
+ * sees and which the parser resolves to the probe name. The test after the
+ * rename is `key in probed.document`, and that only means "the rename put it
+ * there" while the note did not have it already — otherwise a nomination that
+ * lands in a block scalar or a nested mapping, creating no root key at all,
+ * still reads as one, and valid frontmatter is rejected as a duplicate.
  */
-function probeKey(source: string): string {
+function probeKey(source: string, mapping: Mapping): string {
   let key = 'agent-memory-index-duplicate-probe'
-  for (let suffix = 0; source.includes(key); suffix++) {
+  for (let suffix = 0; source.includes(key) || key in mapping; suffix++) {
     key = `agent-memory-index-duplicate-probe-${suffix}`
   }
   return key
@@ -477,7 +486,7 @@ function keyOccurrences(source: string, name: string): { at: number, length: num
  * of them is *really* a repeat is still the parser's answer, not the pattern's.
  */
 function repeated(source: string, mapping: Mapping, problems: string[]): void {
-  const key = probeKey(source)
+  const key = probeKey(source, mapping)
   for (const name of INDEXED_KEYS) {
     if (!(name in mapping)) {
       continue
