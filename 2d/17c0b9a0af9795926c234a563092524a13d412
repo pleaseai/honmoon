@@ -1,0 +1,24 @@
+.claude/agent-memory/review-review-security-reviewer/hook-salt-security-model.md
+  s_0e8ff8bef054b1::t_8348e7057b7f23 200-205
+crates/honmoon-cli/src/hook.rs
+  s_0e8ff8bef054b1::t_bcbd2a76537f58 246-250
+  s_0e8ff8bef054b1::t_b39d366e602bd9 667-673
+packages/claude-plugin/README.md
+  s_0e8ff8bef054b1::t_1d1190e57d9c62 407-410
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "2d17c0b9a0af9795926c234a563092524a13d412",
+  "prompts": {},
+  "sessions": {
+    "s_0e8ff8bef054b1": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "e39294fa-98b3-41d0-9915-89a7891be0b9",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
