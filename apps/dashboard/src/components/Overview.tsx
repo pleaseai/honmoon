@@ -1,5 +1,5 @@
 import type { AuditEvent, Decision, PendingApproval } from '@honmoon/policy'
-import { getApprovals, getAudit } from '../api'
+import { getApprovals, getAudit, NOT_SIGNED_IN } from '../api'
 import { describeFacts, formatTime } from '../format'
 import { useApprovalActions, usePolling } from '../hooks'
 import { ApprovalActions } from './ApprovalActions'
@@ -81,7 +81,11 @@ export function Overview() {
       <div className="px-10 pb-11 max-md:px-6">
         <div className="mx-auto max-w-[1440px]">
           {error && (
-            <ErrorNote message={`Can’t reach the management API — ${error}`} />
+            <ErrorNote
+              message={error === NOT_SIGNED_IN
+                ? `Signed out — ${error}`
+                : `Can’t reach the management API — ${error}`}
+            />
           )}
           {actionFailures.map(f => <ErrorNote key={f.id} message={f.message} />)}
 
@@ -151,6 +155,18 @@ function statusCopy({
   allowed: number
   denied: number
 }): { eyebrow: string, title: string, highlight: string, summary: string, tone: 'ok' | 'error' } {
+  // A 401 is its own state, checked before the generic error: the management API
+  // is answering, so "unavailable" would be false — and it is the kind of false
+  // that sends an operator to debug a healthy gateway instead of signing in.
+  if (error === NOT_SIGNED_IN) {
+    return {
+      eyebrow: 'Signed out',
+      title: 'The dashboard is',
+      highlight: 'not signed in',
+      summary: 'Open the login URL `honmoon gateway` printed at startup to see live data.',
+      tone: 'error',
+    }
+  }
   if (error) {
     return {
       eyebrow: 'Management API unavailable',

@@ -20,14 +20,20 @@ export interface PolicyResponse {
   parsed: Policy
 }
 
-/** The message a 401 gets, in place of an opaque status line. */
-const NOT_LOGGED_IN
+/**
+ * The message a 401 gets, in place of an opaque status line.
+ *
+ * Exported so the views can tell "not signed in" from "the gateway is down".
+ * `usePolling` keeps an error's `message` rather than the error itself, so this
+ * constant — not an error subclass — is what survives to the render.
+ */
+export const NOT_SIGNED_IN
   = 'not signed in — open the dashboard URL `honmoon gateway` printed at startup '
     + '(http://<mgmt-addr>/login?token=…), or read the token from ~/.honmoon/mgmt-token'
 
 function failure(path: string, res: Response): Error {
   return new Error(
-    res.status === 401 ? NOT_LOGGED_IN : `${path} → ${res.status} ${res.statusText}`,
+    res.status === 401 ? NOT_SIGNED_IN : `${path} → ${res.status} ${res.statusText}`,
   )
 }
 
