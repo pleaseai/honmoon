@@ -1231,3 +1231,88 @@ fn a_forged_session_header_reads_no_data() {
         }
     }
 }
+
+/// A response-header value from a response head, matched case-insensitively.
+///
+/// `location`/`set_cookie` above each hard-code one spelling because they only
+/// ever look for one header; this one is given a name, so it has to tolerate
+/// whatever casing the stack emits.
+fn header_value(raw: &str, name: &str) -> Option<String> {
+    raw.lines()
+        .take_while(|line| !line.is_empty())
+        .find_map(|line| {
+            let (key, value) = line.split_once(':')?;
+            key.trim()
+                .eq_ignore_ascii_case(name)
+                .then(|| value.trim().to_string())
+        })
+}
+
+/// One directive's value out of a `Content-Security-Policy`, by name.
+fn csp_directive(csp: &str, name: &str) -> Option<String> {
+    csp.split(';').find_map(|directive| {
+        let directive = directive.trim();
+        let rest = directive.strip_prefix(name)?;
+        // `script-src-elem` must not answer for `script-src`.
+        rest.strip_prefix(' ').map(str::to_string)
+    })
+}
+
+/// The policy the shell is served, spelled out rather than imported.
+///
+/// Imported, this test would assert that a constant equals itself. Spelled out,
+/// it pins the *wire* policy a browser receives, so narrowing or widening it is
+/// a deliberate edit here and not a side effect of editing the constant.
+const EXPECTED_CSP: &str = "default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; \
+     img-src 'self'; connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'";
+
+/// The shell's CSP bounds what a script running in the management origin could
+/// do with the credential `sessionStorage` now holds (#195).
+///
+/// Asserted on every path that serves the shell — the embedded asset and the
+/// SPA fallback are two separate header lists in `static_handler`, and a policy
+/// on one but not the other would leave whichever route the operator actually
+/// opened unbounded.
+///
+/// `frame-ancestors 'none'` and `X-Frame-Options: DENY` are asserted here too:
+/// they are load-bearing since #186 against a same-site sibling port framing
+/// the dashboard, and adding directives around them must not drop them.
+#[test]
+fn the_dashboard_shell_carries_a_script_bounding_csp() {
+    let (gw, _held) = gateway_with_a_held_request();
+
+    for path in ["/", "/index.html", "/approvals"] {
+        let raw = http_request_raw(gw.mgmt_port, "GET", path, &[], "");
+        assert!(raw.starts_with("HTTP/1.1 200"), "{path}: {raw:?}");
+
+        let csp = header_value(&raw, "content-security-policy")
+            .unwrap_or_else(|| panic!("{path} is served with no CSP: {raw:?}"));
+        assert_eq!(csp, EXPECTED_CSP, "{path} is served a different policy");
+        assert_eq!(
+            header_value(&raw, "x-frame-options").as_deref(),
+            Some("DENY"),
+            "{path} lost X-Frame-Options: {raw:?}"
+        );
+
+        // The injection this policy exists for is one that introduces script
+        // into this origin, so a `script-src` that allowed inline script or
+        // `eval` would bound nothing at all. This outlives any later edit to
+        // `EXPECTED_CSP`.
+        let script_src = csp_directive(&csp, "script-src")
+            .unwrap_or_else(|| panic!("{path} has no script-src: {csp:?}"));
+        for escape in ["'unsafe-inline'", "'unsafe-eval'", "'unsafe-hashes'", "*"] {
+            assert!(
+                !script_src.split_whitespace().any(|source| source == escape),
+                "script-src admits {escape} — an injected script would run anyway: {script_src:?}"
+            );
+        }
+
+        // The other half of the bound: a script that did run could act as the
+        // operator, but could not post what it read anywhere off this origin.
+        assert_eq!(
+            csp_directive(&csp, "connect-src").as_deref(),
+            Some("'self'"),
+            "{path} lets the page reach beyond its own origin: {csp:?}"
+        );
+    }
+}

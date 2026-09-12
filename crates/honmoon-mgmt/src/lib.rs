@@ -679,7 +679,9 @@ async fn get_policy(State(s): State<AppState>) -> Json<PolicyResponse> {
     })
 }
 
-/// Deny framing of the dashboard shell.
+/// The dashboard shell's `Content-Security-Policy`.
+///
+/// # `frame-ancestors 'none'` — no framing (with `X-Frame-Options: DENY`)
 ///
 /// The shell is served without a credential, but since #173 the browser can
 /// hold one for this origin. A page on another loopback port is *same-site*, so
@@ -687,16 +689,85 @@ async fn get_policy(State(s): State<AppState>) -> Json<PolicyResponse> {
 /// document into a `POST /api/approvals/{id}/approve` behind a decoy click.
 ///
 /// Since #188 the credential is the dashboard's own script's to attach, which
-/// makes this header the guard against UI redress rather than one layer over an
-/// ambient cookie: a framed dashboard that has the secret will send it, and
+/// makes this directive the guard against UI redress rather than one layer over
+/// an ambient cookie: a framed dashboard that has the secret will send it, and
 /// this is what keeps that frame from existing. (A frame in a *fresh* tab gets
 /// its own empty `sessionStorage` and so would fail to authenticate anyway —
 /// which is a second obstacle in one browser-storage model, not a reason to
 /// drop the first.)
 ///
-/// Only `frame-ancestors` is set: a script/style policy would have to track the
-/// bundler's output, and a CSP that breaks the dashboard is worse than none.
-const FRAME_ANCESTORS_NONE: &str = "frame-ancestors 'none'";
+/// # `script-src`/`connect-src` — bounding a script injection (#195)
+///
+/// #188 moved the browser credential out of an `HttpOnly` cookie and into
+/// `sessionStorage`, which is script-readable by construction — that is what
+/// puts it beyond a sibling loopback port's reach, and it is the one property
+/// the cookie had that the replacement does not. What a script injection in
+/// this origin would cost therefore widened, from "act while the page is open"
+/// to "read a credential that replays off-browser until the operator rotates
+/// the token". These two directives are what bound that:
+///
+/// - `script-src 'self'` — only script served by this origin runs, so an
+///   injected `<script>` element, an inline event handler and `eval` are all
+///   refused. The embedded bundle is loaded from a file, never inlined.
+/// - `connect-src 'self'` — a credential that was read has nowhere to go. A
+///   script that did run could still drive the management API as the operator,
+///   but it could not `fetch` the secret out to a collector.
+///
+/// `default-src 'none'` makes everything not listed below a refusal rather than
+/// an inheritance, so a future asset class (a worker, a frame, a webfont from a
+/// CDN) has to be allowed deliberately instead of arriving unexamined.
+/// `base-uri 'none'` keeps an injected `<base>` from repointing the shell's own
+/// relative asset loads, and `form-action 'none'` keeps a submission from
+/// carrying anything off-origin — the dashboard submits no forms.
+///
+/// **No injection is known here**, which is why this is a bound on blast radius
+/// rather than a fix: the bundle is first-party and embedded in this binary, no
+/// first-party component renders API data as HTML (the views interpolate values
+/// as text, which React escapes), and the one `innerHTML`-class sink —
+/// `react-simple-code-editor`'s highlight layer, fed `Prism.highlight` output
+/// over operator-authored policy YAML in `PolicyView` — renders Prism-escaped
+/// text.
+///
+/// # What `style-src` and `img-src` are *not*
+///
+/// Neither bounds anything, and both are listed only because `default-src
+/// 'none'` would otherwise break the page they belong to:
+///
+/// - `style-src` carries `'unsafe-inline'` because `react-simple-code-editor`
+///   renders an unconditional `<style>` element (a placeholder fixup and IE
+///   hacks) on the Policy view. A style policy with `'unsafe-inline'` in it
+///   bounds close to nothing, so it is written down as what it is rather than
+///   presented as a control. Pinning the element's hash instead would tie a
+///   constant here to a transitive npm package's exact CSS text, which the next
+///   dependency bump would break — as a blank Policy view and a console
+///   violation, in a build no test here would catch.
+/// - `img-src 'self'` exists because a browser probes `/favicon.ico` unasked;
+///   under `default-src 'none'` that probe reports as a violation. No view
+///   loads an image.
+///
+/// Neither weakens `script-src`: `'unsafe-inline'` in one directive does not
+/// reach another.
+///
+/// # Keeping `script-src 'self'` true
+///
+/// It holds only while the built shell takes all its script from files. The
+/// shell Vite emits today has exactly one `<script>`, carrying a `src` — its
+/// module-preload polyfill is emitted into the entry chunk rather than into the
+/// page — and the demo build adds a second `<script src>` rather than inline
+/// code. That is a property of a bundler's output, not something this constant
+/// can enforce, so `scripts/check-dashboard-csp.ts` re-checks both built shells
+/// in CI: a bundler or dependency change that starts inlining script must break
+/// there rather than arrive as a blank dashboard.
+const DASHBOARD_CSP: &str = concat!(
+    "default-src 'none'; ",
+    "script-src 'self'; ",
+    "style-src 'self' 'unsafe-inline'; ",
+    "img-src 'self'; ",
+    "connect-src 'self'; ",
+    "base-uri 'none'; ",
+    "form-action 'none'; ",
+    "frame-ancestors 'none'",
+);
 
 /// Serve an embedded dashboard asset, falling back to `index.html` so client-side
 /// routing works (SPA). Returns 404 only when the dashboard was not built in.
@@ -718,7 +789,7 @@ async fn static_handler(uri: Uri) -> Response {
             [
                 (header::CONTENT_TYPE, mime.as_ref()),
                 (header::X_FRAME_OPTIONS, "DENY"),
-                (header::CONTENT_SECURITY_POLICY, FRAME_ANCESTORS_NONE),
+                (header::CONTENT_SECURITY_POLICY, DASHBOARD_CSP),
             ],
             asset.data.into_owned(),
         )
@@ -730,7 +801,7 @@ async fn static_handler(uri: Uri) -> Response {
         Some(asset) => (
             [
                 (header::X_FRAME_OPTIONS, "DENY"),
-                (header::CONTENT_SECURITY_POLICY, FRAME_ANCESTORS_NONE),
+                (header::CONTENT_SECURITY_POLICY, DASHBOARD_CSP),
             ],
             Html(asset.data.into_owned()),
         )

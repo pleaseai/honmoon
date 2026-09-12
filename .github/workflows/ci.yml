@@ -159,6 +159,13 @@ jobs:
         run: bun demo/build.ts
         working-directory: apps/dashboard
 
+      # The gateway serves the embedded shell under `script-src 'self'` (#195),
+      # which holds only while the built shell takes all its script from files —
+      # a property of Vite's output that no Rust test can assert. Runs after both
+      # builds above, because it checks the artifacts they produce.
+      - name: Dashboard CSP — built shells load only same-origin script
+        run: bun scripts/check-dashboard-csp.ts
+
   pii-benchmark:
     name: PII — Tier-1 benchmark gate
     runs-on: ubuntu-latest
