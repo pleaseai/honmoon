@@ -1,6 +1,6 @@
 ---
 name: dashboard-shell-csp
-description: 'The dashboard shell CSP after #195 — what each directive is for, why style-src carries unsafe-inline and img-src exists at all (both measured, neither a control, do not report either as a weakness), that script-src has no unsafe-* and connect-src is self, what the policy does NOT bound (outbound navigation and WebRTC are outside CSP, so exfiltration is harder not closed — a finding saying so is correct), that every HTML document including /login carries it, and what a change here has to re-verify in a browser rather than by reading the header'
+description: 'The dashboard shell CSP after #195 — what each directive is for, why style-src carries unsafe-inline and img-src exists at all (both measured, neither a control, do not report either as a weakness), that script-src has no unsafe-* and connect-src is self, what the policy does NOT bound (outbound navigation and WebRTC are outside CSP, so exfiltration is harder not closed — a finding saying so is correct), that every HTML document including /login carries it, what a change here has to re-verify in a browser rather than by reading the header, and that an external <a href> is deliberately not a finding in the build-side checker (issue #200 tracks the bundle-level gap)'
 metadata:
   type: project
 ---
@@ -69,11 +69,20 @@ inline `<script>` and fetch a sibling loopback port — observed
 dashboard only in the JS job, so `cargo test` runs against the script-less placeholder
 `crates/honmoon-mgmt/build.rs` writes — a Rust assertion about inline script there would pass
 vacuously. `scripts/check-dashboard-csp.ts` is the guard instead: it runs after `bun run build` and
-`bun demo/build.ts` in CI and refuses an inline `<script>`, an off-origin `src`/`href`, an inline
-handler, a `<base>`, a `<form>`, a `<script>` opening tag it could not read to a `</script>` — and a
-shell with no `<script>` at all, which is how it refuses to pass on that placeholder.
+`bun demo/build.ts` in CI and refuses an inline `<script>`, an off-origin `src`, an off-origin
+`href` on a *subresource* element, a `javascript:` URL anywhere, an inline handler (quoted or not), a
+`<base>`, a `<form>`, a `<script>` opening tag it could not read to a `</script>` — and a shell with
+no `<script>` at all, which is how it refuses to pass on that placeholder. Attribute values need not
+be quoted, and a quoted `>` does not end a tag; both were misses fixed under review.
+
+**An external `<a href>` is deliberately NOT a finding** and re-reporting it is wrong: CSP governs
+what the document fetches, not where a link takes the reader, so failing CI over a working link
+would be the checker's own "a CSP that breaks the dashboard is worse than none". Four reviewers
+raised it in one round against the version that did flag it; `NAVIGATION_HREF` is the fix, and
+`<link href>` stays checked because that one is a fetch. A `javascript:` href is the exception to
+the exception — it is code, not navigation.
 
 **That guard reads the shell HTML only, not the emitted bundle**, so it would not catch a dependency
 that introduces `eval(`/`new Function(` — which `script-src 'self'` refuses, since no `'unsafe-eval'`
-is present. Verified absent from today's bundle; tracked as a follow-up, so a finding about the
+is present. Verified absent from today's bundle; tracked as issue #200, so a finding about the
 *bundle* is in scope while one about the shell's script tags is not.
