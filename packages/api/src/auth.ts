@@ -81,7 +81,16 @@ function errorCode(error: unknown): string | undefined {
  */
 export function resolveToken(dir: string = defaultDir()): ResolvedToken {
   const fromEnv = process.env.HONMOON_MGMT_TOKEN ?? process.env.HONMOON_HOOK_TOKEN
-  if (typeof fromEnv === 'string' && fromEnv.trim() !== '') {
+  if (typeof fromEnv === 'string') {
+    // An explicitly-set-but-empty variable is a misconfiguration, not an
+    // absent one. Falling back to the file here would hand this service a
+    // different credential from the gateway, which refuses to start on the
+    // same input — so refuse too rather than diverge silently.
+    if (fromEnv.trim() === '') {
+      throw new Error(
+        'HONMOON_MGMT_TOKEN (or HONMOON_HOOK_TOKEN) is set but empty — unset it to use the token file',
+      )
+    }
     return { token: fromEnv, source: 'environment' }
   }
 

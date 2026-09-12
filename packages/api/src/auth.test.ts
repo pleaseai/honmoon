@@ -121,6 +121,25 @@ describe('resolveToken', () => {
     }
   })
 
+  test('refuses an explicitly empty environment token rather than falling back', () => {
+    // The Rust CLI bails on the same input (`an_empty_explicit_token_is_refused`).
+    // Falling back to the file here would give this service a different
+    // credential from a gateway that refuses to start at all.
+    const previous = process.env.HONMOON_MGMT_TOKEN
+    try {
+      process.env.HONMOON_MGMT_TOKEN = '   '
+      expect(() => resolveToken(dir)).toThrow()
+    }
+    finally {
+      if (previous === undefined) {
+        delete process.env.HONMOON_MGMT_TOKEN
+      }
+      else {
+        process.env.HONMOON_MGMT_TOKEN = previous
+      }
+    }
+  })
+
   test('aborts on an unreadable token file instead of minting a second one', () => {
     // A directory where the file should be: the read fails with something other
     // than ENOENT, which must not be recovered from by generating a token that

@@ -187,7 +187,6 @@ async function up(opts) {
     '--config', policy,
     '--addr', PROXY_ADDR,
     '--mgmt-addr', MGMT_ADDR,
-    '--mgmt-token', MGMT_TOKEN,
     '--audit-log', F.audit,
   ]
   if (opts.mitm) {
@@ -215,7 +214,14 @@ async function up(opts) {
     cwd: UNIT,
     detached: true,
     stdio: ['ignore', out, out],
-    env: { ...process.env, RUST_LOG: process.env.RUST_LOG ?? 'info' },
+    // The token goes through the environment, not argv: a command line is
+    // world-readable via `ps` on this host, so `--mgmt-token` would publish the
+    // credential to every local user the token exists to exclude.
+    env: {
+      ...process.env,
+      RUST_LOG: process.env.RUST_LOG ?? 'info',
+      HONMOON_MGMT_TOKEN: MGMT_TOKEN,
+    },
   })
   child.unref()
   writeFileSync(F.pid, String(child.pid))

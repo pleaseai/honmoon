@@ -141,9 +141,13 @@ fn http_request_raw(
     send(port, method, path, headers, body)
 }
 
-/// Every `/api/*` route requires the management token (#173), so the default
-/// helper supplies it. A caller that passes its own `Authorization` header keeps
-/// it — that is how the wrong-credential cases are written.
+/// Every `/api/*` route requires the management token (#173), so this helper
+/// supplies it and the ordinary behavioural tests read as they did before the
+/// gate. A caller passing its own `Authorization` header keeps that one.
+///
+/// The credential tests do not use this helper at all: injecting a bearer is
+/// exactly what they must not do, so they call [`http_request_raw`], which
+/// sends only the headers it is given.
 fn http_request_with_body(
     port: u16,
     method: &str,
