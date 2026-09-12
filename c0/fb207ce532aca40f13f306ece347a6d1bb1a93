@@ -1,0 +1,22 @@
+.claude/agent-memory/review-review-silent-failure-hunter/project_pr183_sink_observation_report_dont_correct.md
+  s_c76fd182d547f6::t_215daaf22654dc 1-30
+  s_c76fd182d547f6::t_56777cf56ba139 31
+.claude/agent-memory/review-review-code-reviewer/project_audit_sink_existing_mode_report_161.md
+  s_c76fd182d547f6::t_6d00c92c07144b 1-34
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "c0fb207ce532aca40f13f306ece347a6d1bb1a93",
+  "prompts": {},
+  "sessions": {
+    "s_c76fd182d547f6": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "4b37fffc-f5b8-4ce5-a33b-d8be2892e2a7",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
