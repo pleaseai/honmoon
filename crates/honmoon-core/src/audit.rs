@@ -181,12 +181,12 @@ pub enum RedactionTransport {
 /// rather than one rule with the detail in `reason`, because `rule` is what an
 /// operator filters a query on and the three call for different responses:
 ///
-/// - [`AUDIT_SINK_EXPOSED_RULE`] — the mode admits local users other than the
+/// - `audit-sink-exposed` — the mode admits local users other than the
 ///   owner. A `chmod` is the remedy, and it may also be a mode the operator set
 ///   on purpose.
-/// - [`AUDIT_SINK_FOREIGN_OWNER_RULE`] — the file belongs to another user, so
+/// - `audit-sink-foreign-owner` — the file belongs to another user, so
 ///   honmoon did not create it.
-/// - [`AUDIT_SINK_HARD_LINKED_RULE`] — more than one directory entry names the
+/// - `audit-sink-hard-linked` — more than one directory entry names the
 ///   inode, so every record also lands under a name honmoon never configured.
 ///
 /// The last two have no mode to correct: the sink is a file honmoon did not make,
@@ -224,12 +224,18 @@ pub enum RedactionTransport {
 pub struct AuditSinkFacts {
     /// The sink this observation is about, **as the operator configured it**
     /// (`--audit-log` / `HONMOON_AUDIT_LOG`) — not resolved against the working
-    /// directory the way the hook salt's paths are since issue #174.
+    /// directory the way the hook salt's paths are since issue #174. Rendered with
+    /// `Path::display`, so the one thing it does not preserve is a byte that is
+    /// not UTF-8, which becomes U+FFFD.
     ///
     /// A relative path here names no file on its own, and that is deliberate in
     /// both directions: the record is appended to that same file, so a reader
     /// holding the log already holds the resolution the string lacks, and the
-    /// string the operator typed is the one they can act on.
+    /// string the operator typed is the one they can act on. The reader that
+    /// covers is the one holding the file; the same event is also served from
+    /// the gateway's ring through `GET /api/audit`, where a relative string
+    /// identifies a file only against a working directory the response does not
+    /// carry. The operator who typed it can still resolve it; nobody else can.
     pub path: String,
     /// What the `fstat` on the opened descriptor showed, in its own words: the
     /// mode, the owning uid, or the link count that made this reportable.
@@ -389,7 +395,12 @@ impl AuditLog {
     /// Those events go through [`record`](Self::record), so a sink that will not
     /// take them leaves them in this log's ring with a `tracing` warning rather
     /// than failing the constructor: a report that cannot be written is not a
-    /// reason to refuse a sink the operator asked for.
+    /// reason to refuse a sink the operator asked for. On the hook transport
+    /// neither the ring nor the warning reaches anyone (issue #131), so an
+    /// observation whose append fails there is lost as such — what survives is
+    /// the salt record that follows on the same descriptor, which goes through
+    /// [`record_durable`](Self::record_durable) and reports the refusing sink
+    /// on stderr by path and error, without saying what was observed about it.
     pub fn with_file(capacity: usize, path: impl Into<PathBuf>) -> std::io::Result<Self> {
         let path = path.into();
         let (file, meta) = open_sink(&path)?;

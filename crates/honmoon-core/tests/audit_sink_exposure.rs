@@ -102,6 +102,33 @@ fn a_hard_linked_sink_is_reported_when_opened() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// The observations are independent, and the open records every one of them:
+/// a sink that is both loose and hard-linked reports twice, mode first. Staged
+/// through the public entry point because the unit test of the classifier says
+/// nothing about whether `with_file` records more than the first draft.
+#[test]
+fn a_loose_and_hard_linked_sink_is_reported_twice() {
+    let dir = scratch_dir("loose-hard-link");
+    let path = dir.join("audit.jsonl");
+    let alias = dir.join("theirs.jsonl");
+    std::fs::write(&path, "").expect("seed sink");
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).expect("loosen sink");
+    std::fs::hard_link(&path, &alias).expect("link the sink under a second name");
+
+    let log = AuditLog::with_file(4, &path).expect("open sink");
+
+    let events = log.recent(10);
+    let rules: Vec<Option<&str>> = events.iter().rev().map(|e| e.rule.as_deref()).collect();
+    assert_eq!(
+        rules,
+        [Some("audit-sink-exposed"), Some("audit-sink-hard-linked")],
+        "both observations, in classification order"
+    );
+    let contents = std::fs::read_to_string(&path).expect("read sink");
+    assert_eq!(contents.lines().count(), 2, "{contents}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// The common case says nothing: a sink honmoon created itself, owner-only, with
 /// one name, opens with an empty ring and an untouched file. An observation on a
 /// healthy sink would be noise on every gateway start.
