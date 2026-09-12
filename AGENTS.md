@@ -67,8 +67,10 @@ summary `fixed in PR`. Rather than publish a summary that stops mid-sentence, th
 reports the cut and `--check` fails until the value is quoted. The same holds for a description
 YAML resolves to something that is not text at all: a flow collection (`[a]`, `{a: b}`) or a
 number (`42`, `1e3`, `0644`). A value of `null` or `~` resolves to no value, which reads as a
-note with no description; a block no reader can load is reported against the frontmatter line
-the reader gave up on.
+note with no description. A block no reader can load is reported on its own, against the
+frontmatter line the reader gave up on where the block is short enough to locate one (the
+search is bounded at 200 lines); so is an indexed key the frontmatter gives twice, which YAML
+resolves to the last of them without a word.
 
 Not reasons to quote, since the parser resolves them to the text the index then publishes: a
 leading `&`, `*` or `!` (an anchor, an alias, a tag — though an alias naming no anchor is a load
