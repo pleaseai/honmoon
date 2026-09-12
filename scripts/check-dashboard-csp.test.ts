@@ -49,7 +49,7 @@ describe('checkShell', () => {
 
   test('a script from another origin fails', () => {
     const cdn = BUILT_SHELL.replace('/assets/index-ChyO-qsg.js', 'https://cdn.example/app.js')
-    expect(details(cdn)).toEqual([expect.stringContaining('off this origin')])
+    expect(details(cdn)).toEqual([expect.stringContaining('<script> loads from off this origin')])
   })
 
   // The placeholder `crates/honmoon-mgmt/build.rs` writes so a bare `cargo build`
@@ -87,6 +87,31 @@ describe('checkShell', () => {
   test('an unquoted inline handler fails — HTML does not require the quotes', () => {
     expect(details(BUILT_SHELL.replace('<div id="root">', '<div onclick=go() id="root">')))
       .toEqual([expect.stringContaining('inline event handler')])
+  })
+
+  // `default-src 'none'` governs what the document fetches, not where a link
+  // takes the reader — and no directive restricts navigation at all. Failing the
+  // build over a working link would be the checker's own "worse than no CSP".
+  test('an external <a> link passes — a navigation is not a subresource load', () => {
+    const linked = BUILT_SHELL.replace(
+      '<div id="root"></div>',
+      '<div id="root"></div>\n    <a href="https://honmoon.dev/docs">docs</a>',
+    )
+    expect(checkShell(linked, 'shell')).toEqual([])
+  })
+
+  // The opposite case: <link href> is a fetch, so it stays checked.
+  test('an external <link> stylesheet fails — that href is a fetch', () => {
+    const cdn = BUILT_SHELL.replace('/assets/index-t0vyplZE.css', 'https://cdn.example/app.css')
+    expect(details(cdn)).toEqual([expect.stringContaining('<link> loads from off this origin')])
+  })
+
+  test('an unquoted off-origin src fails — HTML does not require the quotes', () => {
+    const unquoted = BUILT_SHELL.replace(
+      'src="/assets/index-ChyO-qsg.js"',
+      'src=https://cdn.example/app.js',
+    )
+    expect(details(unquoted)).toEqual([expect.stringContaining('<script> loads from off this origin')])
   })
 
   test('a fragment link is same-document, not an off-origin load', () => {

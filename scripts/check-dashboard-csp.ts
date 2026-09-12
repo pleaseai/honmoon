@@ -23,6 +23,12 @@
  * (`react-simple-code-editor` renders a `<style>` element), so there is no
  * property here to keep.
  *
+ * An `<a href>` to another origin is not a violation and is not flagged: CSP
+ * governs what the document fetches, not where a link takes the reader. The
+ * rule has to be that narrow to be usable — a checker that failed the build
+ * over a working link would be its own version of "a CSP that breaks the
+ * dashboard is worse than none".
+ *
  * **Scope: the shell's own markup, not the code it loads.** This reads
  * `index.html` and nothing else, so it is a guard on the shell's `<script>`
  * tags rather than on everything `script-src 'self'` implies. It would not see
@@ -65,8 +71,29 @@ const SCRIPT_TAG = /<script\b([^>]*)>([\s\S]*?)<\/script>/gi
  */
 const SCRIPT_OPEN = /<script\b/gi
 
-/** A `src=` or `href=` value, quoted either way. */
-const URL_ATTR = /\b(?:src|href)\s*=\s*(?:"([^"]*)"|'([^']*)')/gi
+/** An element's opening tag: its name, and everything up to the closing `>`. */
+const OPEN_TAG = /<([a-z][a-z0-9-]*)\b([^>]*)>/gi
+
+/**
+ * A `src=` or `href=` value: double-quoted, single-quoted, or bare.
+ *
+ * HTML does not require the quotes, and a browser fetches an unquoted value
+ * just the same — so a pattern that insisted on them would pass a shell the
+ * policy then refuses.
+ */
+const URL_ATTR = /\b(src|href)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'>]+))/gi
+
+/**
+ * Elements whose `href` is a *navigation*, not a subresource load.
+ *
+ * `default-src 'none'` governs what the document fetches; it does not govern
+ * where a link takes the reader, and no CSP directive restricts an outbound
+ * navigation at all. So an ordinary `<a href="https://…">` is not a violation,
+ * and flagging one would fail the build over a link that works — the checker's
+ * own version of "a CSP that breaks the dashboard is worse than none".
+ * `<link href>` is the opposite case and stays checked: that one is a fetch.
+ */
+const NAVIGATION_HREF = new Set(['a', 'area'])
 
 /**
  * An inline event handler: `onclick="…"`, or unquoted as `onclick=go()`.
@@ -134,13 +161,21 @@ export function checkShell(html: string, shell: string): Problem[] {
     }
   }
 
-  for (const [attr, doubleQuoted, singleQuoted] of html.matchAll(URL_ATTR)) {
-    const url = doubleQuoted ?? singleQuoted ?? ''
-    // A fragment link (`href="#/audit"`) never leaves the document.
-    if (url.startsWith('#') || !OFF_ORIGIN.test(url)) {
-      continue
+  for (const [, tag, attrs] of html.matchAll(OPEN_TAG)) {
+    const element = tag.toLowerCase()
+    for (const [attr, name, doubleQuoted, singleQuoted, bare] of attrs.matchAll(URL_ATTR)) {
+      const url = doubleQuoted ?? singleQuoted ?? bare ?? ''
+      if (name.toLowerCase() === 'href' && NAVIGATION_HREF.has(element)) {
+        continue
+      }
+      // A fragment link (`href="#/audit"`) never leaves the document.
+      if (url.startsWith('#') || !OFF_ORIGIN.test(url)) {
+        continue
+      }
+      note(
+        `<${element}> loads from off this origin, which \`default-src 'none'\` refuses: ${attr}`,
+      )
     }
-    note(`loads from off this origin, which \`default-src 'none'\` refuses: ${attr}`)
   }
 
   if (EVENT_ATTR.test(html)) {
