@@ -1274,6 +1274,12 @@ The compile happens **once, at load**: `Policy::from_yaml` hands every distinct 
 Evaluating a rule then looks its program up rather than parsing CEL again
 ([engine.rs:283-300](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/engine.rs#L283-L300)).
 
+The compiler is asked once per **distinct** condition, but a condition that will not compile is
+warned about once per **rule** carrying it — two rules sharing one unusable expression are two
+inert rules, and naming only the first would leave the second doing nothing with nothing in any log
+identifying it. That matches `warn_undefined_endpoints` and `warn_shadowed_rules`, the loader's
+other two "a rule of yours is inert" warnings, which are also per rule.
+
 That table is keyed by the **condition text**, not by the rule's position or name, so it cannot go
 stale: `Rule::condition` is a public field, and a reassigned condition misses the table and is
 compiled on the spot instead of being answered with the program its old text produced. A `Policy`
@@ -1295,7 +1301,8 @@ sequenceDiagram
   participant CEL as cel
   L->>CEL: Program::compile(condition), once per distinct condition
   alt compile error
-    CEL-->>L: Err → warn! naming the rule → recorded as inert
+    CEL-->>L: Err → recorded as inert
+    L->>L: warn! naming every rule that carries that condition
   else compiled
     CEL-->>L: Program → stored under the condition text
   end
