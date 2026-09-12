@@ -123,8 +123,8 @@ fn load_or_create(dir: &Path) -> Result<Resolved> {
     // token — `@honmoon/api`, a bookmarked login URL and any operator tooling
     // read this same file, and a gateway that disagrees with all of them while
     // reporting success is worse than one that refuses to start.
-    let existing = match std::fs::read_to_string(&path) {
-        Ok(contents) => Some(contents),
+    let existing = match read_token_and_mode(&path) {
+        Ok(read) => Some(read),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
         Err(e) => {
             return Err(e).with_context(|| {
@@ -136,10 +136,10 @@ fn load_or_create(dir: &Path) -> Result<Resolved> {
         }
     };
 
-    if let Some(contents) = &existing {
+    if let Some((contents, mode)) = &existing {
         let token = trim_token(contents);
         if !token.is_empty() {
-            warn_if_readable_beyond_owner(&path);
+            warn_if_readable_beyond_owner(&path, *mode);
             // The persisted path is the common one — every restart after the
             // first — so checking the directory only where a token is minted
             // would mean never checking it in practice. It matters most here:
@@ -181,7 +181,7 @@ fn load_or_create(dir: &Path) -> Result<Resolved> {
         // A concurrent first run won the create. Its token is the one on disk,
         // so adopt it rather than serving one nobody else can present.
         Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
-            let contents = std::fs::read_to_string(&path)
+            let (contents, mode) = read_token_and_mode(&path)
                 .with_context(|| format!("reading {} after a lost create race", path.display()))?;
             let winner = trim_token(&contents);
             if winner.is_empty() {
@@ -190,7 +190,7 @@ fn load_or_create(dir: &Path) -> Result<Resolved> {
                     path.display()
                 );
             }
-            warn_if_readable_beyond_owner(&path);
+            warn_if_readable_beyond_owner(&path, mode);
             warn_if_writable_beyond_owner(dir);
             Ok(Resolved {
                 token: winner.to_string(),
@@ -277,24 +277,12 @@ fn warn_if_writable_beyond_owner(dir: &Path) {
 /// have read has to be *replaced*, and only the operator can decide when to do
 /// that (it invalidates their bookmarked login URL and any tooling holding the
 /// old value). Saying so on stderr is the honest action.
-fn warn_if_readable_beyond_owner(path: &Path) {
+fn warn_if_readable_beyond_owner(path: &Path, mode: Option<u32>) {
     #[cfg(unix)]
     {
-        use std::os::unix::fs::PermissionsExt as _;
-        let metadata = match std::fs::metadata(path) {
-            Ok(metadata) => metadata,
-            // This function exists to never be quiet about the mode. Saying it
-            // could not be read is the honest form of that, and silence here
-            // reads identically to "checked, and it was fine".
-            Err(e) => {
-                eprintln!(
-                    "honmoon: warning: could not read the mode of the management token {}: {e}",
-                    path.display()
-                );
-                return;
-            }
+        let Some(mode) = mode else {
+            return;
         };
-        let mode = metadata.permissions().mode() & 0o777;
         if mode & 0o077 != 0 {
             eprintln!(
                 "honmoon: warning: management token {} is mode {mode:04o} — readable beyond its owner. \
@@ -304,7 +292,48 @@ fn warn_if_readable_beyond_owner(path: &Path) {
         }
     }
     #[cfg(not(unix))]
-    let _ = path;
+    let _ = (path, mode);
+}
+
+/// Read the token and its mode through a single descriptor.
+///
+/// Two resolutions of the same path — `read_to_string(path)` then
+/// `metadata(path)` — can land on two different inodes, and in a directory
+/// another local user can write, that is not theoretical: they supply an
+/// attacker-chosen token for the read, then swap in a private-looking file
+/// before the mode is inspected. The loader would adopt the first value and
+/// report nothing, because the mode it checked belongs to the replacement.
+/// Opening once makes the bytes and the mode describe the same inode by
+/// construction. `packages/api`'s `readTokenAndMode` is the counterpart, fixed
+/// for the same reason.
+///
+/// The mode is `None` where there is nothing to report — a non-Unix host, or a
+/// `fstat` that failed on an already-open descriptor, which is warned about
+/// here rather than silently dropped.
+fn read_token_and_mode(path: &Path) -> std::io::Result<(String, Option<u32>)> {
+    use std::io::Read as _;
+
+    let mut file = std::fs::File::open(path)?;
+
+    let mut mode = None;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        match file.metadata() {
+            Ok(metadata) => mode = Some(metadata.permissions().mode() & 0o777),
+            // Not fatal — the token itself still reads — but never silent:
+            // saying nothing here reads identically to "checked, and it was
+            // fine", which is the one thing this must not imply.
+            Err(e) => eprintln!(
+                "honmoon: warning: could not read the mode of the management token {}: {e}",
+                path.display()
+            ),
+        }
+    }
+
+    let mut contents = String::new();
+    file.read_to_string(&mut contents)?;
+    Ok((contents, mode))
 }
 
 #[cfg(unix)]
