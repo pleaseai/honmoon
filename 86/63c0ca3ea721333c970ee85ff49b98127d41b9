@@ -1,0 +1,43 @@
+.please/docs/decisions/0006-signed-body-requests-under-wire-redaction.md
+  s_b92c74f2d03ba1::t_6ac7a56c898749 10-14,179-181,190-209
+README.md
+  s_b92c74f2d03ba1::t_95a73024ada4cf 239-255
+  s_b92c74f2d03ba1::t_6ac7a56c898749 309-312
+.claude/agent-memory/review-review-documentation-analyzer/pr175_adr0006_untouched_forward_stale.md
+  s_b92c74f2d03ba1::t_e35208b1ba5e89 3,5,8-13,15-18,20-23,25-27,29-38
+  s_b92c74f2d03ba1::t_0238df541dadac 1-2,4,6-7,14,19,24,28
+.claude/agent-memory/review-review-pr-test-analyzer/content_length_trailers_h2.md
+  s_b92c74f2d03ba1::t_b61caca3816129 30-38
+  s_b92c74f2d03ba1::t_e35208b1ba5e89 3
+crates/honmoon-proxy/src/body.rs
+  s_b92c74f2d03ba1::t_eb156b0c3b83cb 1098-1105
+  s_b92c74f2d03ba1::t_a0c1f0a631e327 51-52,262-271,273-291,293-311,319,323-324,331,334-367,370
+  s_b92c74f2d03ba1::t_87571fe41a172e 30-36,388-394,399-408,414-417,425,428,430,438,441,443
+  s_b92c74f2d03ba1::t_9ea3051017eb64 1130,1140-1168
+  s_b92c74f2d03ba1::t_21b3078739458a 1169
+.please/docs/decisions/0009-body-only-inspection-contract.md
+  s_b92c74f2d03ba1::t_95a73024ada4cf 5-10,87-102,184
+crates/honmoon-proxy/src/mitm.rs
+  s_b92c74f2d03ba1::t_87571fe41a172e 710-714
+  s_b92c74f2d03ba1::t_9ea3051017eb64 1699-1708,1720-1722,1750-1751,1753,1767-1768,1770,1824-1858
+  s_b92c74f2d03ba1::t_f05d11996ad251 1698
+.claude/agent-memory/review-review-security-reviewer/request-trailer-plumbing.md
+  s_b92c74f2d03ba1::t_e35208b1ba5e89 37-49
+  s_b92c74f2d03ba1::t_62e60863398f48 35-36
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "8663c0ca3ea721333c970ee85ff49b98127d41b9",
+  "prompts": {},
+  "sessions": {
+    "s_b92c74f2d03ba1": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "ed14d62f-7552-4452-8b5f-6be04091ed84",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
