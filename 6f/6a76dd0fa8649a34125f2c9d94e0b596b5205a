@@ -1,0 +1,21 @@
+.claude/agent-memory/review-review-security-reviewer/policy-yaml-trust-boundary.md
+  s_b100dddae62eec::t_740a7053396ab9 14
+.claude/agent-memory/review-review-comment-analyzer/pr197_program_for_dead_arm.md
+  s_b100dddae62eec::t_740a7053396ab9 17-32,57-58
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "6f6a76dd0fa8649a34125f2c9d94e0b596b5205a",
+  "prompts": {},
+  "sessions": {
+    "s_b100dddae62eec": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d8a23aa2-ca49-436c-826f-804953b513b9",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
