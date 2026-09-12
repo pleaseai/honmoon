@@ -1,41 +1,45 @@
 ---
 name: audit-sink-residual-gaps
-description: 'The three residual gaps in the audit-sink open after #138 — symlinked parent (#160), pre-existing mode and the hard-link/hostile-pre-creation bypass (both #161) — all documented in-code; verify the list still has all three rather than re-reporting them as unnamed'
+description: 'What the audit-sink open still accepts after #138/#179/#161 — a loose mode, a foreign owner and a hard link are accepted and *reported* as degraded events (report-don''t-enforce, settled in #161), a symlinked parent is refused (#179), and an untrusted plain-directory component is accepted with no event; check the in-code list matches before re-reporting any of them'
 metadata:
   type: project
 ---
 
 `open_sink`'s doc comment (`crates/honmoon-core/src/audit.rs`) has a "**Still accepted,
-deliberately:**" section listing three residual gaps. **All three are named in the code
-and tracked; report them as new findings only if the prose stops matching.**
+deliberately:**" section. **Every item there is named in the code and either closed,
+reported, or tracked; report one as a new finding only if the prose stops matching.**
 
-1. **A symlinked parent directory** — `O_NOFOLLOW` constrains the final component only.
-   Tracked in #160. `openat2(RESOLVE_NO_SYMLINKS)` is Linux-only; a component-by-component
-   `openat` walk is portable and simply unwritten.
-2. **The mode of a file that already exists** — `mode` applies on creation only, so a log
-   created by a pre-#138 honmoon at the umask default stays there. Tracked in #161, pinned
-   by `an_existing_sink_keeps_the_mode_it_had`.
-3. **A final inode chosen by means other than a symlink.** `O_NOFOLLOW` constrains
-   *symbolic* links only. In the same untrusted-directory threat model, a local actor can
-   pre-create the audit path as an ordinary `0666` regular file, or `link(2)` it onto a
-   file they own. The `fstat` passes — it *is* a regular file — and the creation mode does
-   not apply, so every record (hosts, SQL tables, PII categories, a hook's absolute
-   `$HOME` salt path) lands where they read it. On macOS there is no
-   `protected_hardlinks` equivalent, so the hard-link form also reopens the integrity half
-   of CWE-59.
+1. **A symlinked parent directory** — closed by #179 (issue #160): a component-by-component
+   `openat` walk refuses a symlink at every step, following one only when the directory
+   holding it is root- or euid-owned with no group/other write bit. That trust test reads
+   `st_mode` only, so a macOS extended ACL is invisible to it — issue #181, open.
+2. **The mode of a file that already exists** — still accepted, **now reported**. `mode`
+   applies on creation only, so a log created by a pre-#138 honmoon at the umask default
+   stays loose; #161 settled report-don't-enforce and `observe_sink` raises an
+   `audit-sink-exposed` degraded event carrying `FactsSummary::sink` (`AuditSinkFacts`).
+   Not re-tightened, because the path is an operator flag a log shipper may read on
+   purpose; `an_existing_sink_keeps_the_mode_it_had` pins both halves (mode kept, event
+   recorded).
+3. **A final inode chosen by means other than a symlink** — still accepted, **now
+   reported** off the same `fstat`: `audit-sink-foreign-owner` (`st_uid != geteuid()`)
+   and `audit-sink-hard-linked` (`st_nlink > 1`). The walk decides which directory the
+   last `openat` runs in, not who owns what it finds there. Refusing was weighed and
+   rejected in #161 for the same reason as re-tightening: a sink an administrator
+   provisioned for a service account reads identically to a hostile pre-creation.
+4. **An untrusted plain-directory component** — accepted with **no event**. The
+   owner-and-mode test fires only on the symlink branch, so an actor who controls a
+   directory on the path can create the rest of the subtree as ordinary directories of
+   their own. The `open_sink` doc says so; nothing observes it.
 
-Gap 3 was **missing from the list** when #163 was first pushed, and #161 was then framed
-as benign history ("left group-readable by an earlier honmoon or by the operator"), which
-made the adversarial version read as already-tracked when it was not. Both were fixed
-before merge: the bullet was added and #161's body was widened to cover it explicitly.
+The recursion — the event about the sink is written *to* that sink — is accepted and
+argued in the `AuditSinkFacts` doc: the operator reads it through `/api/audit` or a
+shipper, it is the only durable channel `honmoon hook` has (no `RUST_LOG`, #131), and a
+sink another user can write was never a guarantee. The hook opens the sink only when it
+has a degraded key to record (`audit_machine_key_status` returns early otherwise), so the
+sink events repeat per invocation only alongside a `hook-salt-*` event.
 
-The cheap close for gap 3 is an fstat-based owner/link check beside the existing type
-check (`st_uid == geteuid()`, `st_nlink == 1`). It sits in #161 rather than its own issue
-because it is the *same decision* as the mode question — may honmoon refuse, or
-re-tighten, an audit file it did not create? — and that refusal is exactly what would
-break the log-shipper scenario the mode half exists to protect.
-
-**How to apply:** on any future audit-sink review, check the in-code list still has all
-three bullets and that #161 still carries the adversarial framing. If it does, this is
-covered; spend the budget elsewhere. Related: [[audit-sink-open-hardening]],
-[[enumerate-from-the-wrong-side]].
+**How to apply:** on any audit-sink review, check the in-code list still has these items
+and that events 2–3 are still *observed, not corrected* — a `set_permissions` on the sink
+path would be the regression, not the fix. Item 4 is the only unreported one; a finding
+there is new only if it proposes something the doc comment does not already concede.
+Related: [[audit-sink-open-hardening]], [[enumerate-from-the-wrong-side]].
