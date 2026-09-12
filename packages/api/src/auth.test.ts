@@ -1,8 +1,8 @@
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
-import { isAuthorized, resolveToken } from './auth'
+import { defaultDir, isAuthorized, resolveToken } from './auth'
 
 describe('isAuthorized', () => {
   test('accepts exactly the configured token as a bearer credential', () => {
@@ -70,7 +70,9 @@ describe('resolveToken', () => {
     const path = join(dir, 'mgmt-token')
     expect(readFileSync(path, 'utf8')).toBe(first.token)
     // A credential another local user can read is the exposure this closes.
-    expect(statSync(path).mode & 0o777).toBe(0o600)
+    if (process.platform !== 'win32') {
+      expect(statSync(path).mode & 0o777).toBe(0o600)
+    }
 
     // The Rust gateway reads this same file, so a second resolution that minted
     // a different token would silently disagree with it.
@@ -85,6 +87,38 @@ describe('resolveToken', () => {
     const resolved = resolveToken(dir)
     expect(resolved.source).toBe('generated')
     expect(resolved.token).toMatch(/^[0-9a-f]{64}$/)
+  })
+
+  test.skipIf(process.platform === 'win32')(
+    'tightens the mode when it replaces an empty token file',
+    () => {
+      // `openSync`'s mode argument applies only when the open creates the file,
+      // so a pre-existing 0644 placeholder would keep that mode and hand a live
+      // credential to every other local user on the host.
+      const path = join(dir, 'mgmt-token')
+      writeFileSync(path, '\n', { mode: 0o644 })
+      chmodSync(path, 0o644)
+      const resolved = resolveToken(dir)
+      expect(resolved.source).toBe('generated')
+      expect(statSync(path).mode & 0o777).toBe(0o600)
+    },
+  )
+
+  test('falls back to a relative .honmoon when HOME is unset, as the Rust CLI does', () => {
+    // The two processes read one file. `homedir()` would resolve the account
+    // home from the passwd database here, disagreeing with the Rust side's
+    // working-directory-relative fallback, and they would mint different
+    // tokens from the same configuration.
+    const home = process.env.HOME
+    try {
+      delete process.env.HOME
+      expect(defaultDir()).toBe('.honmoon')
+    }
+    finally {
+      if (home !== undefined) {
+        process.env.HOME = home
+      }
+    }
   })
 
   test('aborts on an unreadable token file instead of minting a second one', () => {

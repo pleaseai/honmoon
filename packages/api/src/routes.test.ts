@@ -63,3 +63,13 @@ describe('the audit read surface', () => {
     expect((await get('/api/nope', { authorization: `Bearer ${TOKEN}` })).status).toBe(404)
   })
 })
+
+describe('createFetchHandler', () => {
+  test('refuses to build a handler with an empty token', () => {
+    // An empty token authenticates `Authorization: Bearer `, which is exactly
+    // the unauthenticated mode issue #173 closes. `resolveToken` never yields
+    // one, but this is the boundary where the gate is actually constructed.
+    expect(() => createFetchHandler({ token: '', loadEvents: async () => EVENTS })).toThrow()
+    expect(() => createFetchHandler({ token: '   ', loadEvents: async () => EVENTS })).toThrow()
+  })
+})

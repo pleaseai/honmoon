@@ -15,8 +15,7 @@
  * and no CSRF surface. The dashboard talks to the Rust management API.
  */
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto'
-import { closeSync, mkdirSync, openSync, readFileSync, writeSync } from 'node:fs'
-import { homedir } from 'node:os'
+import { chmodSync, closeSync, mkdirSync, openSync, readFileSync, writeSync } from 'node:fs'
 import { join } from 'node:path'
 
 /** File under the honmoon directory holding a generated token. */
@@ -34,9 +33,18 @@ export interface ResolvedToken {
   path?: string
 }
 
-/** `$HOME/.honmoon`, matching the Rust CLI's `mgmt_token::default_dir`. */
+/**
+ * `$HOME/.honmoon`, matching the Rust CLI's `mgmt_token::default_dir`.
+ *
+ * The `HOME`-unset fallback is a working-directory-relative `.honmoon`, which
+ * is what the Rust side does. `homedir()` would disagree with it there — it
+ * falls back to the account's home from the passwd database — and the two
+ * processes would then mint different tokens from the same configuration,
+ * leaving a caller authenticated to one service rejected by the other.
+ */
 export function defaultDir(): string {
-  return join(homedir(), '.honmoon')
+  const home = process.env.HOME
+  return home !== undefined && home !== '' ? join(home, '.honmoon') : '.honmoon'
 }
 
 /**
@@ -103,6 +111,13 @@ export function resolveToken(dir: string = defaultDir()): ResolvedToken {
   try {
     const fd = openSync(path, existed ? 'w' : 'wx', 0o600)
     try {
+      // The mode argument applies only when the open *creates* the file, so a
+      // pre-existing empty `0644` placeholder would otherwise take a live
+      // credential at its old mode. Tighten before the bytes land, so the
+      // token is never briefly readable beyond its owner.
+      if (existed) {
+        chmodSync(path, 0o600)
+      }
       writeSync(fd, token)
     }
     finally {

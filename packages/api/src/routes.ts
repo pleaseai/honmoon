@@ -20,6 +20,13 @@ export interface HandlerConfig {
 }
 
 export function createFetchHandler({ token, loadEvents }: HandlerConfig) {
+  // `resolveToken` never yields an empty token, but `HandlerConfig` accepts any
+  // string and this is the boundary where the gate is built. An empty token
+  // authenticates `Authorization: Bearer ` and so reopens the unauthenticated
+  // mode #173 closes — refuse to build a handler that would.
+  if (token.trim() === '') {
+    throw new Error('refusing to serve with an empty management token')
+  }
   return async function handle(req: Request): Promise<Response> {
     const url = new URL(req.url)
 
