@@ -114,6 +114,27 @@ describe('checkShell', () => {
     expect(details(unquoted)).toEqual([expect.stringContaining('<script> loads from off this origin')])
   })
 
+  // The navigation exemption is about a link being a navigation, not a fetch.
+  // A `javascript:` URL is neither — it is code, which `script-src 'self'`
+  // refuses, so the exemption must not extend to it.
+  test('a javascript: href fails even on an <a>, where navigation is exempt', () => {
+    const js = BUILT_SHELL.replace(
+      '<div id="root"></div>',
+      '<div id="root"></div>\n    <a href="javascript:go()">go</a>',
+    )
+    expect(details(js)).toEqual([expect.stringContaining('javascript: URL')])
+  })
+
+  // `[^>]*` would end the tag at the `>` inside the quoted value and never read
+  // the attribute after it — a miss, not a finding.
+  test('a quoted > inside an attribute does not hide the attributes after it', () => {
+    const tricky = BUILT_SHELL.replace(
+      '<div id="root"></div>',
+      '<div id="root"></div>\n    <link rel="preload" title="a>b" href="https://cdn.example/x.css">',
+    )
+    expect(details(tricky)).toEqual([expect.stringContaining('<link> loads from off this origin')])
+  })
+
   test('a fragment link is same-document, not an off-origin load', () => {
     expect(details(BUILT_SHELL.replace('<div id="root">', '<a href="#/audit">a</a><div id="root">')))
       .toEqual([])

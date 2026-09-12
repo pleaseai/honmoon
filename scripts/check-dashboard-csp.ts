@@ -57,8 +57,18 @@ export const DEFAULT_SHELLS = [
 /** What produces each default shell, named in the error when one is missing. */
 export const BUILD_COMMANDS = `bun run --filter '@honmoon/dashboard' build:demo`
 
+/**
+ * An attribute span inside an opening tag, as a regex source fragment.
+ *
+ * `[^>]*` would end the tag at the first `>`, including one inside a quoted
+ * value (`<a href="a>b">`) — and every attribute after it in that tag would then
+ * go unread, which is a miss rather than a finding. Quoted runs are consumed
+ * whole so only a real tag terminator ends the span.
+ */
+const ATTRS = String.raw`(?:"[^"]*"|'[^']*'|[^>])*`
+
 /** A complete `<script …>…</script>` pair. Built HTML, not arbitrary HTML. */
-const SCRIPT_TAG = /<script\b([^>]*)>([\s\S]*?)<\/script>/gi
+const SCRIPT_TAG = new RegExp(String.raw`<script\b(${ATTRS})>([\s\S]*?)<\/script>`, 'gi')
 
 /**
  * Any `<script` opening tag, counted separately from {@link SCRIPT_TAG}.
@@ -72,7 +82,7 @@ const SCRIPT_TAG = /<script\b([^>]*)>([\s\S]*?)<\/script>/gi
 const SCRIPT_OPEN = /<script\b/gi
 
 /** An element's opening tag: its name, and everything up to the closing `>`. */
-const OPEN_TAG = /<([a-z][a-z0-9-]*)\b([^>]*)>/gi
+const OPEN_TAG = new RegExp(String.raw`<([a-z][a-z0-9-]*)\b(${ATTRS})>`, 'gi')
 
 /**
  * A `src=` or `href=` value: double-quoted, single-quoted, or bare.
@@ -82,6 +92,16 @@ const OPEN_TAG = /<([a-z][a-z0-9-]*)\b([^>]*)>/gi
  * policy then refuses.
  */
 const URL_ATTR = /\b(src|href)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'>]+))/gi
+
+/**
+ * A `javascript:` URL — script, wherever it is carried.
+ *
+ * `script-src 'self'` refuses one (it needs `'unsafe-inline'`), so it is a
+ * finding even in an `href` the navigation exemption below would otherwise skip:
+ * that exemption exists because a *navigation* is not a fetch, and this is not a
+ * navigation, it is code.
+ */
+const JAVASCRIPT_URL = /^\s*javascript:/i
 
 /**
  * Elements whose `href` is a *navigation*, not a subresource load.
@@ -165,6 +185,10 @@ export function checkShell(html: string, shell: string): Problem[] {
     const element = tag.toLowerCase()
     for (const [attr, name, doubleQuoted, singleQuoted, bare] of attrs.matchAll(URL_ATTR)) {
       const url = doubleQuoted ?? singleQuoted ?? bare ?? ''
+      if (JAVASCRIPT_URL.test(url)) {
+        note(`<${element}> carries a javascript: URL, which \`script-src 'self'\` refuses: ${attr}`)
+        continue
+      }
       if (name.toLowerCase() === 'href' && NAVIGATION_HREF.has(element)) {
         continue
       }
