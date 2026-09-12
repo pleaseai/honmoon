@@ -1,0 +1,29 @@
+.claude/agent-memory/review-review-security-reviewer/mgmt-api-auth-model.md
+  s_d720448ec7c988::t_2c677de2e2aa62 1-2,4-28
+  s_d720448ec7c988::t_651c57de50a7e8 29-51
+  s_d720448ec7c988::t_a252be2138bcf3 3
+.claude/agent-memory/review-review-silent-failure-hunter/project_pr186_warn_if_readable_beyond_owner.md
+  s_d720448ec7c988::t_e9a1d69374dc84 1-2,4-7,13,27-30
+  s_d720448ec7c988::t_651c57de50a7e8 3,8-12,14-26
+.claude/agent-memory/review-review-code-reviewer/project_mgmt_token_printable_pr186.md
+  s_d720448ec7c988::t_651c57de50a7e8 3,9-13,15-19,21-24
+  s_d720448ec7c988::t_ae65aee972e47e 1-2,4-8,14,20
+.claude/agent-memory/review-review-documentation-analyzer/pr186_mgmt_token_auth.md
+  s_d720448ec7c988::t_2550dc9ce9af38 3,23-38
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "be3af4eb9560d72ef4d5c661c6246c47d1dc7e71",
+  "prompts": {},
+  "sessions": {
+    "s_d720448ec7c988": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "069c4824-e961-4929-8157-1ff587135fd5",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
