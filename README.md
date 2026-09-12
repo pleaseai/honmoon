@@ -179,9 +179,10 @@ honmoon gateway --config policies/agent.yaml --tls-intercept --pii-mode block
 honmoon join --gateway honmoon.internal:8443
 
 # Check a policy without starting anything: exit 0 if the gateway would load it,
-# non-zero with every offending rule named on stderr if it would not. Binds no
-# listener and writes nothing — notably it never resolves the management token,
-# so unlike `gateway` it cannot create ~/.honmoon/mgmt-token. Safe in CI.
+# non-zero with the loader's diagnosis on stderr if it would not (every rule
+# whose condition does not compile; the first offender for its other checks).
+# Binds no listener and writes nothing — notably it never resolves the
+# management token, so unlike `gateway` it cannot create ~/.honmoon/mgmt-token.
 honmoon policy validate policies/agent.yaml
 ```
 

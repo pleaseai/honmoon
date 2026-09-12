@@ -269,13 +269,19 @@ enum PolicyCommand {
     ///
     /// Loads the file through exactly the loader `honmoon gateway --config`
     /// uses, so a policy this accepts is one the gateway will accept: the
-    /// point is the check, not a second opinion. Exits 0 when the policy
-    /// loads and non-zero when it does not, with every problem the loader
-    /// found on stderr — a load failure names every offending rule (#197), and
-    /// the loader's warnings (a rule an earlier unconditional rule makes
-    /// unreachable, a rule naming an endpoint `endpoints` does not declare)
-    /// are printed here rather than filtered away, since reporting what the
-    /// loader found is the whole job.
+    /// point is the check, not a second opinion. Exits 0 when the policy loads
+    /// and non-zero when it does not, with what the loader found on stderr.
+    ///
+    /// How much of it you get depends on the fault, because that is how the
+    /// loader reports: every rule whose `condition` does not compile is named
+    /// in one go (#197), while its other checks — an unusable `endpoints`
+    /// entry, a blank `condition` — stop at the first offender. The loader's
+    /// warnings (a rule an earlier unconditional rule makes unreachable, a
+    /// rule naming an endpoint `endpoints` does not declare) are printed here
+    /// rather than filtered away, since reporting what the loader found is the
+    /// whole job. They come through `tracing`, so a `RUST_LOG` you have set
+    /// for other reasons replaces this command's `warn` default and can
+    /// silence them — `RUST_LOG=warn` puts them back.
     ///
     /// A warning is not a refusal. The gateway starts on a policy carrying
     /// one, so this exits 0 on one too — a check that disagreed with the
@@ -285,10 +291,11 @@ enum PolicyCommand {
     /// management token is never resolved, so checking a policy cannot create
     /// `~/.honmoon/mgmt-token` the way starting a gateway does (#198).
     ///
-    /// The policy's own contents are not echoed: on success you get a count of
-    /// what loaded, because a CI log is not somewhere an operator chose to put
-    /// their endpoint names. A rejection quotes the rules responsible, which is
-    /// the diagnosis itself and the thing that has to be fixed.
+    /// A policy that loads is summarised by the count of what loaded, never by
+    /// its contents — a CI log is not somewhere an operator chose to put their
+    /// endpoint names. What a *problem* prints is the problem: a rejected rule
+    /// is quoted, and a warning names the rule and endpoint it is about,
+    /// because that is the diagnosis and the thing to go and fix.
     Validate {
         /// Policy file to check.
         #[arg(value_name = "FILE")]
@@ -367,8 +374,14 @@ fn main() -> Result<()> {
 /// defaults to `WARN` instead: two of the loader's diagnostics — an unreachable
 /// rule, a rule naming an undeclared endpoint — are `tracing::warn!` inside
 /// `honmoon-core`, and a check that exists to report what the loader found
-/// cannot be the one place they are filtered out. `RUST_LOG` still overrides
-/// either default.
+/// cannot be the one place they are filtered out.
+///
+/// A default is all it is. `with_default_directive` applies only when
+/// `RUST_LOG` parses to no directives at all, so an operator who already
+/// exports `RUST_LOG=error` to quiet something else gets a `policy validate`
+/// with its warnings silenced and nothing on screen saying so. That is
+/// `RUST_LOG` doing its job — it is the explicit setting and this is the
+/// fallback — but it is worth knowing, so `--help` says it too.
 ///
 /// **Stream.** `tracing_subscriber::fmt` writes to stdout by default, which is
 /// right for a long-running gateway whose log *is* its output and wrong for a
@@ -378,18 +391,25 @@ fn main() -> Result<()> {
 fn init_tracing(command: &Command) {
     use tracing::level_filters::LevelFilter;
 
-    let default = match command {
-        Command::Policy { .. } => LevelFilter::WARN,
-        _ => LevelFilter::ERROR,
+    // One test of the discriminant, held in a named binding, because the level
+    // and the writer are two halves of one decision. Asking twice would let a
+    // command added later answer the two questions differently by omission.
+    let policy_tooling = matches!(command, Command::Policy { .. });
+
+    let default = if policy_tooling {
+        LevelFilter::WARN
+    } else {
+        LevelFilter::ERROR
     };
     let builder = tracing_subscriber::fmt().with_env_filter(
         tracing_subscriber::EnvFilter::builder()
             .with_default_directive(default.into())
             .from_env_lossy(),
     );
-    match command {
-        Command::Policy { .. } => builder.with_writer(std::io::stderr).init(),
-        _ => builder.init(),
+    if policy_tooling {
+        builder.with_writer(std::io::stderr).init();
+    } else {
+        builder.init();
     }
 }
 
@@ -924,22 +944,75 @@ fn load_policy(path: &Path) -> Result<Policy> {
     Ok(Policy::from_yaml(&src)?)
 }
 
+/// A top-level shape a policy can never have, named without quoting what it
+/// held.
+///
+/// `None` means "hand it to the loader", and covers three cases: a mapping (an
+/// ordinary policy), a null document (an empty file, which *is* a valid policy
+/// — every field at its default), and text YAML itself cannot parse, where
+/// serde's own syntax diagnostic is the useful one and quotes only the token it
+/// stopped on, with a line and column.
+///
+/// The remaining shapes are why this exists. serde renders a top-level type
+/// mismatch as `invalid type: string "<value>"`, and when the top level is a
+/// plain scalar that value is **the whole file**. `policy validate` is
+/// documented for CI, where the path it is given comes from the repository
+/// under test — so a mistyped path, or a branch that replaces `policy.yaml`
+/// with a symlink to `~/.honmoon/mgmt-token`, an SSH key or a `.env`, would put
+/// that file in the log. Classifying the shape first says what is wrong without
+/// reading the contents out.
+///
+/// No verdict moves: every shape named here fails [`Policy::from_yaml`] as
+/// well, so the two paths refuse the same files and only the message differs.
+///
+/// It is a bound, not a blanket. A *mapping* carrying a long string still
+/// reaches serde's quoting (`version: "<…>"`) — but that is a file shaped like
+/// a policy, and the value quoted is the author's own field, which is the
+/// diagnosis they need.
+fn not_a_policy_document(src: &str) -> Option<&'static str> {
+    use serde_yaml::Value;
+
+    match serde_yaml::from_str::<Value>(src) {
+        Ok(Value::Mapping(_) | Value::Null) | Err(_) => None,
+        Ok(Value::Sequence(_)) => Some("a list"),
+        Ok(Value::String(_)) => Some("plain text"),
+        Ok(Value::Bool(_) | Value::Number(_)) => Some("a single value"),
+        Ok(Value::Tagged(_)) => Some("a tagged value"),
+    }
+}
+
 /// `honmoon policy validate` — load a policy the way the gateway does, say what
 /// the loader found, and exit.
 ///
-/// The body is deliberately thin. Everything that decides whether a policy is
-/// acceptable lives in [`load_policy`] — the same function `honmoon run` calls
-/// and the same [`Policy::from_yaml`] `gateway` calls — so there is no second
-/// implementation here to drift from the one that matters. The error travels up
-/// unwrapped for the same reason: `main`'s `Result` prints it, so the text an
-/// operator reads from this command is the text the gateway would have printed.
+/// The body is deliberately thin, and shaped like `gateway`'s own first steps:
+/// read the file, then [`Policy::from_yaml`]. Everything that decides whether a
+/// policy is acceptable lives in that one call — the same one `gateway` and
+/// `honmoon run` reach — so there is no second implementation here to drift
+/// from the one that matters. The loader's error travels up unwrapped for the
+/// same reason: `main`'s `Result` prints it, so a rejected policy reads the way
+/// the gateway would have reported it.
+///
+/// The one thing this path says in its own words is
+/// [`not_a_policy_document`], which refuses a file the loader would refuse
+/// anyway, before serde can quote it into a CI log.
 ///
 /// What this function *adds* is everything the gateway does around that load and
 /// this one must not: no management token is resolved (the side effect #198 is
 /// about), no audit log is opened, no CA is read or generated, no listener is
 /// bound. Not suppressing those — never reaching them.
 fn policy_validate(path: &Path) -> Result<()> {
-    let policy = load_policy(path)?;
+    let src = std::fs::read_to_string(path)
+        .with_context(|| format!("reading policy {}", path.display()))?;
+
+    if let Some(shape) = not_a_policy_document(&src) {
+        anyhow::bail!(
+            "{} is not a policy document: its top level is {shape}, not a mapping of \
+             policy fields. Contents withheld — check the path.",
+            path.display()
+        );
+    }
+
+    let policy = Policy::from_yaml(&src)?;
 
     // Counts, not contents: enough to see the file that loaded was the one
     // meant, without putting an operator's endpoint names in a CI log.

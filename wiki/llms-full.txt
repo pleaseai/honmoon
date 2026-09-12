@@ -3093,8 +3093,14 @@ It is a load-and-exit check, so what it accepts is what a gateway accepts:
 | | |
 |---|---|
 | **Exit 0** | The policy loads. The gateway would start on it |
-| **Exit non-zero** | The policy does not load, and the error naming every offending rule is on stderr |
+| **Exit non-zero** | The policy does not load, and the loader's diagnosis is on stderr |
 | **stdout** | Empty. Everything it says goes to stderr, so a CI step can pipe stdout without catching diagnostics |
+
+How much of that diagnosis you get depends on the fault, because that is how the loader reports.
+Every rule whose `condition` does not compile is named in one go
+([#197](https://github.com/pleaseai/honmoon/pull/197)), so three of them take one run to find. The
+loader's other checks — an unusable `endpoints` entry, a blank `condition` — stop at the first
+offender, so those take one run each.
 
 Two properties are worth stating outright, because they are what make it usable.
 
@@ -3106,6 +3112,14 @@ implementation here to drift from that one. The integration test
 the same verdict and the same message
 ([tests/policy_validate.rs](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-cli/tests/policy_validate.rs)).
 
+There is exactly one thing the check says in its own words, and it refuses nothing extra: a file
+whose top level is not a mapping — plain text, a list, a single value — is named as *not a policy
+document* rather than handed to the parser. The loader refuses those too; what changes is that the
+parser would have quoted the file to say so, and for a document that is one plain scalar the quote
+is the whole file. Pointed at a token file, an SSH key or a `.env` by a mistyped path, that lands
+in the CI log. An empty file is not in this class: it is a valid policy with every field at its
+default.
+
 **It has no side effects.** No listener is bound, no audit log is opened, no CA is read or
 generated, and — the one that is easy to miss — the management token is never resolved. Starting a
 gateway resolves it *before* it loads the policy, so `honmoon gateway --config <bad file>` creates
@@ -3116,17 +3130,24 @@ that shows the gateway doing exactly that).
 
 It reports the loader's **warnings** too — an unreachable rule, a rule naming an endpoint
 `endpoints` does not declare — which `tracing` filters out of an ordinary gateway run. They do not
-change the exit code: the gateway starts on a policy carrying one, so this accepts it too. Set
-`RUST_LOG` to see more or less.
+change the exit code: the gateway starts on a policy carrying one, so this accepts it too.
+
+They arrive through `tracing`, and the `warn` level this command asks for is only a *default*. A
+`RUST_LOG` you export for other reasons replaces it, and one that is stricter (`RUST_LOG=error`,
+`off`) silences these warnings with nothing on screen to say so. If a policy you expected a warning
+about comes back clean, check `RUST_LOG` first — `RUST_LOG=warn` puts them back.
 
 ```yaml
 # .github/workflows/policy.yml
 - run: honmoon policy validate policies/agent.yaml
 ```
 
-The policy's own contents are not echoed on success — a count of what loaded, and nothing more.
-An endpoint map names the hosts an operator cares most about, and a CI log is not somewhere they
-chose to put them. A *rejection* does quote the rules responsible: that text is the diagnosis.
+A policy that loads is summarised by a count of what loaded, never by its contents. An endpoint map
+names the hosts an operator cares most about, and a CI log is not somewhere they chose to put them.
+What a *problem* prints is the problem: a rejected rule is quoted, and a warning names the rule and
+the endpoint it is about, because that is the diagnosis and the thing to go and fix. So a clean run
+says nothing about your policy, and a run with a warning names the rules the warning is about —
+worth knowing before you make that log public.
 
 `honmoonctl validate` remains the stub it was. Making it real is its own job
 ([#198](https://github.com/pleaseai/honmoon/issues/198) deliberately left it alone), and it could

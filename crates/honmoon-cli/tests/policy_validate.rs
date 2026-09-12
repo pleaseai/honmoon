@@ -30,13 +30,22 @@ fn honmoon() -> PathBuf {
 /// Hand-rolled rather than pulled from a crate: a new workspace dependency is
 /// an "ask first" change in `crates/AGENTS.md`, and `tests/hook_transports.rs`
 /// already solves this the same way.
+///
+/// Uniqueness is derived, not entrusted to the caller. `process::id()` alone
+/// does not separate two tests — libtest runs the whole binary in one process,
+/// on threads — so the thread name carries it, which libtest sets to the test
+/// function's own name. `label` then only has to be unique *within* one test,
+/// which is the scope a reader can actually check. Get it wrong and two
+/// `TempHome`s share a directory, one of them deleting the other's `HOME`
+/// mid-run: a flaky failure a long way from its cause.
 struct TempHome(PathBuf);
 
 impl TempHome {
     fn new(label: &str) -> Self {
         let path = std::env::temp_dir().join(format!(
-            "honmoon-policy-validate-{}-{label}",
-            std::process::id()
+            "honmoon-policy-validate-{}-{}-{label}",
+            std::process::id(),
+            std::thread::current().name().unwrap_or("unnamed")
         ));
         let _ = std::fs::remove_dir_all(&path);
         std::fs::create_dir_all(&path).expect("create the scratch HOME");
@@ -142,6 +151,20 @@ rules:
         "a policy the gateway loads must validate; stderr: {}",
         stderr(&output)
     );
+    // Pinned for the same reason the bad-policy test pins its rule name: exit 0
+    // is also what a `policy_validate` that never called the loader would
+    // return, and the counts can only come from a policy that parsed.
+    assert!(
+        stderr(&output).contains("policy is valid (1 rules, 1 endpoints)"),
+        "the run must have reached the loader and counted what it loaded; got: {}",
+        stderr(&output)
+    );
+    // The no-side-effect property is not conditioned on the verdict — the
+    // rejected path is checked below, and this is the accepted one.
+    assert!(
+        !home.honmoon_dir().exists(),
+        "an accepted policy must not write anything either"
+    );
     let printed = format!("{}{}", stdout(&output), stderr(&output));
     assert!(
         !printed.contains("crown-jewels") && !printed.contains("jewels.internal"),
@@ -202,27 +225,45 @@ fn validating_a_bad_policy_creates_nothing_under_home() {
 
     // The control: the same bad policy through the only path that exists today.
     // Without it "nothing was created" could just mean nothing ever is.
-    let control = TempHome::new("gateway-control");
-    let control_policy = control.write_policy("bad.yaml", THREE_BAD_RULES);
-    let gateway = run(
-        &control,
-        &["gateway", "--config", control_policy.to_str().unwrap()],
-    );
-    assert!(
-        !gateway.status.success(),
-        "the gateway refuses this policy too"
-    );
-    assert!(
-        control.honmoon_dir().join("mgmt-token").exists(),
-        "the control must show the side effect being avoided: `honmoon gateway` \
-         resolves the management token before it loads the policy, so it mints \
-         one even on the run the policy fails. If this ever stops holding, the \
-         assertion above stops measuring anything."
-    );
+    //
+    // Unix-only, because minting is: `mgmt_token::random_bytes` reads
+    // `/dev/urandom` and its `cfg(not(unix))` twin refuses outright rather than
+    // invent a credential, so on a non-Unix host `gateway` fails *at* token
+    // resolution and never reaches the policy. That leaves nothing for the
+    // control to demonstrate there. The claim above is not gated with it: it is
+    // about what `validate` does, it holds on every platform, and the
+    // `first-bad` assertion is what keeps it from passing vacuously.
+    #[cfg(unix)]
+    {
+        let control = TempHome::new("gateway-control");
+        let control_policy = control.write_policy("bad.yaml", THREE_BAD_RULES);
+        let gateway = run(
+            &control,
+            &["gateway", "--config", control_policy.to_str().unwrap()],
+        );
+        assert!(
+            !gateway.status.success(),
+            "the gateway refuses this policy too"
+        );
+        assert!(
+            control.honmoon_dir().join("mgmt-token").exists(),
+            "the control must show the side effect being avoided: `honmoon gateway` \
+             resolves the management token before it loads the policy, so it mints \
+             one even on the run the policy fails. If this ever stops holding, the \
+             assertion above stops measuring anything."
+        );
+    }
 }
 
 /// A `validate` that accepted what the gateway refuses would be worse than
 /// nothing, so both are run on one file and required to agree.
+///
+/// Unix-only for the reason the control above is: on a non-Unix host `gateway`
+/// stops at token minting, so it never reaches the loader and there is no
+/// second verdict to agree with. Gating beats asserting a weaker claim there —
+/// the drift this guards against is in the loader, and a host that cannot run
+/// one of the two paths cannot observe it either way.
+#[cfg(unix)]
 #[test]
 fn validate_and_the_gateway_report_the_same_refusal() {
     let validate_home = TempHome::new("drift-validate");
@@ -260,6 +301,50 @@ fn validate_and_the_gateway_report_the_same_refusal() {
         "…and it must be the same one the gateway reports; got: {}",
         stderr(&started)
     );
+}
+
+/// The command is documented for CI, where the path it is handed comes from the
+/// repository under test. serde quotes a top-level type mismatch — and when the
+/// top level is a scalar, what it quotes is the whole file — so a mistyped path,
+/// or a branch pointing `policy.yaml` at a credential, would print that file
+/// into the log.
+#[test]
+fn a_file_that_is_not_a_policy_is_named_rather_than_quoted() {
+    let home = TempHome::new("not-a-policy");
+    // Stands in for whatever the path actually resolved to: a token file, an
+    // SSH key, a `.env`. One line, no YAML structure — the shape that makes
+    // serde quote the document whole.
+    let secret = "ghp_thisisnotapolicyitisacredential";
+    let policy = home.write_policy("mistyped.txt", &format!("{secret}\n"));
+
+    let output = run(&home, &["policy", "validate", policy.to_str().unwrap()]);
+
+    assert!(!output.status.success(), "this is not a policy");
+    let printed = format!("{}{}", stdout(&output), stderr(&output));
+    assert!(
+        !printed.contains(secret),
+        "the file's contents must not reach the log; got: {printed}"
+    );
+    assert!(
+        printed.contains("not a policy document"),
+        "…and the operator must be told what is actually wrong; got: {printed}"
+    );
+
+    // Refusing it early changes no verdict — it is refused either way. Without
+    // this, the guard could quietly start rejecting files the gateway accepts.
+    #[cfg(unix)]
+    {
+        let control = TempHome::new("not-a-policy-gateway");
+        let control_policy = control.write_policy("mistyped.txt", &format!("{secret}\n"));
+        let gateway = run(
+            &control,
+            &["gateway", "--config", control_policy.to_str().unwrap()],
+        );
+        assert!(
+            !gateway.status.success(),
+            "the gateway refuses this file too, so the guard only changes the wording"
+        );
+    }
 }
 
 /// A warning is not a refusal: the gateway starts on this policy, so `validate`
