@@ -145,3 +145,22 @@ a history claim with a `key_source` describing a different key — which is why 
 split out rather than folded in. **#172** carries the older path-based-observation
 entry above: read/chmod/stat still resolve `path` separately, so the mode observed is
 not bound to the inode the bytes came from.
+
+**2026-09 (#165) — a refused sink now escalates to the hook response.**
+`audit_machine_key_status` returns `Option<String>`; `run` puts it on the verdict as the
+Claude Code `systemMessage` common field via `attach_system_message`. Verified once, do not
+re-derive: the plugin registers only `PreToolUse` / `PostToolUse` / `UserPromptSubmit`
+(`packages/claude-plugin/hooks/hooks.json`), all synchronous (`async` is not set), and on those
+events `systemMessage` is shown to the user and **not** added to the model's context — so the
+"never feeds the transcript" claim in the doc comments holds. It would *not* hold for an
+`async: true` command hook, where Claude Code delivers `systemMessage` to Claude on the next
+turn; re-check that config if the hook ever goes async.
+The message body is `rule` / `key_source` / `reason` / `sink` / `sink_error`. `rule` and
+`key_source` are static, `reason` is the #162-settled payload, and `sink` is operator config —
+no attacker-controlled bytes reach it, so terminal-escape or JSON injection into the response is
+not a live shape here (serde_json escapes it besides). The one delta worth remembering: this is
+a **new channel** for the settled payload, and in headless runs (`--output-format stream-json`)
+`systemMessage` surfaces as an `SDKInformationalMessage`, so a `$HOME`/cwd path and an OS error
+can land in CI logs that may be more widely readable than the local JSONL.
+`degradation()` is the shared classifier behind both channels; it is exactly equivalent to the
+removed `is_degraded()` gate (`None` only for `(Persisted, None)`).
