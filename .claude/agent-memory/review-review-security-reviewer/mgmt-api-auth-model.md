@@ -1,6 +1,6 @@
 ---
 name: mgmt-api-auth-model
-description: 'How the honmoon management API authenticates after #173 and #188 — mandatory Arc<str> token, nested /api router + route_layer, and the browser credential that is now an origin-scoped session secret in the X-Honmoon-Session header (NOT a cookie; same_origin() and the Credential enum were deleted with it, so do not report them as missing), why the derivation key is versioned v2 and must not be reverted, how the Rust and Bun loaders were made to agree on what counts as a token, and which constant-time/route-ordering questions are settled so they are not re-derived'
+description: 'How the honmoon management API authenticates after #173 and #188 — mandatory Arc<str> token, nested /api router + route_layer, and the browser credential that is now an origin-scoped session secret in the X-Honmoon-Session header (NOT a cookie; same_origin() and the Credential enum were deleted with it, so do not report them as missing), why the derivation key is versioned v2 and must not be reverted, how the Rust and Bun loaders were made to agree on what counts as a token, and which constant-time/route-ordering questions are settled so they are not re-derived; the shell CSP moved past frame-ancestors in #195 (see dashboard-shell-csp)'
 metadata:
   type: project
 ---
@@ -72,16 +72,19 @@ Any future change of this shape needs the next version and its own refusal test.
   `a_session_header_write_needs_no_browser_labelling` and `a_forged_session_header_reads_no_data`.
 
 **Still true, do not re-report:**
-- `static_handler` serves `X-Frame-Options: DENY` and `Content-Security-Policy:
-  frame-ancestors 'none'`. Keep it: the dashboard's own script now holds the credential, so this is
-  the guard against UI redress rather than a layer over an ambient cookie.
+- `static_handler` serves `X-Frame-Options: DENY` and a `Content-Security-Policy` that still
+  carries `frame-ancestors 'none'`. Keep both: the dashboard's own script now holds the credential,
+  so they are the guard against UI redress rather than a layer over an ambient cookie. The policy
+  is no longer only `frame-ancestors` — #195 widened it; see `dashboard-shell-csp`.
 - DNS rebinding stays closed: a rebound page has its own origin's (empty) `sessionStorage` and
   nothing is attached ambiently.
 
 **Residuals after #188** (documented in `session.ts`, `control-plane.md` and the PR, so report
 only a *change* in them): the secret is script-readable where the cookie was `HttpOnly`, so a
-script injection in this origin could exfiltrate a replayable credential rather than only act
-while the page is open; `sessionStorage` is per tab, so a new tab is signed out until the login URL
+script injection in this origin could act as the operator while the page is open — #195 bounded
+what that would cost (`script-src 'self'` refuses the injected script, `connect-src 'self'` gives a
+credential that was read nowhere to go), so do not report the exfiltration half as open; see
+`dashboard-shell-csp`. `sessionStorage` is per tab, so a new tab is signed out until the login URL
 is opened there; revocation is still rotating the token; and the token still rides in `/login`'s
 query string (same-user exposure, `no-store`, nothing logged). `packages/api` was deliberately
 untouched — bearer only, no browser client, nothing to harvest.

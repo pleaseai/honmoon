@@ -741,8 +741,9 @@ async fn get_policy(State(s): State<AppState>) -> Json<PolicyResponse> {
 ///   constant here to a transitive npm package's exact CSS text, which the next
 ///   dependency bump would break — as a blank Policy view and a console
 ///   violation, in a build no test here would catch.
-/// - `img-src 'self'` exists because a browser probes `/favicon.ico` unasked;
-///   under `default-src 'none'` that probe reports as a violation. No view
+/// - `img-src 'self'` exists because a browser probes `/favicon.ico` unasked,
+///   and `default-src 'none'` refuses that probe (measured: Chrome makes the
+///   request with this directive present and does not without it). No view
 ///   loads an image.
 ///
 /// Neither weakens `script-src`: `'unsafe-inline'` in one directive does not
