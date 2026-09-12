@@ -146,6 +146,31 @@ export interface RedactionFacts {
   reason: string
 }
 
+/**
+ * What the audit sink open observed about who else can reach the audit file
+ * (issue #161). Present only on a `degraded` event, and the event's `rule` says
+ * which observation it is: `audit-sink-exposed` for a mode that admits local
+ * users other than the owner, `audit-sink-foreign-owner` for a file another uid
+ * owns, `audit-sink-hard-linked` for an inode named by more than one directory
+ * entry. Honmoon reports these and changes nothing — the path is an operator
+ * flag, plausibly read by a log shipper on purpose — so the record carries what
+ * was observed, never what was done, and one open can produce all three.
+ */
+export interface AuditSinkFacts {
+  /**
+   * The sink as the operator configured it (`--audit-log` / `HONMOON_AUDIT_LOG`),
+   * not resolved: the record is appended to that same file, so a reader holding
+   * the log already holds the resolution the string lacks.
+   */
+  path: string
+  /**
+   * What the `fstat` on the opened descriptor showed, in its own words — the
+   * mode, the owning uid, or the link count. Like `RedactionFacts.reason`, it
+   * is the only field carrying the bad news, so renderers must not drop it.
+   */
+  reason: string
+}
+
 /** Compact snapshot of the facts a decision was made on. */
 export interface FactsSummary {
   domain?: string
@@ -154,6 +179,8 @@ export interface FactsSummary {
   sql?: SqlFacts
   k8s?: K8sFacts
   redaction?: RedactionFacts
+  /** Set only on a `degraded` event about the audit sink itself. */
+  sink?: AuditSinkFacts
 }
 
 /** One recorded decision (`GET /api/audit`). */
