@@ -72,7 +72,7 @@ shared `GatewayState`. `honmoon gateway` runs the proxy and this API on one toki
 Every `/api` row above requires the management token (issue #173) — either
 `Authorization: Bearer <token>` or the session secret in the `X-Honmoon-Session` header that
 `GET /login?token=…` hands the dashboard
-([lib.rs:459-488](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-mgmt/src/lib.rs#L459-L488), [lib.rs:531-580](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-mgmt/src/lib.rs#L531-L580)).
+([lib.rs:462-489](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-mgmt/src/lib.rs#L459-L488), [lib.rs:544-574](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-mgmt/src/lib.rs#L531-L580)).
 The gate is a `route_layer` on the nested `/api` router, so a new `/api` route is covered by
 construction rather than by remembering to check
 ([lib.rs:246-265](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-mgmt/src/lib.rs#L246-L265)). `/healthz` and the SPA fallback
@@ -96,7 +96,7 @@ a URL a browser never sends to a server; the dashboard reads it out of `location
 read it, and **DNS rebinding stays closed**: a rebound page holds its own origin's storage, which
 is empty, and nothing is attached ambiently for it to ride on. That also removes CSRF as a category
 rather than checking for it — a custom header cross-origin needs a CORS preflight this service never
-answers ([lib.rs:393-436](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-mgmt/src/lib.rs#L393-L436), [lib.rs:531-580](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-mgmt/src/lib.rs#L531-L580)).
+answers ([lib.rs:393-418](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-mgmt/src/lib.rs#L393-L436), [lib.rs:544-574](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-mgmt/src/lib.rs#L531-L580)).
 
 <span class="status-caveat">Residual</span> — the secret is script-readable where the old cookie was
 `HttpOnly`, so a script injection in this origin could exfiltrate a replayable credential rather

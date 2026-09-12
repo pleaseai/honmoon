@@ -11,7 +11,8 @@ if (!('window' in globalThis)) {
 const { approve, getAudit, NOT_SIGNED_IN } = await import('./api')
 const { SESSION_HEADER, captureSession } = await import('./session')
 
-const SECRET = 'deadbeef'
+// The shape `/login` emits, which `captureSession` now requires: 64 hex chars.
+const SECRET = `${'de'.repeat(30)}beef`
 
 /** Records each call's headers and answers with `body`. */
 function recordFetch(body: unknown, status = 200) {
@@ -63,6 +64,8 @@ describe('the management API client', () => {
 
   test('a 401 reports "not signed in" rather than an opaque status', async () => {
     recordFetch({ error: 'missing or invalid management token' }, 401)
-    expect(getAudit()).rejects.toThrow(NOT_SIGNED_IN)
+    // Awaited: an un-awaited `rejects` assertion never runs, so the test would
+    // pass whatever the client did with a 401.
+    await expect(getAudit()).rejects.toThrow(NOT_SIGNED_IN)
   })
 })

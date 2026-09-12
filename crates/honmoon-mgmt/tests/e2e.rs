@@ -1102,6 +1102,35 @@ fn no_session_cookie_is_a_credential_so_a_sibling_port_has_nothing_to_harvest() 
     );
 }
 
+/// The secret's shape is a contract the dashboard depends on.
+///
+/// `apps/dashboard/src/session.ts` refuses a login fragment that is not 64
+/// lowercase hex characters — a hostile link can put anything after `#session=`,
+/// and a value carrying a character no header may hold would be stored and then
+/// make every `fetch` throw instead of taking the recoverable 401 path. That
+/// check is only safe while this is what `/login` actually emits, so pin it
+/// here: if the derivation ever changes width or alphabet, this fails rather
+/// than the dashboard silently refusing every real login.
+#[test]
+fn the_login_secret_is_64_hex_characters() {
+    let (gw, _held) = gateway_with_a_held_request();
+    let login = http_request_raw(
+        gw.mgmt_port,
+        "GET",
+        &format!("/login?token={MGMT_TOKEN}"),
+        &[],
+        "",
+    );
+    let secret = session_secret(&login);
+    assert_eq!(secret.len(), 64, "secret is not 64 characters: {secret:?}");
+    assert!(
+        secret
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)),
+        "secret is not lowercase hex: {secret:?}"
+    );
+}
+
 /// A session secret that is not the minted one buys nothing, and neither does
 /// the token itself presented where the secret belongs.
 #[test]

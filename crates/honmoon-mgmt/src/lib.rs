@@ -410,8 +410,11 @@ async fn resolve_agent_path(path: Option<&str>, agent_cwd: Option<&str>) -> Path
 /// is empty: the rebinding the cookie defeated by construction stays closed by
 /// construction.
 ///
-/// Lowercase because `HeaderMap` lookups are case-insensitive only through the
-/// lowercase form the `http` crate normalises to; browsers may send any casing.
+/// Lowercase because that is the canonical on-the-wire form (HTTP/2 and HTTP/3
+/// carry field names lowercased, RFC 9113 §8.2.1) and the form `http` stores.
+/// Not for lookup correctness: `HeaderMap::get` normalises a `&str` key, so it
+/// finds this header whatever casing either side spells — which is why the
+/// dashboard may send `X-Honmoon-Session` and the e2e tests deliberately do.
 pub const SESSION_HEADER: &str = "x-honmoon-session";
 
 /// The session secret that stands in for `token`.
@@ -472,6 +475,16 @@ fn presented_session(headers: &HeaderMap) -> Option<&str> {
 /// Adding any credential a browser attaches by itself — a cookie, TLS client
 /// auth, HTTP auth — reintroduces ambient authority and with it the need for
 /// that origin check. Do not add one without it.
+///
+/// The `Credential` enum that used to make this a compile error (its exhaustive
+/// `match` forced a decision about a new variant) is gone with the origin check
+/// it selected. What replaces it for the credential that actually existed is a
+/// test, not a comment: re-accepting a cookie here fails
+/// `no_session_cookie_is_a_credential_so_a_sibling_port_has_nothing_to_harvest`,
+/// which presents the genuine session secret as a cookie and requires a 401. A
+/// match arm only forced a decision; that test forces the right one. For a
+/// credential kind nobody has proposed yet, this paragraph is the whole guard —
+/// so land such a change with its own refusal test.
 fn authorized(state: &AppState, headers: &HeaderMap) -> bool {
     let expected = state.mgmt_token.as_bytes();
     let bearer = headers

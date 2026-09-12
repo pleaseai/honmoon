@@ -25,6 +25,14 @@
  * exfiltrate a replayable credential rather than only act while the page is
  * open. The bundle is first-party and embedded in the binary, and nothing here
  * renders API data as HTML — but the trade is real, so it is written down.
+ *
+ * A browser that blocks site data throws on `sessionStorage` rather than
+ * returning `null`. Such a browser cannot hold a session, and this module says
+ * so by keeping no credential at all: the calls below fail closed to "no
+ * header", the API answers 401, and the views report "not signed in" with the
+ * login URL to retry. Holding the secret in a module variable instead would
+ * buy one page-load of working dashboard at the cost of a credential whose
+ * lifetime nothing here can see; the honest report is worth more than that.
  */
 
 /** The header `honmoon-mgmt` reads the session secret from (`SESSION_HEADER`). */
@@ -37,30 +45,37 @@ const STORAGE_KEY = 'honmoon_session'
 const FRAGMENT_PREFIX = '#session='
 
 /**
- * The secret for this document, when `sessionStorage` is unavailable.
+ * The shape the management API's `session_secret` emits, and the only shape
+ * accepted here: `hex(HMAC-SHA256(...))`, so 64 lowercase hex characters.
  *
- * Storage access throws rather than returning `null` when a browser blocks it
- * (a site-data setting, some embedded webviews). Holding the captured value
- * here too means such a browser still gets a working dashboard for the life of
- * the page instead of an unexplained "not signed in".
+ * Checked rather than trusted because the fragment is whatever the address bar
+ * says, and a hostile link to this origin can put anything after `#session=`.
+ * A value containing a character no header may carry (a newline, say) would be
+ * stored and then make `fetch` throw on every call — a stuck dashboard, where
+ * refusing it lands on the recoverable "not signed in" path instead. The Rust
+ * side pins this shape with `the_login_secret_is_64_hex_characters`, so the two
+ * cannot drift silently.
  */
-let captured: string | null = null
+const SECRET_SHAPE = /^[0-9a-f]{64}$/
 
 function read(): string | null {
   try {
     return sessionStorage.getItem(STORAGE_KEY)
   }
   catch {
+    // Blocked site data. No session, reported as one — see the module doc.
     return null
   }
 }
 
-function write(secret: string): void {
+/** Whether the secret was actually stored. */
+function write(secret: string): boolean {
   try {
     sessionStorage.setItem(STORAGE_KEY, secret)
+    return true
   }
   catch {
-    // Held in `captured` instead; see above.
+    return false
   }
 }
 
@@ -72,6 +87,9 @@ function write(secret: string): void {
  * address bar with `replaceState` keeps it out of a bookmark made afterwards
  * and out of the hash router's way (`App.tsx` routes on the fragment, so
  * leaving `#session=…` there would also read as an unknown route).
+ *
+ * Anything that is not [`SECRET_SHAPE`] is ignored, and a route fragment such
+ * as `#/audit` is left exactly as it was for the router to read.
  */
 export function captureSession(): void {
   const hash = window.location.hash
@@ -79,16 +97,39 @@ export function captureSession(): void {
     return
   }
   const secret = hash.slice(FRAGMENT_PREFIX.length)
-  if (secret === '') {
+  if (!SECRET_SHAPE.test(secret)) {
     return
   }
-  captured = secret
+  // Best effort: a browser that blocks site data keeps no session, and says so
+  // through the 401 path rather than through a credential nothing can see.
   write(secret)
-  window.history.replaceState(
-    null,
-    '',
-    window.location.pathname + window.location.search,
-  )
+  clearFragment()
+}
+
+/**
+ * Drop the fragment from the address bar, whether or not the secret was stored.
+ *
+ * Unconditionally, because the alternative — keeping it so a reload could retry
+ * the store — retries a block that is still in force, while leaving a live
+ * credential in the one place a bookmark, a copied link, a screenshot or a
+ * shared screen picks it up. The retry is illusory; the exposure is not.
+ *
+ * Never fatal, because this runs before the app renders: `replaceState` throws
+ * in an opaque origin (a sandboxed frame, where storage throws too, so there is
+ * no session to protect and no address bar anyone reads), and an exception here
+ * would blank the dashboard rather than leave a fragment behind.
+ */
+function clearFragment(): void {
+  try {
+    window.history.replaceState(
+      null,
+      '',
+      window.location.pathname + window.location.search,
+    )
+  }
+  catch {
+    // Nothing to do but render.
+  }
 }
 
 /**
@@ -102,6 +143,6 @@ export function captureSession(): void {
  * secret unreachable from anywhere but this document.
  */
 export function sessionHeaders(): Record<string, string> {
-  const secret = captured ?? read()
+  const secret = read()
   return secret === null || secret === '' ? {} : { [SESSION_HEADER]: secret }
 }
