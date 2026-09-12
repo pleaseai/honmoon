@@ -1,6 +1,6 @@
 ---
 name: hook-salt-security-model
-description: honmoon-cli hook machine-salt security model — 0600 invariant, HMAC-SHA256 unforgeability key, fail-open fallback; recurring security-review target
+description: "honmoon-cli hook machine-salt security model — 0600 invariant, HMAC-SHA256 unforgeability key, fail-open fallback; recurring security-review target; `reason` content settled as deliberate (#162), the unauthenticated mgmt reads are #173"
 metadata:
   type: project
 ---
@@ -67,8 +67,9 @@ now **multi-process** (hook subprocess + gateway append to one file, `write_all`
 buffer on `O_APPEND` — not a hard atomicity guarantee on NFS/short writes); the path is
 opened with `create(true).append(true)`, so it follows symlinks and blocks on a FIFO in a
 process contracted to exit fast; and `reason` is an `anyhow` chain that embeds `$HOME`
-paths and OS errors, surfaced by the unauthenticated `GET /api/audit` and the dashboard.
-No key bytes are serialized — `MachineKey`/`MachineKeySource` derive no `Debug`.
+paths and OS errors, surfaced by the unauthenticated `GET /api/audit` and the dashboard
+— **that content is settled, see the #162 entry below.** No key bytes are serialized —
+`MachineKey`/`MachineKeySource` derive no `Debug`.
 
 **2026-09 (#141) — exposure is a second axis on the key status.** `MachineKeySource`
 (provenance) is now wrapped in `MachineKeyStatus { source, exposure }`;
@@ -105,6 +106,36 @@ the shapes recur, not as open findings:
 - The shared doc comments claimed `None` attests "owner-only at the two instants the
   loader looked"; `FreshlyWritten` looks once and `publish_secret_atomically`'s
   winner path looks zero times. Both docs now scope the count to the provenance.
+
+**2026-09 (#162) — the path and OS error in `reason` are deliberate, and now absolute.**
+The question was whether to trim `reason` to an error kind because `GET /api/audit` is
+unauthenticated. Settled: no. `reason` is the hook transport's only durable channel
+(fresh process, no ring, `tracing` filtered without `RUST_LOG` — #131), and the same
+unauthenticated response already serves every domain contacted, request path, SQL table
+and PII category, so trimming one field costs diagnostics while leaving strictly more
+sensitive fields in the same body. The trim is also near-reversible: the rule name plus
+a salt location documented in the plugin README reconstructs everything but the home
+directory. `load_or_create_machine_salt` now resolves `dir` through `absolute_salt_dir`
+(lexical `std::path::absolute`, not `canonicalize`), so the `HOME`-less relative
+`.honmoon/hook-salt` no longer reaches the log as a path nothing can resolve.
+
+**The missing auth layer on the management reads is the real exposure and is tracked
+as #173** — `/api/audit`, `/api/approvals` and `/api/policy` all skip the `authorized()`
+helper that `POST /api/hooks/claude-code` calls. When reviewing this area, raise 173
+rather than the salt path and OS error.
+
+**Scope of that settlement, exactly: two payloads — a local salt path, and an OS error.
+Not the field.** Three things it does NOT cover, all still reportable:
+- A *future* producer putting something else in this `String`. Nothing has reviewed that.
+- The working-directory axis the absolutization itself introduces. `$HOME` is recoverable
+  from `passwd`, so naming it discloses little to a local reader; a `HOME`-less gateway
+  (a systemd unit with no `Environment=HOME`, a container entrypoint, `env -i`) now has
+  its **cwd** filled in instead, and nothing else in the response reveals that. Accepted
+  in #162 as the price of a followable path, and argued there — but it is a disclosure
+  delta, not the neutral change the first draft of that PR called it.
+- A resolution that failed: `absolute_salt_dir` falls back to the path as given and says
+  so on stderr only, so the record cannot distinguish "tried and could not read the cwd"
+  from "never tried". Tracked as **#176** — report it against that, not as new.
 
 Still open, tracked as **#171**: the `must_overwrite` arm is also reached when `read`
 fails with a non-`NotFound` error, where the discarded file may have held a valid salt

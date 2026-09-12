@@ -94,6 +94,42 @@ pub struct RedactionFacts {
     /// unavailable, or the modes it saw on a salt file readable beyond its owner
     /// — the one it was left with under `hook-salt-exposed`, the one it was found
     /// with under `hook-salt-was-exposed`.
+    ///
+    /// **Deliberately untrimmed** (issue #162). For the `honmoon hook` transport
+    /// this record is the only durable channel — a fresh process per invocation,
+    /// so no ring anyone can query, and `tracing` filtered out without
+    /// `RUST_LOG` (issue #131) — which makes "which file, and what did the OS
+    /// say" most of what it is for. A producer may therefore leave a local path
+    /// and a raw OS error here.
+    ///
+    /// The salt loader resolves its directory against the working directory
+    /// before building any of these strings, so a `HOME`-less hook does not
+    /// record a `.honmoon/…` that identifies nothing — it falls back to the path
+    /// as given only where that resolution has no working directory to read
+    /// (issue #176). Nor does every reason name the salt file at all: the
+    /// fallback arm carries an error chain, which on a CSPRNG failure names
+    /// `/dev/urandom` and no salt path.
+    ///
+    /// That resolution is a deliberate trade, not a neutral change. Where `HOME`
+    /// is unset the prefix it fills in is the *working* directory, and unlike a
+    /// home directory — which a local reader gets from `passwd` — nothing else
+    /// in this response reveals where the process was started. So on that one
+    /// path the field discloses more than it did before, bought with a path the
+    /// reader can actually follow; every other path already named `$HOME`.
+    ///
+    /// The question that prompted this (issue #162) was whether an
+    /// unauthenticated `GET /api/audit` should be handing out the operator's
+    /// home-directory layout. The exposure there is the missing auth layer
+    /// rather than this field: the same response already serves every domain
+    /// contacted, request path seen, SQL table named and PII category detected,
+    /// and trimming this one field would cost the hook its diagnostics while
+    /// leaving those in the same body. That is tracked as issue #173.
+    ///
+    /// **What is settled is this content — a local salt path and an OS error —
+    /// not the field.** Do not re-raise those two as a finding, and do not trim
+    /// them as a substitute for issue #173. A *future* producer that starts
+    /// putting something else in this `String` has never been reviewed and is
+    /// fair game.
     pub reason: String,
 }
 

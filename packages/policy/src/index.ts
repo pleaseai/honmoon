@@ -128,6 +128,20 @@ export interface RedactionFacts {
    * unavailable, or the modes it saw on a salt file readable beyond its owner —
    * the one it was left with under `hook-salt-exposed`, the one it was found with
    * under `hook-salt-was-exposed`.
+   *
+   * **Deliberately untrimmed** (issue #162), so it may carry a local path and a
+   * raw OS error. For the `honmoon hook` transport this record is the only
+   * durable channel — a fresh process per invocation, no ring to query,
+   * `tracing` filtered out without `RUST_LOG` (issue #131) — which makes "which
+   * file, and what did the OS say" most of what it is for. The salt loader
+   * resolves its directory first, so the path identifies one file rather than
+   * being relative to a working directory no field records.
+   *
+   * Renderers must not summarise or drop it: on an exposure event `key_source`
+   * stays `persisted` and reads healthy on its own, leaving this the only field
+   * carrying the bad news. The disclosure that prompted the question is the
+   * missing auth layer on the management reads, tracked as issue #173 — not this
+   * field, and trimming it is not a substitute.
    */
   reason: string
 }

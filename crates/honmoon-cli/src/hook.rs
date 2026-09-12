@@ -529,6 +529,41 @@ fn audit_machine_key_status(audit_log: Option<&Path>, status: &MachineKeyStatus)
     }
 }
 
+/// `dir` resolved against the process's working directory, so every path this
+/// loader goes on to name — in a `reason` served by `GET /api/audit`, in a
+/// stderr line, in an error context — identifies one file.
+///
+/// [`honmoon_dir`] returns a relative `.honmoon` when `HOME` is unset, and a
+/// `reason` reading `salt file .honmoon/hook-salt was readable by other local
+/// users` then names no file at all: it is meaningful only against the hook's
+/// working directory, which is the agent's, is a fresh process per invocation,
+/// and is recorded nowhere in the event. Issue #162 settled that `reason` keeps
+/// the path rather than being trimmed to an error kind; a path the reader cannot
+/// resolve is that decision paying for nothing.
+///
+/// Lexical, not [`std::fs::canonicalize`]: the *directory* may not exist yet on
+/// the create path, and resolving symlinks would report a location the operator
+/// did not configure. On Unix that leaves `..` components alone, so the resolved
+/// path traverses what the given one did; Windows' `GetFullPathName` collapses
+/// them instead, which this reasoning does not cover — the exposure machinery
+/// reading these paths is `#[cfg(unix)]` either way.
+///
+/// It fails where the working directory cannot be read — and on an empty path,
+/// which [`honmoon_dir`] never returns even for `HOME=""` — and then leaves the
+/// path as given. That string is byte-for-byte what this loader recorded before
+/// issue #162, so nothing regresses; it is not *marked* as unresolved either,
+/// which is the gap issue #176 carries. Marking it needs the resolution state
+/// threaded through all five `reason` producers, so it is not folded in here.
+fn absolute_salt_dir(dir: &Path) -> PathBuf {
+    std::path::absolute(dir).unwrap_or_else(|e| {
+        eprintln!(
+            "honmoon hook: could not resolve {} against the working directory ({e}) — recording it as given",
+            dir.display()
+        );
+        dir.to_path_buf()
+    })
+}
+
 /// Read (or generate on first use) the persisted machine secret used as the
 /// HMAC key behind placeholder unforgeability. A freshly generated secret is 32
 /// bytes; the read path accepts any existing file of **at least 16 bytes** as-is
@@ -574,7 +609,9 @@ impl LoadedSalt {
     }
 }
 
-fn load_or_create_machine_salt(dir: &Path) -> Result<LoadedSalt> {
+fn load_or_create_machine_salt(requested_dir: &Path) -> Result<LoadedSalt> {
+    let resolved = absolute_salt_dir(requested_dir);
+    let dir = resolved.as_path();
     let path = dir.join("hook-salt");
     // `true` means the file exists but is unusable (must be force-overwritten);
     // `false` means it is absent (first run — create atomically to avoid a race).
@@ -1019,6 +1056,31 @@ mod tests {
     }
 
     impl Drop for TempDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    /// A throwaway directory addressed *relative to the process's working
+    /// directory*, which is what [`honmoon_dir`] falls back to when `HOME` is
+    /// unset. [`TempDir`] cannot stand in for it: the OS temp root is absolute,
+    /// so a salt seeded under it never reaches the relative case at all.
+    struct RelativeTempDir(PathBuf);
+
+    impl RelativeTempDir {
+        fn new(tag: &str) -> Self {
+            let dir = PathBuf::from(format!(".honmoon-hook-test-{tag}-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir_all(&dir).expect("creating relative temp dir");
+            RelativeTempDir(dir)
+        }
+
+        fn path(&self) -> &Path {
+            &self.0
+        }
+    }
+
+    impl Drop for RelativeTempDir {
         fn drop(&mut self) {
             let _ = std::fs::remove_dir_all(&self.0);
         }
@@ -1549,6 +1611,71 @@ mod tests {
         assert!(
             reason.contains("(mode 0640)") && reason.contains("is now mode 0600"),
             "{reason}"
+        );
+    }
+
+    /// A salt directory the loader was handed *relative* to the working
+    /// directory — what [`honmoon_dir`] falls back to when `HOME` is unset —
+    /// still has to reach `/api/audit` as one identifiable file.
+    ///
+    /// Issue #162 asked whether `reason` should be trimmed to the error kind
+    /// because the endpoint serving it is unauthenticated, and settled that it
+    /// should not: this is the hook transport's only durable channel (#131), so
+    /// which file and what the OS said is most of what it is for. The relative
+    /// path is the same question from the other side. `.honmoon/hook-salt` is
+    /// only meaningful against a working directory no field records, so it names
+    /// no file at all and an operator reading the event cannot act on it —
+    /// keeping `reason` whole is worth nothing if the path in it does not
+    /// resolve.
+    #[cfg(unix)]
+    #[test]
+    fn a_relatively_addressed_salt_is_recorded_by_its_absolute_path() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let tmp = RelativeTempDir::new("relative-salt");
+        let relative = tmp.path().join("hook-salt");
+        std::fs::write(&relative, [9u8; 32]).expect("seed valid salt");
+        std::fs::set_permissions(&relative, std::fs::Permissions::from_mode(0o644))
+            .expect("a backup restore, an older build, a careless chmod");
+        // A filesystem that ignores mode bits would leave nothing to report and
+        // make every assertion below pass vacuously.
+        assert_eq!(
+            std::fs::metadata(&relative)
+                .expect("stat the seeded salt")
+                .permissions()
+                .mode()
+                & 0o777,
+            0o644,
+            "this filesystem did not take the seeded mode — the test would prove nothing"
+        );
+        let absolute = std::path::absolute(&relative).expect("an absolute form of the seeded salt");
+        assert!(
+            absolute.is_absolute() && !relative.is_absolute(),
+            "the premise of this test: {} is relative, {} is not",
+            relative.display(),
+            absolute.display()
+        );
+
+        let key = machine_key_in(tmp.path());
+        let log = tmp.path().join("audit.jsonl");
+        audit_machine_key_status(Some(&log), &key.status);
+        let line = std::fs::read_to_string(&log)
+            .expect("a salt found readable beyond its owner reaches the sink");
+        let event: honmoon_core::AuditEvent =
+            serde_json::from_str(line.trim()).expect("one JSONL event per line");
+        let reason = event.facts.redaction.expect("redaction facts").reason;
+
+        assert!(
+            reason.contains(&format!("salt file {}", absolute.display())),
+            "the path the endpoint serves identifies the file on its own: {reason}"
+        );
+        // The absence half. Checked at the token position rather than as a bare
+        // substring, because the absolute path ends with the relative one — a
+        // plain `!contains(relative)` would fail on a correct record.
+        assert!(
+            !reason.contains(&format!("salt file {}", relative.display())),
+            "not a path that is only meaningful against a working directory \
+             nothing records: {reason}"
         );
     }
 
