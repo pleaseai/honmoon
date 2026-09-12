@@ -891,6 +891,22 @@ function report(problems: string[], code: number): number {
 export function main(argv: string[], root: string = MEMORY_DIR, cwd: string = REPO_ROOT): number {
   const check = argv.includes('--check')
 
+  // Before anything reads a note. `Bun.YAML` arrived in a Bun release younger
+  // than some installed ones, and `readYaml` turns *every* throw into "this
+  // note is not valid YAML" — so on a Bun without it, a repository of perfectly
+  // good notes reports as a repository of broken ones and the real cause is
+  // named nowhere. Every entry point here is this CLI (`mise run install`, the
+  // CI step, `orca.yaml`'s worktree setup, `bun run agent-memory:index`), so
+  // one check covers them; the run stops having written nothing, which is what
+  // `EXIT_INVARIANT` is for.
+  if (typeof (Bun as { YAML?: unknown }).YAML !== 'object') {
+    return report([
+      `this Bun does not provide \`Bun.YAML\` (running ${Bun.version}), which this script reads note `
+      + 'frontmatter with (issue #168) — upgrade Bun, or run it through mise, which resolves the '
+      + 'version this repository expects',
+    ], EXIT_INVARIANT)
+  }
+
   // Checked *and acted on* before rebuilding, not after: `rebuild` writes, and
   // a run that ends in a non-zero exit has written by then. A tracked index is
   // a broken invariant, so the tree is left exactly as found and the run stops.

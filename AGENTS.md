@@ -60,6 +60,10 @@ bun scripts/agent-memory-index.ts            # rebuild (also: mise run agent-mem
 bun scripts/agent-memory-index.ts --check    # CI gate: every note can supply its line
 ```
 
+The generator needs a Bun that provides `Bun.YAML`. `mise.toml` tracks `latest`, so anything
+run through mise has one; a system Bun that predates the API is refused by name rather than
+reporting every note as malformed.
+
 Quote a `description:` that is anything but plain prose. The generator reads the frontmatter
 with `Bun.YAML` (issue #168), so the index says what a YAML reader resolves — and a plain scalar
 ends at the first ` #`, which makes `description: fixed in PR #155, then do X` resolve to the
