@@ -158,7 +158,15 @@ pub struct AppState {
     /// without a token would exercise it. Callers that have no token of their
     /// own must generate one (`honmoon-cli`'s `mgmt_token::resolve` persists one
     /// at `~/.honmoon/mgmt-token`), not pass `None`.
-    pub mgmt_token: Arc<str>,
+    ///
+    /// Crate-private on purpose. The empty-token check lives in
+    /// [`AppState::with_hook_config`], and a `pub` field would let any caller
+    /// skip it with a struct literal — an empty token satisfies *both*
+    /// credential arms, since the session cookie is an HMAC under a hardcoded,
+    /// public key and `HMAC(key, "")` is computable by anyone. One non-`pub`
+    /// field makes the literal unavailable outside this crate, so the
+    /// constructor is the only way in.
+    pub(crate) mgmt_token: Arc<str>,
 }
 
 impl AppState {
@@ -459,10 +467,15 @@ fn authorized(state: &AppState, headers: &HeaderMap) -> Option<Credential> {
 /// would still carry the cookie. `Sec-Fetch-Site` and `Origin` are set by the
 /// browser and unsettable by the page, so they distinguish the two.
 ///
-/// Neither header present means no browser labelled this request — a `curl` or
-/// an SDK, which no page can direct — so it is not a CSRF vector and is allowed.
-/// A browser always sends `Origin` on a cross-origin state-changing fetch or
-/// form post, so the permissive arm is not a bypass a page can reach for.
+/// Neither header present means nothing labelled this request as a browser's,
+/// and for a *cookie* credential that is itself the warning sign: a cookie is a
+/// credential only a browser stores and attaches, and every browser labels a
+/// state-changing request with at least one of the two. The unlabelled caller
+/// holding one is therefore replaying a cookie it obtained some other way —
+/// harvested off a sibling loopback port, which cookie scope does not separate
+/// (RFC 6265 §8.5 has no port component). So this arm refuses. A legitimate
+/// non-browser caller is unaffected: it holds the token and sends the bearer,
+/// which never reaches this function.
 fn same_origin(headers: &HeaderMap) -> bool {
     if let Some(site) = headers
         .get("sec-fetch-site")
@@ -473,11 +486,17 @@ fn same_origin(headers: &HeaderMap) -> bool {
         return site == "same-origin" || site == "none";
     }
     let Some(origin) = headers.get(header::ORIGIN).and_then(|v| v.to_str().ok()) else {
-        return true;
+        return false;
     };
-    let authority = origin.split_once("://").map(|(_, authority)| authority);
-    let host = headers.get(header::HOST).and_then(|v| v.to_str().ok());
-    authority.is_some() && authority == host
+    let Some(authority) = origin.split_once("://").map(|(_, authority)| authority) else {
+        return false;
+    };
+    // Hostnames are case-insensitive (RFC 9110 §4.2), so a casing difference
+    // between the two headers is not a cross-origin signal.
+    headers
+        .get(header::HOST)
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|host| host.eq_ignore_ascii_case(authority))
 }
 
 /// The single gate on `/api/*` (#173).
@@ -502,10 +521,15 @@ async fn require_credential(
         )
             .into_response();
     };
-    if matches!(credential, Credential::Session)
-        && !request.method().is_safe()
-        && !same_origin(request.headers())
-    {
+    // Matched exhaustively on purpose: a new `Credential` variant must not
+    // silently inherit `Bearer`'s exemption from the origin check.
+    let origin_checked = match credential {
+        // No page can make a browser attach `Authorization`, so a bearer is
+        // never ambient authority and needs no origin evidence.
+        Credential::Bearer => true,
+        Credential::Session => request.method().is_safe() || same_origin(request.headers()),
+    };
+    if !origin_checked {
         return (
             StatusCode::FORBIDDEN,
             Json(serde_json::json!({
@@ -642,6 +666,18 @@ async fn get_policy(State(s): State<AppState>) -> Json<PolicyResponse> {
     })
 }
 
+/// Deny framing of the dashboard shell.
+///
+/// The shell is served without a credential, but since #173 the browser holds
+/// one for this origin. A page on another loopback port is *same-site*, so
+/// `SameSite=Strict` does not stop it framing the dashboard and having the
+/// framed document — same-origin to itself, and so past the origin check —
+/// issue a `POST /api/approvals/{id}/approve` behind a decoy click.
+///
+/// Only `frame-ancestors` is set: a script/style policy would have to track the
+/// bundler's output, and a CSP that breaks the dashboard is worse than none.
+const FRAME_ANCESTORS_NONE: &str = "frame-ancestors 'none'";
+
 /// Serve an embedded dashboard asset, falling back to `index.html` so client-side
 /// routing works (SPA). Returns 404 only when the dashboard was not built in.
 async fn static_handler(uri: Uri) -> Response {
@@ -659,7 +695,11 @@ async fn static_handler(uri: Uri) -> Response {
     if let Some(asset) = Assets::get(path) {
         let mime = mime_guess::from_path(path).first_or_octet_stream();
         return (
-            [(header::CONTENT_TYPE, mime.as_ref())],
+            [
+                (header::CONTENT_TYPE, mime.as_ref()),
+                (header::X_FRAME_OPTIONS, "DENY"),
+                (header::CONTENT_SECURITY_POLICY, FRAME_ANCESTORS_NONE),
+            ],
             asset.data.into_owned(),
         )
             .into_response();
@@ -667,7 +707,14 @@ async fn static_handler(uri: Uri) -> Response {
 
     // SPA fallback: serve index.html for unknown non-asset paths.
     match Assets::get("index.html") {
-        Some(asset) => Html(asset.data.into_owned()).into_response(),
+        Some(asset) => (
+            [
+                (header::X_FRAME_OPTIONS, "DENY"),
+                (header::CONTENT_SECURITY_POLICY, FRAME_ANCESTORS_NONE),
+            ],
+            Html(asset.data.into_owned()),
+        )
+            .into_response(),
         None => (
             StatusCode::NOT_FOUND,
             "dashboard not built — run `bun run --filter @honmoon/dashboard build`",
