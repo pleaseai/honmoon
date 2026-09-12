@@ -172,6 +172,7 @@ honmoon gateway --config policies/agent.yaml --tls-intercept --pii-mode block
 # --mgmt-token, honmoon mints one at ~/.honmoon/mgmt-token (0600) and prints a
 # one-click dashboard login URL on startup:
 #   honmoon: dashboard: http://127.0.0.1:8444/login?token=<generated>
+# Minting is Unix-only; on Windows set --mgmt-token or HONMOON_MGMT_TOKEN.
 
 # Join a gateway from a client (routes all host traffic)
 honmoon join --gateway honmoon.internal:8443

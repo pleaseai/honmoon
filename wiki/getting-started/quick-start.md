@@ -141,7 +141,10 @@ open "http://127.0.0.1:8444/login?token=$(cat ~/.honmoon/mgmt-token)"
 With no `--mgmt-token`, honmoon mints one on first use and persists it at
 `~/.honmoon/mgmt-token`, in a directory it creates `0700`, with the file itself `0600` — that mode
 is enforced on a file honmoon creates or replaces, while a pre-existing wider-mode file is reported
-on stderr rather than tightened. Set `--mgmt-token` / `HONMOON_MGMT_TOKEN` to pin your own
+on stderr rather than tightened. **Automatic generation is Unix-only** — there is no
+`/dev/urandom` off Unix and a POSIX mode establishes no Windows ACL, so both loaders refuse to mint
+there and a Windows operator must set `--mgmt-token` / `HONMOON_MGMT_TOKEN` themselves. Set
+`--mgmt-token` / `HONMOON_MGMT_TOKEN` to pin your own anywhere
 ([mgmt_token.rs](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-cli/src/mgmt_token.rs)).
 `@honmoon/api` resolves that same token from the same places, so one credential covers both servers
 ([auth.ts](https://github.com/pleaseai/honmoon/blob/main/packages/api/src/auth.ts)). Scripted

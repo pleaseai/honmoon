@@ -1,6 +1,6 @@
 ---
 name: pr186-warn-if-readable-beyond-owner
-description: 'PR #186 (issue #173) token-file and token-directory mode checks — every hole found in warn_if_readable_beyond_owner and the token directory was FIXED in that PR on BOTH sides (Rust create_private_dir at 0700 and auth.ts single-descriptor read plus directory warn); nothing here is open, #188 is now only about the session cookie'
+description: 'PR #186 (issue #173) token-file and token-directory mode checks — every hole found in mgmt_token.rs/auth.ts was FIXED there on BOTH sides (create_private_dir 0700, single-descriptor read, directory warn on every path); #188 is now only the session cookie. STILL OPEN in this domain: hook.rs salt dir has the same create_dir_all shape, no O_NOFOLLOW on either, and the #189 empty-token recovery race — report those against hook.rs/#189, not as new against mgmt_token.rs'
 metadata:
   type: project
 ---
