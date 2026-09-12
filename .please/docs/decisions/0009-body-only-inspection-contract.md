@@ -9,6 +9,14 @@ the forwarding clauses it states conditionally gained a second condition, and th
 place. ADR-0006 was amended in the same change, since `--signed-body forward` no longer reproduces
 such a trailer.
 
+Amended 2026-09-12 (#136): the forwarding clauses gained a third condition, in the other direction.
+Honmoon now *writes* the framing an HTTP/1.1 upstream leg needs in order to carry a trailer section
+at all, so "subject to the upstream leg's framing" is no longer a clause this ADR hands off — it is
+a clause honmoon keeps, for a buffered body and where no signature forbids it. The inspection
+contract is again unchanged: the re-frame reads trailer field *names* and writes request headers,
+and no detector sees a value. ADR-0006 is amended alongside, since a forwarded signed request's
+header section is no longer unconditionally the one the client sent.
+
 ## Context
 
 Honmoon's request pipeline scans request **body** bytes. `inspect_body` buffers the body,
@@ -105,7 +113,27 @@ overclaim. Whether a trailer *reaches* the upstream has a conditional answer:
   fail-safe: a digest the client computed over the original bytes is stale once those bytes are
   replaced, whether it rode in a header or a trailer — the same reasoning that strips
   `BODY_DIGEST_HEADERS`. (The `Trailer:` declaration header left behind by that drop is #135.)
-- What finally crosses is then subject to the upstream leg's own framing rules (#136).
+- What finally crosses is then subject to the upstream leg's own framing rules, which honmoon
+  supplies rather than inherits since #136. HTTP/1.1 carries a trailer section only under chunked
+  framing and only for the fields the request's `Trailer` header names; HTTP/2 requires neither.
+  `framed_for_trailers` writes both headers onto a pass-through request that carries a trailer
+  frame, and hyper resolves them per-protocol — the h1 encoder drops the `Content-Length` once
+  `Transfer-Encoding` is present, the h2 client drops the `Transfer-Encoding` as a
+  connection-specific field and keeps the length — so honmoon never has to know which leg it gets,
+  which it could not: ALPN is negotiated after `handle_request` has returned. Two conditions bound
+  it, and both are the kind that a later reader would otherwise mistake for a guarantee:
+  - It is **declined** when `signed_headers_among` reports a signature over any of
+    `Content-Length`, `Transfer-Encoding` or `Trailer` (`signed_body::TRAILER_FRAMING_HEADERS`).
+    Re-framing would then break the signature the request is being forwarded to preserve — the
+    trade ADR-0006 refuses — so the request goes on exactly as the client framed it and a `warn`
+    names both the covered headers and the trailer fields that will therefore not arrive. Whether
+    honmoon should instead *refuse* such a request is deliberately not decided here (issue 178).
+  - It covers **two of `inspect_body`'s four branches**, the two that buffer. A `Trailer` header has
+    to be written while the header section is in hand, and on the two over-cap branches the trailer
+    frame is still unread at that point, so no declaration can be synthesized for it. An undeclared
+    trailer on an over-cap body therefore still does not reach an HTTP/1.1 upstream (issue 177).
+    The same asymmetry as #134's, reached from the opposite side: that filter had to be streaming to
+    cover all four, and this declaration cannot be.
 
 None of that changes the inspection contract: a dropped trailer was not inspected either.
 
@@ -181,7 +209,7 @@ HTTP request**; on the raw-tunnel path none of it applies, because nothing there
 | Ordinary header (`X-Note:`) | **Never** | Yes |
 | Body-digest header (`Digest`, `Content-Digest`, `Content-MD5`, `Repr-Digest`) | **Never** | Stripped when the body is redacted |
 | Framing header (`Content-Length`, `Content-Encoding`, `Transfer-Encoding`) | **Never** — read as metadata only | Re-framed when the body is redacted |
-| Request trailer | **Never** | Only on a pass-through request, only for a field name honmoon's #134 filter does not refuse, and only where the upstream leg's framing carries trailers at all (see issue #136). This is the one right-hand-column row that also constrains `--signed-body forward` (ADR-0006) |
+| Request trailer | **Never** | Only on a pass-through request, only for a field name honmoon's #134 filter does not refuse, and only where the framing carries a trailer section — which since #136 honmoon writes itself for a buffered body, unless a signature covers the framing headers. This is the one right-hand-column row that also constrains `--signed-body forward` (ADR-0006) |
 
 **The body row's "yes" is itself conditional.** Three conditions mean no finding is possible at
 all. An over-cap body never reaches the scanner (`scanned` is `None`); a decoded body that

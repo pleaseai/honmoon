@@ -371,7 +371,8 @@ fn connection_nominated(headers: &HeaderMap) -> Vec<HeaderName> {
 /// Only the two branches of `inspect_body` that buffer a body ever hold a
 /// trailer `HeaderMap` to ask about. On the two over-cap ones the frame is still
 /// unread when the header section is written, so no declaration can be
-/// synthesized for it — see the module note on [`buffer_up_to`].
+/// synthesized for it, and an undeclared trailer there still does not reach an
+/// HTTP/1.1 upstream — the residual tracked as issue 177.
 pub(crate) fn retained_trailer_names(trailers: &HeaderMap, headers: &HeaderMap) -> Vec<HeaderName> {
     let nominated = connection_nominated(headers);
     trailers

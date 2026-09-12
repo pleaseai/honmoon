@@ -1343,10 +1343,12 @@ fn reframed_headers(headers: &header::HeaderMap, new_length: usize) -> Vec<heade
 /// Declining here is **not** routed through `--signed-body`: that flag
 /// decides what to do about a body honmoon *rewrote*, and honmoon rewrites
 /// nothing here — declining leaves the request byte-identical to what the
-/// client signed, which is already what `forward` promises. Whether honmoon
-/// should instead refuse a request whose signed trailer it cannot carry is a
-/// separate product question, tracked in its own issue rather than decided
-/// by a flag documented for a different one.
+/// client signed, which is already what `forward` promises. It also lives on
+/// `RedactionState`, so routing through it would make trailer framing depend
+/// on whether secret redaction happens to be enabled. Whether honmoon should
+/// instead refuse a request whose signed trailer it cannot carry is an open
+/// product question, not a settled one: issue 178 states the case for
+/// refusing and the three reasons this does not.
 fn framed_for_trailers(
     mut request: Request<Body>,
     retained: &[header::HeaderName],
