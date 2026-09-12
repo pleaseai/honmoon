@@ -17,6 +17,9 @@ use sha2::Sha256;
 
 type HmacSha256 = Hmac<Sha256>;
 const CONTEXT: &str = "shared-test-session";
+/// Every `/api/*` route requires the management token (#173), the HTTP hook
+/// transport included.
+const MGMT_TOKEN: &str = "hook-transport-mgmt-token";
 const MACHINE_SALT: &[u8] = b"0123456789abcdef0123456789abcdef";
 const SECRET: &str = "sk-ant-api03-cross-process-abcDEF123456";
 
@@ -131,7 +134,7 @@ fn start_mgmt(salt: HookSalt) -> u16 {
         pii_mode: PiiMode::Detect,
         redaction: None,
     };
-    let app = AppState::with_hook_config(state, policy_yaml, salt, None);
+    let app = AppState::with_hook_config(state, policy_yaml, salt, MGMT_TOKEN.to_string());
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port();
     std::thread::spawn(move || {
@@ -156,7 +159,7 @@ fn invoke_http(port: u16, body: &str) -> Vec<u8> {
         .unwrap();
     write!(
         stream,
-        "POST /api/hooks/claude-code HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        "POST /api/hooks/claude-code HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer {MGMT_TOKEN}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
         body.len()
     )
     .unwrap();

@@ -2,6 +2,7 @@
 
 mod hook;
 mod isolate;
+mod mgmt_token;
 
 use std::net::{Ipv4Addr, Ipv6Addr, TcpListener};
 use std::path::PathBuf;
@@ -75,9 +76,34 @@ enum Command {
         /// instead — the refusal names the component it stopped on.
         #[arg(long, value_name = "FILE")]
         audit_log: Option<PathBuf>,
-        /// Bearer token required by `POST /api/hooks/claude-code`.
-        /// May also be supplied through `HONMOON_HOOK_TOKEN`.
-        #[arg(long, value_name = "TOKEN", env = "HONMOON_HOOK_TOKEN")]
+        /// Bearer token required by **every** management API route (`/api/*`):
+        /// the audit, approval and policy reads as well as the Claude Code hook
+        /// endpoint (#173).
+        ///
+        /// Unset (the default), honmoon mints one on first use and persists it
+        /// at `~/.honmoon/mgmt-token` (mode `0600`), then prints the dashboard
+        /// login URL at startup. Auth is on by default; the generated credential
+        /// is what keeps that from meaning broken by default.
+        /// May also be supplied through `HONMOON_MGMT_TOKEN`.
+        #[arg(
+            long,
+            value_name = "TOKEN",
+            env = "HONMOON_MGMT_TOKEN",
+            hide_env_values = true
+        )]
+        mgmt_token: Option<String>,
+        /// Deprecated alias for `--mgmt-token`, kept working for operators who
+        /// set it while it guarded only `POST /api/hooks/claude-code`. The same
+        /// token now authenticates the whole management plane — strictly more
+        /// protection, in the direction setting it asked for.
+        /// May also be supplied through `HONMOON_HOOK_TOKEN`; `--mgmt-token`
+        /// wins when both are set.
+        #[arg(
+            long,
+            value_name = "TOKEN",
+            env = "HONMOON_HOOK_TOKEN",
+            hide_env_values = true
+        )]
         hook_token: Option<String>,
         /// Pin the salt context for hook redaction instead of keying it on each
         /// hook payload's `session_id`.
@@ -234,6 +260,7 @@ fn main() -> Result<()> {
             socks_addr,
             mgmt_addr,
             audit_log,
+            mgmt_token,
             hook_token,
             hook_salt_context,
             tls_intercept,
@@ -248,6 +275,7 @@ fn main() -> Result<()> {
             socks_addr,
             mgmt_addr,
             audit_log,
+            mgmt_token,
             hook_token,
             hook_salt_context,
             tls_intercept,
@@ -314,6 +342,7 @@ struct GatewayArgs {
     socks_addr: String,
     mgmt_addr: String,
     audit_log: Option<PathBuf>,
+    mgmt_token: Option<String>,
     hook_token: Option<String>,
     hook_salt_context: Option<String>,
     tls_intercept: bool,
@@ -342,6 +371,7 @@ fn gateway(args: GatewayArgs) -> Result<()> {
         socks_addr,
         mgmt_addr,
         audit_log,
+        mgmt_token,
         hook_token,
         hook_salt_context,
         tls_intercept,
@@ -351,6 +381,16 @@ fn gateway(args: GatewayArgs) -> Result<()> {
         ca_cert,
         ca_key,
     } = args;
+
+    if hook_token.is_some() {
+        // Printed, not logged: `RUST_LOG` is unset in an ordinary run, so a
+        // `tracing::warn!` would be silent exactly where a deprecation has to be
+        // read (same reason as the isolation warning in `run`).
+        eprintln!(
+            "honmoon: warning: --hook-token / HONMOON_HOOK_TOKEN is deprecated — use              --mgmt-token / HONMOON_MGMT_TOKEN. The token now authenticates every management              API route, not just the Claude Code hook endpoint (#173)."
+        );
+    }
+    let mgmt = mgmt_token::resolve(mgmt_token.or(hook_token), &mgmt_token::default_dir())?;
 
     if !tls_intercept && matches!(pii_mode, PiiModeArg::Block) {
         anyhow::bail!("--pii-mode block requires --tls-intercept");
@@ -434,7 +474,22 @@ fn gateway(args: GatewayArgs) -> Result<()> {
         .with_context(|| format!("binding management API {mgmt_addr}"))?;
 
     let hook_salt = hook_salt_for(hook_salt_context.as_deref(), wire_salt, machine_key);
-    let app_state = AppState::with_hook_config(state.clone(), policy_yaml, hook_salt, hook_token);
+    let app_state =
+        AppState::with_hook_config(state.clone(), policy_yaml, hook_salt, mgmt.token.clone());
+
+    // Printed for the same reason the deprecation above is: an operator who
+    // cannot find the credential cannot open the dashboard, and `RUST_LOG` is
+    // unset in an ordinary run. Only a token honmoon minted itself is echoed —
+    // see `mgmt_token::Source::printable`.
+    let mgmt_url = format!("http://{}", mgmt_listener.local_addr()?);
+    if mgmt.source.printable() {
+        eprintln!("honmoon: dashboard: {mgmt_url}/login?token={}", mgmt.token);
+        if let Some(path) = mgmt.source.path() {
+            eprintln!("honmoon: management token: {}", path.display());
+        }
+    } else {
+        eprintln!("honmoon: dashboard: {mgmt_url}/login?token=<your --mgmt-token>");
+    }
 
     let runtime = tokio::runtime::Runtime::new().context("build tokio runtime")?;
 
