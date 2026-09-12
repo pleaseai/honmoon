@@ -1,6 +1,6 @@
 ---
 name: hook-salt-security-model
-description: "honmoon-cli hook machine-salt security model — 0600 invariant, HMAC-SHA256 unforgeability key, fail-open fallback; recurring security-review target; `reason` content settled as deliberate (#162); the mgmt read surface is authenticated as of #173, so do not flag it as open"
+description: "honmoon-cli hook machine-salt security model — 0600 invariant, HMAC-SHA256 unforgeability key, fail-open fallback; recurring security-review target; `reason` content settled as deliberate (#162); the replaced-unread fourth rule shipped in #171 with its three review gaps closed in the same PR; the mgmt reads are authenticated as of #173, so do not flag them as open"
 metadata:
   type: project
 ---
@@ -142,14 +142,48 @@ Not the field.** Three things it does NOT cover, all still reportable:
   so on stderr only, so the record cannot distinguish "tried and could not read the cwd"
   from "never tried". Tracked as **#176** — report it against that, not as new.
 
-Still open, tracked as **#171**: the `must_overwrite` arm is also reached when `read`
-fails with a non-`NotFound` error, where the discarded file may have held a valid salt
-other processes adopted. The key being written is correctly unexposed; the *replaced*
-key's exposure is what goes unrecorded, and routing it through this channel would pair
-a history claim with a `key_source` describing a different key — which is why it was
-split out rather than folded in. **#172** carries the older path-based-observation
-entry above: read/chmod/stat still resolve `path` separately, so the mode observed is
-not bound to the inode the bytes came from.
+**2026-09 (#171) — the replaced-unread arm has a fourth rule.** The failed-read overwrite
+arm (`read` fails non-`NotFound`) records `hook-salt-replaced-unread`: a `reason` naming
+the discarded file's mode as stat'd before the overwrite, and **no exposure claim** — the
+contents were never seen. `degradations()` returns up to two records (key-in-use +
+replaced-unread) and both sinks loop over them, so neither suppresses the other. As merged,
+verified once — do not re-derive:
+- **`key_source` on this rule is not a constant.** It names the key *in use*:
+  `persisted` where the replacement landed, `fallback` where the loader destroyed the file
+  and then could not write one. `degradations()` reads it off `status.source` via
+  `key_source_of`. A finding that it "should be persisted" is wrong.
+- The record is owed from `write_secret_file`'s **truncating open** onward, which
+  `SecretWriteError::truncated` carries: a failure at the open destroyed nothing and owes
+  nothing; a failure after it owes the record even though no replacement landed. Do not
+  re-report the truncate-before-write gap — that was the review finding on this PR and it
+  is fixed.
+- `record_machine_key_status` attempts every owed record and returns one `Err` naming
+  **every** rule the sink refused; `audit_machine_key_status` opens the sink once and emits
+  one self-contained response line per refused record. No record is lost on partial sink
+  failure.
+- The `reason` adds no payload class beyond the #162 settlement (path + OS error + a mode
+  the exposure reasons already carry).
+- Suppression/forgery by a local attacker needs an attacker-writable `~/.honmoon`; a
+  non-owner cannot `chmod` to mislead the pre-overwrite stat.
+
+**The wording is deliberately non-simultaneous.** The `reason` says the mode was seen
+"when the loader last looked, just before discarding it", never "when the loader replaced
+it" — the stat runs several syscalls earlier, path-based and symlink-following, so a
+concurrent loader can intervene. That is the #172 class; report it there, not as a new
+finding here.
+
+**This rule does not always fire once, and that is documented.** On a salt owned by
+another uid that this user can write but not read, the `chmod` cannot take, the
+replacement stays unreadable, and every invocation replaces again — raising this rule
+beside `hook-salt-exposed` and rotating the machine key each time, so placeholders stop
+being byte-stable (#20, #98). The README says so, including that such a host always
+rotated every invocation and the rule merely makes it visible. Likewise the overlap
+window: it is **wider** than `hook-salt-was-exposed`'s, not narrower, and nothing locks
+the file — also stated. Do not re-raise any of the three as new.
+
+**#172** carries the older path-based-observation entry above: read/chmod/stat still
+resolve `path` separately, so the mode observed is not bound to the inode the bytes came
+from.
 
 **2026-09 (#165) — a refused sink now escalates to the hook response.**
 `audit_machine_key_status` returns `Option<String>`; `run` puts it on the verdict as the
@@ -167,5 +201,10 @@ not a live shape here (serde_json escapes it besides). The one delta worth remem
 a **new channel** for the settled payload, and in headless runs (`--output-format stream-json`)
 `systemMessage` surfaces as an `SDKInformationalMessage`, so a `$HOME`/cwd path and an OS error
 can land in CI logs that may be more widely readable than the local JSONL.
-`degradation()` is the shared classifier behind both channels; it is exactly equivalent to the
-removed `is_degraded()` gate (`None` only for `(Persisted, None)`).
+`degradations()` is the shared classifier behind both channels (it was `degradation()`,
+returning at most one, until #171 made a derivation able to owe two). It is **no longer**
+equivalent to the removed `is_degraded()` gate: that gate was silent for the pair
+`(Persisted, None)`, and `degradations()` returns empty only for the *triple*
+`(Persisted, None, replaced_unread: None)` — a derivation that landed its replacement over an
+unread file is `(Persisted, None, Some(..))`, healthy on both old axes and still owed a record.
+`key_in_use_degradation()` is the half that kept the old equivalence.
