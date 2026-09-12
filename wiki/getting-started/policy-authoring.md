@@ -430,8 +430,15 @@ document* rather than handed to the parser
 ([main.rs:972-982](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-cli/src/main.rs#L972-L982)). The loader refuses those too; what changes is that the
 parser would have quoted the file to say so, and for a document that is one plain scalar the quote
 is the whole file. Pointed at a token file, an SSH key or a `.env` by a mistyped path, that lands
-in the CI log. An empty file is not in this class: it is a valid policy with every field at its
-default.
+in the CI log.
+
+An empty file is **not** in this class — it is a valid policy. YAML reads it as `null`, and every
+`Policy` field carries `#[serde(default)]`
+([lib.rs:51-80](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/lib.rs#L51-L80)),
+so a document with no fields in it loads as deny-by-default with no rules. `honmoon gateway
+--config` starts on one, and `a_file_that_is_not_a_policy_is_named_rather_than_quoted` pins that
+`validate` accepts it — the shape guard has to let `null` through, because refusing it would refuse
+a policy the gateway runs.
 
 **It has no side effects.** No listener is bound, no audit log is opened, no CA is read or
 generated, and — the one that is easy to miss — the management token is never resolved. All four

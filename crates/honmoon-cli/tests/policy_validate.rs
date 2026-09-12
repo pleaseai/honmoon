@@ -367,6 +367,20 @@ fn a_file_that_is_not_a_policy_is_named_rather_than_quoted() {
         "a tagged mapping is a mapping — the loader takes it, so this must too; got: {}",
         stderr(&output)
     );
+
+    // The other pass-through arm, and the one two reviewers read backwards: an
+    // empty document is a *valid* policy. Every `Policy` field carries
+    // `#[serde(default)]`, so a document with no fields in it deserializes to
+    // deny-by-default with no rules — `honmoon gateway --config` starts on one.
+    // Pinned here because it is the boundary of the guard above: refusing it
+    // would refuse a policy the gateway runs.
+    let empty = home.write_policy("empty.yaml", "");
+    let output = run(&home, &["policy", "validate", empty.to_str().unwrap()]);
+    assert!(
+        output.status.success(),
+        "an empty document is a policy with every field at its default; got: {}",
+        stderr(&output)
+    );
 }
 
 /// The refusal side of parity is the easy half. This is the other one, and it is
