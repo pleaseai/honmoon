@@ -428,6 +428,38 @@ metadata:
     expect(parseFrontmatter(text).problems).toEqual([expect.stringContaining('tab')])
   })
 
+  // ...and the comment in front of which a tab sits does not exempt it. pyyaml
+  // refuses ` \t# note` exactly as it refuses ` \tmore`; Bun.YAML reads past
+  // both. Trimming the line before testing for a comment hid the tab entirely.
+  test('reports a tab before a comment that follows a plain scalar', () => {
+    for (const indent of [' \t', '  \t']) {
+      const text = noteWith(`summary\n${indent}# note`, '')
+      expect(parseFrontmatter(text).problems).toEqual([expect.stringContaining('tab')])
+    }
+  })
+
+  // A comment outdented out of a block scalar has left the block, so the
+  // block's exemption for a tab has ended with it.
+  test('reports a tab before a comment that ends a block scalar', () => {
+    const text = noteWith(`>\n  first\n \t# note`)
+    expect(parseFrontmatter(text).problems).toEqual([expect.stringContaining('tab')])
+  })
+
+  // ...but at or past the block's own indentation a `#` is not a comment at
+  // all — it is content, and so is the tab in front of it. pyyaml reads this
+  // note as `first \t# note`.
+  test('keeps a tab before a hash inside a block scalar', () => {
+    const text = noteWith(`>\n  first\n  \t# note`)
+    expect(parseFrontmatter(text).problems).toEqual([])
+  })
+
+  // A tab-indented line reaching no key at all still puts a tab where the
+  // indentation goes, and the note never becomes loadable later.
+  test('reports a tab indenting a line before the first key', () => {
+    const text = '---\n\t# note\nname: a-note\ndescription: summary\n---\n'
+    expect(parseFrontmatter(text).problems).toEqual([expect.stringContaining('tab')])
+  })
+
   // `%` opens a directive, and `,`, `]`, `}` close flow collections that were
   // never opened. pyyaml refuses all four; Bun.YAML refuses `%` and disagrees
   // on the rest, which is reason to report either way.

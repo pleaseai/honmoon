@@ -511,11 +511,33 @@ export function parseFrontmatter(text: string): Frontmatter {
     // document. It is the value's own character on a continuation line, too.
     const bare = yamlTrim(line)
 
+    const atRoot = indentWidth(line) <= rootIndent
+
+    // A tab never indents, and the comment in front of which one sits does not
+    // exempt it: pyyaml refuses ` \t# note` exactly as it refuses ` \tmore`,
+    // while Bun.YAML reads past both — the disagreement this reader exists to
+    // report. Trimming the line first, which is what makes the comment tests
+    // below work at all, is precisely what hid the tab.
+    //
+    // The one place a tab is ordinary is inside a block scalar at or past its
+    // indentation, where it is content and both readers keep it. That case is
+    // measured further down, once the block's indentation is known; here it is
+    // only held back from this rule.
+    const inBlockContent = key !== null && blockScalars.has(key) && !atRoot
+    if (bare !== '' && !inBlockContent && /^[ \t]*\t/.test(line)) {
+      if (key === null) {
+        problems.push('a line is indented with a tab, which YAML does not accept as indentation — indent with spaces')
+      }
+      else {
+        tabIndented.add(key)
+      }
+      continue
+    }
+
     // A comment at column zero closes the value above it — a block scalar ends
     // there, and so does a plain one. Nothing is wrong with the comment itself;
     // what YAML refuses is indented content *after* it, which lands where a key
     // is expected. Recorded here and reported at the continuation below.
-    const atRoot = indentWidth(line) <= rootIndent
     if (bare.startsWith('#') && atRoot) {
       if (key) {
         closedByComment.add(key)
@@ -618,6 +640,12 @@ export function parseFrontmatter(text: string): Frontmatter {
         // at column zero does, so the close is recorded rather than only the
         // line skipped. Leaving the block open folded the next indented line
         // into the summary and reported nothing, for a document pyyaml refuses.
+        // Outdented is outside the block, so the exemption above has ended
+        // too — a tab in front of this comment is indentation again.
+        if (/^[ \t]*\t/.test(line)) {
+          tabIndented.add(key)
+          continue
+        }
         if (bare.startsWith('#')) {
           closedByComment.add(key)
           continue
