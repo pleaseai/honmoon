@@ -1,0 +1,27 @@
+wiki/llms-full.txt
+  s_11b941d9b7523d::t_fad0274f210ceb 1265,1269-1287,1292,1294,1296,1298,1300-1310,1313,1326-1327,1331,1337,1348,1803,1910-1930,1956-1962,2016-2022,2533-2538,2541-2552,2919,2925-2929,2943-2948,2953,2956,2958,2960-2966,2969,2973-2976
+wiki/deep-dive/policy-engine.md
+  s_11b941d9b7523d::t_9c96860e8729ab 138,140,152,178,192
+  s_11b941d9b7523d::t_81e7fe43747adc 130,137,202,213
+  s_11b941d9b7523d::t_38ca946273f972 134-136,139,142-151,157,159,161,163,165-175,191,196
+  s_11b941d9b7523d::t_49c51ef58dd751 141
+wiki/getting-started/policy-authoring.md
+  s_11b941d9b7523d::t_d49febd725db89 284,290-291,293-294,308-313,318,321,323,325-331,338-340
+  s_11b941d9b7523d::t_9c96860e8729ab 292,334,341
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "a241a468686e05f2e027a372346b7eeffd33774b",
+  "prompts": {},
+  "sessions": {
+    "s_11b941d9b7523d": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "33daa32e-815f-435a-97e1-983552021242",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
