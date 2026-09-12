@@ -1,0 +1,29 @@
+.claude/skills/run-honmoon/driver.mjs
+  s_d720448ec7c988::t_03c929c20d3ace 217-224
+crates/honmoon-mgmt/tests/e2e.rs
+  s_d720448ec7c988::t_03c929c20d3ace 144-150
+wiki/deep-dive/egress-gateway.md
+  s_d720448ec7c988::t_49263085e99160 233
+packages/api/src/auth.test.ts
+  s_d720448ec7c988::t_7b433684ca3519 124-142
+packages/api/src/auth.ts
+  s_d720448ec7c988::t_03c929c20d3ace 84-93
+crates/honmoon-cli/src/main.rs
+  s_d720448ec7c988::t_a67fe1ea8b9b77 88-94
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "03fa8f4362783f3ff1528f1f49fcf64a7f681a6e",
+  "prompts": {},
+  "sessions": {
+    "s_d720448ec7c988": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "069c4824-e961-4929-8157-1ff587135fd5",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
