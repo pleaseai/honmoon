@@ -70,7 +70,8 @@ number (`42`, `1e3`, `0644`). A value of `null` or `~` resolves to no value, whi
 note with no description. A block no reader can load is reported on its own, against the
 frontmatter line the reader gave up on where the block is short enough to locate one (the
 search is bounded at 200 lines); so is an indexed key the frontmatter gives twice, which YAML
-resolves to the last of them without a word.
+resolves to the last of them without a word — in any spelling written at the key itself, though
+not one an alias defines elsewhere (#205).
 
 Not reasons to quote, since the parser resolves them to the text the index then publishes: a
 leading `&`, `*` or `!` (an anchor, an alias, a tag — though an alias naming no anchor is a load

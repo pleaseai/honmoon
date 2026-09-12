@@ -417,6 +417,23 @@ const QUOTED_KEY = /(['"])(?:\\[\s\S]|(?!\1)[^\\])*\1(?=[ \t\r\n]*[:\r\n])/g
  *
  * Each offset carries a length because the rename replaces what was matched:
  * the name for a bare key, the whole token — quotes and all — for a quoted one.
+ *
+ * **Where this stops, on purpose.** What is nominated is a key whose spelling is
+ * lexically *here*, at the key position. A key whose identity is defined
+ * somewhere else in the document is not: `? &k description` / `: first` over
+ * `? *k` / `: second` resolves both entries to `description` and drops `first`
+ * without a word (#205). Covering it means resolving anchors — finding anchor
+ * definitions, mapping each to the key it spells, then finding alias tokens in
+ * key position — three more source patterns, which is how the scanner this file
+ * replaced reached thirty-one review rounds.
+ *
+ * The line is drawn here rather than one spelling further along because nothing
+ * closes this set while the parser exposes no structure: `Bun.YAML` gives no
+ * CST, no token stream and no positions, so locating a key is lexical work that
+ * cannot be delegated. What *is* delegated is every semantic question — the
+ * parser says what a token spells and whether an occurrence is really a repeat.
+ * The index stays correct either way: it publishes what the parser resolved, so
+ * a missed report costs the author a warning, never the reader a wrong summary.
  */
 function keyOccurrences(source: string, name: string): { at: number, length: number }[] {
   // Loose on purpose: this only *nominates* offsets for the parser to rule on,

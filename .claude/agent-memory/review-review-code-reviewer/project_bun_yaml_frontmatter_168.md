@@ -102,6 +102,35 @@ as wide as the set of spellings the parser treats as identical.** Loose costs a 
 costs a report. Nominate widely on purpose and let the parser be the thing that decides — a value
 wrapping onto a line that reads like a key gets nominated here, probed, and correctly cleared.
 
+## Where the duplicate report stops, and why the line is there (#205)
+
+Four review rounds each found a further key spelling the nomination missed: flow style, quoted,
+escaped (`"descrip\u0074ion":`), continued across a line. Each fix was a real lexical rule and each
+was right. The fifth — a key spelled by an **alias** (`? &k description` / `: first` over `? *k` /
+`: second`) — was **not** taken, and that decision is the durable part.
+
+Nothing closes this set while `Bun.YAML` exposes no structure: no CST, no token stream, no
+positions. Locating where a key is written is lexical work that cannot be delegated, so the
+pattern can always be one spelling short. Four rounds of widening it is the shape that took the
+old scanner to thirty-one rounds on #156.
+
+So the boundary is stated instead of chased: **the report covers a key whose spelling is lexically
+present at the key position, not one whose identity is defined elsewhere in the document.** It is
+in the `keyOccurrences` doc comment, in `AGENTS.md`, and in #205.
+
+Two things make that affordable, and both should be checked before anyone moves the line:
+
+- **The index is correct either way.** It publishes what the parser resolved, so it never
+  disagrees with a YAML reader. A missed duplicate report costs the *author* a warning; it never
+  costs the *reader* a wrong summary. That is a different severity from the comment probe, where
+  the index itself would have advertised a truncated summary.
+- **Reachability is not uniform.** An inline `#` in prose forced 36 notes to be quoted; an
+  anchored explicit key aliased as a second key is not something anyone writes by accident.
+
+A finding of the form "here is one more spelling of a duplicate key" is therefore answered by
+#205, not by another pattern. What would actually close it is a reader that refuses duplicate keys
+(js-yaml does; `Bun.YAML` does not), which is a dependency decision, not a rule.
+
 ## Deliberately dropped — do not re-file as a regression
 
 The checks that reported a **disagreement between two readers**: a tab or a U+2028/U+2029 in a
