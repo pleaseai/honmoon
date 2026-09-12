@@ -1,16 +1,17 @@
 ---
 name: pr203-yaml-rewrite-no-test-weakened
-description: "PR #203 (issue #168) swapped agent-memory-index.ts's hand-written YAML scanner for Bun.YAML — audited all 121 to 131 tests one by one, none was weakened or silently dropped; the audit method (trace every renamed test to a measured behaviour change, and require it to assert the resolved value rather than an empty problems array) is the reusable part"
+description: "PR #203 (issue #168) swapped agent-memory-index.ts's hand-written YAML scanner for Bun.YAML — audited every test one by one, none was weakened or silently dropped; the audit method (trace every renamed test to a measured behaviour change, and require it to assert the resolved value rather than an empty problems array) is the reusable part, as is the reachability rule that turned one finding from add-a-test into delete-the-branch"
 metadata:
   type: project
 ---
 
 PR #203 rewrote `scripts/agent-memory-index.ts` (issue #168) to use `Bun.YAML.parse` instead of
-a hand-written frontmatter scanner. The 1274-line test file was rewritten to 1450 lines / 131
-tests (was 121).
+a hand-written frontmatter scanner, and the 1274-line test file was rewritten with it. Counts
+moved through the PR and are not the point; what the audit established is that the rewrite
+*added* cases and re-pointed the rest at measured behaviour, and lost none.
 
 Verified by diffing test names old vs new (`git show origin/main:...` vs HEAD): 12 old test names
-disappeared, 22 new ones appeared. Traced every one of the 12 individually — each maps to a
+disappeared and new ones appeared in their place. Traced every one of the 12 individually — each maps to a
 genuine behavioral difference between the old scanner and Bun.YAML (e.g. tabs before comments
 that pyyaml refused but Bun.YAML reads past, `,summary`/line-separator handling, anchors/aliases/
 tags now *resolving* instead of being reported, the two-message "out-of-range codepoint"/

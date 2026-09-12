@@ -24,7 +24,9 @@ the `parse` call site in the calling `.ts` file, not into the document, and the 
 ("Unexpected token"). `failingLine` recovers the location by asking the parser about prefixes: the
 *longest* prefix of lines that still reads is the last line that can be right. Longest, not first —
 a quoted scalar that wraps cannot close on its own line, so the first prefix that throws is
-routinely a line with nothing wrong with it.
+routinely a line with nothing wrong with it. That is one parse per line over a block whose
+own length grows with the line count, so the scan is bounded at 200 lines — past it the
+refusal is still reported and only the location is dropped.
 
 ## What the script reports, and how
 
@@ -80,8 +82,9 @@ the *index* disagree is a real defect and always was.
 
 ## What was checked at the time
 
-- The index generated for all 96 committed notes was byte-identical to the scanner's, and
-  `--check` reported no problems.
+- The index generated for every committed note was byte-identical to the scanner's, and
+  `--check` reported no problems. Re-run it on any change here: a byte-identical corpus is
+  the evidence that carries, and it survived the review fixes as well as the rewrite.
 - Anchors, aliases and tags now resolve rather than being reported: `!!str 42` is the string `42`,
   and an alias naming no anchor is an "Unresolved alias" load failure.
 - The script's interface is unchanged — same exports, same exit codes (`EXIT_PROBLEMS` 2,
