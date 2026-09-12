@@ -169,6 +169,22 @@ metadata:
   // `#` makes the document stop parsing — which says nothing about that comment
   // and must not be reported. It must also not swallow a real cut on another
   // line, which is why one `#` is masked at a time rather than all of them.
+  // The refusal class the probe skips is a comment after a *closed node*, and a
+  // flow collection is one as much as a quoted scalar is. Nothing was cut from
+  // either — the quoted value comes back whole, and the collection is reported
+  // as not-text by the caller — so the skip costs no report in either case.
+  test('skips the probe after a closed flow collection, which loses no report', () => {
+    const withValue = (value: string): string =>
+      note('a-note', 'placeholder').replace('description: placeholder', `description: ${value}`)
+
+    expect(parseFrontmatter(withValue('[a, b] # a trailing note')).problems)
+      .toEqual([expect.stringContaining('is a sequence rather than text')])
+    expect(parseFrontmatter(withValue('{a: b} # a trailing note')).problems)
+      .toEqual([expect.stringContaining('is a mapping rather than text')])
+    expect(parseFrontmatter(withValue(`'single' # a trailing note`)))
+      .toMatchObject({ scalars: { description: 'single' }, problems: [] })
+  })
+
   test('still reports a cut key when another line ends in a valid comment', () => {
     const text = `---\nname: cut at #1 here\ndescription: "quoted" # a real comment\n---\n`
     expect(parseFrontmatter(text)).toMatchObject({
