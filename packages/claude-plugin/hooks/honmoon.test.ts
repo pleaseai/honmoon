@@ -11,7 +11,9 @@ type PromptArgs = Parameters<typeof promptHook>
 function engine(reply: (payload: Payload) => Reply, http?: (url: string, init: unknown) => unknown) {
   const calls: { argv: readonly string[], payload: Payload }[] = []
   const fetches: { url: string, init: unknown }[] = []
+  const logs: string[] = []
   const $ = {
+    ui: { log: (text: string) => { logs.push(text) } },
     process: {
       run: async (argv: readonly string[], init: { stdin: string }) => {
         const payload = JSON.parse(init.stdin) as Payload
@@ -32,8 +34,11 @@ function engine(reply: (payload: Payload) => Reply, http?: (url: string, init: u
     clock: { sleep: () => new Promise<void>(() => {}) },
     session: { id: async () => 'session-1', cwd: async () => '/repo' },
   }
-  return { $: $ as unknown as EngineInterface, calls, fetches }
+  return { $: $ as unknown as EngineInterface, calls, fetches, logs }
 }
+
+/** The `systemMessage` `honmoon hook` adds when the audit log refused a degradation record. */
+const DEGRADED = 'honmoon: redaction ran on a degraded key and the audit log would not take the record, so this message is its only trace. rule=hook-salt-fallback key_source=fallback reason=x sink=/tmp/audit.jsonl sink_error=y'
 
 function redacted(output: unknown): string {
   return JSON.stringify({ hookSpecificOutput: { hookEventName: 'PostToolUse', updatedToolOutput: output } })
@@ -167,6 +172,38 @@ describe('tool.call', () => {
     expect((await runTool(partial, readEvent, async () => readResult)).deny).toBe('honmoon: redaction engine unavailable (engine answered a PostToolUse verdict that decides nothing); tool output withheld')
     const { $: generic } = engine(p => (p.hook_event_name === 'PostToolUse' ? { stdout: '{"continue":true}' } : {}))
     expect((await runTool(generic, readEvent, async () => readResult)).deny).toBe('honmoon: redaction engine unavailable (engine output is not a hook verdict (unexpected key "continue")); tool output withheld')
+  })
+
+  test('a systemMessage is shown to the user and decides nothing (honmoon issue #165)', async () => {
+    applyOptions({})
+    // Alone: the verdict is the `{}` no-op it would have been without the message.
+    const { $: quiet, logs: quietLogs } = engine(() => ({ stdout: JSON.stringify({ systemMessage: DEGRADED }) }))
+    let ran = false
+    const r = await runTool(quiet, readEvent, async () => {
+      ran = true
+      return readResult
+    })
+    expect(ran).toBe(true)
+    expect(r).toBe(readResult)
+    expect(quietLogs).toEqual([DEGRADED, DEGRADED])
+    // Beside a redaction: the rewrite still applies.
+    const scrubbed = { ...readRecord, file: { ...readRecord.file, content: 'key=<<hs:abc123>>' } }
+    const { $: noisy, logs: noisyLogs } = engine(p => (p.hook_event_name === 'PostToolUse'
+      ? { stdout: JSON.stringify({ hookSpecificOutput: { hookEventName: 'PostToolUse', updatedToolOutput: scrubbed }, systemMessage: DEGRADED }) }
+      : {}))
+    const redactedResult = await runTool(noisy, readEvent, async () => readResult)
+    expect(redactedResult.result).toEqual(scrubbed)
+    expect(noisyLogs).toEqual([DEGRADED])
+    // Beside a deny: the deny still wins.
+    const { $: denying, logs: denyLogs } = engine(p => (p.hook_event_name === 'PreToolUse'
+      ? { stdout: JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: 'honmoon: blocked path' }, systemMessage: DEGRADED }) }
+      : {}))
+    expect(await runTool(denying, readEvent, async () => readResult)).toEqual({ deny: 'honmoon: blocked path' })
+    expect(denyLogs).toEqual([DEGRADED])
+    // Anything but a string is not the engine talking.
+    const { $: numbered, logs: numberedLogs } = engine(p => (p.hook_event_name === 'PostToolUse' ? { stdout: '{"systemMessage":1}' } : {}))
+    expect((await runTool(numbered, readEvent, async () => readResult)).deny).toBe('honmoon: redaction engine unavailable (engine output is not a hook verdict (systemMessage is not a string)); tool output withheld')
+    expect(numberedLogs).toEqual([])
   })
 
   test('denies the read when PreToolUse answers with a decision other than deny', async () => {
@@ -373,6 +410,19 @@ describe('prompt.submit', () => {
     expect(seen).toEqual(['my key is <<hs:abc123>>'])
     expect(r.text).toBe('my key is <<hs:abc123>>')
     expect(r.context).toEqual(['honmoon: 1 value(s) redacted with stable placeholders; treat <<hs:…>> tokens as opaque'])
+  })
+
+  test('a systemMessage on the prompt verdict is shown and the prompt still goes through', async () => {
+    applyOptions({})
+    const { $, logs } = engine(() => ({ stdout: JSON.stringify({ systemMessage: DEGRADED }) }))
+    let forwarded = false
+    const r = await runPrompt($, { text: 'hello', wait: false, origin: 'user' }, async () => {
+      forwarded = true
+      return { text: 'hello' }
+    })
+    expect(forwarded).toBe(true)
+    expect(r).toEqual({ text: 'hello' })
+    expect(logs).toEqual([DEGRADED])
   })
 
   test('drops the prompt when the verdict carries a decision other than block', async () => {

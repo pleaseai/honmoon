@@ -27,8 +27,12 @@ const PLACEHOLDER = /<<hs:[^>]*>>/g
 const TOOL_MATCHER = { tool: ['Read', 'Bash', 'Grep', 'WebFetch'] } as const
 
 type Json = Record<string, unknown>
-/** A parsed hook verdict, or why the engine could not produce one. */
-type Answer = { ok: true, verdict: Json } | { ok: false, cause: string }
+/**
+ * A parsed hook verdict, or why the engine could not produce one. `notice` is
+ * the verdict's `systemMessage`, lifted off it: a line for the user that
+ * decides nothing (see `parseVerdict`).
+ */
+type Answer = { ok: true, verdict: Json, notice?: string } | { ok: false, cause: string }
 interface Config {
   bin: string
   url: string
@@ -43,6 +47,7 @@ type Runner = (
 ) => Promise<{ exitCode: number, stdout: string }>
 type Fetcher = (url: string, init: HttpInit) => Promise<HttpResponse>
 type Sleeper = (ms: number, options?: { signal?: AbortSignal }) => Promise<void>
+type Logger = (text: string) => void
 type Ask = (payload: Json) => Promise<Answer>
 
 export function configure(options: PluginOptions = {}): Config {
@@ -68,8 +73,14 @@ export function configure(options: PluginOptions = {}): Config {
 }
 
 /** An empty body is the engine's documented no-op; anything else must be JSON. */
-/** The keys `honmoon hook` and the mgmt endpoint emit (Claude Code hook JSON). */
-const VERDICT_KEYS = new Set(['hookSpecificOutput', 'decision', 'reason'])
+/**
+ * The keys `honmoon hook` and the mgmt endpoint emit (Claude Code hook JSON).
+ * `systemMessage` is the common field `honmoon hook` adds when a degraded
+ * machine key could not be recorded in the audit log (honmoon issue #165): a
+ * line for the user, never a decision, so `parseVerdict` lifts it off the
+ * verdict rather than letting it read as an answer to the event.
+ */
+const VERDICT_KEYS = new Set(['hookSpecificOutput', 'decision', 'reason', 'systemMessage'])
 
 function parseVerdict(body: string, transport: 'process' | 'http'): Answer {
   const text = body.trim()
@@ -106,7 +117,14 @@ function parseVerdict(body: string, transport: 'process' | 'http'): Answer {
   if (output && (output as Json).updatedToolOutput === null) {
     return { ok: false, cause: 'engine output is not a hook verdict (updatedToolOutput is null)' }
   }
-  return { ok: true, verdict: parsed as Json }
+  const { systemMessage, ...verdict } = parsed as Json
+  if (systemMessage === undefined) {
+    return { ok: true, verdict }
+  }
+  if (typeof systemMessage !== 'string') {
+    return { ok: false, cause: 'engine output is not a hook verdict (systemMessage is not a string)' }
+  }
+  return { ok: true, verdict, notice: systemMessage }
 }
 
 /** A lookup run under the hook budget: its value, or why it did not arrive. */
@@ -187,11 +205,22 @@ async function transportCall(config: Config, run: Runner, fetch: Fetcher, payloa
  * HTTP error, or a rejected lookup all come back as `{ ok: false }` so the
  * caller can make the fail-closed decision while the host still listens.
  */
-export function engineAsk(config: Config, run: Runner, fetch: Fetcher, sleep: Sleeper): Engine {
+export function engineAsk(config: Config, run: Runner, fetch: Fetcher, sleep: Sleeper, log: Logger): Engine {
   const budget = startBudget(sleep)
   const ask: Ask = async (payload) => {
     const answer = await budget.guard(transportCall(config, run, fetch, payload))
-    return answer.ok ? answer.value : answer
+    if (!answer.ok) {
+      return answer
+    }
+    // The engine's `systemMessage` is what a command hook would have shown the
+    // user; `$.ui.log` is this API's equivalent — a transcript line that is
+    // not sent to the model. It is the degradation's only trace when it
+    // arrives (the audit log refused it), so it is shown before the verdict
+    // is judged, whatever the verdict then turns out to be.
+    if (answer.value.ok && answer.value.notice !== undefined) {
+      log(answer.value.notice)
+    }
+    return answer.value
   }
   return { ask, ...budget }
 }
@@ -502,6 +531,7 @@ function engineFor($: Parameters<typeof toolHook>[0]): Engine {
     (argv, init) => $.process.run(argv, init),
     (url, init) => $.http.fetch(url, init),
     (ms, options) => $.clock.sleep(ms, options),
+    text => $.ui.log(text),
   )
 }
 
@@ -592,6 +622,7 @@ export const promptHook: Hook<'prompt.submit'> = async ($, e, next) => {
     (argv, init) => $.process.run(argv, init),
     (url, init) => $.http.fetch(url, init),
     (ms, options) => $.clock.sleep(ms, options),
+    text => $.ui.log(text),
   )
   try {
     const facts = await sessionFacts($, engine)

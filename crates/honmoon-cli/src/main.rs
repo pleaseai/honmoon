@@ -190,13 +190,13 @@ enum Command {
         /// Same constraint as `honmoon gateway --audit-log`: a regular file, never
         /// a symlink, FIFO, socket or device (issue #138), and no symlinked parent
         /// directory except one only `root` or honmoon's own user could have planted
-        /// (issue #160). A refused path is reported to stderr and the hook carries on
-        /// — which, per the paragraph above, is a channel a non-interactive hook
-        /// process discards, so a degradation recorded nowhere is the cost of
-        /// pointing this at a target the sink will not take (issue #165). The
-        /// parent-directory rule makes that worth re-checking against a path that
-        /// worked before: it is the same file the gateway writes, so a path the
-        /// gateway starts on is one the hook takes too.
+        /// (issue #160). A refused path does not stop the hook: the degradation
+        /// it could not record goes back on the hook response as `systemMessage`,
+        /// which Claude Code shows to the user and keeps out of the model's
+        /// context (issue #165) — a trace, not a durable one, so the parent-
+        /// directory rule is worth re-checking against a path that worked before.
+        /// It is the same file the gateway writes, so a path the gateway starts
+        /// on is one the hook takes too.
         #[arg(long, value_name = "FILE", env = "HONMOON_AUDIT_LOG")]
         audit_log: Option<PathBuf>,
     },
