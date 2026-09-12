@@ -609,9 +609,9 @@ impl LoadedSalt {
     }
 }
 
-fn load_or_create_machine_salt(dir: &Path) -> Result<LoadedSalt> {
-    let dir = absolute_salt_dir(dir);
-    let dir = dir.as_path();
+fn load_or_create_machine_salt(requested_dir: &Path) -> Result<LoadedSalt> {
+    let resolved = absolute_salt_dir(requested_dir);
+    let dir = resolved.as_path();
     let path = dir.join("hook-salt");
     // `true` means the file exists but is unusable (must be force-overwritten);
     // `false` means it is absent (first run — create atomically to avoid a race).
