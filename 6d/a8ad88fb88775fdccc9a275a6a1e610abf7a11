@@ -1,0 +1,32 @@
+apps/dashboard/AGENTS.md
+  s_b7c0aca07e94f1::t_72b747227b15a3 44
+  s_b7c0aca07e94f1::t_cfac6b3c06eb2a 48
+apps/dashboard/vite.config.ts
+  s_b7c0aca07e94f1::t_cfac6b3c06eb2a 15-19
+wiki/getting-started/quick-start.md
+  s_b7c0aca07e94f1::t_cfac6b3c06eb2a 135-136
+.claude/skills/run-honmoon/SKILL.md
+  s_b7c0aca07e94f1::t_cfac6b3c06eb2a 160-161
+packages/api/src/auth.ts
+  s_b7c0aca07e94f1::t_cfac6b3c06eb2a 14-17
+wiki/deep-dive/egress-gateway.md
+  s_b7c0aca07e94f1::t_cfac6b3c06eb2a 233
+wiki/deep-dive/control-plane.md
+  s_b7c0aca07e94f1::t_cfac6b3c06eb2a 73-75,84-104,132-138,196-198
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "6da8ad88fb88775fdccc9a275a6a1e610abf7a11",
+  "prompts": {},
+  "sessions": {
+    "s_b7c0aca07e94f1": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "4951d865-cc4f-4262-a023-49a2ace4a99d",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
