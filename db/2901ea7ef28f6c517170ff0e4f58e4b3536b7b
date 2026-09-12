@@ -1,0 +1,35 @@
+crates/honmoon-cli/src/hook.rs
+  s_e774291c320bdb::t_aab9a7993e3ab6 547-562,574
+  s_e774291c320bdb::t_37d46f715b382b 96,442-459,469,471,500-522
+  s_e774291c320bdb::t_0743e3092fcc5b 82,88,526,535,543,591-605,612-623,627-649
+  s_768232b2089e4d::t_8981ccef1bd587 14-15,39-42,69,95,606-611,2203-2280,2314-2318,2330-2333,2335-2341
+  s_768232b2089e4d::t_0757c11de8f232 58,60-68,81,83-87,89-94,97,523-525,527-534,536-542,544-546
+crates/honmoon-cli/src/main.rs
+  s_768232b2089e4d::t_8981ccef1bd587 193-199
+packages/claude-plugin/README.md
+  s_768232b2089e4d::t_8981ccef1bd587 274-278
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "db2901ea7ef28f6c517170ff0e4f58e4b3536b7b",
+  "prompts": {},
+  "sessions": {
+    "s_768232b2089e4d": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "56eb0cb4-3eea-4ae1-ae99-df37d60e8d08",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    },
+    "s_e774291c320bdb": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "3fa0a8aa-6088-4615-832b-4d33215bf4f8",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
