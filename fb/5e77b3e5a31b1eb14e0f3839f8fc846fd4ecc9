@@ -1,0 +1,19 @@
+.claude/agent-memory/review-review-comment-analyzer/pr183_audit_sink_report_claims.md
+  s_c76fd182d547f6::t_d4dd7d3d7a4f7c 1-34
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "fb5e77b3e5a31b1eb14e0f3839f8fc846fd4ecc9",
+  "prompts": {},
+  "sessions": {
+    "s_c76fd182d547f6": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "4b37fffc-f5b8-4ce5-a33b-d8be2892e2a7",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
