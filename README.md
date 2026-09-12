@@ -234,8 +234,25 @@ absence conditions work, so an **absence** rule does fire, and treats the reques
 findings, and do not read `pii.count == 0` as "no secrets in this request".
 
 Whether a trailer then *reaches* the upstream is a separate question, and not one this contract
-answers. On a pass-through request it is replayed — subject to the upstream leg's framing carrying
-trailers at all (see issue #136), and to its *name*. Honmoon refuses to forward a trailer whose
+answers. On a pass-through request it is replayed, subject to its *name* and to framing. On framing,
+honmoon now does the work rather than leaving it to the upstream leg: HTTP/1.1 carries a trailer
+section only under chunked framing and only for the fields a `Trailer` header names, and HTTP/2
+requires neither, so honmoon writes `Transfer-Encoding: chunked` and a `Trailer` header naming the
+surviving fields (issue #136). hyper reconciles the two per-protocol — an HTTP/1.1 leg drops the
+`Content-Length`, an HTTP/2 leg drops the `Transfer-Encoding` — so honmoon does not need to know
+which one it will get. Limits — in each of these the **re-frame** is skipped and the request still
+goes forward exactly as the client framed it, losing the trailer section rather than the request
+(fail open, not the `403` the signed-body path returns): the re-frame is skipped when the request's
+signature covers one of
+those headers *that this re-frame would actually touch* — `Content-Length` and `Transfer-Encoding`
+only when the request is not already chunked, `Trailer` only when a field is undeclared — since
+re-framing would then break the signature the request was forwarded to preserve (a `warn` names the
+covered headers and the trailers that will therefore be lost); it is skipped again when the
+request carries a `Content-Length` hyper cannot resolve to a single length, because the HTTP/1.1
+leg only drops a length it could parse and honmoon would otherwise be the one putting both
+framings on one wire; and it
+needs the trailer field names, which honmoon only holds for a body it buffered, so an over-cap body
+still depends on the client's own framing (issue #177). On names, honmoon refuses to forward a trailer whose
 field name could change how the recipient **frames, routes, or authenticates** the request — the
 hazard RFC 9110 §6.5.1 describes, and which RFC 7230 §4.1.2 stated outright: a recipient must
 ignore such a field, "since processing them as if they were present in the header section might
@@ -306,10 +323,14 @@ sends none, in the `X-Amz-Content-Sha256` query parameter presigning hoists that
 its own its signature covers the request and the headers it names, not the uploaded bytes. So is a
 bare payload hash with no AWS authentication on the request — that is an integrity check, not a
 signature. The covered list is parsed rather than assumed, and only headers the rewrite would actually
-change count. A signed request with nothing to redact is forwarded with its body and headers
-unchanged — the one exception being a trailer whose field name a trailer section must not carry,
-which is dropped by the #134 filter before any of this is consulted (see the trailer paragraph
-above; `Content-Digest` is not on that list). See [ADR-0006](.please/docs/decisions/0006-signed-body-requests-under-wire-redaction.md).
+change count. A signed request with nothing to redact is forwarded with its body unchanged and its
+headers unchanged **except** for the two framing decisions that are not the rewrite's, both
+described in the trailer paragraph above and both applied before any of this is consulted: a
+trailer whose field name a trailer section must not carry is dropped by the #134 filter
+(`Content-Digest` is not on that list), and a request carrying a trailer section gains the
+`Transfer-Encoding: chunked` and `Trailer` headers an HTTP/1.1 leg needs to carry it — which is
+what lets a signed `Content-Digest` trailer survive that leg, and which is skipped for exactly the
+requests whose signature covers those headers. See [ADR-0006](.please/docs/decisions/0006-signed-body-requests-under-wire-redaction.md).
 
 ### What `honmoon run` enforces, and what it costs
 

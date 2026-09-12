@@ -12,6 +12,13 @@ name a trailer section must not carry is dropped before the request leaves honmo
 that runs ahead of — and independently of — every decision this ADR describes. The qualification is
 stated where each claim is made below.
 
+Amended 2026-09-12 (#136): `forward`'s "same headers" is no longer unqualified either, and this
+time the qualification *serves* the decision rather than costing it. A request carrying a trailer
+section gains the two framing headers an HTTP/1.1 upstream leg needs in order to carry that section
+— which is what lets a signed `Content-Digest` sent as a trailer survive the leg at all — and that
+re-frame is declined for exactly the requests whose signature covers those headers. The clause and
+the constraint it answers to are stated below.
+
 ## Context
 
 `--redact-secrets` rewrites intercepted request bodies: detected secrets and Tier-1 PII are
@@ -187,9 +194,10 @@ machinery — with the one exception #134 introduced, below.
   header, and a plain-text explanation naming the scheme and the escape hatch, and records an
   audit event (`Decision::Denied`, `Verdict::Deny`, rule `wire-redaction/signed-body`). The
   secret is never sent, and an opaque upstream signature failure becomes an actionable local one.
-- `forward` returns the original request unchanged by redaction — same body bytes, same headers, no
-  mapping recorded — mirroring the existing `Content-Range` fail-open branch, for operators who
-  trust the signed upstream more than they fear the leak.
+- `forward` returns the original request unchanged by redaction — same body bytes, no mapping
+  recorded — mirroring the existing `Content-Range` fail-open branch, for operators who trust the
+  signed upstream more than they fear the leak. Its headers are the client's too, with the one
+  addition #136 introduces below.
 
 **The one thing `forward` does not reproduce verbatim (#134).** `trailer_filtered_body` drops a
 forwarded trailer whose field name a trailer section must not carry — framing, routing,
@@ -206,7 +214,43 @@ covering one was already unreproducible on an h1 upstream before honmoon existed
 framing token because a signature happens to cover it is exactly the laundering #134 exists to
 stop. The trailer a signature realistically covers — `Content-Digest`, the RFC 9421 case this ADR
 is written around — is **not** on the list and is unaffected, which
-`signed_body_request_keeps_its_digest_trailer_in_forward_mode` pins.
+`signed_body_request_keeps_its_digest_trailer_in_forward_mode` pins. Reaching the upstream leg is a
+second condition on top of surviving that filter, and since #136 honmoon supplies the framing it
+needs — see the clause below.
+
+**The two framing headers `forward` adds, and why they are not the trade this ADR refuses (#136).**
+A trailer section reaches an HTTP/1.1 upstream only under chunked framing and only for the fields
+the request's `Trailer` header names; HTTP/2 requires neither, and honmoon's own buffering hands
+hyper an exact body length even when the client declared none. So a `Content-Digest` sent as a
+trailer — the RFC 9421 case this ADR is written around — was being dropped on that leg, and
+`forward` was reproducing a request the client had not signed. `framed_for_trailers` writes
+`Transfer-Encoding: chunked` and the missing `Trailer` names onto a pass-through request that
+carries a trailer frame, and hyper resolves the pair per-protocol, dropping whichever of
+`Content-Length` / `Transfer-Encoding` its leg forbids — provided, on the HTTP/1.1 side, that it
+could parse the length it is dropping; a `Content-Length` it cannot resolve declines the re-frame
+instead of riding out next to the chunked framing.
+
+That is a header change on a request this ADR promises to forward as signed, so it takes the same
+constraint as every other one, and with the same narrowing: `signed_headers_among` is asked about
+the members of `signed_body::TRAILER_FRAMING_HEADERS` (`content-length`, `transfer-encoding`,
+`trailer`) that **this** re-frame would actually touch — the first two only when the request is not
+already chunked, `trailer` only when a retained field is undeclared — and a signature over one of
+those **declines the re-frame**. A signed header the re-frame leaves as it found it blocks nothing,
+exactly as a signed `Content-Encoding` the rewrite never sends does not. On a decline the request
+goes on exactly as the client framed it, and a `warn` names the covered headers alongside the
+trailers that will therefore not arrive. The asymmetry with the rewrite is deliberate and is what keeps this consistent: the rewrite
+*must* act once a secret is found, so it needs a block-or-forward flag to decide how; this re-frame
+never has to act, so declining is a complete answer and needs no flag. The set is its own constant
+rather than `REWRITTEN_FRAMING_HEADERS` because it is a different rewrite — `Content-Encoding` is
+untouched here, since the body's bytes are, and `Trailer` is not something the redaction rewrite
+ever writes.
+
+What this leaves open, deliberately: when the signature covers a framing header *and* the trailer
+field, honmoon has no option that preserves it, and it forwards as-is rather than refusing. Under
+`--signed-body block` the operator arguably asked for the opposite. That is a new denial mode, not
+this flag applied further — `SignedBodyMode` also lives on `RedactionState`, so routing through it
+would make trailer framing depend on whether secret redaction is enabled — and it is tracked as its
+own question (issue 178) rather than settled here.
 
 `block` is the default because it is the only mode that preserves the guarantee `--redact-secrets`
 is bought for: a flag the operator turned on to stop secrets crossing the wire must not silently

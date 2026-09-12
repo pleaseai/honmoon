@@ -23,13 +23,14 @@
 //!   and never redacted anywhere in the pipeline. (Headers *are* read, for
 //!   framing, decoding and signature metadata — that is metadata handling, not
 //!   detection.) Whether a
-//!   carried trailer survives is a separate, conditional matter, and there are
-//!   two conditions: a wire redaction rewrite replaces the body with `Full`,
-//!   which has no trailer frame, so the client's trailers are dropped there
-//!   (see `mitm::HonmoonHandler::forwarded_request`); and a trailer whose
-//!   *name* a trailer section must not carry is dropped by
-//!   [`trailer_filtered_body`] on every **request**-forwarding path. Neither
-//!   decision reads a value. Response trailers are not filtered by name at all
+//!   carried trailer survives is a separate matter, and not one this module
+//!   settles: the only part of it decided here is that a trailer whose *name* a
+//!   trailer section must not carry is dropped by [`trailer_filtered_body`] on
+//!   every **request**-forwarding path. The rest — what a wire redaction
+//!   rewrite and the upstream leg's framing do to a trailer frame — is decided
+//!   in `mitm` and written down in ADR-0009. What holds across all of them is
+//!   the invariant this module is responsible for: no such decision reads a
+//!   trailer's value. Response trailers are not filtered by name at all
 //!   — [`detokenizing_body`] forwards the upstream's trailer frame to the
 //!   client unmodified — because the hazard #134 is about is a *client*
 //!   laundering a framing token into honmoon's upstream leg. See
@@ -350,6 +351,35 @@ fn connection_nominated(headers: &HeaderMap) -> Vec<HeaderName> {
         .filter_map(|value| value.to_str().ok())
         .flat_map(|value| value.split(','))
         .filter_map(|name| HeaderName::from_bytes(name.trim().as_bytes()).ok())
+        .collect()
+}
+
+/// The field names a trailer section would still carry after
+/// [`trailer_filtered_body`] has run over it.
+///
+/// The read-only counterpart of [`strip_forbidden_trailers`], for the one thing
+/// the streaming filter cannot answer in time: hyper's h1 encoder emits only the
+/// trailer fields a request's `Trailer` **header** names
+/// (`hyper-1.10.1/src/proto/h1/role.rs:1401-1418`), and that header has to be
+/// written while the header section is still in hand — long before the filter
+/// sees the frame. `mitm` declares exactly these names, so nothing is declared
+/// that the filter will then drop (#136).
+///
+/// Both directions read [`FORBIDDEN_TRAILER_FIELDS`] and [`connection_nominated`],
+/// so the rule has one definition; `retained_names_match_the_streaming_filter`
+/// pins the two against each other.
+///
+/// Only the two branches of `inspect_body` that buffer a body ever hold a
+/// trailer `HeaderMap` to ask about. On the two over-cap ones the frame is still
+/// unread when the header section is written, so no declaration can be
+/// synthesized for it, and an undeclared trailer there still does not reach an
+/// HTTP/1.1 upstream — the residual tracked as issue 177.
+pub(crate) fn retained_trailer_names(trailers: &HeaderMap, headers: &HeaderMap) -> Vec<HeaderName> {
+    let nominated = connection_nominated(headers);
+    trailers
+        .keys()
+        .filter(|name| !FORBIDDEN_TRAILER_FIELDS.contains(name) && !nominated.contains(name))
+        .cloned()
         .collect()
 }
 
@@ -1166,5 +1196,52 @@ mod tests {
             "the digest a signature may cover is not on the forbidden list"
         );
         assert!(collected.to_bytes().is_empty());
+    }
+
+    /// `retained_trailer_names` answers ahead of time what the streaming filter
+    /// will do, so a `Trailer` header can be written while the header section is
+    /// still in hand. The two read one rule, and this pins that they agree:
+    /// anything the filter keeps must be named, and anything it drops must not.
+    #[tokio::test]
+    async fn retained_names_match_the_streaming_filter() {
+        let mut sent = HeaderMap::new();
+        for (name, value) in [
+            ("transfer-encoding", "chunked"),
+            ("content-length", "0"),
+            ("authorization", "Bearer smuggled"),
+            ("x-hop", "nominated"),
+            ("content-digest", "sha-256=:ZGlnZXN0:"),
+            ("x-note", "kept"),
+        ] {
+            sent.insert(
+                name,
+                hudsucker::hyper::header::HeaderValue::from_static(value),
+            );
+        }
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            CONNECTION,
+            hudsucker::hyper::header::HeaderValue::from_static("x-hop"),
+        );
+
+        let predicted = retained_trailer_names(&sent, &headers);
+        let filtered = trailer_filtered_body(
+            buffered_body(Bytes::new(), Some(sent)),
+            &headers,
+            "localhost",
+        )
+        .collect()
+        .await
+        .expect("collect filtered body")
+        .trailers()
+        .cloned()
+        .expect("a surviving trailer keeps the frame");
+
+        let mut predicted: Vec<&str> = predicted.iter().map(HeaderName::as_str).collect();
+        let mut actual: Vec<&str> = filtered.keys().map(HeaderName::as_str).collect();
+        predicted.sort_unstable();
+        actual.sort_unstable();
+        assert_eq!(predicted, actual);
+        assert_eq!(actual, ["content-digest", "x-note"]);
     }
 }
