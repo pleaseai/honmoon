@@ -1,6 +1,6 @@
 ---
 name: project-audit-sink-nofollow-138
-description: What #138/PR #163 changed in the audit sink open, and the libc-in-honmoon-core dependency judgment two reviewers reached independently
+description: 'What #138/PR #163 changed in the audit sink open and what that open refuses; mode(0o600) is a umask-filtered ceiling applied on creation only; the libc-in-honmoon-core dependency judgment two reviewers reached independently (not ask-first); honmoon-core tests run on Linux CI only'
 metadata:
   type: project
 ---

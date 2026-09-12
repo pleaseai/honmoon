@@ -1,6 +1,6 @@
 ---
 name: framing-deliberate-skips
-description: How to flag missing-logging bugs inside a code path the task explicitly marks as deliberate/do-not-flag
+description: A code path the task explicitly marks deliberate/do-not-flag can still hide a flaggable gap in a stated sub-guarantee (e.g. missing logging) — how to flag that anyway
 metadata:
   type: feedback
 ---

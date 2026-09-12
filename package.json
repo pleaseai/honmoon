@@ -14,7 +14,8 @@
     "lint:fix": "eslint . --fix",
     "typecheck": "bun run --filter '*' typecheck",
     "dashboard:dev": "bun run --filter '@honmoon/dashboard' dev",
-    "version:bump": "bun scripts/bump-version.ts"
+    "version:bump": "bun scripts/bump-version.ts",
+    "agent-memory:index": "bun scripts/agent-memory-index.ts"
   },
   "devDependencies": {
     "@eslint-react/eslint-plugin": "^3",

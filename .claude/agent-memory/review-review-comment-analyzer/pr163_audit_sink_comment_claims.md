@@ -1,6 +1,6 @@
 ---
 name: pr163-audit-sink-comment-claims
-description: Four doc-comment claims in audit.rs that were wrong when first written and are now corrected — plus the checks that caught them, which are cheap to repeat
+description: Four doc-comment claims in audit.rs that were wrong when first written and are now corrected — a drifted cross-crate fn name, an unqualified macOS errno, overstated openat portability, and a self-contradicted libc claim — plus the checks that caught them, which are cheap to repeat
 metadata:
   type: project
 ---

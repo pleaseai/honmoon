@@ -1,6 +1,6 @@
 ---
 name: pr163-open-sink-hardening
-description: The audit sink's two call sites react to a refused open very differently — gateway fail-closed and loud, hook swallowed to a stderr nobody reads (#165)
+description: 'The audit sink''s two call sites react to a refused open very differently — gateway fail-closed and loud, hook swallowed to a stderr nobody reads; that widened trigger is tracked in #165, not an unnamed gap'
 metadata:
   type: project
 ---

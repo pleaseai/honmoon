@@ -45,6 +45,37 @@ cargo run -p honmoon-cli -- gateway --config policies/agent.yaml --addr 127.0.0.
 | `policies/` | Example policies. |
 | `wiki/` | Generated VitePress documentation site. |
 | `.please/docs/` | Knowledge docs, ADRs, tech-debt tracker. |
+| `.claude/agent-memory/` | Per-agent review notes (tracked) + a generated `MEMORY.md` index (not tracked). |
+
+## Agent Memory
+
+Agents record findings as one note per file under `.claude/agent-memory/<agent>/`, and those
+notes are committed with the PR that produced them. The `MEMORY.md` beside them is the index
+an agent loads to choose a note; it is **generated and git-ignored**, so never edit or commit
+it — put the one-line summary in the note's own frontmatter `description:`, which is what the
+index line is built from.
+
+```bash
+bun scripts/agent-memory-index.ts            # rebuild (also: mise run agent-memory-index)
+bun scripts/agent-memory-index.ts --check    # CI gate: every note can supply its line
+```
+
+Quote a `description:` that is anything but plain prose. A plain YAML scalar ends at the first
+` #`, so anything that loads `description: fixed in PR #155, then do X` sees the summary
+`fixed in PR`, while the generator — deliberately not a YAML reader — keeps the whole line. The
+note would then say one thing in its index and another to everything that parses it, and that
+disagreement is what a derived index exists to end. The same split opens for a value beginning
+`[`, `{`, `&`, `*` or `!`, or one that is entirely a number or a date, since YAML resolves those
+to something that is not text. So the generator reports each case rather than picking a side,
+and `--check` fails until the description is quoted — CI catches the disagreement instead of
+letting it reach the repository.
+
+Hand-appending a shared index made every concurrent PR that recorded a memory for the same
+agent collide on one line, and duplicated each claim into a second place that drifted from the
+note (issue #129). `mise run install` rebuilds the indexes, and `orca.yaml`'s worktree setup
+builds a fresh one — a derived file is not copied between worktrees, because the source
+checkout's copy describes whatever branch that checkout is on. A checkout that has done neither
+still has every note: it is missing the table of contents, not the memory, until the next rebuild.
 
 ## Code Style
 

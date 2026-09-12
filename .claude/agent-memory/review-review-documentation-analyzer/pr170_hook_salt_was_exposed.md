@@ -1,6 +1,6 @@
 ---
 name: pr170-hook-salt-was-exposed
-description: PR #170 (issue #143) hook-salt-was-exposed docs — a single "reaches the dashboard on any host" guarantee took four rounds of valid findings, one unstated premise each (trigger semantics, which branch fires, path resolution, a concurrency race); narrow the claim rather than add qualifiers
+description: 'PR #170 (issue #143) hook-salt-was-exposed docs — a single "reaches the dashboard on any host" guarantee took four rounds of valid findings, one unstated premise each (trigger semantics, which branch fires, path resolution, a concurrency race); narrow the claim rather than add qualifiers'
 metadata:
   type: project
 ---

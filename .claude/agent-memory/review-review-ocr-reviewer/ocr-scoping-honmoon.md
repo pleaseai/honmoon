@@ -1,6 +1,6 @@
 ---
 name: ocr-scoping-honmoon
-description: ocr Delegation Mode scoping, flags and rule resolution observed for the honmoon repo
+description: ocr Delegation Mode scoping, flags and rule resolution on honmoon — no default flags configured, rules match by extension, lockfiles and docs excluded, and --from/--to is needed on stacked PRs even with a clean tree
 metadata:
   type: project
 ---

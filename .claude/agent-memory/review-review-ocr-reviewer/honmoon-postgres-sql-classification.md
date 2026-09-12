@@ -1,6 +1,6 @@
 ---
 name: honmoon-postgres-sql-classification
-description: How to verify honmoon-core's sqlparser-based SQL verb classification claims against real PostgreSQL, and where it already covers itself
+description: How to verify honmoon-core's sqlparser-based SQL verb classification claims against real PostgreSQL (local psql/initdb available) — hypothesize accepted-but-unwalked AST shapes and check them before reporting — and where it already covers itself
 metadata:
   type: project
 ---

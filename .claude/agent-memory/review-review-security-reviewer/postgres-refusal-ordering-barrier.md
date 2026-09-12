@@ -1,6 +1,6 @@
 ---
 name: postgres-refusal-ordering-barrier
-description: The honmoon postgres runtime's refusal ordering invariant (sync_points <= forwarded), what the barrier does and does not cover, its live gaps (the per-stall bound, the swallowed COPY-Sync of #128, and the two flush edge cases ADR-0007 records), and the settled rules not to undo.
+description: 'The honmoon postgres runtime''s refusal ordering invariant (sync_points <= forwarded), what the barrier does and does not cover, its live gaps (the per-stall bound, the swallowed COPY-Sync of #128, and the two flush edge cases ADR-0007 records), and the settled rules not to undo.'
 metadata:
   type: project
 ---

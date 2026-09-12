@@ -1,6 +1,6 @@
 ---
 name: postgres-sync-point-protocol-claims
-description: PR #112 (issue-101 pipelined-refusal-order) sync-point comments in crates/honmoon-proxy/src/runtime/postgres.rs
+description: 'PR #112 (issue-101 pipelined-refusal-order) sync-point comments in crates/honmoon-proxy/src/runtime/postgres.rs — barrier mechanics verified accurate; one real prose imprecision ("answered" vs sync-point), and the COPY-Sync claim flagged there turned out to be correct per the v3 spec'
 metadata:
   type: project
 ---

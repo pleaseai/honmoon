@@ -1,6 +1,6 @@
 ---
 name: project-trailer-contract-adr-133
-description: PR #150 (ADR-0009, docs-only) reviewed clean against source; four-branch inspect_body trailer claims verified true, pre/post-#130 table verified against commit 023cf54
+description: 'PR #150 (ADR-0009, docs-only) reviewed clean against source; four-branch inspect_body trailer claims verified true, pre/post-#130 table verified against commit 023cf54'
 metadata:
   type: project
 ---

@@ -1,6 +1,6 @@
 ---
 name: project-signed-body-narrowing
-description: signed_body.rs aws_sigv4_signs_body narrowing (issue #81 / PR #120) reviewed clean — no silent-failure defects found
+description: 'signed_body.rs aws_sigv4_signs_body narrowing (issue #81 / PR #120) reviewed clean — no silent-failure defects found; keeps the branch matrix to recheck if it is touched again'
 metadata:
   type: project
 ---

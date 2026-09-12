@@ -1,6 +1,6 @@
 ---
 name: project-hook-salt-was-exposed-143
-description: PR #170 (issue #143, hook-salt-was-exposed rule) — my pass called the logic clean and it was not; two other reviewers found a discarded exposure I had walked past
+description: 'PR #170 (issue #143, hook-salt-was-exposed rule) — my pass called the logic clean and it was not; two other reviewers found a discarded exposure I had walked past'
 metadata:
   type: project
 ---

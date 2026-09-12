@@ -1,6 +1,6 @@
 ---
 name: audit-sink-fifo-enxio-shortcircuits-fstat
-description: open_sink refuses a FIFO two ways and only one is reachable per test — a reader-less FIFO never reaches the fstat check; both cases are covered since #163, do not re-flag
+description: 'open_sink refuses a FIFO two ways and only one is reachable per test — a reader-less FIFO never reaches the fstat check; both cases are covered since #163, do not re-flag'
 metadata:
   type: project
 ---

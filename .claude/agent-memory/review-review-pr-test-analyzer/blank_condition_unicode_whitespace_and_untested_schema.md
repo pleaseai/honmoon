@@ -1,6 +1,6 @@
 ---
 name: blank-condition-unicode-whitespace-and-untested-schema
-description: honmoon-core's trim()-based blank-condition check covers Unicode whitespace but NOT zero-width characters, which still panic; and policy.schema.json has no consumer or test in-repo (filed as #157)
+description: 'honmoon-core''s trim()-based blank-condition check catches Unicode whitespace (U+00A0/U+3000) and has tested it since PR #155, but deliberately not zero-width characters (U+200B/U+FEFF), which still panic — any unlexable char panics alike (#154), so do not ask for them to be folded in; policy.schema.json still has no consumer or test in-repo (filed as #157)'
 metadata:
   type: project
 ---

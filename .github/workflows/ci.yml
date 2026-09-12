@@ -138,6 +138,12 @@ jobs:
       - name: Typecheck
         run: bun run typecheck
 
+      # The per-agent memory indexes are generated and git-ignored (issue #129).
+      # This fails if a note cannot supply its own index line, or if an index has
+      # been committed again — which would silently restore the append collisions.
+      - name: Agent-memory index
+        run: bun scripts/agent-memory-index.ts --check
+
       - name: Test
         run: bun test
 

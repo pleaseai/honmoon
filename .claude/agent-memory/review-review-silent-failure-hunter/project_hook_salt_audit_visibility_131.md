@@ -1,6 +1,6 @@
 ---
 name: hook-salt-audit-visibility-131
-description: PR reviewed for issue #131 (hook falls back to public HMAC key) — the new audit-log reporting path's remaining gaps.
+description: 'PR for issue #131 (hook falls back to public HMAC key) — the Degraded audit path is sound at open-failure and the post-open sink-write silence was fixed before merge by record_durable, but the correlated-failure gap stands; `tracing::warn!` is not a reporting channel in a short-lived subprocess'
 metadata:
   type: project
 ---

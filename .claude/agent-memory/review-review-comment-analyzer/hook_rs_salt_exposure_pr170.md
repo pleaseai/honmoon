@@ -1,6 +1,6 @@
 ---
 name: hook-rs-salt-exposure-pr170
-description: honmoon-cli hook.rs SaltExposure/SaltProvenance doc claims in PR #170 (issue #143) — three quantifier defects, all fixed before merge; the check that caught them is cheap to repeat
+description: 'honmoon-cli hook.rs SaltExposure/SaltProvenance doc claims in PR #170 (issue #143) — three quantifier defects, all fixed before merge; the check that caught them is cheap to repeat'
 metadata:
   type: project
 ---

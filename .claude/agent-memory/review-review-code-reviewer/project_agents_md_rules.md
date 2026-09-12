@@ -1,6 +1,6 @@
 ---
 name: project-agents-md-rules
-description: Key crates/AGENTS.md rules to check on every Rust data-plane diff (honmoon-proxy, honmoon-core, honmoon-mgmt, honmoon-cli)
+description: Key crates/AGENTS.md rules to check on every Rust data-plane diff (honmoon-proxy, honmoon-core, honmoon-mgmt, honmoon-cli) — the Always/Ask-first/Never boundary table, and that a new workspace dependency needs "ask first"
 metadata:
   type: project
 ---

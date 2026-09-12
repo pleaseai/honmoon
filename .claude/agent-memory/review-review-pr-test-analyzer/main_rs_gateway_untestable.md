@@ -1,6 +1,6 @@
 ---
 name: main-rs-gateway-untestable
-description: crates/honmoon-cli/src/main.rs::gateway() binds real sockets and blocks forever, so it has no unit test — wiring calls made directly inside it (e.g. record_machine_key_source with RedactionTransport::Gateway) are never exercised even when the helper functions they call are well-tested elsewhere.
+description: 'crates/honmoon-cli/src/main.rs::gateway() binds real sockets and blocks forever, so it has no unit test — wiring calls made directly inside it (rather than extracted like hook_salt_for) are never exercised even when the helpers they call are well-tested elsewhere; filed as #139'
 metadata:
   type: project
 ---

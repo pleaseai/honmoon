@@ -1,6 +1,6 @@
 ---
 name: signed-body-sigv4-narrowing
-description: why the removed bare_payload_hash_request_keeps_client_accept_encoding test in redaction.rs is not a coverage loss (issue #81 / PR #120)
+description: 'Why the removed bare_payload_hash_request_keeps_client_accept_encoding test in redaction.rs is not a coverage loss (issue #81 / PR #120) — the narrowing makes Some(AwsSigV4) always imply authentication_signs_headers = true, so the test covered a now-unreachable state'
 metadata:
   type: project
 ---

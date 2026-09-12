@@ -1,6 +1,6 @@
 ---
 name: audit-sink-open-hardening
-description: What AuditLog::open_sink (honmoon-core/src/audit.rs, #138) does and does not defend against — verified O_NOFOLLOW/O_NONBLOCK/fstat semantics and the hard-link + hostile-pre-creation gap the doc comment omits
+description: 'What AuditLog::open_sink (honmoon-core/src/audit.rs, #138) does and does not defend against — O_NOFOLLOW/O_NONBLOCK/fstat semantics, each verified once, so do not re-derive them — and the hard-link + hostile-pre-creation gap the doc comment omits'
 metadata:
   type: project
 ---

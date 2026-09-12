@@ -1,6 +1,6 @@
 ---
 name: signed-body-detection-invariants
-description: Invariants for crates/honmoon-proxy/src/signed_body.rs — over-inclusion is a redaction leak under --signed-body forward; current SigV4 rule after #81 narrowing
+description: 'Invariants for crates/honmoon-proxy/src/signed_body.rs — over-inclusion is a redaction leak under --signed-body forward, so each detector needs real scheme evidence (the X-Amz-Algorithm gate); current SigV4 rule after the #81 narrowing'
 metadata:
   type: project
 ---

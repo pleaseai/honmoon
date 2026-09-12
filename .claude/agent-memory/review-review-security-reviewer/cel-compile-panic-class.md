@@ -1,6 +1,6 @@
 ---
 name: cel-compile-panic-class
-description: cel-interpreter 0.10 Program::compile panics (antlr4rust unreachable!) on any lone character it cannot begin a token with — the measured set, why trim().is_empty() deliberately does not cover all of it, and why catch_unwind is not the fix
+description: cel-interpreter 0.10 Program::compile panics (antlr4rust unreachable!) on any lone character it cannot begin a token with (`@`, `§`, emoji, zero-width), not just on no-token input — the measured set, why trim().is_empty() deliberately covers only the whitespace slice (#154), and why catch_unwind is never the fix to recommend
 metadata:
   type: project
 ---

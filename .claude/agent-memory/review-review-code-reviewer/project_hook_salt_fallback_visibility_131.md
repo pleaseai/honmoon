@@ -1,6 +1,6 @@
 ---
 name: project-hook-salt-fallback-visibility-131
-description: PR #137 (issue #131) — reviewed clean; the Overview.tsx decision-mix gap found mid-review was closed before merge
+description: 'PR #137 (issue #131) — reviewed clean; the Overview.tsx decision-mix gap found mid-review was closed before merge'
 metadata:
   type: project
 ---

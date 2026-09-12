@@ -23,3 +23,10 @@ CLAUDE.local.md
 
 # please plugin runtime state
 .please/state/
+
+# Per-agent memory indexes, generated from the notes beside them by
+# `bun scripts/agent-memory-index.ts`. The notes themselves stay tracked — only
+# this table of contents is derived, because tracking it made every concurrent
+# PR that recorded a memory for the same agent collide on one appended line and
+# risk dropping a third party's entry on resolve (issue #129).
+.claude/agent-memory/*/MEMORY.md

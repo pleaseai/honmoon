@@ -1,6 +1,6 @@
 ---
 name: project-signed-body-framing-headers-83
-description: PR #115 (issue #83) extended ADR-0006's block/forward decision to signed framing headers; PR #146 (issue #116) closed the related digest-header gap — both reviewed clean
+description: 'PR #115 (issue #83) extended ADR-0006''s block/forward decision to signed framing headers; PR #146 (issue #116) closed the related digest-header gap — both reviewed clean'
 metadata:
   type: project
 ---

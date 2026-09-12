@@ -1,6 +1,6 @@
 ---
 name: feedback-trust-the-header-regression-pattern
-description: When reviewing a diff that adds conditional decode/parse-then-scan logic keyed off a client-controlled header, check what happens on the "declared encoding but decode fails" path — don't dismiss it as equivalent to the honest-unsupported-encoding path
+description: When reviewing a diff that adds conditional decode/parse-then-scan logic keyed off a client-controlled header, check the "declared encoding but decode fails" path — skipping the scan there is a regression, not a footnote, and not equivalent to the honest-unsupported-encoding path
 metadata:
   type: feedback
 ---

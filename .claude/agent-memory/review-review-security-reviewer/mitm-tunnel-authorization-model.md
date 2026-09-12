@@ -1,6 +1,6 @@
 ---
 name: mitm-tunnel-authorization-model
-description: How honmoon-proxy mitm.rs decides a request is an already-authorized tunnel inner request (shape 3), and which hudsucker internals that decision rests on
+description: How honmoon-proxy mitm.rs decides a request is an already-authorized tunnel inner request (shape 3) — recognition rides the hudsucker handler clone lineage, and host+port are both load-bearing for h2
 metadata:
   type: project
 ---
