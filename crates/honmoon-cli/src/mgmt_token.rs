@@ -130,7 +130,8 @@ fn load_or_create(dir: &Path) -> Result<Resolved> {
     }
 
     let token = hex_encode(&random_bytes(TOKEN_BYTES)?);
-    std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
+    create_private_dir(dir).with_context(|| format!("creating {}", dir.display()))?;
+    warn_if_writable_beyond_owner(dir);
 
     if existing.is_some() {
         // Replacing a known-empty file: `create_new` would only report that it
@@ -169,6 +170,73 @@ fn load_or_create(dir: &Path) -> Result<Resolved> {
         }
         Err(e) => Err(e).with_context(|| format!("writing {}", path.display())),
     }
+}
+
+/// Create the token directory owner-only.
+///
+/// `create_dir_all` asks for `0777` and lets the umask subtract from it, so the
+/// directory it produces depends on a setting that has nothing to do with this
+/// credential: `0755` under the usual `022`, but `0775` under the `002` some
+/// distributions ship and `0777` under a `0` umask. The last two are the ones
+/// that matter, because directory *write* permission is what decides who may
+/// replace a file inside it. Another local user who can write here can unlink
+/// `mgmt-token` and drop in a `0600` file of their own choosing — and
+/// [`warn_if_readable_beyond_owner`] would find that substitute perfectly
+/// well-moded and say nothing, after which the gateway authenticates every
+/// management route against a token the attacker picked.
+///
+/// Asking for `0700` closes it, because a umask can only clear bits, never set
+/// them: whatever it subtracts, the result stays owner-only. `packages/api`'s
+/// `resolveToken` already passed `mode: 0o700` to `mkdirSync`; this side was
+/// the one relying on the umask, and the two now agree.
+fn create_private_dir(dir: &Path) -> std::io::Result<()> {
+    let mut builder = std::fs::DirBuilder::new();
+    builder.recursive(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt as _;
+        builder.mode(0o700);
+    }
+    builder.create(dir)
+}
+
+/// Report — but do not correct — a token directory the mode leaves writable
+/// beyond its owner.
+///
+/// [`create_private_dir`] only governs a directory this process creates. One
+/// that already existed keeps whatever mode it has, and the same reasoning as
+/// [`warn_if_readable_beyond_owner`] applies to correcting it: the operator may
+/// have widened `~/.honmoon` deliberately, and silently narrowing a directory
+/// they share with their own tooling is a surprise this loader has no standing
+/// to spring. Unlike the file case the remedy is not to replace the token —
+/// a fresh one lands in the same writable directory — so the warning names the
+/// directory mode as the thing to fix.
+fn warn_if_writable_beyond_owner(dir: &Path) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        let metadata = match std::fs::metadata(dir) {
+            Ok(metadata) => metadata,
+            Err(e) => {
+                eprintln!(
+                    "honmoon: warning: could not read the mode of the management token directory {}: {e}",
+                    dir.display()
+                );
+                return;
+            }
+        };
+        let mode = metadata.permissions().mode() & 0o777;
+        if mode & 0o022 != 0 {
+            eprintln!(
+                "honmoon: warning: management token directory {} is mode {mode:04o} — writable beyond its owner. \
+                 Any local user it admits can substitute the token file and authenticate to the whole management API; \
+                 chmod 700 it.",
+                dir.display()
+            );
+        }
+    }
+    #[cfg(not(unix))]
+    let _ = dir;
 }
 
 /// Report — but do not correct — a token file the mode leaves readable beyond
@@ -378,6 +446,26 @@ mod tests {
     /// credential and stay readable by every other local user on the host,
     /// which is the whole population the token exists to exclude.
     #[cfg(unix)]
+    #[test]
+    fn a_created_token_directory_is_owner_only() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        // Not the `TempDir` itself — that one already exists, and the point is
+        // the mode `resolve` gives a directory it creates for the first time.
+        let tmp = TempDir::new("dir-mode");
+        let dir = tmp.path().join("nested").join(".honmoon");
+
+        let resolved = resolve(None, &dir).unwrap();
+        assert!(matches!(resolved.source, Source::Generated(_)));
+
+        let mode = std::fs::metadata(&dir).unwrap().permissions().mode() & 0o777;
+        assert_eq!(
+            mode & 0o077,
+            0,
+            "a created token directory must be owner-only, was {mode:04o}"
+        );
+    }
+
     #[test]
     fn replacing_an_empty_token_file_tightens_its_mode() {
         use std::os::unix::fs::PermissionsExt as _;
