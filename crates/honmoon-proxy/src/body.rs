@@ -353,6 +353,34 @@ fn connection_nominated(headers: &HeaderMap) -> Vec<HeaderName> {
         .collect()
 }
 
+/// The field names a trailer section would still carry after
+/// [`trailer_filtered_body`] has run over it.
+///
+/// The read-only counterpart of [`strip_forbidden_trailers`], for the one thing
+/// the streaming filter cannot answer in time: hyper's h1 encoder emits only the
+/// trailer fields a request's `Trailer` **header** names
+/// (`hyper-1.10.1/src/proto/h1/role.rs:1401-1418`), and that header has to be
+/// written while the header section is still in hand — long before the filter
+/// sees the frame. `mitm` declares exactly these names, so nothing is declared
+/// that the filter will then drop (#136).
+///
+/// Both directions read [`FORBIDDEN_TRAILER_FIELDS`] and [`connection_nominated`],
+/// so the rule has one definition; `retained_names_match_the_streaming_filter`
+/// pins the two against each other.
+///
+/// Only the two branches of `inspect_body` that buffer a body ever hold a
+/// trailer `HeaderMap` to ask about. On the two over-cap ones the frame is still
+/// unread when the header section is written, so no declaration can be
+/// synthesized for it — see the module note on [`buffer_up_to`].
+pub(crate) fn retained_trailer_names(trailers: &HeaderMap, headers: &HeaderMap) -> Vec<HeaderName> {
+    let nominated = connection_nominated(headers);
+    trailers
+        .keys()
+        .filter(|name| !FORBIDDEN_TRAILER_FIELDS.contains(name) && !nominated.contains(name))
+        .cloned()
+        .collect()
+}
+
 /// Remove every [`FORBIDDEN_TRAILER_FIELDS`] entry, and every `nominated` name,
 /// from `trailers`, returning the names dropped.
 ///
@@ -1166,5 +1194,52 @@ mod tests {
             "the digest a signature may cover is not on the forbidden list"
         );
         assert!(collected.to_bytes().is_empty());
+    }
+
+    /// `retained_trailer_names` answers ahead of time what the streaming filter
+    /// will do, so a `Trailer` header can be written while the header section is
+    /// still in hand. The two read one rule, and this pins that they agree:
+    /// anything the filter keeps must be named, and anything it drops must not.
+    #[tokio::test]
+    async fn retained_names_match_the_streaming_filter() {
+        let mut sent = HeaderMap::new();
+        for (name, value) in [
+            ("transfer-encoding", "chunked"),
+            ("content-length", "0"),
+            ("authorization", "Bearer smuggled"),
+            ("x-hop", "nominated"),
+            ("content-digest", "sha-256=:ZGlnZXN0:"),
+            ("x-note", "kept"),
+        ] {
+            sent.insert(
+                name,
+                hudsucker::hyper::header::HeaderValue::from_static(value),
+            );
+        }
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            CONNECTION,
+            hudsucker::hyper::header::HeaderValue::from_static("x-hop"),
+        );
+
+        let predicted = retained_trailer_names(&sent, &headers);
+        let filtered = trailer_filtered_body(
+            buffered_body(Bytes::new(), Some(sent)),
+            &headers,
+            "localhost",
+        )
+        .collect()
+        .await
+        .expect("collect filtered body")
+        .trailers()
+        .cloned()
+        .expect("a surviving trailer keeps the frame");
+
+        let mut predicted: Vec<&str> = predicted.iter().map(HeaderName::as_str).collect();
+        let mut actual: Vec<&str> = filtered.keys().map(HeaderName::as_str).collect();
+        predicted.sort_unstable();
+        actual.sort_unstable();
+        assert_eq!(predicted, actual);
+        assert_eq!(actual, ["content-digest", "x-note"]);
     }
 }

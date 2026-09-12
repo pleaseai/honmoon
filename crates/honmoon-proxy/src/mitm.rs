@@ -50,14 +50,14 @@ use hudsucker::{Body, HttpContext, HttpHandler, RequestOrResponse};
 use crate::approval::{HoldOutcome, hold};
 use crate::body::{
     Buffered, MAX_INSPECT_BODY, StrictDecode, buffer_up_to, buffered_body, decode_strict,
-    detokenizing_body, prefixed_body, trailer_filtered_body, utf8_prefix,
+    detokenizing_body, prefixed_body, retained_trailer_names, trailer_filtered_body, utf8_prefix,
 };
 use crate::gateway::{
     GatewayState, InterceptPolicy, PiiMode, SignedBodyMode, authority_port, canonical_host,
 };
 use crate::signed_body::{
-    BODY_DIGEST_HEADERS, REWRITTEN_FRAMING_HEADERS, SignedBodyScheme, authentication_signs_headers,
-    body_signature_scheme, signed_headers_among,
+    BODY_DIGEST_HEADERS, REWRITTEN_FRAMING_HEADERS, SignedBodyScheme, TRAILER_FRAMING_HEADERS,
+    authentication_signs_headers, body_signature_scheme, signed_headers_among,
 };
 
 /// Names why honmoon itself produced a response, so a client (or an agent
@@ -130,6 +130,22 @@ struct RedactionInput<'a> {
     /// Facts the caller already decided on, reused for the audit record when a
     /// body-signed request is blocked here.
     summary: &'a FactsSummary,
+    /// The trailer field names the forwarded body will actually carry — what
+    /// [`crate::body::retained_trailer_names`] answered on a buffered branch,
+    /// and empty on the two over-cap ones, where honmoon never holds the frame.
+    retained_trailers: &'a [header::HeaderName],
+}
+
+/// What wire redaction did to a policy-approved request, which decides whether
+/// its trailer section is still there to be re-framed for the upstream leg.
+enum Forwarded {
+    /// The body is the one the client sent, trailer frame included.
+    PassThrough(Request<Body>),
+    /// The redaction rewrite replaced the body with `Full`, which carries no
+    /// trailer frame (deliberately — see [`HonmoonHandler::redacted_request`]).
+    Rewritten(Request<Body>),
+    /// Answered locally instead of forwarded.
+    Blocked(RequestOrResponse),
 }
 
 /// Outcome of the host-level policy gate.
@@ -351,11 +367,32 @@ impl HonmoonHandler {
     /// Usually a request, but wire redaction can end the request here: a
     /// body-signed request whose payload would be rewritten is answered with a
     /// local `403` under [`SignedBodyMode::Block`].
+    ///
+    /// The trailer re-framing [`framed_for_trailers`] applies runs only on
+    /// the pass-through outcome, which is why [`redacted_request`] reports which
+    /// one it reached rather than returning a bare request: once the rewrite has
+    /// replaced the body with `Full`, there is no trailer frame left to carry,
+    /// and declaring one would leave the upstream a `Trailer` header naming
+    /// fields that never arrive.
+    ///
+    /// [`redacted_request`]: Self::redacted_request
     fn forwarded_request(
         &self,
-        mut request: Request<Body>,
+        request: Request<Body>,
         input: RedactionInput<'_>,
     ) -> RequestOrResponse {
+        let host = input.host.to_owned();
+        let retained = input.retained_trailers;
+        match self.redacted_request(request, input) {
+            Forwarded::PassThrough(request) => framed_for_trailers(request, retained, &host).into(),
+            Forwarded::Rewritten(request) => request.into(),
+            Forwarded::Blocked(response) => response,
+        }
+    }
+
+    /// Apply wire redaction to a policy-approved request, reporting whether the
+    /// body it carries is still the one the client sent.
+    fn redacted_request(&self, mut request: Request<Body>, input: RedactionInput<'_>) -> Forwarded {
         let RedactionInput {
             scanned,
             decoded,
@@ -365,9 +402,10 @@ impl HonmoonHandler {
             is_json,
             host,
             summary,
+            retained_trailers: _,
         } = input;
         let Some(redaction) = &self.state.redaction else {
-            return request.into();
+            return Forwarded::PassThrough(request);
         };
 
         // Ask upstreams for text we can safely detokenize on the response path.
@@ -405,7 +443,7 @@ impl HonmoonHandler {
                 domain = %host,
                 "wire redaction bypassed for Content-Range (partial upload) request"
             );
-            return request.into();
+            return Forwarded::PassThrough(request);
         }
 
         let Some(_raw) = scanned else {
@@ -414,14 +452,14 @@ impl HonmoonHandler {
                 limit = MAX_INSPECT_BODY,
                 "wire redaction bypassed for over-cap request body"
             );
-            return request.into();
+            return Forwarded::PassThrough(request);
         };
         if content_encoding_present && content_encoding.is_none() {
             tracing::warn!(
                 domain = %host,
                 "wire redaction bypassed because Content-Encoding was not valid text"
             );
-            return request.into();
+            return Forwarded::PassThrough(request);
         }
         let Some(decoded) = decoded else {
             tracing::warn!(
@@ -429,7 +467,7 @@ impl HonmoonHandler {
                 encoding = ?content_encoding,
                 "wire redaction bypassed because request encoding was not fully decodable"
             );
-            return request.into();
+            return Forwarded::PassThrough(request);
         };
         // Rewriting a UTF-8 prefix would discard the remaining request bytes.
         // Only a fully decoded, fully valid text body is eligible for rewriting.
@@ -438,7 +476,7 @@ impl HonmoonHandler {
                 domain = %host,
                 "wire redaction bypassed because request body is not valid UTF-8"
             );
-            return request.into();
+            return Forwarded::PassThrough(request);
         };
         let outcome = if is_json {
             let (eligible_spans, skipped_json_spans) = quoted_json_spans(text, pii_spans);
@@ -459,7 +497,7 @@ impl HonmoonHandler {
             redact_with_spans(text, &redaction.salt, DEFAULT_MIN_PII_SEVERITY, pii_spans)
         };
         if !outcome.redacted {
-            return request.into();
+            return Forwarded::PassThrough(request);
         }
 
         // Honmoon holds none of the client's signing credentials, so it cannot
@@ -475,7 +513,7 @@ impl HonmoonHandler {
                         scheme = scheme.label(),
                         "wire redaction bypassed for body-signed request (fail open)"
                     );
-                    request.into()
+                    Forwarded::PassThrough(request)
                 }
                 SignedBodyMode::Block => {
                     tracing::warn!(
@@ -490,7 +528,7 @@ impl HonmoonHandler {
                         facts: summary.clone(),
                         approval_id: None,
                     });
-                    signed_body_response(scheme)
+                    Forwarded::Blocked(signed_body_response(scheme))
                 }
             };
         }
@@ -523,7 +561,7 @@ impl HonmoonHandler {
                         headers = %signed,
                         "wire redaction bypassed for header-signed request (fail open)"
                     );
-                    request.into()
+                    Forwarded::PassThrough(request)
                 }
                 SignedBodyMode::Block => {
                     tracing::warn!(
@@ -539,7 +577,7 @@ impl HonmoonHandler {
                         facts: summary.clone(),
                         approval_id: None,
                     });
-                    signed_headers_response(&signed)
+                    Forwarded::Blocked(signed_headers_response(&signed))
                 }
             };
         }
@@ -570,7 +608,7 @@ impl HonmoonHandler {
         for name in BODY_DIGEST_HEADERS {
             request.headers_mut().remove(name);
         }
-        request.into()
+        Forwarded::Rewritten(request)
     }
 
     /// Scan a request body for PII. Detect mode audits findings and forwards;
@@ -647,27 +685,47 @@ impl HonmoonHandler {
         // the upstream leg intact, because a body signature can cover a
         // `Content-Digest` sent there and `--signed-body forward` promises to
         // reproduce the request as signed.
-        let (new_body, scanned, body_size) = match content_length {
+        // `retained` is the trailer field names the forwarded body will still
+        // carry, which `framed_for_trailers` has to declare in a `Trailer`
+        // header while `parts` is still in hand. Only the two buffered branches
+        // can answer: on the over-cap ones the frame is unread and stays that
+        // way, so their trailers keep reaching an h1 upstream leg only when the
+        // client framed the request to carry them (#136).
+        let (new_body, scanned, body_size, retained) = match content_length {
             Some(len) if len <= MAX_INSPECT_BODY => match body.collect().await {
                 Ok(collected) => {
                     let trailers = collected.trailers().cloned();
+                    let retained = retained_names(trailers.as_ref(), &parts.headers);
                     let bytes = collected.to_bytes();
                     let size = bytes.len() as i64;
-                    (buffered_body(bytes.clone(), trailers), Some(bytes), size)
+                    (
+                        buffered_body(bytes.clone(), trailers),
+                        Some(bytes),
+                        size,
+                        retained,
+                    )
                 }
                 // Failing to read the *client's* body is a client-side error.
                 Err(_) => return status_response(StatusCode::BAD_REQUEST),
             },
-            Some(len) => (body, None, len as i64),
+            Some(len) => (body, None, len as i64, Vec::new()),
             None => match buffer_up_to(body, MAX_INSPECT_BODY).await {
                 Ok(Buffered::Complete { bytes, trailers }) => {
+                    let retained = retained_names(trailers.as_ref(), &parts.headers);
                     let size = bytes.len() as i64;
-                    (buffered_body(bytes.clone(), trailers), Some(bytes), size)
+                    (
+                        buffered_body(bytes.clone(), trailers),
+                        Some(bytes),
+                        size,
+                        retained,
+                    )
                 }
                 // Over the cap — forward the buffered prefix plus the rest of
                 // the stream untouched, unscanned (same as an over-cap
                 // `Content-Length` body).
-                Ok(Buffered::Overflow { prefix, rest }) => (prefixed_body(prefix, rest), None, -1),
+                Ok(Buffered::Overflow { prefix, rest }) => {
+                    (prefixed_body(prefix, rest), None, -1, Vec::new())
+                }
                 Err(_) => return status_response(StatusCode::BAD_REQUEST),
             },
         };
@@ -787,6 +845,7 @@ impl HonmoonHandler {
                     is_json,
                     host: &host,
                     summary: &summary,
+                    retained_trailers: &retained,
                 },
             );
         };
@@ -818,6 +877,7 @@ impl HonmoonHandler {
                         is_json,
                         host: &host,
                         summary: &summary,
+                        retained_trailers: &retained,
                     },
                 )
             }
@@ -855,6 +915,7 @@ impl HonmoonHandler {
                             is_json,
                             host: &host,
                             summary: &summary,
+                            retained_trailers: &retained,
                         },
                     ),
                     Gate::Block(response) => *response,
@@ -1239,6 +1300,179 @@ fn reframed_headers(headers: &header::HeaderMap, new_length: usize) -> Vec<heade
             }
         })
         .collect()
+}
+
+/// Re-frame a pass-through request so the trailer section it carries
+/// survives an HTTP/1.1 upstream leg (#136).
+///
+/// **Why honmoon has to write framing headers it was not asked for.**
+/// hyper's h1 encoder writes a request's trailer section only when both
+/// conditions hold: the encoder is `Kind::Chunked(Some(fields))`, and each
+/// field is named in the request's `Trailer` header. A fixed-length request
+/// takes the `_` arm of `Encoder::encode_trailers`
+/// (`hyper-1.10.1/src/proto/h1/encode.rs:212-215`) and a chunked one with no
+/// `Trailer` header takes `Kind::Chunked(None)` (`:208-211`); both log at
+/// `debug` and drop the frame. HTTP/2 imposes neither requirement, so an h2
+/// client legitimately sends trailers alongside a `content-length` and
+/// without a `Trailer` header, and honmoon's own buffering re-declares a
+/// length even when the client sent none (`BufferedBody`'s `size_hint` is
+/// exact, which is what `set_length` turns into a `Content-Length`). Every
+/// one of those reaches an h1 upstream a trailer short, silently.
+///
+/// **Why it is safe to write them without knowing the upstream protocol.**
+/// honmoon cannot know: ALPN is negotiated inside `hyper_util`'s connection
+/// pool, after `handle_request` has returned. It does not have to. The two
+/// headers are reconciled per-protocol by hyper itself — an h1 leg drops
+/// `Content-Length` once `Transfer-Encoding` is present
+/// (`role.rs:1424-1427`), and an h2 leg drops `Transfer-Encoding` as a
+/// connection-specific field (`strip_connection_headers`,
+/// `proto/h2/mod.rs:43`) and keeps the `Content-Length`, which is the h2
+/// behavior that already worked. So the request carries both names out of
+/// here and exactly one of them onto the wire.
+///
+/// **Why it can be declined.** `Content-Length`, `Transfer-Encoding` and
+/// `Trailer` are [`TRAILER_FRAMING_HEADERS`], and a signature routinely
+/// covers the first two — an AWS SDK upload signs `content-length`, and an
+/// RFC 9421 or draft-cavage component list covers whatever it names. Re-framing
+/// such a request to rescue its trailer would trade one signature failure for
+/// another, on the path whose contract is to forward the bytes the client
+/// signed (ADR-0006). So the re-frame happens only when it breaks nothing;
+/// otherwise the request goes on untouched and the loss is logged, which is
+/// the same fail-open shape as the other bypasses in this module.
+///
+/// Declining here is **not** routed through `--signed-body`: that flag
+/// decides what to do about a body honmoon *rewrote*, and honmoon rewrites
+/// nothing here — declining leaves the request byte-identical to what the
+/// client signed, which is already what `forward` promises. Whether honmoon
+/// should instead refuse a request whose signed trailer it cannot carry is a
+/// separate product question, tracked in its own issue rather than decided
+/// by a flag documented for a different one.
+fn framed_for_trailers(
+    mut request: Request<Body>,
+    retained: &[header::HeaderName],
+    host: &str,
+) -> Request<Body> {
+    if retained.is_empty() {
+        return request;
+    }
+    let chunked = transfer_encoding_is_chunked(request.headers());
+    let undeclared: Vec<&header::HeaderName> = retained
+        .iter()
+        .filter(|name| !declares_trailer(request.headers(), name))
+        .collect();
+
+    let mut reframed: Vec<header::HeaderName> = Vec::new();
+    if !chunked {
+        // Only ours to account for while *we* are the ones selecting the
+        // chunked encoder: on a request the client already framed as
+        // chunked, hyper drops any `Content-Length` regardless of what
+        // honmoon does with it.
+        if request.headers().contains_key(header::CONTENT_LENGTH) {
+            reframed.push(header::CONTENT_LENGTH);
+        }
+        reframed.push(header::TRANSFER_ENCODING);
+    }
+    if !undeclared.is_empty() {
+        reframed.push(header::TRAILER);
+    }
+    debug_assert!(
+        reframed
+            .iter()
+            .all(|name| TRAILER_FRAMING_HEADERS.contains(name)),
+        "the re-frame must only touch the headers it asks about"
+    );
+    if reframed.is_empty() {
+        // Already chunked, already declared: the client framed a request
+        // hyper will carry as it stands.
+        return request;
+    }
+
+    let broken = signed_headers_among(request.headers(), request.uri(), &reframed);
+    if !broken.is_empty() {
+        tracing::warn!(
+            domain = %host,
+            headers = %join_names(&broken),
+            trailers = %join_names(retained),
+            "trailer re-framing bypassed for a signed request: its trailer section will not \
+             reach an HTTP/1.1 upstream leg (fail open)"
+        );
+        return request;
+    }
+
+    if !chunked {
+        // Appended rather than inserted: a `Transfer-Encoding` the client
+        // already sent is a codec list this re-frame has no business
+        // rewriting, and `chunked` last is what both the RFC and hyper's
+        // `is_chunked` require.
+        request.headers_mut().append(
+            header::TRANSFER_ENCODING,
+            header::HeaderValue::from_static("chunked"),
+        );
+    }
+    if !undeclared.is_empty() {
+        let declared = join_names(undeclared.iter().copied());
+        request.headers_mut().append(
+            header::TRAILER,
+            header::HeaderValue::from_str(&declared)
+                .expect("header names are valid header-value bytes"),
+        );
+    }
+    tracing::debug!(
+        domain = %host,
+        trailers = %join_names(retained),
+        "re-framed request as chunked so its trailer section survives an HTTP/1.1 upstream leg"
+    );
+    request
+}
+
+/// The trailer field names a forwarded body will still carry, or none when the
+/// branch never held the frame.
+fn retained_names(
+    trailers: Option<&header::HeaderMap>,
+    headers: &header::HeaderMap,
+) -> Vec<header::HeaderName> {
+    trailers.map_or_else(Vec::new, |trailers| {
+        retained_trailer_names(trailers, headers)
+    })
+}
+
+/// Whether hyper's h1 encoder will read this request as chunked — the last
+/// `Transfer-Encoding` token is `chunked`.
+///
+/// Mirrors `headers::is_chunked` (`hyper-1.10.1/src/proto/h1/headers.rs`), which
+/// is what actually selects the encoder: the last value of the last field line,
+/// because the RFC requires `chunked` to come last.
+fn transfer_encoding_is_chunked(headers: &header::HeaderMap) -> bool {
+    headers
+        .get_all(header::TRANSFER_ENCODING)
+        .iter()
+        .next_back()
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.rsplit(',').next())
+        .is_some_and(|encoding| encoding.trim().eq_ignore_ascii_case("chunked"))
+}
+
+/// Whether the request's `Trailer` header already names `name`, parsed exactly
+/// as hyper parses it to build the encoder's allowlist
+/// (`hyper-1.10.1/src/proto/h1/role.rs:1406-1413`): every field value, split on
+/// commas, trimmed, each read as a `HeaderName`.
+fn declares_trailer(headers: &header::HeaderMap, name: &header::HeaderName) -> bool {
+    headers
+        .get_all(header::TRAILER)
+        .iter()
+        .filter_map(|value| value.to_str().ok())
+        .flat_map(|value| value.split(','))
+        .filter_map(|declared| header::HeaderName::from_bytes(declared.trim().as_bytes()).ok())
+        .any(|declared| declared == *name)
+}
+
+/// Header names as one comma-separated string, for a log field.
+fn join_names<'a>(names: impl IntoIterator<Item = &'a header::HeaderName>) -> String {
+    names
+        .into_iter()
+        .map(header::HeaderName::as_str)
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 /// Whether the `Content-Length` the rewrite inserts is byte-identical to the
@@ -1707,6 +1941,24 @@ mod tests {
         sent: hudsucker::hyper::HeaderMap,
         headers: &[(&str, &str)],
     ) -> Option<hudsucker::hyper::HeaderMap> {
+        forwarded_request_with(payload, content_length, Some(sent), headers)
+            .await
+            .into_body()
+            .collect()
+            .await
+            .expect("collect forwarded body")
+            .trailers()
+            .cloned()
+    }
+
+    /// Drive `inspect_body` and hand back the forwarded request itself, so a
+    /// test can read the framing headers honmoon wrote as well as the body.
+    async fn forwarded_request_with(
+        payload: hudsucker::hyper::body::Bytes,
+        content_length: Option<usize>,
+        sent: Option<hudsucker::hyper::HeaderMap>,
+        headers: &[(&str, &str)],
+    ) -> Request<Body> {
         let policy =
             honmoon_core::Policy::from_yaml("egress:\n  default: allow\n").expect("policy");
         let handler = HonmoonHandler::new(GatewayState::new(policy));
@@ -1721,7 +1973,7 @@ mod tests {
             builder = builder.header(*name, *value);
         }
         let req = builder
-            .body(buffered_body(payload, Some(sent)))
+            .body(buffered_body(payload, sent))
             .expect("build request");
 
         let RequestOrResponse::Request(forwarded) = handler.inspect_body(req, HTTPS_PORT).await
@@ -1729,12 +1981,26 @@ mod tests {
             panic!("detect-only inspection must forward the request");
         };
         forwarded
-            .into_body()
+    }
+
+    /// A single `content-digest` trailer — the RFC 9421 shape a body signature
+    /// covers, and the one #136 is about losing.
+    fn digest_trailer() -> hudsucker::hyper::HeaderMap {
+        let mut sent = hudsucker::hyper::HeaderMap::new();
+        sent.insert(
+            "content-digest",
+            header::HeaderValue::from_static("sha-256=:ZGlnZXN0:"),
+        );
+        sent
+    }
+
+    fn header_values(request: &Request<Body>, name: header::HeaderName) -> Vec<String> {
+        request
+            .headers()
+            .get_all(name)
+            .iter()
+            .map(|value| value.to_str().expect("ascii header value").to_owned())
             .collect()
-            .await
-            .expect("collect forwarded body")
-            .trailers()
-            .cloned()
     }
 
     /// The names the issue calls out, one of each RFC 9110 §6.5.1 category, plus
@@ -1855,5 +2121,327 @@ mod tests {
             Some(&b"kept"[..]),
             "a field the `Connection` header does not name is unaffected"
         );
+    }
+
+    /// #136: an h2 client may send trailers alongside a `Content-Length`, and
+    /// HTTP/1.1 has nowhere to put them — hyper's `Encoder::length` drops the
+    /// frame with a `debug!` and nothing else. honmoon writes the two framing
+    /// headers that make hyper carry it instead: `Transfer-Encoding: chunked`
+    /// selects a chunked encoder, and `Trailer` fills the allowlist that encoder
+    /// filters the frame through.
+    #[tokio::test]
+    async fn a_content_length_request_is_reframed_to_carry_its_trailers() {
+        let payload = hudsucker::hyper::body::Bytes::from_static(b"key=value");
+        let forwarded = forwarded_request_with(
+            payload.clone(),
+            Some(payload.len()),
+            Some(digest_trailer()),
+            &[],
+        )
+        .await;
+
+        assert_eq!(
+            header_values(&forwarded, header::TRANSFER_ENCODING),
+            ["chunked"],
+            "a trailer section rides on chunked framing or on nothing"
+        );
+        assert_eq!(
+            header_values(&forwarded, header::TRAILER),
+            ["content-digest"],
+            "hyper emits only the trailer fields the `Trailer` header names"
+        );
+        // Left as the client sent it: hyper drops it on an h1 leg once
+        // `Transfer-Encoding` is present, and keeps it on an h2 leg, which is
+        // the leg that already carried the trailer correctly.
+        assert_eq!(
+            header_values(&forwarded, header::CONTENT_LENGTH),
+            [payload.len().to_string()],
+        );
+    }
+
+    /// honmoon's own buffering is enough to lose a trailer even when the client
+    /// declared no length at all: `BufferedBody`'s `size_hint` is exact, so
+    /// hyper's `set_length` writes a `Content-Length` and picks the same
+    /// fixed-length encoder. The re-frame has to cover this branch too.
+    #[tokio::test]
+    async fn an_unknown_length_request_is_reframed_to_carry_its_trailers() {
+        let payload = hudsucker::hyper::body::Bytes::from_static(b"key=value");
+        let forwarded = forwarded_request_with(payload, None, Some(digest_trailer()), &[]).await;
+
+        assert_eq!(
+            header_values(&forwarded, header::TRANSFER_ENCODING),
+            ["chunked"]
+        );
+        assert_eq!(
+            header_values(&forwarded, header::TRAILER),
+            ["content-digest"]
+        );
+    }
+
+    /// Only the names that survive `trailer_filtered_body` may be declared: a
+    /// `Trailer` header naming a field the filter then drops would advertise a
+    /// field that never arrives.
+    #[tokio::test]
+    async fn only_the_trailers_that_survive_the_filter_are_declared() {
+        let payload = hudsucker::hyper::body::Bytes::from_static(b"key=value");
+        let forwarded = forwarded_request_with(
+            payload.clone(),
+            Some(payload.len()),
+            Some(hostile_trailers()),
+            &[],
+        )
+        .await;
+
+        assert_eq!(
+            header_values(&forwarded, header::TRAILER),
+            ["x-note"],
+            "the declaration must name exactly the trailers the filter keeps"
+        );
+    }
+
+    /// A request the client already framed to carry its trailers is left exactly
+    /// as it framed it — no second `Transfer-Encoding`, no second `Trailer`.
+    #[tokio::test]
+    async fn an_already_chunked_and_declared_request_is_left_alone() {
+        let payload = hudsucker::hyper::body::Bytes::from_static(b"key=value");
+        let forwarded = forwarded_request_with(
+            payload,
+            None,
+            Some(digest_trailer()),
+            &[
+                ("transfer-encoding", "chunked"),
+                ("trailer", "Content-Digest"),
+            ],
+        )
+        .await;
+
+        assert_eq!(
+            header_values(&forwarded, header::TRANSFER_ENCODING),
+            ["chunked"]
+        );
+        assert_eq!(
+            header_values(&forwarded, header::TRAILER),
+            ["Content-Digest"],
+            "the client's own declaration must not be rewritten or duplicated"
+        );
+    }
+
+    /// A chunked request that declared nothing still loses its trailers on an h1
+    /// upstream — hyper's `Kind::Chunked(None)` arm — so the declaration alone is
+    /// added, and the framing the client chose is untouched.
+    #[tokio::test]
+    async fn a_chunked_request_that_declared_nothing_gains_only_the_declaration() {
+        let payload = hudsucker::hyper::body::Bytes::from_static(b"key=value");
+        let forwarded = forwarded_request_with(
+            payload,
+            None,
+            Some(digest_trailer()),
+            &[("transfer-encoding", "chunked")],
+        )
+        .await;
+
+        assert_eq!(
+            header_values(&forwarded, header::TRANSFER_ENCODING),
+            ["chunked"]
+        );
+        assert_eq!(
+            header_values(&forwarded, header::TRAILER),
+            ["content-digest"]
+        );
+    }
+
+    /// ADR-0006's constraint, applied to this re-frame: `Content-Length` and
+    /// `Transfer-Encoding` are two of the three names the re-frame writes, and an
+    /// AWS SDK upload signs `content-length`. Rescuing the trailer by breaking
+    /// that signature trades one upstream rejection for another, so the request
+    /// goes on exactly as the client signed it and the loss is logged instead.
+    #[tokio::test]
+    async fn a_signature_over_the_framing_headers_declines_the_reframe() {
+        let payload = hudsucker::hyper::body::Bytes::from_static(b"key=value");
+        let forwarded = forwarded_request_with(
+            payload.clone(),
+            Some(payload.len()),
+            Some(digest_trailer()),
+            &[(
+                "authorization",
+                "AWS4-HMAC-SHA256 Credential=AKIA/20260907/us-east-1/s3/aws4_request, \
+                 SignedHeaders=content-length;host;x-amz-date, Signature=abc",
+            )],
+        )
+        .await;
+
+        assert!(
+            header_values(&forwarded, header::TRANSFER_ENCODING).is_empty(),
+            "a signed `content-length` must not be re-framed away"
+        );
+        assert!(
+            header_values(&forwarded, header::TRAILER).is_empty(),
+            "declining the re-frame must leave the header section untouched"
+        );
+        assert_eq!(
+            header_values(&forwarded, header::CONTENT_LENGTH),
+            [payload.len().to_string()]
+        );
+    }
+
+    /// The same decision for the narrower case: the client already framed the
+    /// request as chunked, so the only header the re-frame would write is
+    /// `Trailer` — and a signature covering that name declines it on its own.
+    #[tokio::test]
+    async fn a_signature_over_the_trailer_header_declines_the_declaration() {
+        let payload = hudsucker::hyper::body::Bytes::from_static(b"key=value");
+        let forwarded = forwarded_request_with(
+            payload,
+            None,
+            Some(digest_trailer()),
+            &[
+                ("transfer-encoding", "chunked"),
+                (
+                    "authorization",
+                    "AWS4-HMAC-SHA256 Credential=AKIA/20260907/us-east-1/s3/aws4_request, \
+                     SignedHeaders=host;trailer;x-amz-date, Signature=abc",
+                ),
+            ],
+        )
+        .await;
+
+        assert!(
+            header_values(&forwarded, header::TRAILER).is_empty(),
+            "a signed `trailer` must not be appended to"
+        );
+    }
+
+    /// A request with no trailer frame is not re-framed at all: there is nothing
+    /// to carry, and switching a plain upload to chunked would change its wire
+    /// framing for no reason.
+    #[tokio::test]
+    async fn a_request_without_trailers_is_not_reframed() {
+        let payload = hudsucker::hyper::body::Bytes::from_static(b"key=value");
+        let forwarded =
+            forwarded_request_with(payload.clone(), Some(payload.len()), None, &[]).await;
+
+        assert!(header_values(&forwarded, header::TRANSFER_ENCODING).is_empty());
+        assert!(header_values(&forwarded, header::TRAILER).is_empty());
+        assert_eq!(
+            header_values(&forwarded, header::CONTENT_LENGTH),
+            [payload.len().to_string()]
+        );
+    }
+
+    /// The end of the chain the issue traces, driven rather than argued: the
+    /// forwarded request goes onto a real hyper HTTP/1.1 client connection, and
+    /// the assertion is on the bytes hyper wrote. `Encoder::encode_trailers` is
+    /// what decides whether a trailer section is written at all, so nothing
+    /// between honmoon's headers and the wire is simulated here.
+    ///
+    /// This is the only place the h2-client shape can be proven end to end: the
+    /// integration harness speaks HTTP/1.1, which cannot express a request that
+    /// carries both a `Content-Length` and a trailer frame.
+    #[tokio::test]
+    async fn a_reframed_request_puts_its_trailer_on_the_http1_wire() {
+        let payload = hudsucker::hyper::body::Bytes::from_static(b"key=value");
+        let mut forwarded = forwarded_request_with(
+            payload.clone(),
+            Some(payload.len()),
+            Some(digest_trailer()),
+            &[],
+        )
+        .await;
+        // hyper_util rewrites the absolute-form URI to origin form before the
+        // upstream leg (`origin_form`); at connection level that is the caller's
+        // job, and hyper writes whatever it is given.
+        *forwarded.uri_mut() = "/submit".parse().expect("origin-form uri");
+
+        let wire = http1_upstream_wire(forwarded).await;
+        assert!(
+            wire.to_ascii_lowercase()
+                .contains("transfer-encoding: chunked"),
+            "hyper must frame the upstream leg as chunked; wire was:\n{wire}"
+        );
+        assert!(
+            wire.ends_with("\r\n0\r\ncontent-digest: sha-256=:ZGlnZXN0:\r\n\r\n"),
+            "the trailer section must be written after the last chunk; wire was:\n{wire}"
+        );
+    }
+
+    /// Send `request` over a real hyper HTTP/1.1 client connection to a loopback
+    /// listener, and return every byte hyper wrote for it.
+    async fn http1_upstream_wire(request: Request<Body>) -> String {
+        use tokio::io::AsyncWriteExt;
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind upstream");
+        let addr = listener.local_addr().expect("upstream addr");
+        let upstream = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.expect("accept upstream connection");
+            let received = read_one_request(&mut socket).await;
+            socket
+                .write_all(b"HTTP/1.1 200 OK\r\ncontent-length: 0\r\n\r\n")
+                .await
+                .expect("write upstream response");
+            received
+        });
+
+        let stream = tokio::net::TcpStream::connect(addr)
+            .await
+            .expect("connect upstream");
+        let (mut sender, connection) = hudsucker::hyper::client::conn::http1::handshake(
+            hudsucker::hyper_util::rt::TokioIo::new(stream),
+        )
+        .await
+        .expect("http/1.1 handshake");
+        tokio::spawn(connection);
+        let response = sender.send_request(request).await.expect("send request");
+        assert_eq!(response.status(), StatusCode::OK);
+
+        String::from_utf8(upstream.await.expect("upstream task")).expect("ascii wire bytes")
+    }
+
+    /// Read exactly one HTTP/1.1 request — fixed-length or chunked with its
+    /// trailer section — and return the bytes as they arrived. Both framings are
+    /// handled so the test fails on its assertion rather than by hanging when the
+    /// re-frame does not happen.
+    async fn read_one_request(socket: &mut tokio::net::TcpStream) -> Vec<u8> {
+        use tokio::io::AsyncReadExt;
+
+        let mut received = Vec::new();
+        let mut buffer = [0u8; 1024];
+        let header_end = loop {
+            let read = socket
+                .read(&mut buffer)
+                .await
+                .expect("read request headers");
+            assert!(read > 0, "connection closed before the request headers");
+            received.extend_from_slice(&buffer[..read]);
+            if let Some(at) = received.windows(4).position(|window| window == b"\r\n\r\n") {
+                break at + 4;
+            }
+        };
+        let headers = String::from_utf8(received[..header_end].to_vec())
+            .expect("ascii request headers")
+            .to_ascii_lowercase();
+        if headers.contains("transfer-encoding: chunked") {
+            // The zero-length chunk plus its (possibly empty) trailer section.
+            while !(received.windows(5).any(|window| window == b"\r\n0\r\n")
+                && received.ends_with(b"\r\n\r\n"))
+            {
+                let read = socket.read(&mut buffer).await.expect("read chunked body");
+                assert!(read > 0, "connection closed before the last chunk");
+                received.extend_from_slice(&buffer[..read]);
+            }
+        } else {
+            let length = headers
+                .lines()
+                .find_map(|line| line.strip_prefix("content-length:"))
+                .map(|value| value.trim().parse::<usize>().expect("numeric length"))
+                .unwrap_or(0);
+            while received.len() < header_end + length {
+                let read = socket.read(&mut buffer).await.expect("read request body");
+                assert!(read > 0, "connection closed before the body");
+                received.extend_from_slice(&buffer[..read]);
+            }
+        }
+        received
     }
 }

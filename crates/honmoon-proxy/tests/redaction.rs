@@ -1013,6 +1013,44 @@ fn signed_body_request_keeps_its_digest_trailer_in_forward_mode() {
     assert_eq!(mappings.unwrap().len(), 0);
 }
 
+// #136: hyper's h1 encoder writes a trailer section only for the fields the
+// request's `Trailer` header names — a chunked request that declares none takes
+// the `Kind::Chunked(None)` arm of `Encoder::encode_trailers` and loses the
+// frame with nothing but a `debug!`. HTTP/2 has no such requirement, so its
+// clients routinely send trailers undeclared; this is the same loss, in the one
+// shape an HTTP/1.1 harness can express, driven to the upstream wire.
+#[test]
+fn an_undeclared_trailer_still_reaches_the_upstream() {
+    let (upstream, captured) = start_upstream(ResponseMode::Static(b"ok".to_vec()));
+    let (proxy, _) = start_proxy(false);
+    let body = "key=value";
+    let digest = "sha-256=:ZGlnZXN0LW92ZXItdGhlLXNpZ25lZC1ib2R5:";
+
+    let request = format!(
+        "POST http://127.0.0.1:{upstream}/submit HTTP/1.1\r\n\
+         Host: 127.0.0.1:{upstream}\r\n\
+         Transfer-Encoding: chunked\r\n\
+         Connection: close\r\n\r\n\
+         {:x}\r\n{body}\r\n0\r\nContent-Digest: {digest}\r\n\r\n",
+        body.len()
+    );
+    let response = raw_proxy_request(proxy, request.as_bytes());
+    assert!(response.starts_with(b"HTTP/1.1 200"));
+
+    let forwarded = captured.recv_timeout(Duration::from_secs(5)).unwrap();
+    assert_eq!(forwarded.body, body.as_bytes());
+    assert_eq!(
+        header_value(&forwarded.trailers, "content-digest"),
+        Some(digest),
+        "an undeclared trailer must still reach the upstream"
+    );
+    assert_eq!(
+        header_value(&forwarded.headers, "trailer"),
+        Some("content-digest"),
+        "which takes the declaration honmoon writes for it"
+    );
+}
+
 // #133: the inspection contract covers request *bodies* only. Trailer values —
 // like the request headers they are shaped after — are never scanned for PII or
 // secrets, never redacted, and reach the upstream verbatim. This pins that

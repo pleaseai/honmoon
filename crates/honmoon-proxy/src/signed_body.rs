@@ -109,6 +109,29 @@ pub const REWRITTEN_FRAMING_HEADERS: [header::HeaderName; 3] = [
     header::TRANSFER_ENCODING,
 ];
 
+/// The framing headers re-framing a request so its **trailer section** survives
+/// an HTTP/1.1 upstream leg would change on the wire.
+///
+/// A different set from [`REWRITTEN_FRAMING_HEADERS`] because it is a different
+/// rewrite. That one replaces the payload, so it re-frames `Content-Encoding`
+/// and writes a new `Content-Length`. This one leaves every byte of the body
+/// alone and only moves the request from fixed-length to chunked framing, which
+/// is the only framing an HTTP/1.1 trailer section can ride on: `Content-Length`
+/// disappears (hyper removes it once `Transfer-Encoding` is present —
+/// `hyper-1.10.1/src/proto/h1/role.rs:1424-1427`), `Transfer-Encoding: chunked`
+/// appears, and `Trailer` has to name the fields or hyper's encoder emits none
+/// of them. `Content-Encoding` is untouched, because the bytes are.
+///
+/// It exists for the same reason its sibling does: a signature routinely covers
+/// these names, so the code that re-frames and the code that asks
+/// [`signed_headers_among`] whether re-framing is allowed read one list rather
+/// than two kept aligned by convention.
+pub const TRAILER_FRAMING_HEADERS: [header::HeaderName; 3] = [
+    header::CONTENT_LENGTH,
+    header::TRANSFER_ENCODING,
+    header::TRAILER,
+];
+
 /// Which of `candidates` this request's authentication actually signs, in the
 /// order given.
 ///
