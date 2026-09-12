@@ -1,0 +1,25 @@
+.claude/agent-memory/review-review-comment-analyzer/pr163_audit_sink_comment_claims.md
+  s_cdaa9b4042ee3f::t_2da8afb9d80a09 3
+.claude/agent-memory/review-review-code-reviewer/project_audit_sink_symlinked_parent_160.md
+  s_cdaa9b4042ee3f::t_1a705e87c014eb 3,25-35
+  s_cdaa9b4042ee3f::t_e28fda40e980b4 38-40
+.claude/agent-memory/review-review-pr-test-analyzer/audit_symlink_walk_untested_branches.md
+  s_cdaa9b4042ee3f::t_1a705e87c014eb 10-57
+  s_cdaa9b4042ee3f::t_cda5fe56fb3682 3
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "9ce24e1d3645b46e2954196bf57f9417f58bb3ce",
+  "prompts": {},
+  "sessions": {
+    "s_cdaa9b4042ee3f": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "b8171202-7996-4219-b687-063de24c3b30",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
