@@ -1,0 +1,40 @@
+.claude/agent-memory/review-review-comment-analyzer/pr197_program_for_dead_arm.md
+  s_b100dddae62eec::t_5a4c77df0160da 1-2,4-7
+  s_b100dddae62eec::t_a5aee9c0f1e4c5 3,8-50
+.claude/agent-memory/review-review-pr-test-analyzer/uncompilable_condition_load_failure_pr197.md
+  s_b100dddae62eec::t_b3016882784a24 3
+  s_b100dddae62eec::t_ebc5c4a87d5574 1-2,4-44,46,48-60,69-74
+  s_b100dddae62eec::t_7087d9877bbc87 45,47,61-68
+.claude/agent-memory/review-review-documentation-analyzer/pr197_uncompilable_policy_load_fail.md
+  s_b100dddae62eec::t_f0bcfe79e08ac2 1-2,4-12,29-44
+  s_b100dddae62eec::t_b3016882784a24 3,20-23,45-55
+  s_b100dddae62eec::t_9aa51a85f97668 13-19,24-28
+.claude/agent-memory/review-review-security-reviewer/policy-yaml-trust-boundary.md
+  s_b100dddae62eec::t_46c4b1be59559b 15
+  s_b100dddae62eec::t_7087d9877bbc87 14
+.claude/agent-memory/review-review-type-design-analyzer/honmoon_core_error_vec_variant_emptiness.md
+  s_b100dddae62eec::t_b3016882784a24 3
+  s_b100dddae62eec::t_6ac48e17bfa336 1-2,4-22,46-50
+  s_b100dddae62eec::t_67c99bdd915215 23-45
+.claude/agent-memory/review-review-code-reviewer/project_uncompilable_condition_load_failure_191.md
+  s_b100dddae62eec::t_7087d9877bbc87 3,15-22,42
+  s_b100dddae62eec::t_2c9bbd2155bc06 1-2,4-14,23-41,43-47
+.claude/agent-memory/review-review-pr-test-analyzer/blank_condition_unicode_whitespace_and_untested_schema.md
+  s_b100dddae62eec::t_b34361cd93772e 52-64
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "5cd2175c32e1ab86fb36ccbc50824168517bb592",
+  "prompts": {},
+  "sessions": {
+    "s_b100dddae62eec": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d8a23aa2-ca49-436c-826f-804953b513b9",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
