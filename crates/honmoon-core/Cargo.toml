@@ -22,11 +22,15 @@ thiserror.workspace = true
 time.workspace = true
 tracing.workspace = true
 
-# Only for the `O_NOFOLLOW`/`O_NONBLOCK` constants `OpenOptionsExt::custom_flags`
-# needs to harden the operator-supplied audit sink open (issue #138); their values
-# differ per target, so they cannot be spelled portably by hand. `open_sink` makes no
-# syscall through `libc` — it takes two integer constants and the I/O stays `std::fs`,
-# as it already was (the test suite does call `libc::mkfifo`, to build a FIFO fixture).
+# For the flag constants and the directory-relative syscalls that harden the
+# operator-supplied audit sink open (issues #138 and #160). `open_sink` no longer
+# opens the configured path in one `std::fs` call: closing the symlinked-parent hole
+# needs a component-by-component walk, and the primitives for that — `openat`,
+# `fstatat`, `readlinkat` — have no `std` equivalent that takes a directory
+# descriptor, so this crate does call them directly (the test suite additionally
+# calls `libc::mkfifo`, to build a FIFO fixture). Every descriptor they return is
+# handed straight to `std::fs::File`, which owns and closes it; no I/O *dependency*
+# is added, and the sink is still the only file this crate touches.
 # The crate is already in this workspace's graph via `honmoon-cli`, pinned centrally
 # with the rest. Mirrors that crate's `cfg(unix)` gate.
 [target.'cfg(unix)'.dependencies]

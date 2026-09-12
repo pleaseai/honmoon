@@ -380,7 +380,19 @@ impl AuditLog {
 /// - A **symlink as the final path component**, via `O_NOFOLLOW` (open fails
 ///   `ELOOP`). A symlink pre-planted by another local user can no longer redirect
 ///   the append onto a file the honmoon user happens to be able to write, and a
-///   *dangling* one can no longer quietly become the place the records go.
+///   *dangling* one can no longer quietly become the place the records go. This
+///   refusal is unconditional: the trusted-directory exception below applies to
+///   directory components only, never to the file honmoon writes.
+/// - A **symlink as a parent component, in a directory somebody else can write**
+///   (issue #160). `O_NOFOLLOW` on a single `open` constrains the final component
+///   only, so every directory above it used to be resolved through symlinks and an
+///   actor who controlled any directory *on* the path still chose where the log
+///   landed. The path is now walked component by component with `openat`, each step
+///   carrying `O_NOFOLLOW | O_DIRECTORY`, from the trusted root named below.
+///   `openat2(RESOLVE_NO_SYMLINKS)` would do it in one call but is Linux-only and
+///   `ENOSYS` on kernels before 5.6; the walk is the portable form, so Linux and
+///   macOS run the same code and the same tests rather than a fast path and an
+///   under-exercised fallback.
 /// - **Anything that is not a regular file** — a FIFO, socket, device or
 ///   directory. The type is read with `fstat` on the descriptor this function is
 ///   already holding, never with a `stat` of the path, so nothing can be swapped
@@ -398,15 +410,45 @@ impl AuditLog {
 ///   `append_jsonl` hands the error back to `record_durable` rather than losing the
 ///   record.)
 ///
+/// **The trusted root.** A walk is only as good as where it starts. For an absolute
+/// path it is `/`, which cannot itself be a symlink. For a relative one it is the
+/// process's own working directory, opened as `.`: what lies above it is the
+/// process's own context rather than anything the configured path selects, and
+/// `getcwd` would resolve it through exactly the symlinks this function refuses to
+/// trust. Everything from that root down is walked.
+///
+/// **What the walk holds, stated no more strongly than it is true.** Each directory
+/// the walk opens is pinned by the descriptor the next `openat` resolves against, so
+/// a directory cannot be exchanged for another after it has been opened. That is a
+/// property of the *directories*, not of the entries inside them: classifying a
+/// refused component ([`is_symlink_at`]) and reading a symlink's target
+/// ([`read_link_at`]) both act on a name inside a held descriptor, and the entry at
+/// that name is not pinned between those calls. The safety there comes from
+/// somewhere else, and `is_symlink_at` says where: an entry swapped in mid-sequence
+/// is still opened under `O_NOFOLLOW`, and a symlink is followed only when the
+/// *directory holding it* — which is pinned — passed the trust test. So the
+/// resolution never traverses an untrusted link; it is not the case that nothing
+/// can change underneath it.
+///
 /// **Still accepted, deliberately:**
-/// - A **symlinked parent directory**. `O_NOFOLLOW` constrains the final
-///   component only; every directory above it is still resolved through symlinks,
-///   so an actor who controls a directory *on* the configured path still chooses
-///   where the log lands. `openat2(RESOLVE_NO_SYMLINKS)` would close it in one
-///   call but is Linux-only; the portable form is a component-by-component
-///   `openat` walk with `O_NOFOLLOW` at each step, which macOS does support and
-///   which is simply not written yet — a larger change with its own test surface
-///   than this open. Tracked in issue #160.
+/// - A **symlink in a directory only root or this process's own effective user can
+///   write** (owner `root` or our euid, and no group or other write bit). It is
+///   followed, and its target is then walked under this same rule rather than
+///   handed to the kernel whole, so a link planted further along the target's own
+///   path is still caught. Refusing every symlinked parent outright was the
+///   alternative and it is not shippable: macOS resolves `/var`, `/tmp` and `/etc`
+///   through root-owned symlinks into `/private`, so the default `TMPDIR` and any
+///   `/var/log/...` audit path would be refused on that platform, and a
+///   root-installed `/var/log -> /mnt/log` is an ordinary Linux deployment. The
+///   issue raised that risk explicitly. This is a trusted-path assumption, not a
+///   proof: it reads owner and write bits only, and says nothing about a root-owned
+///   directory reachable some other way, or about what root itself does. Nor about
+///   ACLs — and that one is not symmetric between the platforms. A Linux POSIX ACL
+///   granting write to a named user needs the ACL mask to carry write, and the mask
+///   is what `st_mode`'s group bits report, so `0o020` catches it; macOS NFSv4-style
+///   ACLs (`chmod +a`) do not appear in `st_mode` at all, so a root-owned `0755`
+///   directory carrying `user:mallory allow write` reads as trusted here. Tracked in
+///   issue #181.
 /// - The **mode of a file that already exists**. `mode` applies only when this
 ///   call creates the file, so a log left group- or world-readable by an earlier
 ///   honmoon (which created it at the umask default) or by the operator keeps
@@ -416,29 +458,31 @@ impl AuditLog {
 ///   deliberately; silently re-tightening it every time the gateway or a hook
 ///   process opens it would break that collection with no signal. Reporting it
 ///   instead needs a degradation event of its own — issue #161.
-/// - **A final inode the attacker chose by means other than a symlink.** The two
+/// - **A final inode the attacker chose by means other than a symlink.** The
 ///   bullets above are what `O_NOFOLLOW` and the type check cover; this one is the
 ///   same list read from the other side, because enumerating refused *link types*
 ///   hides everything that is not a link. An actor who can write the directory can
 ///   pre-create the path as an ordinary `0666` file, or `link(2)` it onto a file of
 ///   their own: both are regular files owned by nobody this code checks, so the
 ///   `fstat` passes, the creation mode never applies, and every record lands
-///   somewhere they read. The payload is what makes that matter — the gateway's
-///   records name hosts, SQL tables and PII categories, and a hook's degradation
-///   record carries the absolute `$HOME` path of the salt it could not use. Closing
-///   it means refusing a sink this process does not solely own (`uid`/`nlink` off
-///   the same `fstat`), which is the same decision as #161's: whether honmoon may
-///   refuse or re-tighten an audit file it did not create. Both are tracked there.
+///   somewhere they read. The walk does not touch this — it decides which directory
+///   the last `openat` runs in, not who owns what it finds there. **And the same
+///   holds one level up, with no link involved at all**: a directory component that
+///   opens successfully is accepted whoever owns it, because the owner-and-mode test
+///   fires only on the symlink branch. An actor who controls a directory on the path
+///   can simply create the rest of the subtree as ordinary directories of their own.
+///   Said positively, because a list of refused *link types* hides everything that is
+///   not a link: the walk asserts that no component below the trusted root was a
+///   symlink it did not trust — not that any component is owned by someone honmoon
+///   trusts. The payload is
+///   what makes that matter — the gateway's records name hosts, SQL tables and PII
+///   categories, and a hook's degradation record carries the absolute `$HOME` path
+///   of the salt it could not use. Closing it means refusing a sink this process
+///   does not solely own (`uid`/`nlink` off the same `fstat`), which is the same
+///   decision as #161's: whether honmoon may refuse or re-tighten an audit file it
+///   did not create. Both are tracked there.
 fn open_sink(path: &Path) -> std::io::Result<std::fs::File> {
-    let mut opts = std::fs::OpenOptions::new();
-    opts.create(true).append(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        opts.mode(0o600);
-        opts.custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
-    }
-    let file = opts.open(path).map_err(|e| explain_refusal(path, e))?;
+    let file = open_sink_file(path)?;
 
     // `File::metadata` is `fstat` on the descriptor above, not a fresh lookup of
     // `path`, so this is the type of the object actually opened.
@@ -456,6 +500,459 @@ fn open_sink(path: &Path) -> std::io::Result<std::fs::File> {
     Ok(file)
 }
 
+/// How many symlinks one audit path may resolve through before the walk gives up.
+/// Matches Linux's `SYMLOOP_MAX`, which is what an ordinary `open` of the same path
+/// would have allowed.
+#[cfg(unix)]
+const MAX_SYMLINK_HOPS: u32 = 40;
+
+/// Walk `path` from its trusted root and open the final component for appending,
+/// refusing a symlink at every step — see [`open_sink`] for which ones survive that
+/// and why.
+///
+/// The loop carries the components still to resolve in a queue rather than
+/// iterating the path once, because following a trusted symlink splices that
+/// link's own components onto the front of the remaining work.
+#[cfg(unix)]
+fn open_sink_file(path: &Path) -> std::io::Result<std::fs::File> {
+    use std::ffi::OsString;
+    use std::os::unix::ffi::OsStrExt as _;
+    use std::path::Component;
+
+    let mut absolute = false;
+    let mut pending: VecDeque<OsString> = VecDeque::new();
+    for component in path.components() {
+        match component {
+            Component::RootDir => absolute = true,
+            Component::CurDir => {}
+            Component::ParentDir => pending.push_back(OsString::from("..")),
+            Component::Normal(name) => pending.push_back(name.to_os_string()),
+            // Windows-only; `cfg(unix)` never reaches it, and an error beats a panic.
+            Component::Prefix(_) => return Err(unusable_path(path, "is not a Unix path")),
+        }
+    }
+
+    // A path naming a *directory* must be refused, not turned into a request to
+    // create a file. `components()` cannot be asked this question: it normalises
+    // away both a trailing separator and a trailing `.`, so `/var/log/honmoon/`,
+    // `/var/log/honmoon/.` and `/var/log/honmoon` all arrive as the same four
+    // components — and the first two would then create the *file* `honmoon` where
+    // the operator named a directory and the previous single `open` reported
+    // `ENOTDIR` or `EISDIR`. Only `..` survives normalisation, so a check written
+    // against the components catches one of the three shapes and silently passes
+    // the other two.
+    //
+    // So the test runs on the configured bytes instead. Whatever follows the last
+    // separator is the only thing that can name a file to append to, and the empty
+    // string, `.` and `..` are none of them.
+    let bytes = path.as_os_str().as_bytes();
+    let final_segment = match bytes.iter().rposition(|byte| *byte == b'/') {
+        Some(separator) => &bytes[separator + 1..],
+        None => bytes,
+    };
+    if matches!(final_segment, [] | [b'.'] | [b'.', b'.']) {
+        return Err(unusable_path(
+            path,
+            "names a directory, not a file to append to",
+        ));
+    }
+    let Some(leaf) = pending.pop_back() else {
+        return Err(unusable_path(path, "has no final file-name component"));
+    };
+
+    let mut dir = open_walk_root(absolute)?;
+    let mut hops = 0u32;
+    while let Some(name) = pending.pop_front() {
+        let failure = match open_directory(&dir, &name) {
+            Ok(next) => {
+                dir = next;
+                continue;
+            }
+            Err(e) => e,
+        };
+        // The two platforms disagree about how `openat` refuses a symlink under
+        // `O_DIRECTORY | O_NOFOLLOW`: Linux reports `ELOOP` (`O_NOFOLLOW` spoke
+        // first), macOS reports `ENOTDIR` (a symlink is not a directory, and
+        // `O_DIRECTORY` spoke first). Neither errno is exclusive to a symlink —
+        // `ENOTDIR` is also an ordinary file mid-path — so the component is
+        // classified with `fstatat(AT_SYMLINK_NOFOLLOW)` rather than read off the
+        // errno, and anything that is not a symlink is handed back untouched.
+        if !is_symlink_at(&dir, &name) {
+            return Err(failure);
+        }
+        hops += 1;
+        if hops > MAX_SYMLINK_HOPS {
+            return Err(unusable_path(
+                path,
+                "resolves through more symbolic links than the walk will follow",
+            ));
+        }
+        require_link_in_a_trusted_directory(path, &dir, &name)?;
+        let target = read_link_at(path, &dir, &name)?;
+        if target.is_absolute() {
+            dir = open_walk_root(true)?;
+        }
+        for component in target.components().rev() {
+            match component {
+                Component::RootDir | Component::CurDir => {}
+                Component::ParentDir => pending.push_front(OsString::from("..")),
+                Component::Normal(name) => pending.push_front(name.to_os_string()),
+                Component::Prefix(_) => return Err(unusable_path(path, "is not a Unix path")),
+            }
+        }
+    }
+
+    open_leaf(&dir, &leaf).map_err(|e| explain_refusal(path, e))
+}
+
+/// Non-Unix hosts have neither `O_NOFOLLOW` nor `openat`, so the sink is opened as
+/// it always was and the regular-file check in [`open_sink`] is all the hardening
+/// that applies there. Split by `cfg` rather than branched inside one body,
+/// matching `describe_file_type` below.
+#[cfg(not(unix))]
+fn open_sink_file(path: &Path) -> std::io::Result<std::fs::File> {
+    std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+}
+
+/// Open the directory the walk starts from: `/` for an absolute audit path, the
+/// process's working directory for a relative one. Neither can be a symlink, so
+/// neither needs `O_NOFOLLOW`.
+#[cfg(unix)]
+fn open_walk_root(absolute: bool) -> std::io::Result<std::fs::File> {
+    let root = if absolute { c"/" } else { c"." };
+    let open = |access| {
+        // SAFETY: `root` is a `'static` NUL-terminated C string, `AT_FDCWD` is the
+        // documented "resolve against the working directory" sentinel, and the
+        // returned descriptor is handed straight to `File`, which closes it on drop.
+        let fd = unsafe {
+            libc::openat(
+                libc::AT_FDCWD,
+                root.as_ptr(),
+                access | libc::O_DIRECTORY | libc::O_CLOEXEC,
+            )
+        };
+        from_raw_fd(fd)
+    };
+    // Retried for the same reason as a component (see `open_directory`): `/` is
+    // readable on any sane host, but a relative audit path starts at the working
+    // directory, and nothing says a process cannot be running in a search-only one.
+    match open(libc::O_RDONLY) {
+        Err(denied) if denied.raw_os_error() == Some(libc::EACCES) => open(O_TRAVERSE),
+        attempt => attempt,
+    }
+}
+
+/// The flag that opens a directory for *traversal* rather than for reading: the
+/// descriptor is usable as an `openat`/`fstatat`/`readlinkat` starting point, and
+/// asking for it needs only search (`x`) permission, not read (`r`).
+///
+/// Both platforms have one under a different name, and neither name exists on the
+/// other. Where there is no such flag the constant is `O_RDONLY`, which makes the
+/// retry in [`open_directory`] a repeat of the attempt that just failed — correct,
+/// because that host genuinely cannot open a search-only directory, and the second
+/// `EACCES` is the honest answer rather than a worse one.
+#[cfg(target_os = "macos")]
+const O_TRAVERSE: libc::c_int = libc::O_SEARCH;
+#[cfg(target_os = "linux")]
+const O_TRAVERSE: libc::c_int = libc::O_PATH;
+#[cfg(all(unix, not(any(target_os = "macos", target_os = "linux"))))]
+const O_TRAVERSE: libc::c_int = libc::O_RDONLY;
+
+/// Open `name` inside `dir` as a directory, refusing a symlink.
+///
+/// The caller must not read *which* errno that refusal carries: it is `ELOOP` on
+/// Linux and `ENOTDIR` on macOS, and neither is exclusive to a symlink. The walk
+/// classifies a refused component with [`is_symlink_at`] instead, and this
+/// function reports whatever the OS said.
+///
+/// **Why the `EACCES` retry exists.** Resolving a path needs only search permission
+/// on the directories along it; *opening* one with `O_RDONLY` needs read permission
+/// as well. A directory that is `0711` — searchable by everyone, readable by its
+/// owner — is an ordinary deployment shape and a Debian/Ubuntu default for `/home`,
+/// and the whole-path `open` this walk replaced traversed it without a thought. Left
+/// at `O_RDONLY` the walk would refuse it with `EACCES`, which on the gateway means
+/// a configuration that worked yesterday aborts startup today. So a denied open is
+/// re-attempted for traversal alone.
+///
+/// The first attempt is kept as it was rather than replaced outright, so the flags
+/// every existing test exercises are still the ones almost every open uses, and
+/// [`O_TRAVERSE`] is reached only where the alternative is a hard failure. That also
+/// keeps a symlink away from it: a symlinked component is refused by `O_NOFOLLOW`
+/// with `ELOOP`/`ENOTDIR` before any read permission is consulted, so the retry sees
+/// real directories only, never an entry whose type is still in question.
+#[cfg(unix)]
+fn open_directory(dir: &std::fs::File, name: &std::ffi::OsStr) -> std::io::Result<std::fs::File> {
+    let c_name = c_component(name)?;
+    match openat_directory(dir, &c_name, libc::O_RDONLY) {
+        Err(denied) if denied.raw_os_error() == Some(libc::EACCES) => {
+            openat_directory(dir, &c_name, O_TRAVERSE)
+        }
+        attempt => attempt,
+    }
+}
+
+/// One `openat` of a directory component, under `access` plus the flags that make
+/// the walk what it is: `O_DIRECTORY` so nothing else can be opened, `O_NOFOLLOW` so
+/// a symlink is refused rather than traversed.
+#[cfg(unix)]
+fn openat_directory(
+    dir: &std::fs::File,
+    name: &std::ffi::CStr,
+    access: libc::c_int,
+) -> std::io::Result<std::fs::File> {
+    use std::os::unix::io::AsRawFd as _;
+
+    // SAFETY: `name` is a valid NUL-terminated path for the duration of the call,
+    // `dir` outlives it and owns the descriptor being resolved against, and the
+    // returned descriptor is handed straight to `File`, which closes it on drop.
+    let fd = unsafe {
+        libc::openat(
+            dir.as_raw_fd(),
+            name.as_ptr(),
+            access | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+        )
+    };
+    from_raw_fd(fd)
+}
+
+/// Is `name` inside `dir` a symlink? Answered with `fstatat(AT_SYMLINK_NOFOLLOW)`,
+/// which describes the entry itself rather than what it points at.
+///
+/// This runs only after an `openat` has already refused the component, to tell a
+/// symlink apart from the other things the same errno covers — never to decide
+/// whether the *next* open is safe. That decision stays with `O_NOFOLLOW` on the
+/// open itself, so the classification carrying no lock on the entry costs nothing:
+/// a component swapped between the two calls is still opened under `O_NOFOLLOW`,
+/// and a symlink followed from here is still gated on the directory holding it,
+/// which the walk pins by descriptor.
+///
+/// A failing `fstatat` answers "not a symlink", which returns the original open
+/// error to the caller — the honest outcome when the entry can no longer be
+/// described at all.
+#[cfg(unix)]
+fn is_symlink_at(dir: &std::fs::File, name: &std::ffi::OsStr) -> bool {
+    use std::os::unix::io::AsRawFd as _;
+
+    let Ok(c_name) = c_component(name) else {
+        return false;
+    };
+    let mut stat = std::mem::MaybeUninit::<libc::stat>::uninit();
+    // SAFETY: `c_name` is a valid NUL-terminated path for the duration of the call,
+    // `dir` owns the descriptor resolved against, and `stat` is a live, correctly
+    // sized allocation the call writes into only on success.
+    let rc = unsafe {
+        libc::fstatat(
+            dir.as_raw_fd(),
+            c_name.as_ptr(),
+            stat.as_mut_ptr(),
+            libc::AT_SYMLINK_NOFOLLOW,
+        )
+    };
+    if rc != 0 {
+        return false;
+    }
+    // SAFETY: `fstatat` returned 0, so it initialised `stat`.
+    let stat = unsafe { stat.assume_init() };
+    stat.st_mode & libc::S_IFMT == libc::S_IFLNK
+}
+
+/// How many times the sink open may be re-attempted after a spurious `ENOENT` —
+/// see [`open_leaf`] for what makes one spurious. One extra attempt has always been
+/// enough in practice; the bound is four so a loaded machine has room, and it is a
+/// bound rather than a loop because a *real* `ENOENT` must still be reported.
+#[cfg(unix)]
+const SINK_OPEN_ATTEMPTS: u32 = 4;
+
+/// Open `name` inside `dir` as the sink itself — the same flags and creation mode
+/// the single `OpenOptions` call used before the walk existed, so the `O_NOFOLLOW`
+/// refusal, the `O_NONBLOCK` FIFO guard and the `0600` ceiling are unchanged; only
+/// the directory they are resolved against is now one this function walked to.
+///
+/// **The retry is not defensive padding.** On macOS, `openat` with `O_CREAT` racing
+/// another creation of the same name loses that race with `ENOENT` instead of
+/// returning the file the winner made; the equivalent `open` of the whole path
+/// never does, which is why the single open this replaced never saw it. Measured
+/// here on Darwin 24: eight threads creating one name through `openat` failed two
+/// to six times out of eight, through `open` zero times out of eight, and with
+/// unique names or no concurrency zero either way. That is not a test artefact —
+/// `honmoon hook` is a separate short-lived process per agent invocation appending
+/// to the same `--audit-log` as the gateway (issue #137), so two processes creating
+/// that file at once is the ordinary case, and losing the race would mean an
+/// invocation whose records went nowhere.
+///
+/// Only `ENOENT` is retried, and only while attempts remain: with `O_CREAT` set and
+/// a directory this function holds a descriptor to, the durable reading of `ENOENT`
+/// is that the directory itself was removed — and then every attempt fails and the
+/// error is returned as the OS wrote it. Each attempt carries the same `O_NOFOLLOW`
+/// against the same pinned descriptor, so retrying weakens nothing.
+#[cfg(unix)]
+fn open_leaf(dir: &std::fs::File, name: &std::ffi::OsStr) -> std::io::Result<std::fs::File> {
+    use std::os::unix::io::AsRawFd as _;
+
+    let c_name = c_component(name)?;
+    let mut attempts = 0;
+    loop {
+        // SAFETY: as `openat_directory` above; the trailing `mode` argument is the
+        // variadic one `openat` reads only when `O_CREAT` is set, which it is.
+        let fd = unsafe {
+            libc::openat(
+                dir.as_raw_fd(),
+                c_name.as_ptr(),
+                libc::O_WRONLY
+                    | libc::O_CREAT
+                    | libc::O_APPEND
+                    | libc::O_NOFOLLOW
+                    | libc::O_NONBLOCK
+                    | libc::O_CLOEXEC,
+                0o600 as libc::c_uint,
+            )
+        };
+        if fd >= 0 {
+            return from_raw_fd(fd);
+        }
+        let failure = std::io::Error::last_os_error();
+        attempts += 1;
+        if failure.raw_os_error() != Some(libc::ENOENT) || attempts >= SINK_OPEN_ATTEMPTS {
+            return Err(failure);
+        }
+    }
+}
+
+/// Take ownership of a descriptor an `openat` just returned, or report why it did
+/// not return one.
+#[cfg(unix)]
+fn from_raw_fd(fd: libc::c_int) -> std::io::Result<std::fs::File> {
+    if fd < 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    // SAFETY: `fd` is a fresh, positive descriptor from `openat` that nothing else
+    // owns, so `File` is its sole owner from here on.
+    Ok(unsafe { <std::fs::File as std::os::unix::io::FromRawFd>::from_raw_fd(fd) })
+}
+
+/// Refuse a symlink the walk found in a directory somebody other than root or this
+/// process's own user can write — the case issue #160 is about.
+///
+/// The test is owner and write bits on the directory *holding* the link, read by
+/// `fstat` on the descriptor the walk already has rather than by a fresh `stat`, so
+/// it describes the directory the next `openat` will actually run in. A
+/// group-writable directory counts as untrusted even where the group is one this
+/// process belongs to: honmoon cannot tell that group's members apart from an
+/// attacker, and refusing is the fail-closed side.
+#[cfg(unix)]
+fn require_link_in_a_trusted_directory(
+    path: &Path,
+    dir: &std::fs::File,
+    name: &std::ffi::OsStr,
+) -> std::io::Result<()> {
+    use std::os::unix::fs::MetadataExt as _;
+
+    let meta = dir.metadata()?;
+    // SAFETY: `geteuid` reads process credentials, takes no arguments and is
+    // documented as always succeeding.
+    let euid = unsafe { libc::geteuid() };
+    if (meta.uid() == 0 || meta.uid() == euid) && meta.mode() & 0o022 == 0 {
+        return Ok(());
+    }
+    Err(std::io::Error::new(
+        std::io::ErrorKind::InvalidInput,
+        format!(
+            "audit log {}: the path component {} is a symlink, and the directory holding it \
+             is uid {} mode {:04o} — writable by someone other than root or this process's \
+             own user, so the link may have been planted to choose where the records land",
+            path.display(),
+            Path::new(name).display(),
+            meta.uid(),
+            meta.mode() & 0o7777,
+        ),
+    ))
+}
+
+/// Read the target of the symlink `name` inside `dir`, without a path `std::fs`
+/// could follow behind the walk's back.
+#[cfg(unix)]
+fn read_link_at(
+    path: &Path,
+    dir: &std::fs::File,
+    name: &std::ffi::OsStr,
+) -> std::io::Result<PathBuf> {
+    use std::os::unix::ffi::OsStringExt as _;
+    use std::os::unix::io::AsRawFd as _;
+
+    let c_name = c_component(name)?;
+    let mut buf = vec![0u8; 256];
+    loop {
+        // SAFETY: `c_name` is a valid NUL-terminated path for the duration of the
+        // call, `dir` owns the descriptor resolved against, and `buf` is a live
+        // allocation of exactly the length passed as the bound.
+        let written = unsafe {
+            libc::readlinkat(
+                dir.as_raw_fd(),
+                c_name.as_ptr(),
+                buf.as_mut_ptr().cast::<libc::c_char>(),
+                buf.len(),
+            )
+        };
+        if written < 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        // `readlinkat` does not NUL-terminate and silently truncates, so a result
+        // that filled the buffer may have been cut short: grow and ask again.
+        let written = usize::try_from(written).unwrap_or(buf.len());
+        if written < buf.len() {
+            buf.truncate(written);
+            return Ok(PathBuf::from(std::ffi::OsString::from_vec(buf)));
+        }
+        if buf.len() >= 64 * 1024 {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!(
+                    "audit log {}: the symlink at path component {} has an implausibly long \
+                     target",
+                    path.display(),
+                    Path::new(name).display()
+                ),
+            ));
+        }
+        buf.resize(buf.len() * 2, 0);
+    }
+}
+
+/// Turn one path component into a C string, refusing the interior NUL that
+/// `OsStr` permits and the kernel does not.
+#[cfg(unix)]
+fn c_component(name: &std::ffi::OsStr) -> std::io::Result<std::ffi::CString> {
+    use std::os::unix::ffi::OsStrExt as _;
+
+    std::ffi::CString::new(name.as_bytes()).map_err(|_| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!(
+                "audit log path component {} contains an interior NUL byte",
+                Path::new(name).display()
+            ),
+        )
+    })
+}
+
+/// Report a configured path the walk cannot use as a sink path at all.
+///
+/// Not all of these are decided up front, so the message deliberately says nothing
+/// about when the walk gave up: the shape checks on the configured path run before
+/// any syscall, while the symlink-hop bound is reached only after the walk has
+/// already made a good many, and a `Component::Prefix` can arrive from a symlink
+/// target resolved mid-walk.
+#[cfg(unix)]
+fn unusable_path(path: &Path, why: &str) -> std::io::Error {
+    std::io::Error::new(
+        std::io::ErrorKind::InvalidInput,
+        format!("audit log path {} {why}", path.display()),
+    )
+}
+
 /// Rewrite the one open error whose wording actively misleads, and pass every
 /// other one through in the OS's own words.
 ///
@@ -463,8 +960,13 @@ fn open_sink(path: &Path) -> std::io::Result<std::fs::File> {
 /// links" — which describes a link *cycle*. An operator whose audit path is one
 /// ordinary symlink (a rotation `current -> audit-2026-09-12.jsonl`, say) reads that
 /// and learns nothing about why honmoon refused it, on a flag whose failure aborts
-/// gateway startup. A parent-directory loop reports the same errno, so the
-/// replacement names both rather than asserting which one happened.
+/// gateway startup.
+///
+/// Only the final component reaches here. It is opened with one `openat` against a
+/// directory the walk already holds, so `ELOOP` from it cannot mean a parent — that
+/// was true of the single whole-path `open` this replaced, and the message no
+/// longer hedges about it. A symlinked *parent* is refused by
+/// [`require_link_in_a_trusted_directory`], in its own words.
 #[cfg(unix)]
 fn explain_refusal(path: &Path, e: std::io::Error) -> std::io::Error {
     if e.raw_os_error() != Some(libc::ELOOP) {
@@ -474,17 +976,11 @@ fn explain_refusal(path: &Path, e: std::io::Error) -> std::io::Error {
         std::io::ErrorKind::InvalidInput,
         format!(
             "audit log {} was refused with ELOOP: the audit sink is opened with O_NOFOLLOW, \
-             so a symlink as the final path component is refused (a symlink loop in a \
-             parent directory reports the same error)",
+             so a symlink as the final path component is refused — the sink must be the file \
+             the operator named, not a link to one",
             path.display()
         ),
     )
-}
-
-/// Non-Unix hosts get no `O_NOFOLLOW`, so there is no `ELOOP` of ours to explain.
-#[cfg(not(unix))]
-fn explain_refusal(_path: &Path, e: std::io::Error) -> std::io::Error {
-    e
 }
 
 /// Name what [`open_sink`] found at the audit path, so the operator is told which
@@ -632,6 +1128,38 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// Every writer of the sink may be the one creating it: `honmoon hook` is a
+    /// fresh process per agent invocation appending to the same `--audit-log` as the
+    /// gateway (issue #137), so two creations of that file can race. Threads stand
+    /// in for those processes, as in the test above.
+    ///
+    /// This is the property the retry in `open_leaf` exists for, and on macOS it is
+    /// not hypothetical: `openat` with `O_CREAT` loses that race with `ENOENT`
+    /// instead of returning the file the winner made, where the whole-path `open`
+    /// the walk replaced did not — so this failed several openers out of eight
+    /// before the retry, and the failure arrived as a gateway that would not start.
+    /// Repeated, so a machine that happens to serialise one round still exercises it.
+    #[test]
+    fn concurrent_opens_of_one_new_sink_all_succeed() {
+        let dir = scratch_dir("concurrent-create");
+        for round in 0..3 {
+            let path = dir.join(format!("audit-{round}.jsonl"));
+            let openers: Vec<_> = (0..8)
+                .map(|_| {
+                    let path = path.clone();
+                    std::thread::spawn(move || AuditLog::with_file(4, &path).map(|_| ()))
+                })
+                .collect();
+            for opener in openers {
+                opener
+                    .join()
+                    .expect("opener panicked")
+                    .expect("every concurrent creation of one sink must succeed");
+            }
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn record_durable_reports_a_healthy_sink_and_an_absent_one_as_success() {
         // The two success arms: a sink that takes the record, and no sink at all
@@ -774,6 +1302,296 @@ mod tests {
         assert!(
             !elsewhere.exists(),
             "the refused open must not have created the link's target"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A world-writable directory that another local user can plant a symlink in
+    /// is the whole of issue #160: `O_NOFOLLOW` on a single `open` guards the final
+    /// component only, so before the walk this redirected every record into a
+    /// directory of the attacker's choosing and the open reported nothing wrong.
+    ///
+    /// The directory is made `0777` deliberately — that is the precondition the
+    /// attack needs, and it is what makes the link untrusted. A symlinked parent in
+    /// a directory only its owner can write is a different case, pinned by
+    /// `with_file_follows_a_symlinked_parent_only_its_owner_can_write` below.
+    #[cfg(unix)]
+    #[test]
+    fn with_file_refuses_a_symlinked_parent_directory() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = scratch_dir("symlink-parent");
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o777))
+            .expect("make the directory one another local user could write");
+        let attacker = dir.join("attacker");
+        std::fs::create_dir(&attacker).expect("create the attacker's directory");
+        std::os::unix::fs::symlink(&attacker, dir.join("logs")).expect("plant symlink");
+
+        let sink = dir.join("logs").join("audit.jsonl");
+        let Err(err) = AuditLog::with_file(4, &sink) else {
+            panic!("a sink under a symlinked parent directory must be refused");
+        };
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput, "{err}");
+        assert!(err.to_string().contains("is a symlink"), "{err}");
+        assert!(
+            !attacker.join("audit.jsonl").exists(),
+            "the refused open must not have created the sink through the link"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The same refusal two components up, so a walk that only checked the sink's
+    /// immediate parent would fail here. Nothing about the check is positional.
+    #[cfg(unix)]
+    #[test]
+    fn with_file_refuses_a_symlinked_grandparent_directory() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = scratch_dir("symlink-grandparent");
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o777))
+            .expect("make the directory one another local user could write");
+        let attacker = dir.join("attacker");
+        std::fs::create_dir_all(attacker.join("honmoon")).expect("create the attacker's tree");
+        std::os::unix::fs::symlink(&attacker, dir.join("logs")).expect("plant symlink");
+
+        let sink = dir.join("logs").join("honmoon").join("audit.jsonl");
+        let Err(err) = AuditLog::with_file(4, &sink) else {
+            panic!("a sink under a symlinked grandparent directory must be refused");
+        };
+        assert!(err.to_string().contains("is a symlink"), "{err}");
+        assert!(
+            !attacker.join("honmoon").join("audit.jsonl").exists(),
+            "the refused open must not have created the sink through the link"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The deliberate limit of the two tests above, and not a soft edge: a symlink
+    /// in a directory only root or this process's own user can write is *followed*.
+    ///
+    /// Refusing every symlinked parent would be unshippable rather than merely
+    /// strict. macOS reaches `/var`, `/tmp` and `/etc` through root-owned symlinks
+    /// into `/private` — so the default `TMPDIR` every sink test above runs in, and
+    /// any `/var/log/...` an operator configures, would be refused on that platform
+    /// — and a root-installed `/var/log -> /mnt/log` is an ordinary Linux
+    /// deployment. The mode is set explicitly because a machine whose umask is `0`
+    /// would otherwise hand `create_dir_all` a `0777` scratch directory and quietly
+    /// turn this into a copy of the test above.
+    #[cfg(unix)]
+    #[test]
+    fn with_file_follows_a_symlinked_parent_only_its_owner_can_write() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = scratch_dir("symlink-parent-trusted");
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755))
+            .expect("make the directory one only its owner can write");
+        let real = dir.join("real");
+        std::fs::create_dir(&real).expect("create the target directory");
+        std::os::unix::fs::symlink(&real, dir.join("logs")).expect("plant symlink");
+
+        let log = AuditLog::with_file(4, dir.join("logs").join("audit.jsonl"))
+            .expect("a symlink only its owner could have planted is followed");
+        log.record(draft(Decision::Allowed));
+
+        let contents = std::fs::read_to_string(real.join("audit.jsonl"))
+            .expect("the sink is the file the link resolves to");
+        assert_eq!(contents.lines().count(), 1);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A symlink target may be *relative*, and that is a different splice: the walk
+    /// keeps the directory holding the link and prepends the target's components,
+    /// where an absolute target resets it to the walk root first.
+    ///
+    /// Left to the other tests this branch's coverage is platform-dependent in a way
+    /// that reads backwards. Every symlink they plant has an absolute target, so on
+    /// Linux — where `temp_dir()` is `/tmp`, a real directory — the relative branch
+    /// is never taken at all. On macOS it is taken by *every* sink test in this file,
+    /// including the ones with nothing to do with symlinks, because `temp_dir()` is
+    /// `/var/folders/...` and `/var` is itself a symlink whose target `private/var`
+    /// is relative. Planting a relative link explicitly makes the branch covered on
+    /// both platforms instead of on whichever one CI happens to be running.
+    #[cfg(unix)]
+    #[test]
+    fn with_file_follows_a_relative_symlink_target() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = scratch_dir("symlink-relative-target");
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755))
+            .expect("make the directory one only its owner can write");
+        std::fs::create_dir(dir.join("real")).expect("create the target directory");
+        // `real`, not `dir.join("real")`: the target is resolved against the
+        // directory holding the link, so this is the branch that must not reset.
+        std::os::unix::fs::symlink("real", dir.join("logs")).expect("plant relative symlink");
+
+        let log = AuditLog::with_file(4, dir.join("logs").join("audit.jsonl"))
+            .expect("a relative symlink target resolves against the link's own directory");
+        log.record(draft(Decision::Allowed));
+
+        let contents = std::fs::read_to_string(dir.join("real").join("audit.jsonl"))
+            .expect("the sink is the file the relative link resolves to");
+        assert_eq!(contents.lines().count(), 1);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// `require_link_in_a_trusted_directory` masks `0o022`, not `0o002` — a
+    /// group-writable directory is untrusted even where the group is one this process
+    /// belongs to, because honmoon cannot tell that group's members from an attacker.
+    ///
+    /// The other trust tests use `0o777` and `0o755`, which a mask narrowed to
+    /// `0o002` would classify identically — `0o777` has both write bits and `0o755`
+    /// has neither. `0o770` is the mode that separates them: group-write set, and
+    /// world-write clear, so it is refused under `0o022` and accepted under `0o002`.
+    #[cfg(unix)]
+    #[cfg(unix)]
+    #[test]
+    fn with_file_opens_a_sink_under_a_search_only_parent_directory() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = scratch_dir("search-only-parent");
+        let parent = dir.join("deploy");
+        std::fs::create_dir(&parent).expect("create the parent the walk must traverse");
+        // `0o311` is searchable by everyone and readable by nobody — the shape a
+        // deployment directory takes when its listing is meant to stay private.
+        // Resolving a path through it is allowed; opening it `O_RDONLY` is not.
+        std::fs::set_permissions(&parent, std::fs::Permissions::from_mode(0o311))
+            .expect("make the parent searchable but not readable");
+
+        // Prove the host actually enforces that, so a pass here means the walk
+        // traversed a directory it could not read rather than one that was never
+        // restricted. Root bypasses the permission bits, so say so instead.
+        // SAFETY: `geteuid` reads process credentials, takes no arguments and is
+        // always successful.
+        if unsafe { libc::geteuid() } == 0 {
+            eprintln!("running as root: the search-only restriction is not enforced");
+        } else {
+            assert!(
+                std::fs::File::open(&parent).is_err(),
+                "a `0o311` directory must not be openable for reading, or this test proves nothing"
+            );
+        }
+
+        let sink = parent.join("audit.jsonl");
+        let log = AuditLog::with_file(4, &sink).expect("open a sink under a search-only parent");
+        log.record(draft(Decision::Allowed));
+
+        let contents = std::fs::read_to_string(&sink).expect("the sink took the event");
+        assert_eq!(contents.lines().count(), 1);
+
+        let _ = std::fs::set_permissions(&parent, std::fs::Permissions::from_mode(0o755));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn with_file_refuses_a_symlinked_parent_in_a_group_writable_directory() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = scratch_dir("symlink-parent-group");
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o770))
+            .expect("make the directory group-writable but not world-writable");
+        let elsewhere = dir.join("elsewhere");
+        std::fs::create_dir(&elsewhere).expect("create the link's target");
+        std::os::unix::fs::symlink(&elsewhere, dir.join("logs")).expect("plant symlink");
+
+        let Err(err) = AuditLog::with_file(4, dir.join("logs").join("audit.jsonl")) else {
+            panic!("a symlink in a group-writable directory must be refused");
+        };
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput, "{err}");
+        assert!(err.to_string().contains("is a symlink"), "{err}");
+        assert!(
+            !elsewhere.join("audit.jsonl").exists(),
+            "the refused open must not have created the sink through the link"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The hop budget, which nothing else reaches. Without it a cyclic chain would
+    /// not hang — every hop still passes through `readlinkat`, so the walk makes
+    /// progress — but it would resolve without bound, and an off-by-one in
+    /// `hops > MAX_SYMLINK_HOPS` would go unnoticed.
+    ///
+    /// The chain is built in an owner-only directory on purpose: a link the trust
+    /// test refuses never reaches the budget, so an untrusted chain would pass this
+    /// test for the wrong reason.
+    #[cfg(unix)]
+    #[test]
+    fn with_file_refuses_a_symlink_chain_longer_than_the_hop_budget() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = scratch_dir("symlink-chain");
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755))
+            .expect("make the directory one only its owner can write");
+        std::fs::create_dir(dir.join("real")).expect("create the chain's destination");
+        // `hop0 -> real`, then `hop{n} -> hop{n-1}`: 48 links, comfortably past the
+        // 40 the walk will follow, all of them relative and all in a trusted place.
+        std::os::unix::fs::symlink("real", dir.join("hop0")).expect("plant the first link");
+        for hop in 1..48 {
+            std::os::unix::fs::symlink(format!("hop{}", hop - 1), dir.join(format!("hop{hop}")))
+                .expect("extend the chain");
+        }
+
+        let Err(err) = AuditLog::with_file(4, dir.join("hop47").join("audit.jsonl")) else {
+            panic!("a symlink chain past the hop budget must be refused");
+        };
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput, "{err}");
+        assert!(
+            err.to_string().contains("more symbolic links"),
+            "the refusal must name the budget, not some incidental failure: {err}"
+        );
+        assert!(
+            !dir.join("real").join("audit.jsonl").exists(),
+            "the refused open must not have created the sink at the chain's end"
+        );
+
+        // The budget is a bound on the walk, not a refusal of every chain: a short
+        // one still resolves, so this test cannot pass by refusing symlinks outright.
+        let log = AuditLog::with_file(4, dir.join("hop3").join("audit.jsonl"))
+            .expect("a chain within the budget still resolves");
+        log.record(draft(Decision::Allowed));
+        assert!(dir.join("real").join("audit.jsonl").exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The walk resolves the path itself rather than handing it to one `open`, so
+    /// the two shapes that have no file to append to are refused explicitly instead
+    /// of falling through to a component the operator did not write. A trailing
+    /// separator is the one that matters: `path.components()` drops it, which would
+    /// otherwise turn the *directory* `…/logs/` into a request to create the file
+    /// `logs`.
+    #[cfg(unix)]
+    #[test]
+    fn with_file_refuses_a_path_that_names_no_file() {
+        let dir = scratch_dir("no-file-name");
+        let trailing = PathBuf::from(format!("{}/logs/", dir.join("x").display()));
+
+        let Err(err) = AuditLog::with_file(4, &trailing) else {
+            panic!("a path with a trailing separator names a directory");
+        };
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput, "{err}");
+        assert!(err.to_string().contains("names a directory"), "{err}");
+        assert!(
+            !dir.join("x").exists(),
+            "the refused path must not have created the component before it"
+        );
+
+        let Err(err) = AuditLog::with_file(4, dir.join("..")) else {
+            panic!("a path ending in `..` names a directory");
+        };
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput, "{err}");
+        assert!(err.to_string().contains("names a directory"), "{err}");
+
+        // The shape that slipped past the first version of this guard, which tested
+        // for a trailing separator: `components()` normalises a trailing `.` away
+        // entirely, so `<dir>/nested/.` arrived indistinguishable from
+        // `<dir>/nested` and would have *created* `nested` as a regular file.
+        let Err(err) = AuditLog::with_file(4, dir.join("nested").join(".")) else {
+            panic!("a path ending in `.` names a directory");
+        };
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput, "{err}");
+        assert!(err.to_string().contains("names a directory"), "{err}");
+        assert!(
+            !dir.join("nested").exists(),
+            "a path naming a directory must not create a file where the directory was named"
         );
         let _ = std::fs::remove_dir_all(&dir);
     }
