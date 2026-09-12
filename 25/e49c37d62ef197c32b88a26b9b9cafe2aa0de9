@@ -1,0 +1,19 @@
+.claude/agent-memory/review-review-pr-test-analyzer/audit_sink_response_fallback_only_tests_key_source.md
+  s_768232b2089e4d::t_32294c258bd245 1-31
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "25e49c37d62ef197c32b88a26b9b9cafe2aa0de9",
+  "prompts": {},
+  "sessions": {
+    "s_768232b2089e4d": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "56eb0cb4-3eea-4ae1-ae99-df37d60e8d08",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
