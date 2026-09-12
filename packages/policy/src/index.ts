@@ -33,8 +33,10 @@ export interface Rule {
    *
    * Neither check validates CEL. A condition can be non-blank and still fail
    * to compile — a lone `@`, `§`, or zero-width space is not a CEL expression
-   * — in which case the engine declines the rule and the egress default
-   * answers. Passing this check only means the field is not empty.
+   * — and passing this check only means the field is not empty. Since #191 the
+   * Rust loader is where such a condition is caught: `Policy::from_yaml` fails
+   * the load and names every rule responsible, rather than loading the policy
+   * with those rules inert.
    */
   condition: string
   verdict: Verdict

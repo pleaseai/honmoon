@@ -4,6 +4,7 @@
 //! protocol [`Facts`] and receives a [`Verdict`].
 
 use std::collections::{BTreeMap, HashMap};
+use std::fmt;
 
 use serde::{Deserialize, Serialize};
 
@@ -197,25 +198,28 @@ pub struct K8sFacts {
 impl Policy {
     /// Parse a policy from YAML.
     ///
-    /// An unusable `endpoints` entry and a rule with a blank `condition` are
-    /// errors (see [`Policy::validate_endpoints`] and
-    /// [`Policy::validate_rules`]); an *undefined* endpoint reference and an
-    /// unreachable rule are only warnings (see
+    /// An unusable `endpoints` entry, a rule with a blank `condition`, and a
+    /// rule whose `condition` the CEL compiler rejects are errors (see
+    /// [`Policy::validate_endpoints`], [`Policy::validate_rules`] and
+    /// [`Policy::validate_compiled_conditions`]); an *undefined* endpoint
+    /// reference and an unreachable rule are only warnings (see
     /// [`Policy::warn_undefined_endpoints`] and
     /// [`Policy::warn_shadowed_rules`]).
+    ///
+    /// The compile check is last because it is the only one that needs the
+    /// conditions compiled, and the compile is also what a policy that loads
+    /// keeps. So a policy refused for a bad condition has already emitted the
+    /// two warnings above — they are about other rules and still true, and an
+    /// author fixing the file is better served seeing every complaint at once
+    /// than one per run.
     pub fn from_yaml(src: &str) -> Result<Self, Error> {
         let mut policy: Self = serde_yaml::from_str(src).map_err(Error::Parse)?;
         policy.validate_endpoints()?;
         policy.validate_rules()?;
         policy.warn_undefined_endpoints();
         policy.warn_shadowed_rules();
-        // Last, and only on a policy that passed validation: a condition that
-        // fails to compile is *not* a load failure — it warns here and the rule
-        // declines at evaluation exactly as it did when the compile happened
-        // there. Rejecting such a policy would change when an operator learns
-        // about a bad rule, which is its own change (#164's follow-up list, and
-        // the second half of #167).
         policy.compiled = engine::CompiledConditions::compile(&policy.rules);
+        policy.validate_compiled_conditions()?;
         Ok(policy)
     }
 
@@ -283,6 +287,53 @@ impl Policy {
             }
         }
         Ok(())
+    }
+
+    /// Reject rules whose `condition` the CEL compiler will not accept.
+    ///
+    /// A condition that does not compile can never match, so the rule sits in
+    /// the policy looking active and answers nothing — the same failure mode a
+    /// blank condition has, arrived at by a different route. Until #191 it was
+    /// only a warning: the gateway started, the rule was inert, and an operator
+    /// found out whenever somebody next read the log. It is an error now, where
+    /// the author sees it, like an unusable `endpoints` entry.
+    ///
+    /// What closed the old objection is that there is no longer a crash to
+    /// trade against. #154 declined load-time compilation because it "moves the
+    /// panic from request time to startup"; on `cel` 0.14 every input class
+    /// #151 and #154 measured returns `Err` rather than panicking (#164
+    /// measured 12/17 panicking inputs before, 0/17 after), so what moves to
+    /// startup is a diagnostic, not a panic.
+    ///
+    /// **Every** offending rule is reported, not the first. Three malformed
+    /// conditions are three edits, and naming one per load would make that
+    /// three runs to discover. That is what the loader's two per-rule warnings
+    /// ([`Policy::warn_undefined_endpoints`] and `warn_shadowed_rules`) already
+    /// do for the other two ways a rule goes inert; it differs from
+    /// [`Policy::validate_rules`] and [`Policy::validate_endpoints`], which
+    /// return on the first offender, because those read one field at a time
+    /// while this one has already compiled every condition and so is holding
+    /// the whole answer.
+    ///
+    /// A **blank** condition never reaches here: [`Policy::validate_rules`]
+    /// returns before the compile, and its `"condition is blank"` message is
+    /// the better one for the malformed condition an author writes by accident.
+    fn validate_compiled_conditions(&self) -> Result<(), Error> {
+        let rules: Vec<UncompilableRule> = self
+            .compiled
+            .inert_rules(&self.rules)
+            .into_iter()
+            .map(|(index, rule)| UncompilableRule {
+                index,
+                name: rule.name.clone(),
+                condition: rule.condition.clone(),
+            })
+            .collect();
+
+        if rules.is_empty() {
+            return Ok(());
+        }
+        Err(Error::UncompilableRuleConditions { rules })
     }
 
     /// Look up the endpoint declared for the `(host, port)` a client dialed.
@@ -421,6 +472,56 @@ fn normalize_host(host: &str) -> String {
     host.trim_end_matches('.').to_ascii_lowercase()
 }
 
+/// A rule whose `condition` is not a valid CEL expression, as named by
+/// [`Error::UncompilableRuleConditions`].
+///
+/// Carries the rule's position as well as its name for the same reason
+/// [`Error::BlankRuleCondition`] does: [`Rule::name`] is an ordinary field, not
+/// a map key like an endpoint's, so nothing requires it to be unique or even
+/// non-empty and on its own it can name two rules or none.
+///
+/// It carries the `condition` text too, which the blank error has no use for —
+/// there the text is empty by definition, while here it is the thing the author
+/// has to go and fix. A policy is parsed from a string, so the loader has no
+/// line number to quote instead.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UncompilableRule {
+    /// Position in [`Policy::rules`].
+    pub index: usize,
+    /// The rule's [`name`](Rule::name), as written.
+    pub name: String,
+    /// The [`condition`](Rule::condition) text the compiler rejected.
+    pub condition: String,
+}
+
+impl fmt::Display for UncompilableRule {
+    /// Both author-written values are rendered with `{:?}` rather than wrapped
+    /// in backticks, which is what the other variants here do with a `name`.
+    ///
+    /// The condition is why. Four of the classes this error exists to catch —
+    /// a lone `U+200B`, BOM, word joiner or soft hyphen — are *invisible*, and
+    /// between backticks they render as nothing: an operator would be told a
+    /// condition is not valid CEL and shown an empty pair of backticks, which
+    /// is precisely the "you would never spot it" problem the check is for.
+    /// `{:?}` prints them as `"\u{200b}"`. It also escapes a newline or a
+    /// control character, which otherwise breaks a report whose clauses are
+    /// joined on one line, and it leaves ordinary CEL alone — `str`'s `Debug`
+    /// escapes `"` and `\` but not `'`, so `sql.verb == 'DROP'` reads
+    /// unchanged.
+    ///
+    /// The `name` follows for the same reason at one remove: it is the other
+    /// value an author controls, it appears in the same joined line, and
+    /// quoting the two halves of one clause differently would read as an
+    /// accident.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "rule {:?} (rules[{}]) has a `condition` that is not a valid CEL expression: {:?}",
+            self.name, self.index, self.condition
+        )
+    }
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     #[error("failed to parse policy: {0}")]
@@ -431,6 +532,14 @@ pub enum Error {
         "rule `{name}` (rules[{index}]) has a blank `condition`; write `\"true\"` for a rule that always matches"
     )]
     BlankRuleCondition { index: usize, name: String },
+    /// Every rule the CEL compiler rejected, in rule order — see
+    /// [`Policy::validate_compiled_conditions`] for why all of them rather than
+    /// the first.
+    ///
+    /// One clause per rule, joined with `; `, so a policy with a single bad
+    /// condition reads exactly like the other single-cause errors here.
+    #[error("{}", .rules.iter().map(ToString::to_string).collect::<Vec<_>>().join("; "))]
+    UncompilableRuleConditions { rules: Vec<UncompilableRule> },
     #[error(
         "endpoints `{first}` and `{second}` both target {host}:{port}; each target must have one name"
     )]
@@ -660,19 +769,35 @@ endpoints:
         );
 
         // `U+FEFF` is *not* whitespace to Rust, so a condition of only that is
-        // not blank and does load. It is still unevaluable — the CEL compiler
-        // rejects it like any other lone character the lexer cannot start a
-        // token with (#154), so the rule declines at request time — which is
-        // precisely why this check does not claim to be a validity test, only
-        // an emptiness one.
-        Policy::from_yaml(
+        // not blank and passes this check. It is still unevaluable — the CEL
+        // compiler rejects it like any other lone character the lexer cannot
+        // start a token with (#154) — so since #191 it fails the load at the
+        // *compile* check instead, one step later.
+        //
+        // Which error comes back is what pins the boundary between the two
+        // checks, and it is the whole point of this test: `is_blank_condition`
+        // is an emptiness test, not a validity test, so a character that is
+        // invisible without being whitespace has to fall to the compiler. A
+        // narrowing or widening of `is_blank_condition` that moved this code
+        // point would swap the variant here.
+        let error = Policy::from_yaml(
             "rules:\n  - name: bom\n    endpoint: '*'\n    condition: \"\\ufeff\"\n    verdict: allow\n",
         )
-        .expect("U+FEFF is not whitespace, so the condition is not blank");
+        .expect_err("U+FEFF is not valid CEL either, so the policy does not load");
+        let Error::UncompilableRuleConditions { rules } = &error else {
+            panic!("U+FEFF is not whitespace, so this must not be the blank error: {error}");
+        };
+        assert_eq!(rules.len(), 1);
+        assert_eq!(rules[0].name, "bom");
+        assert_eq!(rules[0].condition, "\u{feff}");
     }
 
-    /// The load-time check is about a condition with nothing in it, not about
-    /// a condition the loader dislikes: it never inspects CEL syntax.
+    /// [`is_blank_condition`] is about a condition with nothing in it, and
+    /// nothing more: it does not inspect CEL syntax, which is why the compile
+    /// check exists beside it. These conditions clear both — content, and an
+    /// expression that compiles — including the one that is only `true` with
+    /// spaces around it, since the blank test trims and the compiler does not
+    /// mind.
     #[test]
     fn accepts_a_rule_whose_condition_has_content() {
         for condition in ["\"true\"", "\"sql.verb == 'DROP'\"", "\" true \""] {
@@ -681,6 +806,157 @@ endpoints:
             ))
             .unwrap_or_else(|error| panic!("condition {condition} should load: {error}"));
         }
+    }
+
+    /// #191: a condition the CEL compiler rejects fails the load, naming the
+    /// rule and quoting the condition.
+    ///
+    /// The classes are #154's, minus the blank ones — those never reach the
+    /// compile check, because `validate_rules` returns first and says
+    /// "condition is blank" instead. Everything here is a condition an author
+    /// wrote something into that CEL cannot read, including four that render
+    /// as nothing in an editor and so are exactly the rules an operator would
+    /// never spot going inert.
+    #[test]
+    fn rejects_a_rule_whose_condition_does_not_compile() {
+        // Escaped for YAML, so the policy text carries the code point rather
+        // than the escape.
+        for (condition, written) in [
+            ("\"&&\"", "&&"),
+            ("\")\"", ")"),
+            ("\"true &&\"", "true &&"),
+            ("\"()\"", "()"),
+            ("\"// nothing\"", "// nothing"),
+            ("\"@\"", "@"),
+            ("\"\\u00a7\"", "\u{00a7}"),
+            // Astral plane, so YAML needs `\U` and eight digits — `\u` takes
+            // exactly four and would carry a different string through.
+            ("\"\\U0001f600\"", "\u{1f600}"),
+            // Invisible without being whitespace: zero-width space, BOM, word
+            // joiner, soft hyphen.
+            ("\"\\u200b\"", "\u{200b}"),
+            ("\"\\ufeff\"", "\u{feff}"),
+            ("\"\\u2060\"", "\u{2060}"),
+            ("\"\\u00ad\"", "\u{00ad}"),
+        ] {
+            let error = Policy::from_yaml(&format!(
+                "rules:\n  - name: broken\n    endpoint: '*'\n    condition: {condition}\n    verdict: allow\n"
+            ))
+            .unwrap_err();
+
+            let Error::UncompilableRuleConditions { rules } = &error else {
+                panic!("condition {condition}: unexpected error: {error}");
+            };
+            assert_eq!(
+                rules,
+                &[UncompilableRule {
+                    index: 0,
+                    name: "broken".into(),
+                    condition: written.to_string(),
+                }],
+                "condition {condition}"
+            );
+        }
+    }
+
+    /// Every offending rule is named, not the first — a policy with three
+    /// malformed conditions is three edits, and reporting one per load would
+    /// make that three runs to find them all.
+    ///
+    /// Also the reason the report carries positions: two of these rules are
+    /// called `dup`, so the names alone do not say which rules they are.
+    #[test]
+    fn names_every_rule_whose_condition_does_not_compile() {
+        let error = Policy::from_yaml(
+            "egress:\n  default: deny\nrules:\n  \
+             - name: dup\n    endpoint: '*'\n    condition: \"&&\"\n    verdict: allow\n  \
+             - name: sound\n    endpoint: '*'\n    condition: \"http.method == 'GET'\"\n    verdict: allow\n  \
+             - name: dup\n    endpoint: '*'\n    condition: \"&&\"\n    verdict: allow\n  \
+             - name: other\n    endpoint: '*'\n    condition: \"@\"\n    verdict: deny\n",
+        )
+        .expect_err("three conditions do not compile");
+
+        let Error::UncompilableRuleConditions { rules } = &error else {
+            panic!("unexpected error: {error}");
+        };
+
+        // In rule order, the sound rule skipped — and both rules sharing the
+        // one unusable condition are there. The compiler is asked once for
+        // `"&&"`; the accounting is per rule, so deduping it along with the
+        // compile would leave the third rule unnamed and its author fixing the
+        // policy twice.
+        assert_eq!(
+            rules,
+            &[
+                UncompilableRule {
+                    index: 0,
+                    name: "dup".into(),
+                    condition: "&&".into(),
+                },
+                UncompilableRule {
+                    index: 2,
+                    name: "dup".into(),
+                    condition: "&&".into(),
+                },
+                UncompilableRule {
+                    index: 3,
+                    name: "other".into(),
+                    condition: "@".into(),
+                },
+            ]
+        );
+
+        // The message names each of them, so an operator reading stderr gets
+        // what the struct carries. This is the whole diagnostic: a policy is
+        // parsed from a string, so there is no line number to quote.
+        let message = error.to_string();
+        assert_eq!(
+            message,
+            "rule \"dup\" (rules[0]) has a `condition` that is not a valid CEL expression: \"&&\"; \
+             rule \"dup\" (rules[2]) has a `condition` that is not a valid CEL expression: \"&&\"; \
+             rule \"other\" (rules[3]) has a `condition` that is not a valid CEL expression: \"@\""
+        );
+    }
+
+    /// A blank condition is still the blank error, not the compile one.
+    ///
+    /// `validate_rules` runs before the compile, so the message that tells an
+    /// author what to write instead survives #191 — which matters because
+    /// blank is the malformed condition they reach by accident, and
+    /// `"is not a valid CEL expression: ``"` would tell them nothing.
+    #[test]
+    fn a_blank_condition_is_still_reported_as_blank() {
+        let error = Policy::from_yaml(
+            "rules:\n  - name: broken\n    endpoint: '*'\n    condition: \"&&\"\n    verdict: allow\n  \
+             - name: blank\n    endpoint: '*'\n    condition: \"\"\n    verdict: allow\n",
+        )
+        .expect_err("neither condition is evaluable");
+
+        assert!(
+            matches!(&error, Error::BlankRuleCondition { index, name } if *index == 1 && name == "blank"),
+            "the blank rule is reported as blank even though an earlier rule fails to compile: {error}"
+        );
+    }
+
+    /// The other side of #191: a policy whose conditions all compile loads
+    /// exactly as it did before, table and all.
+    ///
+    /// The guard on the change being a *rejection* of bad policies rather than
+    /// a narrowing of what counts as a good one — `agent.yaml`, the shipped
+    /// example, is covered separately by
+    /// `engine::tests::shipped_example_policy_fires`.
+    #[test]
+    fn a_policy_whose_conditions_all_compile_still_loads() {
+        let policy = Policy::from_yaml(
+            "egress:\n  default: deny\nrules:\n  \
+             - name: drop\n    endpoint: postgres-prod\n    condition: \"sql.verb == 'DROP'\"\n    verdict: pause\n  \
+             - name: secrets\n    endpoint: k8s-prod\n    condition: \"k8s.resource == 'secrets' && k8s.verb == 'delete'\"\n    verdict: deny\n  \
+             - name: always\n    endpoint: '*'\n    condition: \"true\"\n    verdict: allow\n",
+        )
+        .expect("every condition compiles");
+
+        assert_eq!(policy.rules.len(), 3);
+        assert_eq!(policy.compiled_conditions().len(), 3);
     }
 
     /// A misspelled key must not silently disable protocol inspection: without

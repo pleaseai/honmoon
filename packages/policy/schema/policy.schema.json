@@ -54,7 +54,7 @@
           "type": "string",
           "minLength": 1,
           "pattern": "[^\\s\\u0085]|\\uFEFF",
-          "description": "CEL expression over protocol facts. Must not be blank: a blank condition carries no expression, so the rule can never match and would sit in the policy looking active while doing nothing -- Policy::from_yaml refuses to load one. Write \"true\" for a rule that always matches. The pattern mirrors the Rust check (char::is_whitespace) exactly: ECMAScript \\s differs from Unicode White_Space only by excluding U+0085 and including U+FEFF, and the class corrects for both. It is not a CEL validator -- a non-blank condition that is not a valid expression compiles to an error and the engine declines the rule."
+          "description": "CEL expression over protocol facts. Must not be blank: a blank condition carries no expression, so the rule can never match and would sit in the policy looking active while doing nothing -- Policy::from_yaml refuses to load one. Write \"true\" for a rule that always matches. The pattern mirrors the Rust check (char::is_whitespace) exactly: ECMAScript \\s differs from Unicode White_Space only by excluding U+0085 and including U+FEFF, and the class corrects for both. It is not a CEL validator -- a non-blank condition that is not a valid expression passes here and is refused by Policy::from_yaml instead, which since #191 fails the load and names every rule whose condition did not compile."
         },
         "verdict": { "$ref": "#/$defs/verdict" }
       }

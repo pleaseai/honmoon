@@ -134,16 +134,22 @@ The test `egress_allow_deny_and_default` locks all four cases, including "deny w
 A rule's condition is a [CEL](https://github.com/google/cel-spec) expression compiled by `cel`.
 The compile happens **once, at load**: `Policy::from_yaml` hands every distinct condition to
 `Program::compile` and carries the results on the policy
-([lib.rs:206-226](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/lib.rs#L206-L226),
-[engine.rs:185-281](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/engine.rs#L185-L281)).
+([lib.rs:199-224](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/lib.rs#L199-L224),
+[engine.rs:185-285](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/engine.rs#L185-L285)).
 Evaluating a rule then looks its program up rather than parsing CEL again
-([engine.rs:283-300](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/engine.rs#L283-L300)).
+([engine.rs:287-319](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/engine.rs#L287-L319)).
 
-The compiler is asked once per **distinct** condition, but a condition that will not compile is
-warned about once per **rule** carrying it — two rules sharing one unusable expression are two
-inert rules, and naming only the first would leave the second doing nothing with nothing in any log
-identifying it. That matches `warn_undefined_endpoints` and `warn_shadowed_rules`, the loader's
-other two "a rule of yours is inert" warnings, which are also per rule.
+A condition the compiler rejects **fails the load**. Since
+[#191](https://github.com/pleaseai/honmoon/issues/191) `Policy::from_yaml` returns
+`Error::UncompilableRuleConditions` rather than warning and carrying on, so a policy that loads
+holds a compiled `Program` for every condition its rules carry
+([lib.rs:292-337](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/lib.rs#L292-L337)).
+
+The compiler is asked once per **distinct** condition, but the rejection names once per **rule**
+carrying it — two rules sharing one unusable expression are two inert rules, and naming only the
+first would send their author back for a second run. That matches `warn_undefined_endpoints` and
+`warn_shadowed_rules`, the loader's two "a rule of yours is inert" *warnings*, which are also per
+rule.
 
 That table is keyed by the **condition text**, not by the rule's position or name, so it cannot go
 stale: `Rule::condition` is a public field, and a reassigned condition misses the table and is
@@ -155,7 +161,9 @@ policy did before [#167](https://github.com/pleaseai/honmoon/issues/167).
 (`http`, `sql`, `k8s`, and always `pii`), and runs the program. **Only `Ok(Bool(true))` counts as a
 match** — every other outcome (runtime error, non-bool, `false`) means "no match", and so does a
 condition that never compiled
-([engine.rs:375-421](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/engine.rs#L375-L421)).
+([engine.rs:398-444](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/engine.rs#L398-L444)).
+A loaded policy has none of those left; that arm answers a `Policy` built in code, and a
+`Rule::condition` reassigned after the load.
 
 ```mermaid
 sequenceDiagram
@@ -167,7 +175,7 @@ sequenceDiagram
   L->>CEL: Program::compile(condition), once per distinct condition
   alt compile error
     CEL-->>L: Err → recorded as inert
-    L->>L: warn! naming every rule that carries that condition
+    L->>L: load fails, naming every rule that carries that condition
   else compiled
     CEL-->>L: Program → stored under the condition text
   end
@@ -188,7 +196,7 @@ sequenceDiagram
     EP-->>D: matches!(result, Ok(Bool(true)))
   end
 ```
-<!-- Sources: crates/honmoon-core/src/lib.rs:206-226, crates/honmoon-core/src/engine.rs:185-300, crates/honmoon-core/src/engine.rs:375-421 -->
+<!-- Sources: crates/honmoon-core/src/lib.rs:199-224, crates/honmoon-core/src/lib.rs:292-337, crates/honmoon-core/src/engine.rs:185-319, crates/honmoon-core/src/engine.rs:398-444 -->
 
 Each fact sub-struct derives `Serialize`, and `cel::to_value` converts it into a CEL
 value bound under its name — so `http.method`, `sql.verb`, and `k8s.resource` are addressable in
@@ -201,7 +209,7 @@ The engine cannot be tricked into allowing by a broken rule. Three mechanisms co
 | Mechanism | Effect | Source |
 |-----------|--------|--------|
 | `Egress::default = Deny` | Unmatched domain denies | [lib.rs:48-60](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/lib.rs#L48-L60) |
-| Compile error → no program | A malformed condition never matches | [engine.rs:302-333](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/engine.rs#L302-L333) |
+| Compile error → no program | A malformed condition never matches | [engine.rs:321-353](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/engine.rs#L321-L353) |
 | Missing fact → `false` | A condition on an unpopulated fact never matches | [engine.rs:408-419](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/engine.rs#L408-L419) |
 
 `unknown_fact_reference_does_not_match` proves that a `sql.verb == 'DROP'` rule, evaluated when

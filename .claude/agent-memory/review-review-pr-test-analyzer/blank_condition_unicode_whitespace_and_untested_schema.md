@@ -49,3 +49,16 @@ whitespace is exercised (it is today) and do **not** ask for zero-width characte
 into the same check — point at #154 instead. For a PR touching `policy.schema.json`, note that no
 test in this repo will catch a broken schema until #157 or #42 lands, so the review is the only
 gate.
+
+## Update from #191 (PR #197): the "not blank" class no longer panics — it now fails the load
+
+`Policy::from_yaml` compiles every rule condition at load and, since #191, refuses the policy
+(`Error::UncompilableRuleConditions`) if any fails to compile, instead of warning and loading it
+anyway. So U+200B/U+FEFF/U+2060/U+00AD and the rest of the not-blank-but-unlexable class described
+above no longer "load cleanly and panic at request time" — cel 0.14 (measured by #164) turns those
+panics into `Err` (12/17 panicking inputs before, 0/17 after), and `from_yaml` now surfaces that
+`Err` as a load failure naming the rule, index and condition text. PR #197's
+`rejects_a_rule_whose_condition_does_not_compile` test in `lib.rs` pins exactly this class
+(including U+200B/U+FEFF/U+2060/U+00AD) going through `UncompilableRuleConditions` rather than
+loading. `is_blank_condition` itself is unchanged (still Unicode-whitespace-only, still does not
+absorb zero-width chars) — only what happens to a condition it lets through changed.
