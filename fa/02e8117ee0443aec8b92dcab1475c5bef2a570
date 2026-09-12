@@ -1,0 +1,28 @@
+packages/api/src/auth.ts
+  s_d720448ec7c988::t_d992bb9a49d759 47
+  s_d720448ec7c988::t_ed6794e8436cc7 18,36-44,46,114-120
+packages/api/src/routes.ts
+  s_d720448ec7c988::t_ed6794e8436cc7 23-29
+packages/api/src/routes.test.ts
+  s_d720448ec7c988::t_cb22ab94ec7ff9 66-75
+packages/api/src/auth.test.ts
+  s_d720448ec7c988::t_cb22ab94ec7ff9 5
+  s_d720448ec7c988::t_dcdd13dd7da055 1,73-75,92-121
+  s_d720448ec7c988::t_89cb4913938497 122-123
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "fa02e8117ee0443aec8b92dcab1475c5bef2a570",
+  "prompts": {},
+  "sessions": {
+    "s_d720448ec7c988": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "069c4824-e961-4929-8157-1ff587135fd5",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
