@@ -92,7 +92,22 @@ const FRONTMATTER = /^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/
 //     value opening on a no-break space, which dropped the description
 //     entirely. It does not affect what is captured: `[ \t]*` is greedy, so
 //     the group captures the same text `(.*)?` would.
-const TOP_LEVEL_KEY = /^([ \t]*)([a-z][\w-]*):[ \t]*([^ \t].*)?$/i
+const TOP_LEVEL_KEY = /^([ \t]*)([a-z][\w-]*):[ \t]*([^ \t][^\r\n]*)?$/i
+
+/**
+ * The two line terminators JavaScript has and YAML does not.
+ *
+ * `.` never matches `U+2028` or `U+2029`, so a value holding one stopped the
+ * key pattern dead and the description did not drift — it vanished, with
+ * nothing reported. Both readers treat them as ordinary characters, which is
+ * why the value group spells its own class rather than using `.`: this is the
+ * only place the two definitions of "a line" disagree, and a description is
+ * one line by construction here.
+ *
+ * Unquoted they are a different answer, and that one *is* a disagreement:
+ * pyyaml refuses the document, Bun.YAML reads it.
+ */
+const PLAIN_LINE_SEPARATOR = /[\u2028\u2029]/
 
 /**
  * The separators YAML actually pads a scalar with, for trimming a value's edges.
@@ -456,6 +471,7 @@ export function parseFrontmatter(text: string): Frontmatter {
   const underIndented = new Set<string>()
   const tabIndented = new Set<string>()
   const tabInPlain = new Set<string>()
+  const separatorInPlain = new Map<string, string>()
   const closedByComment = new Set<string>()
   const brokenByBlank = new Set<string>()
   // A frontmatter mapping may be indented as a whole; what makes a key a *root*
@@ -545,6 +561,10 @@ export function parseFrontmatter(text: string): Frontmatter {
           // rule. Quoting is the form that carries a tab to every reader.
           if (!/^['"]/.test(value) && value.includes('\t')) {
             tabInPlain.add(key)
+          }
+          const separator = !/^['"]/.test(value) && PLAIN_LINE_SEPARATOR.exec(value)
+          if (separator) {
+            separatorInPlain.set(key, separator[0])
           }
         }
       }
@@ -665,6 +685,12 @@ export function parseFrontmatter(text: string): Frontmatter {
         continue
       }
 
+      const separator = plainScalar && PLAIN_LINE_SEPARATOR.exec(line)
+      if (separator) {
+        separatorInPlain.set(key, separator[0])
+        continue
+      }
+
       // A quoted scalar that has already closed is finished. A comment may
       // still follow it — YAML drops that — but content cannot: it lands where
       // a key is expected and neither reader will parse it.
@@ -750,6 +776,12 @@ export function parseFrontmatter(text: string): Frontmatter {
 
     if (tabIndented.has(name)) {
       problems.push(`\`${name}:\` is continued by a line indented with a tab, which YAML does not accept as indentation — indent with spaces`)
+    }
+
+    const separator = separatorInPlain.get(name)
+    if (separator !== undefined) {
+      const point = (separator.codePointAt(0) ?? 0).toString(16).toUpperCase()
+      problems.push(`\`${name}:\` holds a line separator (U+${point}) in a plain scalar, which pyyaml refuses to load and Bun.YAML keeps — quote the value so every reader sees the same text`)
     }
 
     if (tabInPlain.has(name)) {

@@ -450,7 +450,12 @@ metadata:
   // note as `first \t# note`.
   test('keeps a tab before a hash inside a block scalar', () => {
     const text = noteWith(`>\n  first\n  \t# note`)
-    expect(parseFrontmatter(text).problems).toEqual([])
+    // Asserting the value, not only that nothing was reported: both readers
+    // yield `first\n\t# note\n` here, and an index line is one line, so the
+    // run of break-and-tab collapses to the single space this carries. A test
+    // that checked `problems` alone would pass on a parser that dropped the
+    // `# note` outright.
+    expect(parseFrontmatter(text)).toMatchObject({ scalars: { description: 'first # note' }, problems: [] })
   })
 
   // A tab-indented line reaching no key at all still puts a tab where the
@@ -490,6 +495,32 @@ metadata:
       expect(parseFrontmatter(text).problems).toEqual([])
     }
     expect(parseFrontmatter(noteWith(String.raw`"before\0after"`)).problems).toEqual([])
+  })
+
+  // U+2028 and U+2029 are not line breaks to either reader — pyyaml and
+  // Bun.YAML both keep them as characters — but they *are* line terminators to
+  // JavaScript, so `.` could not cross one and the key matched nothing at all.
+  // The description did not drift; it vanished, and silently.
+  //
+  // The value that survives is the collapsed one, because an index line is one
+  // line: both readers yield `a<separator>b`, and that is the run this folds to
+  // a single space. What matters is that the text is there and matches them.
+  test('keeps a quoted description that holds a line separator', () => {
+    for (const separator of ['\u2028', '\u2029']) {
+      for (const quote of ['"', '\'']) {
+        const text = `---\nname: a-note\ndescription: ${quote}a${separator}b${quote}\n---\n`
+        expect(parseFrontmatter(text)).toMatchObject({ scalars: { description: 'a b' }, problems: [] })
+      }
+    }
+  })
+
+  // Unquoted is a different answer: pyyaml refuses the document and Bun.YAML
+  // reads it, which is the disagreement this reader exists to report.
+  test('reports a line separator in a plain scalar', () => {
+    for (const separator of ['\u2028', '\u2029']) {
+      const text = `---\nname: a-note\ndescription: a${separator}b\n---\n`
+      expect(parseFrontmatter(text).problems).toEqual([expect.stringContaining('line separator')])
+    }
   })
 
   // `%` opens a directive, and `,`, `]`, `}` close flow collections that were
