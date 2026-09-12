@@ -1,6 +1,6 @@
 ---
 name: pr163-audit-sink-comment-claims
-description: Doc-comment claims in audit.rs that were wrong when first written across PR #163 and PR #179 (issue #160) — drifted names, unqualified/self-contradicted errno claims, overstated portability, a stale one-line fn doc left behind by a more careful comment added nearby — plus the checks that caught them, which are cheap to repeat
+description: "Doc-comment claims in audit.rs that were wrong when first written across PR #163 and PR #179 (issue #160) — drifted names, unqualified/self-contradicted errno claims, overstated portability, a stale one-line fn doc left behind by a more careful comment added nearby — plus the checks that caught them, which are cheap to repeat"
 metadata:
   type: project
 ---
