@@ -1,6 +1,6 @@
 ---
 name: bun-yaml-frontmatter-reader-168
-description: 'scripts/agent-memory-index.ts reads note frontmatter with Bun.YAML after PR #203 (issue #168) — Bun.YAML does not implement YAML''s c-printable set (it refuses only U+0000) and its SyntaxError carries no position into the YAML, so those two gaps are filled in the script and must survive an edit; the silent discards are recovered by differential probes, whose mask must neutralise everything the unmasking makes parseable (a comment holding `: ` broke this once) and whose stand-ins are searched for rather than fixed, since a fixed one needs a collision guard that is a fail-open; the pyyaml-divergence checks were dropped deliberately, so a finding that this reader and a stricter one disagree about a tab, a line separator or a YAML 1.1 type is answered by that decision, not by a new rule'
+description: 'scripts/agent-memory-index.ts reads note frontmatter with Bun.YAML after PR #203 (issue #168) — Bun.YAML does not implement YAML''s c-printable set (it refuses only U+0000) and its SyntaxError carries no position into the YAML, so those two gaps are filled in the script and must survive an edit; the silent discards are recovered by differential probes, whose mask must neutralise everything the unmasking makes parseable (a comment holding `: ` broke this once) and whose stand-ins are searched for rather than fixed (a fixed one needs a collision guard, and that guard is a fail-open) and whose candidate nomination must admit every spelling the parser collapses to one key (`"description":`, `? description`, flow style); the pyyaml-divergence checks were dropped deliberately, so a finding that this reader and a stricter one disagree about a tab, a line separator or a YAML 1.1 type is answered by that decision, not by a new rule'
 metadata:
   type: project
 ---
@@ -64,6 +64,20 @@ cannot itself cause the refusal. Check what the mask *creates*, not only what it
 Both stand-ins are private-use code points **searched for in the note** rather than fixed, and
 the duplicate probe's key is suffixed until it is absent. A fixed sentinel needs a "does the note
 already contain it?" guard, and that guard is a fail-open the note's own content can trip.
+
+## And what a probe has to *nominate*, which is every spelling the parser collapses
+
+The duplicate probe nominates candidate offsets with a regex and lets the parser rule on them.
+That regex first matched only a bare `description:`, so a repeat spelled `"description":` was never
+nominated and never reported — `Bun.YAML` resolves the quoted and bare spellings to one key and keeps
+the last, exactly as silently. Same for `'description':`, for the explicit key (`? description`
+over `: text`), and for flow style (`{name: a, name: b}`). Three bot reviewers found the quoted
+case independently, which is a fair signal for how visible it is once looked for.
+
+The rule that falls out, and the mirror of the masking one above: **a nomination pattern must be
+as wide as the set of spellings the parser treats as identical.** Loose costs a probe; narrow
+costs a report. Nominate widely on purpose and let the parser be the thing that decides — a value
+wrapping onto a line that reads like a key gets nominated here, probed, and correctly cleared.
 
 ## Deliberately dropped — do not re-file as a regression
 
