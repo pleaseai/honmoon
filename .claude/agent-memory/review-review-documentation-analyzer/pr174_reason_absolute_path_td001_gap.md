@@ -1,6 +1,6 @@
 ---
 name: pr174-reason-absolute-path-td001-gap
-description: 'PR #174 (issue #162) made hook.rs resolve the salt dir to absolute before it reaches `reason`, and added rustdoc to RedactionFacts::reason explaining the deliberate-untrim decision and pointing at #173 — README examples/prose stayed accurate (honmoon_dir() itself is unchanged, still relative when HOME is unset), and packages/policy/src/index.ts''s `reason` JSDoc was missing the mirror — the same TD-001 mirror-drift class pr170 found for a miscount, FIXED in #174 after review'
+description: 'PR #174 (issue #162) made hook.rs resolve the salt dir to absolute before it reaches `reason`, and added rustdoc to RedactionFacts::reason explaining the deliberate-untrim decision and pointing at #173 (since closed — the management reads are token-gated, do not report them as open) — README examples/prose stayed accurate (honmoon_dir() itself is unchanged, still relative when HOME is unset), and packages/policy/src/index.ts''s `reason` JSDoc was missing the mirror — the same TD-001 mirror-drift class pr170 found for a miscount, FIXED in #174 after review'
 metadata:
   type: project
 ---
@@ -11,8 +11,9 @@ metadata:
 relative `.honmoon/hook-salt`. `crates/honmoon-core/src/audit.rs` gained substantial new
 rustdoc on `RedactionFacts::reason`: the field is "deliberately untrimmed" (issue #162), the
 path is resolved before the string is built (not *unconditionally* absolute — the
-unreadable-cwd fallback is #176), and the real fix for the unauthenticated-`GET /api/audit`
-exposure is tracked as #173. The settlement is scoped to this content — a local salt path and
+unreadable-cwd fallback is #176), and the real fix for the then-unauthenticated
+`GET /api/audit` exposure was tracked as #173 — **since closed, so that route is token-gated
+now and must not be reported as open**. The settlement is scoped to this content — a local salt path and
 an OS error — not to the field, so a future producer putting something else in the same
 `String` is still reportable.
 

@@ -69,6 +69,12 @@ shared `GatewayState`. `honmoon gateway` runs the proxy and this API on one toki
 | `/healthz` | GET | `{status:"ok"}` | [lib.rs:77-79](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-mgmt/src/lib.rs#L77-L79) |
 | anything else | — | Embedded dashboard (SPA fallback) | [lib.rs:138-168](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-mgmt/src/lib.rs#L138-L168) |
 
+Every `/api` row above requires the management token (issue #173) — either
+`Authorization: Bearer <token>` or the `honmoon_session` cookie that `GET /login?token=…` sets.
+The gate is a `route_layer` on the nested `/api` router, so a new `/api` route is covered by
+construction rather than by remembering to check. `/healthz` and the SPA fallback are the two
+deliberate exceptions and stay open.
+
 One careful detail: the SPA fallback **refuses to mask an unmatched `/api/...` path as `200 text/html`**
 — those 404 honestly, so a failed management action is never hidden behind the dashboard shell
 ([lib.rs:142-146](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-mgmt/src/lib.rs#L142-L146)).
@@ -153,6 +159,13 @@ durable, historical queries `@honmoon/api` reads the **JSONL file** the gateway 
 | `GET /api/audit` | `limit`, `decision`, `since`, `domain` | [audit.ts:43-72](https://github.com/pleaseai/honmoon/blob/main/packages/api/src/audit.ts#L43-L72), [index.ts:45-48](https://github.com/pleaseai/honmoon/blob/main/packages/api/src/index.ts#L45-L48) |
 | `GET /api/audit/stats` | counts by decision | [audit.ts:74-83](https://github.com/pleaseai/honmoon/blob/main/packages/api/src/audit.ts#L74-L83) |
 | `GET /healthz` | — | [index.ts:41-43](https://github.com/pleaseai/honmoon/blob/main/packages/api/src/index.ts#L41-L43) |
+
+Both `/api/audit` routes require the management token as `Authorization: Bearer <token>` (issue
+[#173](https://github.com/pleaseai/honmoon/issues/173)) — the same token the Rust gateway
+requires, resolved from the same places. There is no cookie flow here: this service serves no
+browser shell to log in from, so a caller sends the bearer directly.
+`GET /healthz` is open
+([routes.ts:1-50](https://github.com/pleaseai/honmoon/blob/main/packages/api/src/routes.ts#L1-L50)).
 
 Two correctness details worth noting: results are sorted **by timestamp, not id** (ids restart
 from 1 after a gateway restart, so a reused JSONL file would otherwise misorder)

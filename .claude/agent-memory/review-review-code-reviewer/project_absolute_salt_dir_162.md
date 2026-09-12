@@ -5,10 +5,12 @@ metadata:
   type: project
 ---
 
-PR #174 answers issue #162 (whether `RedactionFacts::reason`, served by unauthenticated
-`GET /api/audit`, should be trimmed) by deciding to keep it whole — filed as #173 (missing
-auth layer) — and fixing the other half: `honmoon_dir()` returns a relative `.honmoon` when
-`HOME` is unset, so a reason like `salt file .honmoon/hook-salt ...` names no file.
+PR #174 answers issue #162 (whether `RedactionFacts::reason`, served by a then-unauthenticated
+`GET /api/audit`, should be trimmed) by deciding to keep it whole — filing the missing auth
+layer as #173, **since closed: every management read now requires the management token, so do
+not report that route as open** — and fixing the other half: `honmoon_dir()` returns a
+relative `.honmoon` when `HOME` is unset, so a reason like `salt file .honmoon/hook-salt
+...` names no file.
 
 Fix: `load_or_create_machine_salt` rebinds `dir` through a new `absolute_salt_dir` (lexical
 `std::path::absolute`, falls back to the path as given on error) as its first line, before

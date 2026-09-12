@@ -70,7 +70,7 @@ now **multi-process** (hook subprocess + gateway append to one file, `write_all`
 buffer on `O_APPEND` — not a hard atomicity guarantee on NFS/short writes); the path is
 opened with `create(true).append(true)`, so it follows symlinks and blocks on a FIFO in a
 process contracted to exit fast; and `reason` is an `anyhow` chain that embeds `$HOME`
-paths and OS errors, surfaced by the unauthenticated `GET /api/audit` and the dashboard
+paths and OS errors, surfaced by `GET /api/audit` (token-gated as of #173) and the dashboard
 — **that content is settled, see the #162 entry below.** No key bytes are serialized —
 `MachineKey`/`MachineKeySource` derive no `Debug`.
 
@@ -111,10 +111,10 @@ the shapes recur, not as open findings:
   winner path looks zero times. Both docs now scope the count to the provenance.
 
 **2026-09 (#162) — the path and OS error in `reason` are deliberate, and now absolute.**
-The question was whether to trim `reason` to an error kind because `GET /api/audit` is
-unauthenticated. Settled: no. `reason` is the hook transport's only durable channel
+The question was whether to trim `reason` to an error kind because `GET /api/audit` was
+then unauthenticated. Settled: no. `reason` is the hook transport's only durable channel
 (fresh process, no ring, `tracing` filtered without `RUST_LOG` — #131), and the same
-unauthenticated response already serves every domain contacted, request path, SQL table
+response already serves every domain contacted, request path, SQL table
 and PII category, so trimming one field costs diagnostics while leaving strictly more
 sensitive fields in the same body. The trim is also near-reversible: the rule name plus
 a salt location documented in the plugin README reconstructs everything but the home
@@ -122,10 +122,12 @@ directory. `load_or_create_machine_salt` now resolves `dir` through `absolute_sa
 (lexical `std::path::absolute`, not `canonicalize`), so the `HOME`-less relative
 `.honmoon/hook-salt` no longer reaches the log as a path nothing can resolve.
 
-**The missing auth layer on the management reads is the real exposure and is tracked
-as #173** — `/api/audit`, `/api/approvals` and `/api/policy` all skip the `authorized()`
-helper that `POST /api/hooks/claude-code` calls. When reviewing this area, raise 173
-rather than the salt path and OS error.
+**The missing auth layer on the management reads was the real exposure, and it is
+closed.** Issue #173 made the management token mandatory: `/api/audit`, `/api/approvals`
+and `/api/policy` are gated by a `route_layer` on the nested `/api` router, so they can
+no longer be added without it, and `AppState.mgmt_token` is a non-optional `Arc<str>`.
+**Do not raise 173, and do not report the management reads as unauthenticated** — both
+are now false. `/healthz` and the static dashboard shell are open by design.
 
 **Scope of that settlement, exactly: two payloads — a local salt path, and an OS error.
 Not the field.** Three things it does NOT cover, all still reportable:
