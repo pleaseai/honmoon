@@ -1,6 +1,6 @@
 ---
 name: pr183-audit-sink-readme-verified
-description: "PR #183 (issue #161) added audit-sink-exposed/foreign-owner/hard-linked degraded events; packages/claude-plugin/README.md's ordering claim (sink events before the salt event, same file), the hook-only-when-degraded scoping claim, and the wire type/dashboard mirror were all verified accurate against audit.rs/hook.rs — a clean-PR calibration point"
+description: "PR #183 (issue #161) added audit-sink-exposed/foreign-owner/hard-linked degraded events; packages/claude-plugin/README.md's ordering claim (sink events before the salt event, same file), the hook-only-when-degraded scoping claim, and the gateway-reports-every-start claim were all verified accurate against audit.rs/hook.rs — a clean-PR calibration point"
 metadata:
   type: project
 ---
