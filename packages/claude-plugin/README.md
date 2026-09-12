@@ -290,6 +290,22 @@ already closed need opposite responses:
 | `hook-salt-exposed` | the key **is** the persisted one, but its file is readable by other local users and the loader could not restrict it to `0600` | tighten the file — the loader already tried and could not |
 | `hook-salt-was-exposed` | the key **is** the persisted one, and the loader *found* its file readable by other local users, then did not see it that way after restricting it | rotate, per the suspicion rule below — the mode is no longer the problem. Where the `reason` says the mode could not be read back, check the file is `0600` first: the correction is unconfirmed there |
 
+The sink can also report on **itself**. Opening it reads the file's mode, owner and link
+count, and anything beyond an owner-only file with one name that this process owns is
+appended as a `degraded` event with `facts.sink` (`path`, `reason`) — before the salt
+event, in the same file. Nothing is corrected: the path is yours, and a group-readable
+log may be one a log shipper reads on purpose (issue #161).
+
+| `rule` | What was observed | What to do |
+| --- | --- | --- |
+| `audit-sink-exposed` | the file's mode admits local users other than its owner — every deployment that created its log before issue #138 has this at the umask default | `chmod 600` it, unless the mode is deliberate |
+| `audit-sink-foreign-owner` | the file is owned by another uid, so honmoon did not create it | point `--audit-log` at a file you own, unless an administrator provisioned this one |
+| `audit-sink-hard-linked` | more than one directory entry names the file's inode, so every record also lands under a name you did not configure | find the other name (`find <dir> -samefile <log>`) and move the log to a directory only you can write |
+
+The hook opens the sink only when it has a degraded key to report, so these appear on the
+hook transport only alongside a `hook-salt-*` event; the gateway reports them at every
+start.
+
 On the fallback rule, `key_source` says which guarantee was lost, because they are not
 the same failure:
 

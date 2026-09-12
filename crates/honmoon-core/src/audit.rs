@@ -57,7 +57,8 @@ pub enum Decision {
     /// key?" from the log rather than from a stderr line nobody read. The
     /// accompanying `verdict` describes what happened to the traffic (`allow`:
     /// fail-open let it through), not the degradation itself, and [`FactsSummary`]
-    /// carries the specifics — see [`RedactionFacts`].
+    /// carries the specifics — see [`RedactionFacts`] for the placeholder key and
+    /// [`AuditSinkFacts`] for the audit file this log is written to.
     Degraded,
 }
 
@@ -173,6 +174,109 @@ pub enum RedactionTransport {
     Gateway,
 }
 
+/// What the sink open observed about who else can reach the audit file, recorded
+/// on a [`Decision::Degraded`] event.
+///
+/// The event's `rule` says which observation this is, and each is its own rule
+/// rather than one rule with the detail in `reason`, because `rule` is what an
+/// operator filters a query on and the three call for different responses:
+///
+/// - `audit-sink-exposed` — the mode admits local users other than the
+///   owner. A `chmod` is the remedy, and it may also be a mode the operator set
+///   on purpose.
+/// - `audit-sink-foreign-owner` — the file belongs to another user, so
+///   honmoon did not create it.
+/// - `audit-sink-hard-linked` — more than one directory entry names the
+///   inode, so every record also lands under a name honmoon never configured.
+///
+/// The last two have no mode to correct: the sink is a file honmoon did not make,
+/// and the fix is a different path rather than a different mode. Folding them into
+/// the first would put the rare, urgent case inside the common, usually benign one
+/// — a deployment that ran honmoon before issue #138 created its audit log at the
+/// umask default, which is group-readable on most hosts.
+///
+/// **Honmoon reports these and changes nothing** (issue #161). Unlike the hook
+/// salt, which `restrict_to_owner_only` re-tightens on every read
+/// (`honmoon-cli/src/hook.rs`), this path is an operator flag rather than a
+/// honmoon-owned secret, and is plausibly collected by a log shipper that was
+/// granted group read deliberately; re-tightening it on every gateway start and
+/// every `honmoon hook` invocation would break that collection with no signal at
+/// all. Refusing the open outright would break it harder, and would also refuse
+/// every audit log that predates issue #138. So this carries what was *observed*,
+/// never what was done — the shape `SaltExposure` settled for the salt (issues
+/// #141, #143, #170), one step further out.
+///
+/// **The event about the sink is written to that sink**, which is the recursion
+/// issue #161 asks about. It is the right channel anyway, and the limits are worth
+/// stating rather than working around:
+///
+/// - It tells the reader something they did not know. A local user the loose mode
+///   admits can already `stat` the file; the *operator*, who reads this log through
+///   `/api/audit` or a shipper, is the one who learns from it.
+/// - It is the only durable channel `honmoon hook` has — a fresh process per
+///   invocation, no ring anyone can query, and `tracing` filtered out without
+///   `RUST_LOG` (issue #131). A `tracing::warn!` is emitted too, but that reaches
+///   the gateway's terminal alone, and the gateway is the path that needed it least.
+/// - A sink another local user can *write* is one they can also truncate, so this
+///   record is a signal rather than a guarantee. That is true of every other record
+///   in the same file, and writing nothing does not improve it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AuditSinkFacts {
+    /// The sink this observation is about, **as the operator configured it**
+    /// (`--audit-log` / `HONMOON_AUDIT_LOG`) — not resolved against the working
+    /// directory the way the hook salt's paths are since issue #174. Rendered with
+    /// `Path::display`, so the one thing it does not preserve is a byte that is
+    /// not UTF-8, which becomes U+FFFD.
+    ///
+    /// A relative path here names no file on its own, and that is deliberate in
+    /// both directions: the record is appended to that same file, so a reader
+    /// holding the log already holds the resolution the string lacks, and the
+    /// string the operator typed is the one they can act on. The reader that
+    /// covers is the one holding the file; the same event is also served from
+    /// the gateway's ring through `GET /api/audit`, where a relative string
+    /// identifies a file only against a working directory the response does not
+    /// carry. The operator who typed it can still resolve it; nobody else can.
+    pub path: String,
+    /// What the `fstat` on the opened descriptor showed, in its own words: the
+    /// mode, the owning uid, or the link count that made this reportable.
+    ///
+    /// A claim about what the kernel allowed at the instant the sink was opened,
+    /// never about who actually read or wrote it.
+    pub reason: String,
+}
+
+/// `rule` on a [`Decision::Degraded`] event whose sink is accessible to local
+/// users other than its owner (issue #161).
+///
+/// Fires on **any** permission beyond the owner, not only a read bit — a log
+/// another local user can write is one they can forge records into or truncate —
+/// and the `reason` names the mode observed rather than assuming which access was
+/// meant. Same rule as the salt's exposure events use.
+const AUDIT_SINK_EXPOSED_RULE: &str = "audit-sink-exposed";
+
+/// `rule` on a [`Decision::Degraded`] event whose sink is owned by a uid other
+/// than this process's effective one (issue #161).
+///
+/// The creation mode in [`open_leaf`] applies only when the open creates the file,
+/// and the type check in [`open_sink`] passes for any regular file, so a path
+/// pre-created by whoever can write the audit directory is appended to exactly as
+/// one honmoon made itself. This is what says so.
+///
+/// It is an observation, not an accusation: a sink an administrator created for a
+/// service account reads the same way, which is why it is reported rather than
+/// refused.
+const AUDIT_SINK_FOREIGN_OWNER_RULE: &str = "audit-sink-foreign-owner";
+
+/// `rule` on a [`Decision::Degraded`] event whose sink inode is named by more than
+/// one directory entry (issue #161).
+///
+/// `O_NOFOLLOW` constrains *symbolic* links only. An actor who can write the audit
+/// directory can `link(2)` the configured path onto a file of their own, and the
+/// result is an ordinary regular file the open accepts; on macOS, which has no
+/// `protected_hardlinks` equivalent, they can also link a file they may only read.
+/// A link count above one is what that leaves behind.
+const AUDIT_SINK_HARD_LINKED_RULE: &str = "audit-sink-hard-linked";
+
 /// A compact, serializable snapshot of the [`Facts`] a decision was made on.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct FactsSummary {
@@ -192,6 +296,12 @@ pub struct FactsSummary {
     /// which describes a request rather than the engine's own posture.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub redaction: Option<RedactionFacts>,
+    /// Set only on a [`Decision::Degraded`] event, and for the same reason as
+    /// `redaction`: it describes the engine's own posture rather than a request.
+    /// A separate field rather than a variant of `redaction`, which is about the
+    /// HMAC key behind placeholder minting and nothing else.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sink: Option<AuditSinkFacts>,
 }
 
 impl From<&Facts> for FactsSummary {
@@ -204,6 +314,7 @@ impl From<&Facts> for FactsSummary {
             k8s: f.k8s.clone(),
             pii: f.pii.clone(),
             redaction: None,
+            sink: None,
         }
     }
 }
@@ -274,12 +385,34 @@ impl AuditLog {
     /// since issue #137, opened by `honmoon hook` as well as by the gateway.
     /// [`open_sink`] documents exactly which hostile targets the open refuses
     /// and which it still accepts.
+    ///
+    /// What it accepts, it now *reports*: a sink reachable by more than this
+    /// process's own user produces a [`Decision::Degraded`] event per observation,
+    /// carrying [`AuditSinkFacts`], before this returns. The mode, the owner and
+    /// the link count are left exactly as they were found — see [`AuditSinkFacts`]
+    /// for why honmoon does not correct an operator's file (issue #161).
+    ///
+    /// Those events go through [`record`](Self::record), so a sink that will not
+    /// take them leaves them in this log's ring with a `tracing` warning rather
+    /// than failing the constructor: a report that cannot be written is not a
+    /// reason to refuse a sink the operator asked for. On the hook transport
+    /// neither the ring nor the warning reaches anyone (issue #131), so an
+    /// observation whose append fails there is lost as such — what survives is
+    /// the salt record that follows on the same descriptor, which goes through
+    /// [`record_durable`](Self::record_durable) and reports the refusing sink
+    /// on the hook response by path and error (issue #182), without saying what
+    /// was observed about it. An observation lost while that salt record
+    /// succeeds is issue #184.
     pub fn with_file(capacity: usize, path: impl Into<PathBuf>) -> std::io::Result<Self> {
         let path = path.into();
-        let file = open_sink(&path)?;
+        let (file, meta) = open_sink(&path)?;
+        let observed = observe_sink(&meta, &path);
         let mut log = Self::new(capacity);
         log.sink = Some(Mutex::new(file));
         log.sink_path = Some(path);
+        for draft in observed {
+            log.record(draft);
+        }
         Ok(log)
     }
 
@@ -456,8 +589,10 @@ impl AuditLog {
 ///   on every read (`honmoon-cli/src/hook.rs`), this path is chosen by the operator
 ///   and may be collected by a log shipper that was granted group read
 ///   deliberately; silently re-tightening it every time the gateway or a hook
-///   process opens it would break that collection with no signal. Reporting it
-///   instead needs a degradation event of its own — issue #161.
+///   process opens it would break that collection with no signal. Accepted, then,
+///   but **no longer silent**: issue #161 settled it as report-don't-enforce, and
+///   [`observe_sink`] raises an `audit-sink-exposed` degradation event off the same
+///   `fstat` this function already performs.
 /// - **A final inode the attacker chose by means other than a symlink.** The
 ///   bullets above are what `O_NOFOLLOW` and the type check cover; this one is the
 ///   same list read from the other side, because enumerating refused *link types*
@@ -477,16 +612,22 @@ impl AuditLog {
 ///   trusts. The payload is
 ///   what makes that matter — the gateway's records name hosts, SQL tables and PII
 ///   categories, and a hook's degradation record carries the absolute `$HOME` path
-///   of the salt it could not use. Closing it means refusing a sink this process
-///   does not solely own (`uid`/`nlink` off the same `fstat`), which is the same
-///   decision as #161's: whether honmoon may refuse or re-tighten an audit file it
-///   did not create. Both are tracked there.
-fn open_sink(path: &Path) -> std::io::Result<std::fs::File> {
+///   of the salt it could not use. Issue #161 weighed refusing such a sink — the
+///   `uid`/`nlink` test is free off the same `fstat` — against reporting it, and
+///   settled on reporting for the reason the bullet above gives: a refusal breaks
+///   the operator whose sink is legitimately not honmoon-created, and it breaks
+///   them at gateway start. So this stays accepted, and [`observe_sink`] raises
+///   `audit-sink-foreign-owner` and `audit-sink-hard-linked` against it. **The
+///   directory case one level up is not covered by either** — a component honmoon
+///   opened successfully is still accepted whoever owns it, and no event says so;
+///   the `fstat` this function holds describes the sink, not the path above it.
+fn open_sink(path: &Path) -> std::io::Result<(std::fs::File, std::fs::Metadata)> {
     let file = open_sink_file(path)?;
 
     // `File::metadata` is `fstat` on the descriptor above, not a fresh lookup of
     // `path`, so this is the type of the object actually opened.
-    let file_type = file.metadata()?.file_type();
+    let meta = file.metadata()?;
+    let file_type = meta.file_type();
     if !file_type.is_file() {
         return Err(std::io::Error::new(
             std::io::ErrorKind::InvalidInput,
@@ -497,7 +638,110 @@ fn open_sink(path: &Path) -> std::io::Result<std::fs::File> {
             ),
         ));
     }
-    Ok(file)
+    // Handed back rather than re-read by the caller: [`observe_sink`] reports on
+    // the same `fstat` this refusal was decided from, so the two cannot disagree
+    // about the object, and there is no second call that could fail and leave the
+    // report silently skipped.
+    Ok((file, meta))
+}
+
+/// Turn what [`open_sink`]'s `fstat` said about the sink into the degradation
+/// events [`AuditLog::with_file`] records — see [`AuditSinkFacts`] for why honmoon
+/// reports this rather than correcting or refusing it.
+///
+/// `meta` describes the descriptor honmoon holds, not a fresh lookup of `path`, so
+/// nothing can be swapped in between the check and the open. The `tracing::warn!`
+/// here is the gateway's fast channel — an operator watching a terminal sees it at
+/// startup — and is deliberately not the only one: under a plugin dispatcher
+/// `honmoon hook` has no `RUST_LOG`, so `EnvFilter` drops it before it is written
+/// (issue #131, issue #165), which is what the durable record is for.
+#[cfg(unix)]
+fn observe_sink(meta: &std::fs::Metadata, path: &Path) -> Vec<AuditDraft> {
+    use std::os::unix::fs::MetadataExt as _;
+
+    // SAFETY: `geteuid` reads process credentials, takes no arguments and is
+    // documented as always succeeding.
+    let euid = unsafe { libc::geteuid() };
+    sink_exposure(meta.mode(), meta.uid(), meta.nlink(), euid)
+        .into_iter()
+        .map(|(rule, reason)| {
+            tracing::warn!(
+                rule,
+                reason = %reason,
+                path = %path.display(),
+                "the audit sink is reachable by more than this process's own user"
+            );
+            AuditDraft {
+                decision: Decision::Degraded,
+                // What happened to the traffic, not to the guarantee: the sink
+                // opened and every record still reaches it. The `degraded`
+                // decision carries the bad news, as it does for the hook salt.
+                verdict: Verdict::Allow,
+                rule: Some(rule.to_string()),
+                facts: FactsSummary {
+                    sink: Some(AuditSinkFacts {
+                        path: path.display().to_string(),
+                        reason,
+                    }),
+                    ..Default::default()
+                },
+                approval_id: None,
+            }
+        })
+        .collect()
+}
+
+/// Non-Unix hosts have neither a POSIX mode nor a uid to read, so there is nothing
+/// to observe and nothing is recorded. Split by `cfg` rather than branched inside
+/// one body, matching [`open_sink_file`].
+#[cfg(not(unix))]
+fn observe_sink(_meta: &std::fs::Metadata, _path: &Path) -> Vec<AuditDraft> {
+    Vec::new()
+}
+
+/// Which of the three sink observations the `fstat` fields carry, each with the
+/// `reason` its event will report.
+///
+/// Takes the four numbers rather than a `Metadata` so every branch — including the
+/// foreign owner, which needs a second uid to exist on the machine — is reachable
+/// from a test. All three are independent, so all three can fire at once: an actor
+/// who hard-links the audit path onto a `0666` file of their own trips every one,
+/// and each is separately true.
+#[cfg(unix)]
+fn sink_exposure(mode: u32, uid: u32, nlink: u64, euid: u32) -> Vec<(&'static str, String)> {
+    let mut observed = Vec::new();
+    if mode & 0o077 != 0 {
+        observed.push((
+            AUDIT_SINK_EXPOSED_RULE,
+            format!(
+                "the audit sink is mode {:04o}, which admits local users other than its owner",
+                mode & 0o7777
+            ),
+        ));
+    }
+    if uid != euid {
+        observed.push((
+            AUDIT_SINK_FOREIGN_OWNER_RULE,
+            format!(
+                "the audit sink is owned by uid {uid} and this process runs as uid {euid}, \
+                 so honmoon did not create it"
+            ),
+        ));
+    }
+    // `> 1`, not `!= 1`: a count of zero means the entry was unlinked between the
+    // `openat` and this `fstat`, which is a sink that no longer exists rather than
+    // one that exists under a second name. Nothing here reports that — an unlink
+    // a moment later is the same loss, and no check at open time sees either.
+    if nlink > 1 {
+        observed.push((
+            AUDIT_SINK_HARD_LINKED_RULE,
+            format!(
+                "{nlink} directory entries name the audit sink's inode, so every record \
+                 also lands under a name honmoon was not given"
+            ),
+        ));
+    }
+    observed
 }
 
 /// How many symlinks one audit path may resolve through before the walk gives up.
@@ -1737,8 +1981,10 @@ mod tests {
     /// The stated limit of the line above: the open mode applies on creation
     /// only, so a sink an operator (or an older honmoon, at the umask default)
     /// already left group-readable keeps that mode. Pinned so the decision is a
-    /// tested behaviour rather than a claim in a doc comment — reporting it
-    /// instead is issue #161.
+    /// tested behaviour rather than a claim in a doc comment. Issue #161 settled
+    /// what to do about it — report, never correct — so the assertion on the mode
+    /// stays exactly as it was and the test now also holds the other half: the
+    /// open says so, once, ahead of anything the caller records.
     #[cfg(unix)]
     #[test]
     fn an_existing_sink_keeps_the_mode_it_had() {
@@ -1762,7 +2008,115 @@ mod tests {
             mode, 0o644,
             "an existing sink must keep its mode, not be silently re-tightened"
         );
+
+        let recent = log.recent(10);
+        assert_eq!(recent.len(), 2, "one observation, then the caller's event");
+        let observed = &recent[1];
+        assert_eq!(
+            observed.id, 1,
+            "the observation is recorded before anything else"
+        );
+        assert_eq!(observed.decision, Decision::Degraded);
+        assert_eq!(observed.verdict, Verdict::Allow);
+        assert_eq!(observed.rule.as_deref(), Some(AUDIT_SINK_EXPOSED_RULE));
+        let facts = observed
+            .facts
+            .sink
+            .as_ref()
+            .expect("sink facts on the observation");
+        assert_eq!(facts.path, path.display().to_string());
+        assert!(facts.reason.contains("mode 0644"), "{}", facts.reason);
+        assert!(observed.facts.redaction.is_none(), "not a key degradation");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The observation is one line in the sink like any other event, and the
+    /// `sink` facts survive the round trip a reader of the file performs.
+    #[cfg(unix)]
+    #[test]
+    fn a_sink_observation_round_trips_through_the_sink() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = scratch_dir("observation-jsonl");
+        let path = dir.join("audit.jsonl");
+        std::fs::write(&path, "").expect("seed sink");
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o660))
+            .expect("loosen sink");
+
+        let _log = AuditLog::with_file(4, &path).expect("open sink");
+
+        let contents = std::fs::read_to_string(&path).expect("read sink");
+        let lines: Vec<&str> = contents.lines().collect();
+        assert_eq!(lines.len(), 1, "{contents}");
+        let event: AuditEvent = serde_json::from_str(lines[0]).expect("one whole event");
+        assert_eq!(event.decision, Decision::Degraded);
+        assert_eq!(event.rule.as_deref(), Some(AUDIT_SINK_EXPOSED_RULE));
+        let facts = event.facts.sink.expect("sink facts survive serialisation");
+        assert!(facts.reason.contains("mode 0660"), "{}", facts.reason);
+        // Absent facts are omitted rather than written as `null`, as every other
+        // `FactsSummary` field is — a reader of an older log sees the same shape.
+        assert!(!lines[0].contains("\"redaction\""), "{}", lines[0]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The `fstat` fields alone decide what is reported, so every branch is
+    /// reachable here — including the foreign owner, which the filesystem tests
+    /// cannot stage without a second uid on the machine.
+    #[cfg(unix)]
+    #[test]
+    fn sink_exposure_reports_each_observation_independently() {
+        const REG: u32 = 0o100000;
+        let rules = |observed: Vec<(&'static str, String)>| -> Vec<&'static str> {
+            observed.into_iter().map(|(rule, _)| rule).collect()
+        };
+
+        // Owner-only, own uid, one name: nothing to say. `0o600` and stricter alike.
+        assert!(sink_exposure(REG | 0o600, 501, 1, 501).is_empty());
+        assert!(sink_exposure(REG | 0o400, 501, 1, 501).is_empty());
+        assert!(
+            sink_exposure(REG, 501, 1, 501).is_empty(),
+            "mode 0000 is owner-only too"
+        );
+
+        // Any group or other bit is exposure, not only read.
+        assert_eq!(
+            rules(sink_exposure(REG | 0o640, 501, 1, 501)),
+            [AUDIT_SINK_EXPOSED_RULE]
+        );
+        assert_eq!(
+            rules(sink_exposure(REG | 0o602, 501, 1, 501)),
+            [AUDIT_SINK_EXPOSED_RULE]
+        );
+        let (_, reason) = sink_exposure(REG | 0o644, 501, 1, 501).remove(0);
+        assert_eq!(
+            reason,
+            "the audit sink is mode 0644, which admits local users other than its owner"
+        );
+
+        // Owned by someone else, and the reason names both uids.
+        let mut foreign = sink_exposure(REG | 0o600, 0, 1, 501);
+        assert_eq!(foreign.len(), 1);
+        let (rule, reason) = foreign.remove(0);
+        assert_eq!(rule, AUDIT_SINK_FOREIGN_OWNER_RULE);
+        assert!(reason.contains("owned by uid 0"), "{reason}");
+        assert!(reason.contains("runs as uid 501"), "{reason}");
+
+        // A second name on the inode. Zero is an unlinked file, not a linked one.
+        assert_eq!(
+            rules(sink_exposure(REG | 0o600, 501, 2, 501)),
+            [AUDIT_SINK_HARD_LINKED_RULE]
+        );
+        assert!(sink_exposure(REG | 0o600, 501, 0, 501).is_empty());
+
+        // All three are separately true of a hard link onto another user's 0666 file.
+        assert_eq!(
+            rules(sink_exposure(REG | 0o666, 502, 2, 501)),
+            [
+                AUDIT_SINK_EXPOSED_RULE,
+                AUDIT_SINK_FOREIGN_OWNER_RULE,
+                AUDIT_SINK_HARD_LINKED_RULE
+            ]
+        );
     }
 
     /// An ordinary regular-file sink still opens, appends, and reports its path

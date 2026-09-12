@@ -43,6 +43,21 @@ describe('describeFacts', () => {
     expect(describeFacts(exposed)).toContain('could not be restricted')
   })
 
+  test('an audit sink observation renders its path and reason', () => {
+    // The other degradation the engine reports about itself (issue #161). Like
+    // an exposure event, `reason` is the only field carrying the bad news, and
+    // the path is the string the operator configured, so both are shown whole.
+    const sink: FactsSummary = {
+      sink: {
+        path: '/var/log/honmoon/audit.jsonl',
+        reason: 'the audit sink is mode 0644, which admits local users other than its owner',
+      },
+    }
+    expect(describeFacts(sink)).toBe(
+      'audit sink /var/log/honmoon/audit.jsonl — the audit sink is mode 0644, which admits local users other than its owner',
+    )
+  })
+
   test('falls back to request facts, then to a dash', () => {
     expect(describeFacts({ domain: 'evil.com' })).toBe('evil.com')
     expect(describeFacts({})).toBe('—')

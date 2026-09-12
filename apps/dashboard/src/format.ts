@@ -8,6 +8,9 @@ export function describeFacts(f: FactsSummary): string {
   if (f.redaction) {
     return `redaction key: ${f.redaction.key_source} (${f.redaction.transport}) — ${f.redaction.reason}`
   }
+  if (f.sink) {
+    return `audit sink ${f.sink.path} — ${f.sink.reason}`
+  }
   if (f.sql && f.sql.verb) {
     return `SQL ${f.sql.verb} ${f.sql.table ?? ''}`.trim()
   }
