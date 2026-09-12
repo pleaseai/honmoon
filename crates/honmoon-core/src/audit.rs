@@ -623,18 +623,43 @@ fn open_sink_file(path: &Path) -> std::io::Result<std::fs::File> {
 #[cfg(unix)]
 fn open_walk_root(absolute: bool) -> std::io::Result<std::fs::File> {
     let root = if absolute { c"/" } else { c"." };
-    // SAFETY: `root` is a `'static` NUL-terminated C string, `AT_FDCWD` is the
-    // documented "resolve against the working directory" sentinel, and the returned
-    // descriptor is handed straight to `File`, which closes it on drop.
-    let fd = unsafe {
-        libc::openat(
-            libc::AT_FDCWD,
-            root.as_ptr(),
-            libc::O_RDONLY | libc::O_DIRECTORY | libc::O_CLOEXEC,
-        )
+    let open = |access| {
+        // SAFETY: `root` is a `'static` NUL-terminated C string, `AT_FDCWD` is the
+        // documented "resolve against the working directory" sentinel, and the
+        // returned descriptor is handed straight to `File`, which closes it on drop.
+        let fd = unsafe {
+            libc::openat(
+                libc::AT_FDCWD,
+                root.as_ptr(),
+                access | libc::O_DIRECTORY | libc::O_CLOEXEC,
+            )
+        };
+        from_raw_fd(fd)
     };
-    from_raw_fd(fd)
+    // Retried for the same reason as a component (see `open_directory`): `/` is
+    // readable on any sane host, but a relative audit path starts at the working
+    // directory, and nothing says a process cannot be running in a search-only one.
+    match open(libc::O_RDONLY) {
+        Err(denied) if denied.raw_os_error() == Some(libc::EACCES) => open(O_TRAVERSE),
+        attempt => attempt,
+    }
 }
+
+/// The flag that opens a directory for *traversal* rather than for reading: the
+/// descriptor is usable as an `openat`/`fstatat`/`readlinkat` starting point, and
+/// asking for it needs only search (`x`) permission, not read (`r`).
+///
+/// Both platforms have one under a different name, and neither name exists on the
+/// other. Where there is no such flag the constant is `O_RDONLY`, which makes the
+/// retry in [`open_directory`] a repeat of the attempt that just failed — correct,
+/// because that host genuinely cannot open a search-only directory, and the second
+/// `EACCES` is the honest answer rather than a worse one.
+#[cfg(target_os = "macos")]
+const O_TRAVERSE: libc::c_int = libc::O_SEARCH;
+#[cfg(target_os = "linux")]
+const O_TRAVERSE: libc::c_int = libc::O_PATH;
+#[cfg(all(unix, not(any(target_os = "macos", target_os = "linux"))))]
+const O_TRAVERSE: libc::c_int = libc::O_RDONLY;
 
 /// Open `name` inside `dir` as a directory, refusing a symlink.
 ///
@@ -642,11 +667,44 @@ fn open_walk_root(absolute: bool) -> std::io::Result<std::fs::File> {
 /// Linux and `ENOTDIR` on macOS, and neither is exclusive to a symlink. The walk
 /// classifies a refused component with [`is_symlink_at`] instead, and this
 /// function reports whatever the OS said.
+///
+/// **Why the `EACCES` retry exists.** Resolving a path needs only search permission
+/// on the directories along it; *opening* one with `O_RDONLY` needs read permission
+/// as well. A directory that is `0711` — searchable by everyone, readable by its
+/// owner — is an ordinary deployment shape and a Debian/Ubuntu default for `/home`,
+/// and the whole-path `open` this walk replaced traversed it without a thought. Left
+/// at `O_RDONLY` the walk would refuse it with `EACCES`, which on the gateway means
+/// a configuration that worked yesterday aborts startup today. So a denied open is
+/// re-attempted for traversal alone.
+///
+/// The first attempt is kept as it was rather than replaced outright, so the flags
+/// every existing test exercises are still the ones almost every open uses, and
+/// [`O_TRAVERSE`] is reached only where the alternative is a hard failure. That also
+/// keeps a symlink away from it: a symlinked component is refused by `O_NOFOLLOW`
+/// with `ELOOP`/`ENOTDIR` before any read permission is consulted, so the retry sees
+/// real directories only, never an entry whose type is still in question.
 #[cfg(unix)]
 fn open_directory(dir: &std::fs::File, name: &std::ffi::OsStr) -> std::io::Result<std::fs::File> {
+    let name = c_component(name)?;
+    match openat_directory(dir, &name, libc::O_RDONLY) {
+        Err(denied) if denied.raw_os_error() == Some(libc::EACCES) => {
+            openat_directory(dir, &name, O_TRAVERSE)
+        }
+        attempt => attempt,
+    }
+}
+
+/// One `openat` of a directory component, under `access` plus the flags that make
+/// the walk what it is: `O_DIRECTORY` so nothing else can be opened, `O_NOFOLLOW` so
+/// a symlink is refused rather than traversed.
+#[cfg(unix)]
+fn openat_directory(
+    dir: &std::fs::File,
+    name: &std::ffi::CStr,
+    access: libc::c_int,
+) -> std::io::Result<std::fs::File> {
     use std::os::unix::io::AsRawFd as _;
 
-    let name = c_component(name)?;
     // SAFETY: `name` is a valid NUL-terminated path for the duration of the call,
     // `dir` outlives it and owns the descriptor being resolved against, and the
     // returned descriptor is handed straight to `File`, which closes it on drop.
@@ -654,7 +712,7 @@ fn open_directory(dir: &std::fs::File, name: &std::ffi::OsStr) -> std::io::Resul
         libc::openat(
             dir.as_raw_fd(),
             name.as_ptr(),
-            libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+            access | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
         )
     };
     from_raw_fd(fd)
@@ -1385,6 +1443,45 @@ mod tests {
     /// has neither. `0o770` is the mode that separates them: group-write set, and
     /// world-write clear, so it is refused under `0o022` and accepted under `0o002`.
     #[cfg(unix)]
+    #[cfg(unix)]
+    #[test]
+    fn with_file_opens_a_sink_under_a_search_only_parent_directory() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = scratch_dir("search-only-parent");
+        let parent = dir.join("deploy");
+        std::fs::create_dir(&parent).expect("create the parent the walk must traverse");
+        // `0o311` is searchable by everyone and readable by nobody — the shape a
+        // deployment directory takes when its listing is meant to stay private.
+        // Resolving a path through it is allowed; opening it `O_RDONLY` is not.
+        std::fs::set_permissions(&parent, std::fs::Permissions::from_mode(0o311))
+            .expect("make the parent searchable but not readable");
+
+        // Prove the host actually enforces that, so a pass here means the walk
+        // traversed a directory it could not read rather than one that was never
+        // restricted. Root bypasses the permission bits, so say so instead.
+        // SAFETY: `geteuid` reads process credentials, takes no arguments and is
+        // always successful.
+        if unsafe { libc::geteuid() } == 0 {
+            eprintln!("running as root: the search-only restriction is not enforced");
+        } else {
+            assert!(
+                std::fs::File::open(&parent).is_err(),
+                "a `0o311` directory must not be openable for reading, or this test proves nothing"
+            );
+        }
+
+        let sink = parent.join("audit.jsonl");
+        let log = AuditLog::with_file(4, &sink).expect("open a sink under a search-only parent");
+        log.record(draft(Decision::Allowed));
+
+        let contents = std::fs::read_to_string(&sink).expect("the sink took the event");
+        assert_eq!(contents.lines().count(), 1);
+
+        let _ = std::fs::set_permissions(&parent, std::fs::Permissions::from_mode(0o755));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn with_file_refuses_a_symlinked_parent_in_a_group_writable_directory() {
         use std::os::unix::fs::PermissionsExt;
