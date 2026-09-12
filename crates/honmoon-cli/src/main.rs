@@ -6,7 +6,7 @@ mod mgmt_token;
 
 use std::io::IsTerminal as _;
 use std::net::{Ipv4Addr, Ipv6Addr, TcpListener};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
@@ -194,6 +194,11 @@ enum Command {
         )]
         ca_key: Option<PathBuf>,
     },
+    /// Policy tooling that runs no gateway and binds no listener.
+    Policy {
+        #[command(subcommand)]
+        command: PolicyCommand,
+    },
     /// Join a gateway and route host traffic through it.
     Join {
         #[arg(long, value_name = "HOST:PORT")]
@@ -258,12 +263,43 @@ enum Command {
     },
 }
 
-fn main() -> Result<()> {
-    tracing_subscriber::fmt()
-        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
-        .init();
+#[derive(Subcommand)]
+enum PolicyCommand {
+    /// Check a policy file and exit, without starting anything.
+    ///
+    /// Loads the file through exactly the loader `honmoon gateway --config`
+    /// uses, so a policy this accepts is one the gateway will accept: the
+    /// point is the check, not a second opinion. Exits 0 when the policy
+    /// loads and non-zero when it does not, with every problem the loader
+    /// found on stderr — a load failure names every offending rule (#197), and
+    /// the loader's warnings (a rule an earlier unconditional rule makes
+    /// unreachable, a rule naming an endpoint `endpoints` does not declare)
+    /// are printed here rather than filtered away, since reporting what the
+    /// loader found is the whole job.
+    ///
+    /// A warning is not a refusal. The gateway starts on a policy carrying
+    /// one, so this exits 0 on one too — a check that disagreed with the
+    /// gateway in either direction would be worse than no check at all.
+    ///
+    /// Nothing is written and no listener is bound. In particular the
+    /// management token is never resolved, so checking a policy cannot create
+    /// `~/.honmoon/mgmt-token` the way starting a gateway does (#198).
+    ///
+    /// The policy's own contents are not echoed: on success you get a count of
+    /// what loaded, because a CI log is not somewhere an operator chose to put
+    /// their endpoint names. A rejection quotes the rules responsible, which is
+    /// the diagnosis itself and the thing that has to be fixed.
+    Validate {
+        /// Policy file to check.
+        #[arg(value_name = "FILE")]
+        file: PathBuf,
+    },
+}
 
+fn main() -> Result<()> {
     let cli = Cli::parse();
+    init_tracing(&cli.command);
+
     match cli.command {
         Command::Run { policy, argv } => run(policy, argv),
         Command::Gateway {
@@ -297,6 +333,9 @@ fn main() -> Result<()> {
             ca_cert,
             ca_key,
         }),
+        Command::Policy { command } => match command {
+            PolicyCommand::Validate { file } => policy_validate(&file),
+        },
         Command::Join { gateway } => {
             anyhow::bail!("`join` not yet implemented (gateway: {gateway})");
         }
@@ -314,6 +353,43 @@ fn main() -> Result<()> {
                 .context("supervising the sandboxed command")?;
             std::process::exit(status.code().unwrap_or(1));
         }
+    }
+}
+
+/// Install the tracing subscriber, with the defaults `command` needs.
+///
+/// Runs after `Cli::parse()` rather than before it — nothing logs during
+/// parsing, and the command is what decides the two settings below.
+///
+/// **Level.** Every command keeps the historical default of `ERROR` when
+/// `RUST_LOG` is unset, which is why `gateway` and `run` print the lines an
+/// operator must read with `eprintln!` rather than `tracing`. `policy validate`
+/// defaults to `WARN` instead: two of the loader's diagnostics — an unreachable
+/// rule, a rule naming an undeclared endpoint — are `tracing::warn!` inside
+/// `honmoon-core`, and a check that exists to report what the loader found
+/// cannot be the one place they are filtered out. `RUST_LOG` still overrides
+/// either default.
+///
+/// **Stream.** `tracing_subscriber::fmt` writes to stdout by default, which is
+/// right for a long-running gateway whose log *is* its output and wrong for a
+/// command run in a CI step: a warning on stdout lands in whatever the caller
+/// is piping. So `policy validate` sends its diagnostics to stderr, where the
+/// error for a policy it refuses already goes, and leaves stdout empty.
+fn init_tracing(command: &Command) {
+    use tracing::level_filters::LevelFilter;
+
+    let default = match command {
+        Command::Policy { .. } => LevelFilter::WARN,
+        _ => LevelFilter::ERROR,
+    };
+    let builder = tracing_subscriber::fmt().with_env_filter(
+        tracing_subscriber::EnvFilter::builder()
+            .with_default_directive(default.into())
+            .from_env_lossy(),
+    );
+    match command {
+        Command::Policy { .. } => builder.with_writer(std::io::stderr).init(),
+        _ => builder.init(),
     }
 }
 
@@ -842,10 +918,40 @@ fn hook_salt_for(context: Option<&str>, wire_salt: Vec<u8>, machine_key: Vec<u8>
     }
 }
 
-fn load_policy(path: &PathBuf) -> Result<Policy> {
+fn load_policy(path: &Path) -> Result<Policy> {
     let src = std::fs::read_to_string(path)
         .with_context(|| format!("reading policy {}", path.display()))?;
     Ok(Policy::from_yaml(&src)?)
+}
+
+/// `honmoon policy validate` — load a policy the way the gateway does, say what
+/// the loader found, and exit.
+///
+/// The body is deliberately thin. Everything that decides whether a policy is
+/// acceptable lives in [`load_policy`] — the same function `honmoon run` calls
+/// and the same [`Policy::from_yaml`] `gateway` calls — so there is no second
+/// implementation here to drift from the one that matters. The error travels up
+/// unwrapped for the same reason: `main`'s `Result` prints it, so the text an
+/// operator reads from this command is the text the gateway would have printed.
+///
+/// What this function *adds* is everything the gateway does around that load and
+/// this one must not: no management token is resolved (the side effect #198 is
+/// about), no audit log is opened, no CA is read or generated, no listener is
+/// bound. Not suppressing those — never reaching them.
+fn policy_validate(path: &Path) -> Result<()> {
+    let policy = load_policy(path)?;
+
+    // Counts, not contents: enough to see the file that loaded was the one
+    // meant, without putting an operator's endpoint names in a CI log.
+    // On stderr, like every other line this binary addresses a human with, so
+    // stdout stays empty for a caller that is piping it.
+    eprintln!(
+        "honmoon: {}: policy is valid ({} rules, {} endpoints)",
+        path.display(),
+        policy.rules.len(),
+        policy.endpoints.len()
+    );
+    Ok(())
 }
 
 #[cfg(test)]

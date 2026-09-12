@@ -81,6 +81,7 @@ Honmoon is a monorepo that separates languages by responsibility.
 | **Process Wrapper** | `honmoon run -- <command>` | Isolate a single process so the proxy is its only route out (Linux and macOS; advisory elsewhere) |
 | **Gateway** | `honmoon gateway` | Central proxy that loads policy and accepts client connections |
 | **Join** | `honmoon join` | Route all host traffic to the gateway through a tunnel |
+| **Policy check** | `honmoon policy validate <file>` | Load a policy the way the gateway does and exit — no listener, no files written |
 
 ---
 
@@ -176,6 +177,12 @@ honmoon gateway --config policies/agent.yaml --tls-intercept --pii-mode block
 
 # Join a gateway from a client (routes all host traffic)
 honmoon join --gateway honmoon.internal:8443
+
+# Check a policy without starting anything: exit 0 if the gateway would load it,
+# non-zero with every offending rule named on stderr if it would not. Binds no
+# listener and writes nothing — notably it never resolves the management token,
+# so unlike `gateway` it cannot create ~/.honmoon/mgmt-token. Safe in CI.
+honmoon policy validate policies/agent.yaml
 ```
 
 ### SOCKS5 and inline PostgreSQL inspection
