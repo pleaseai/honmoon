@@ -137,15 +137,15 @@ type Mapping = Record<string, unknown>
 /**
  * Whether a parsed document is a mapping this reader can take keys from.
  *
- * `instanceof Date` is excluded explicitly: a `!!timestamp` tag resolves to one,
- * and a `Date` is an object that is not an array, so the plain shape test alone
- * would call a document that is a single timestamp a mapping with no keys.
+ * A sequence is the only other object `Bun.YAML` builds. It resolves no scalar
+ * to a `Date` — a bare `2026-09-13`, an ISO datetime and an explicit
+ * `!!timestamp` tag all come back as text, because YAML 1.2's core schema has
+ * no timestamp type — so there is no third object shape to exclude here.
  */
 function isMapping(value: unknown): value is Mapping {
   return typeof value === 'object'
     && value !== null
     && !Array.isArray(value)
-    && !(value instanceof Date)
 }
 
 /** A parsed document, or the reason the parser refused it. */
@@ -182,8 +182,21 @@ function readYaml(source: string): Read {
  * that wraps makes its own opening line unreadable on its own (`description: "a`
  * closes nothing yet) and readable again once the closing line arrives, so the
  * first prefix that throws is routinely a line with nothing wrong with it.
+ *
+ * One parse per line over a block whose own length grows with the line count is
+ * quadratic work, so the scan is bounded. Every committed note's frontmatter is
+ * five or six lines and no note has a reason to be longer, but nothing in the
+ * format stops one — a body pasted inside the fence would reach here on a path
+ * that runs in CI, in `mise run install` and in every new worktree's setup.
+ * Past the bound the block goes unlocated rather than slow: a note that large
+ * is malformed in a way its author can see without a line number.
  */
+const LOCATABLE_LINES = 200
+
 function failingLine(lines: string[]): { number: number, text: string } | undefined {
+  if (lines.length > LOCATABLE_LINES) {
+    return undefined
+  }
   let readable = 0
   for (let count = 1; count <= lines.length; count++) {
     if (!('reason' in readYaml(lines.slice(0, count).join('\n')))) {
@@ -199,20 +212,48 @@ function failingLine(lines: string[]): { number: number, text: string } | undefi
 }
 
 /**
- * A stand-in for a `#` while the parser is asked what that `#` hid.
+ * Two characters the note does not already use, to stand in for the ones a
+ * comment probe masks.
  *
- * U+E000 is the first private-use code point: YAML admits it as an ordinary
- * character, and a note has no reason to hold one. `commentedOut` checks rather
- * than assumes, and does not probe at all when the note already carries one.
+ * Private-use code points: YAML admits them as ordinary characters, and nothing
+ * a note is written in resolves to one. They are *found* rather than fixed,
+ * because a fixed pair only holds while no note contains it — a note that did
+ * would have turned the probe off, and turning a check off on the strength of
+ * the note's own content is how a reader stops reading. There are 6400 of them
+ * and two are needed, so a note has to carry 6399 distinct ones to run this out.
  */
-const COMMENT_PROBE = '\uE000'
+const PRIVATE_USE_FIRST = 0xE000
+const PRIVATE_USE_LAST = 0xF8FF
+
+function probeCharacters(source: string): [string, string] | undefined {
+  let first: string | undefined
+  for (let point = PRIVATE_USE_FIRST; point <= PRIVATE_USE_LAST; point++) {
+    const character = String.fromCodePoint(point)
+    if (source.includes(character)) {
+      continue
+    }
+    if (first === undefined) {
+      first = character
+      continue
+    }
+    return [first, character]
+  }
+  return undefined
+}
 
 /**
- * A mapping key the parser will read, used to ask whether a key the document
- * has *once* was written twice. Long and specific so it cannot collide with a
- * key a note actually carries; `repeated` checks that too.
+ * A mapping key the note does not already carry, to rename one occurrence of a
+ * key to while the parser is asked whether that key was written twice. Suffixed
+ * until it is absent, for the same reason the probe characters are searched
+ * for: a name that collides must not read as "nothing to check here".
  */
-const PROBE_KEY = 'agent-memory-index-duplicate-probe'
+function probeKey(source: string): string {
+  let key = 'agent-memory-index-duplicate-probe'
+  for (let suffix = 0; source.includes(key); suffix++) {
+    key = `agent-memory-index-duplicate-probe-${suffix}`
+  }
+  return key
+}
 
 /**
  * Offsets of every `#` in `source` that could open a comment mid-line.
@@ -248,13 +289,33 @@ function* inlineHashes(source: string): Generator<number> {
 }
 
 /**
+ * A copy of `source` in which the `#` at `offset` no longer opens a comment.
+ *
+ * The `#` is not the only thing that has to change. Everything after it was
+ * comment text, written under no grammar at all, and once the `#` stops hiding
+ * it the parser reads it as YAML — so a comment holding `: ` (`description:
+ * fixed in PR #155: see docs`) turns the line into an attempted nested mapping
+ * and the probe fails to parse. That failure is indistinguishable from the one
+ * a probe is *supposed* to skip, so the probe would answer "nothing to see" for
+ * exactly the value it was asked about. Masking the line's remaining `:` as
+ * well leaves it a plain scalar; both stand-ins are put back before the
+ * comparison, so the value being compared is the note's own text.
+ */
+function maskComment(source: string, offset: number, hash: string, colon: string): string {
+  const rest = source.slice(offset).search(/[\r\n]/)
+  const stop = rest === -1 ? source.length : offset + rest
+  const masked = source.slice(offset, stop).replaceAll('#', hash).replaceAll(':', colon)
+  return `${source.slice(0, offset)}${masked}${source.slice(stop)}`
+}
+
+/**
  * Report an indexed value whose text YAML cut at a comment.
  *
- * This is the one thing a YAML reader does *silently* to a scalar, and it is
- * the defect that forced 36 of the committed notes to be quoted (#156): the
- * author writes `description: fixed in PR #155, so do X` and every reader
- * resolves `fixed in PR`, so the index would advertise a summary that stops
- * mid-sentence and nothing would say why.
+ * The commonest thing a YAML reader does *silently* to a scalar, and the defect
+ * that forced 36 of the committed notes to be quoted (#156): the author writes
+ * `description: fixed in PR #155, so do X` and every reader resolves
+ * `fixed in PR`, so the index would advertise a summary that stops mid-sentence
+ * and nothing would say why.
  *
  * Asked of the parser rather than decided here. Masking one `#` and reading the
  * document again says exactly what that `#` hid — no rule about which scalars
@@ -263,22 +324,26 @@ function* inlineHashes(source: string): Generator<number> {
  * values match, while one that opened a comment comes back with the rest of the
  * line attached.
  *
- * One `#` at a time, and a probe the parser refuses is skipped rather than
- * reported. Masking a comment that legitimately follows a *closed* quoted
- * scalar (`description: "text" # note`) puts content where a key belongs and
- * the document stops parsing — which says nothing about that comment, and must
- * not hide a real truncation on another line.
+ * One `#` at a time, so a probe the parser still refuses costs only that one
+ * `#`. The remaining refusal is a comment after a *closed* quoted scalar
+ * (`description: "text" # note`), where unmasking puts content where a key
+ * belongs; nothing was cut from a quoted scalar, so there is nothing that probe
+ * could have reported, and a truncation anywhere else in the block is a
+ * different `#` with a probe of its own.
  */
 function commentedOut(source: string, mapping: Mapping, problems: string[]): void {
-  if (source.includes(COMMENT_PROBE)) {
+  const probes = probeCharacters(source)
+  if (probes === undefined) {
+    problems.push('the frontmatter uses every private-use character, leaving this reader nothing to mask a `#` with — it cannot check whether a comment cut a value short')
     return
   }
+  const [hash, colon] = probes
   const reported = new Set<string>()
   for (const offset of inlineHashes(source)) {
     if (reported.size === INDEXED_KEYS.length) {
       return
     }
-    const probed = readYaml(`${source.slice(0, offset)}${COMMENT_PROBE}${source.slice(offset + 1)}`)
+    const probed = readYaml(maskComment(source, offset, hash, colon))
     if ('reason' in probed || !isMapping(probed.document)) {
       continue
     }
@@ -293,7 +358,7 @@ function commentedOut(source: string, mapping: Mapping, problems: string[]): voi
       if (reported.has(name) || typeof resolved !== 'string' || typeof whole !== 'string') {
         continue
       }
-      if (whole.replaceAll(COMMENT_PROBE, '#') !== resolved) {
+      if (whole.replaceAll(hash, '#').replaceAll(colon, ':') !== resolved) {
         reported.add(name)
         problems.push(`\`${name}:\` is unquoted and contains \` #\`, which YAML reads as the start of a comment — quote the value so it survives`)
       }
@@ -304,11 +369,11 @@ function commentedOut(source: string, mapping: Mapping, problems: string[]): voi
 /**
  * Report an indexed key the note gives more than once.
  *
- * The other silent discard. YAML requires a mapping key to be unique; Bun.YAML
- * and pyyaml both keep the last of a repeat rather than refusing the document,
- * so the index would not *drift* from them — but the author wrote two summaries
- * and one disappeared without a word, and a stricter reader (js-yaml) rejects
- * the note outright.
+ * The second silent discard. YAML requires a mapping key to be unique;
+ * Bun.YAML and pyyaml both keep the last of a repeat rather than refusing the
+ * document, so the index would not *drift* from them — but the author wrote two
+ * summaries and one disappeared without a word, and a stricter reader (js-yaml)
+ * rejects the note outright.
  *
  * Asked of the parser for the same reason as the comment probe: renaming one
  * occurrence and reading the document again answers "was this key at the root
@@ -317,33 +382,34 @@ function commentedOut(source: string, mapping: Mapping, problems: string[]): voi
  * (`my.key:`) left the root indentation undecided and a nested `description:`
  * was published as the note's own. A rename of a *nested* occurrence puts the
  * probe key inside the nested mapping, where this test does not see it.
+ *
+ * Occurrences are nominated by offset in the block rather than by line, so a
+ * duplicate inside a flow mapping (`{name: a, name: b}`, which resolves to `b`
+ * as silently as the block form does) is nominated like any other.
  */
-function repeated(lines: string[], mapping: Mapping, problems: string[]): void {
-  if (lines.some(line => line.includes(PROBE_KEY))) {
-    return
-  }
+function repeated(source: string, mapping: Mapping, problems: string[]): void {
+  const key = probeKey(source)
   for (const name of INDEXED_KEYS) {
     if (!(name in mapping)) {
       continue
     }
-    // Loose on purpose: this only *nominates* lines for the parser to rule on,
-    // so a line it nominates wrongly costs one probe and a line it misses costs
-    // a report, never a wrong one. `String.raw`, because a plain template
-    // literal decodes the `\t` and puts a real tab in the character class —
-    // which matches the same two characters but reads as an accident.
-    const keyLine = new RegExp(String.raw`^[ \t]*${name}[ \t]*:`)
-    const occurrences = lines.flatMap((line, index) => keyLine.test(line) ? [index] : [])
+    // Loose on purpose: this only *nominates* offsets for the parser to rule
+    // on, so one it nominates wrongly costs a probe and one it misses costs a
+    // report, never a wrong one. The leading group is what separates a key from
+    // a word inside a value; `String.raw`, because a plain template literal
+    // decodes the `\s`/`\t` and puts the characters themselves in the pattern —
+    // which matches much the same thing but reads as an accident.
+    const keyStart = new RegExp(String.raw`(^|[\s{,])${name}[ \t]*:`, 'g')
+    const occurrences = [...source.matchAll(keyStart)].map(match => match.index + match[1].length)
     if (occurrences.length < 2) {
       continue
     }
-    for (const index of occurrences) {
-      const probed = readYaml(lines
-        .map((line, at) => at === index ? line.replace(name, PROBE_KEY) : line)
-        .join('\n'))
+    for (const at of occurrences) {
+      const probed = readYaml(`${source.slice(0, at)}${key}${source.slice(at + name.length)}`)
       if ('reason' in probed || !isMapping(probed.document)) {
         continue
       }
-      if (PROBE_KEY in probed.document && name in probed.document) {
+      if (key in probed.document && name in probed.document) {
         problems.push(`\`${name}:\` is given more than once, and YAML requires a mapping key to be unique — keep the one that is the summary and delete the other`)
         break
       }
@@ -355,9 +421,6 @@ function repeated(lines: string[], mapping: Mapping, problems: string[]): void {
 function describeValue(value: unknown): string {
   if (Array.isArray(value)) {
     return 'a sequence'
-  }
-  if (value instanceof Date) {
-    return 'a timestamp'
   }
   if (isMapping(value)) {
     return 'a mapping'
@@ -393,8 +456,11 @@ function foldOntoOneLine(value: string): string {
  *
  * What a parser does *not* do is report, and reporting is the load-bearing half
  * here — the index must not quietly advertise something other than what the
- * note's frontmatter yields. So three things are reported rather than resolved:
+ * note's frontmatter yields. So four things are reported rather than resolved:
  *
+ *   - a character YAML does not admit at all, which `Bun.YAML` mostly does not
+ *     refuse (it stops only at U+0000) and would otherwise carry into the index
+ *     verbatim;
  *   - a block the parser refuses, which is a note no reader can load;
  *   - a value that resolves to something that is not text (`42`, `[a]`), which
  *     is not a summary whatever it is;
@@ -414,20 +480,14 @@ export function parseFrontmatter(text: string): Frontmatter {
   const forbidden = forbiddenCharacter(source)
   if (forbidden !== undefined) {
     const point = (forbidden.codePointAt(0) ?? 0).toString(16).toUpperCase().padStart(4, '0')
-    problems.push(`the frontmatter holds U+${point}, which YAML does not allow as a character — its reader refuses the note before parsing, so write the character as an escape in a double-quoted value`)
+    problems.push(`the frontmatter holds U+${point}, which YAML does not allow as a character — a reader may refuse the note over it or carry it into the index unchanged, so write it as an escape in a double-quoted value`)
   }
 
   const read = readYaml(source)
   if ('reason' in read) {
-    // A forbidden character is *why* a reader refuses the block, and it has
-    // already been named along with the code point it is about. Adding the
-    // parser's terser refusal underneath reports one defect twice — and only
-    // U+0000 reaches here that way, since Bun.YAML reads the others through.
-    if (forbidden === undefined) {
-      const at = failingLine(source.split(/\r?\n/))
-      problems.push(`the frontmatter is not valid YAML — ${read.reason}${
-        at ? ` (line ${at.number}: \`${at.text}\`)` : ''}`)
-    }
+    const at = failingLine(source.split(/\r?\n/))
+    problems.push(`the frontmatter is not valid YAML — ${read.reason}${
+      at ? ` (line ${at.number}: \`${at.text}\`)` : ''}`)
     return { scalars: {}, problems }
   }
 
@@ -465,7 +525,7 @@ export function parseFrontmatter(text: string): Frontmatter {
   }
 
   commentedOut(source, mapping, problems)
-  repeated(source.split(/\r?\n/), mapping, problems)
+  repeated(source, mapping, problems)
 
   return { scalars, problems }
 }
