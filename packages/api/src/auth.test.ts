@@ -161,6 +161,32 @@ describe('resolveToken', () => {
     },
   )
 
+  test.skipIf(process.platform === 'win32')(
+    'warns when the token directory is writable beyond its owner',
+    () => {
+      // The file's own mode cannot stand in for this: a local user who can
+      // write the directory unlinks the token and installs a 0600 file of their
+      // own, which the file check then approves. The Rust loader warns here, so
+      // this one must too — the whole point of both is that one operator does
+      // not see an exposure the other is shown.
+      const path = join(dir, 'mgmt-token')
+      writeFileSync(path, 'a-persisted-token\n')
+      chmodSync(path, 0o600)
+      chmodSync(dir, 0o777)
+      const warnings: string[] = []
+      const original = console.warn
+      console.warn = (...args: unknown[]) => warnings.push(args.join(' '))
+      try {
+        expect(resolveToken(dir).source).toBe('persisted')
+      }
+      finally {
+        console.warn = original
+        chmodSync(dir, 0o700)
+      }
+      expect(warnings.join(' ')).toContain('writable beyond its owner')
+    },
+  )
+
   test('aborts on an unreadable token file instead of minting a second one', () => {
     // A directory where the file should be: the read fails with something other
     // than ENOENT, which must not be recovered from by generating a token that

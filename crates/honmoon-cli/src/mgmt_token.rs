@@ -118,6 +118,12 @@ fn load_or_create(dir: &Path) -> Result<Resolved> {
         let token = contents.trim();
         if !token.is_empty() {
             warn_if_readable_beyond_owner(&path);
+            // The persisted path is the common one — every restart after the
+            // first — so checking the directory only where a token is minted
+            // would mean never checking it in practice. It matters most here:
+            // a writable directory lets another local user substitute a
+            // well-moded file, which the file check above then approves.
+            warn_if_writable_beyond_owner(dir);
             return Ok(Resolved {
                 token: token.to_string(),
                 source: Source::Persisted(path),

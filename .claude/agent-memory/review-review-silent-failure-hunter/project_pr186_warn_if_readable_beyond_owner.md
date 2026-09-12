@@ -1,6 +1,6 @@
 ---
 name: pr186-warn-if-readable-beyond-owner
-description: 'PR #186 (issue #173) mgmt_token.rs mode checks — four holes found in warn_if_readable_beyond_owner and the token directory; the three Rust ones were FIXED in that PR (including create_private_dir at 0700), only the missing packages/api/src/auth.ts warn equivalent is still open (tracked in #188)'
+description: 'PR #186 (issue #173) token-file and token-directory mode checks — every hole found in warn_if_readable_beyond_owner and the token directory was FIXED in that PR on BOTH sides (Rust create_private_dir at 0700 and auth.ts single-descriptor read plus directory warn); nothing here is open, #188 is now only about the session cookie'
 metadata:
   type: project
 ---
@@ -19,11 +19,15 @@ file before citing any of this.**
    `Source::Persisted` state as an ordinary read. Near-zero risk either way —
    the winner's file was created `create_new` + `mode(0o600)` microseconds
    earlier — but the asymmetry is gone.
-3. **STILL OPEN, tracked as #188.** `packages/api/src/auth.ts`'s `resolveToken`
-   has no equivalent check on its persisted-read path, so a file `chmod`'d wide
-   open months after either process minted it is surfaced by the Rust operator
-   and not the TS one. This is the instance that actually matters in practice.
-   Report it against #188, not as new.
+3. **FIXED in #186 — the description of this note said otherwise for one
+   revision, so check the file, not a memory of it.** `packages/api/src/auth.ts`
+   now warns on both the persisted-read path and the race-adopt path. It also
+   reads the token and its mode through *one* descriptor (`readTokenAndMode`):
+   a `readFileSync(path)` followed by a stat of `path` can land on two inodes if
+   the file is replaced in between, which fails in the worst direction — the
+   token adopted comes from the permissive file while the mode reported comes
+   from the replacement, announcing a readable credential as safe. #188 is no
+   longer about any of this; it is only the session cookie.
 
 4. **FIXED in #186.** The *directory* was the gap the file-mode checks could not
    see. `create_dir_all` asks for `0777` and lets the umask subtract, so

@@ -88,8 +88,11 @@ enum Command {
         ///
         /// Prefer `HONMOON_MGMT_TOKEN` to this flag: a command line can be read
         /// by other local users through `ps` — how far that reaches is platform
-        /// and configuration dependent — where the token file is `0600`
-        /// outright. `@honmoon/api` cannot see this flag either — it
+        /// and configuration dependent — where a token file honmoon created is
+        /// `0600`. A pre-existing file with a wider mode is reported at startup
+        /// rather than tightened, so that contrast holds for the file honmoon
+        /// mints and not for one it merely found. `@honmoon/api` cannot see
+        /// this flag either — it
         /// reads the environment variable or the file — so a token supplied
         /// here must be given to that service by one of those two routes, or
         /// the two will not agree.
@@ -363,6 +366,35 @@ struct GatewayArgs {
 }
 
 /// Default directory for persisted CA material (`$HOME/.honmoon`, else `.honmoon`).
+/// Percent-encode a token for use as a query-string value.
+///
+/// A generated token is hex, which needs no encoding — but a *persisted* token
+/// is whatever the operator put in the file, and `Source::Persisted` is
+/// printable. An `&` or `#` in it would otherwise end the parameter: the
+/// browser would send `/login` a truncated prefix, and the one-click login this
+/// URL advertises would 401 with nothing on screen to explain why.
+///
+/// Encodes everything outside RFC 3986's unreserved set rather than enumerating
+/// what is special, so a character no one thought of is escaped by default
+/// rather than missed by omission.
+fn percent_encode_query_value(value: &str) -> String {
+    use std::fmt::Write as _;
+
+    let mut out = String::with_capacity(value.len());
+    for byte in value.bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' => {
+                out.push(byte as char);
+            }
+            _ => {
+                // Writing to a String cannot fail.
+                let _ = write!(out, "%{byte:02X}");
+            }
+        }
+    }
+    out
+}
+
 fn default_ca_dir() -> PathBuf {
     match std::env::var_os("HOME") {
         Some(home) => PathBuf::from(home).join(".honmoon"),
@@ -502,7 +534,10 @@ fn gateway(args: GatewayArgs) -> Result<()> {
     let mgmt_url = format!("http://{}", mgmt_listener.local_addr()?);
     let token_path = mgmt.source.path();
     if mgmt.source.printable() && std::io::stderr().is_terminal() {
-        eprintln!("honmoon: dashboard: {mgmt_url}/login?token={}", mgmt.token);
+        eprintln!(
+            "honmoon: dashboard: {mgmt_url}/login?token={}",
+            percent_encode_query_value(&mgmt.token)
+        );
     } else if mgmt.source.printable() {
         eprintln!(
             "honmoon: dashboard: {mgmt_url}/login?token=<the token in {}>",
@@ -788,6 +823,21 @@ fn load_policy(path: &PathBuf) -> Result<Policy> {
 
 #[cfg(test)]
 mod tests {
+    use super::percent_encode_query_value;
+
+    #[test]
+    fn a_login_url_token_survives_reserved_characters() {
+        // A generated token is hex and unchanged by encoding...
+        assert_eq!(percent_encode_query_value("a0f9"), "a0f9");
+        // ...but an operator-written one is arbitrary, and `&`/`#` would
+        // otherwise end the query parameter and truncate what `/login` sees.
+        assert_eq!(
+            percent_encode_query_value("a&b#c d"),
+            "a%26b%23c%20d",
+            "reserved characters must not end the token parameter"
+        );
+    }
+
     use super::*;
 
     /// #98: an unpinned gateway must hand the endpoint a *session*-derived salt,

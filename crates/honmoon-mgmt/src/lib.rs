@@ -201,9 +201,14 @@ impl AppState {
                 "hook salt must match the wire redaction salt so both transports mint identical placeholders"
             );
         }
+        // Trimmed, because the CLI and TypeScript resolvers both reject a
+        // whitespace-only token and this assert is the last line of defence for
+        // anyone constructing the state another way. A lone space would
+        // otherwise authenticate: `GET /login?token=%20` matches it and mints a
+        // session cookie good for every `/api/*` route.
         assert!(
-            !mgmt_token.is_empty(),
-            "management token must not be empty — an empty credential authenticates everyone"
+            !mgmt_token.trim().is_empty(),
+            "management token must not be empty or whitespace-only — such a credential authenticates everyone"
         );
         let hook_mappings = gateway
             .redaction

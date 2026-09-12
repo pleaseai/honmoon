@@ -97,10 +97,11 @@ export function resolveToken(dir: string = defaultDir()): ResolvedToken {
   const path = join(dir, FILE_NAME)
   let existed = false
   try {
-    const contents = readFileSync(path, 'utf8').trim()
+    const { contents, mode } = readTokenAndMode(path)
     existed = true
     if (contents !== '') {
-      warnIfReadableBeyondOwner(path)
+      warnIfModeReadableBeyondOwner(path, mode)
+      warnIfDirectoryWritableBeyondOwner(dir)
       return { token: contents, source: 'persisted', path }
     }
   }
@@ -113,6 +114,12 @@ export function resolveToken(dir: string = defaultDir()): ResolvedToken {
   }
 
   mkdirSync(dir, { recursive: true, mode: 0o700 })
+  // `mode` governs only a directory this call creates; one that already existed
+  // keeps whatever it has. That matters more than the file's own mode: write
+  // permission on the directory is what lets another local user substitute a
+  // perfectly `0600` token file of their choosing, which the file check above
+  // then approves.
+  warnIfDirectoryWritableBeyondOwner(dir)
   const token = randomBytes(TOKEN_BYTES).toString('hex')
   // `wx` is O_CREAT|O_EXCL: it neither follows nor clobbers a pre-planted
   // symlink or file, and it is how a concurrent first run is detected. An
@@ -146,14 +153,50 @@ export function resolveToken(dir: string = defaultDir()): ResolvedToken {
     }
     // Another process created it between our read and our write. Its token is
     // the one on disk, so adopt it rather than serving one nobody can present.
-    const winner = readFileSync(path, 'utf8').trim()
+    const { contents: winner, mode } = readTokenAndMode(path)
     if (winner === '') {
       throw new Error(`management token ${path} is empty after a lost create race`)
     }
     // Same state as an ordinary persisted read — a token read off disk — so it
-    // gets the same check. The Rust loader had this identical asymmetry.
-    warnIfReadableBeyondOwner(path)
+    // gets the same checks. The Rust loader had this identical asymmetry.
+    warnIfModeReadableBeyondOwner(path, mode)
+    warnIfDirectoryWritableBeyondOwner(dir)
     return { token: winner, source: 'persisted', path }
+  }
+}
+
+/**
+ * Read the token and its mode through a single descriptor.
+ *
+ * Two calls — `readFileSync(path)` then a stat of `path` — can land on two
+ * different inodes if the file is replaced in between, and the failure is
+ * silent in the worst direction: the token actually adopted comes from the
+ * permissive file while the mode reported comes from the replacement, so a
+ * credential other local users can read is announced as safe. Opening once and
+ * working from that descriptor makes the bytes and the mode describe the same
+ * inode by construction.
+ *
+ * `mode` is `null` where there is nothing meaningful to report — Windows, or a
+ * stat that failed on an already-open descriptor.
+ */
+function readTokenAndMode(path: string): { contents: string, mode: number | null } {
+  const fd = openSync(path, 'r')
+  try {
+    let mode: number | null = null
+    if (process.platform !== 'win32') {
+      try {
+        mode = fstatSync(fd).mode & 0o777
+      }
+      catch (error) {
+        // Not fatal — the token itself is still readable — but never silent:
+        // saying nothing here reads exactly like "checked, and it was fine".
+        console.warn(`honmoon api: warning: could not read the mode of ${path}: ${String(error)}`)
+      }
+    }
+    return { contents: readFileSync(fd, 'utf8').trim(), mode }
+  }
+  finally {
+    closeSync(fd)
   }
 }
 
@@ -169,14 +212,45 @@ export function resolveToken(dir: string = defaultDir()): ResolvedToken {
  * another local user could already have read has to be *replaced*, and only the
  * operator can decide when, since it invalidates their bookmarked login URL and
  * anything else holding the old value.
+ *
+ * Takes the mode rather than the path so it describes the same inode the token
+ * came from — see {@link readTokenAndMode}.
  */
-function warnIfReadableBeyondOwner(path: string): void {
+function warnIfModeReadableBeyondOwner(path: string, mode: number | null): void {
+  if (mode === null) {
+    return
+  }
+  if ((mode & 0o077) !== 0) {
+    console.warn(
+      `honmoon api: warning: management token ${path} is mode ${mode.toString(8).padStart(4, '0')} `
+      + '— readable beyond its owner. Any local user it admits can read the whole management API; '
+      + 'delete the file to mint a new one.',
+    )
+  }
+}
+
+/**
+ * Report — but do not correct — a token directory writable beyond its owner.
+ *
+ * The mirror of the Rust CLI's `warn_if_writable_beyond_owner`, and the check
+ * the file-mode one cannot stand in for: a local user who can write `~/.honmoon`
+ * does not need to widen the token file, they unlink it and install a `0600`
+ * file containing a value they chose. {@link warnIfModeReadableBeyondOwner}
+ * then inspects that substitute, finds it owner-only, and says nothing — while
+ * this service starts with a bearer token the attacker knows.
+ *
+ * Reported rather than corrected, matching the file case: the operator may have
+ * widened the directory deliberately. Unlike the file case, replacing the token
+ * is not the remedy — a fresh one lands in the same writable directory — so the
+ * warning names the directory mode instead.
+ */
+function warnIfDirectoryWritableBeyondOwner(dir: string): void {
   if (process.platform === 'win32') {
     return
   }
   let mode: number
   try {
-    const fd = openSync(path, 'r')
+    const fd = openSync(dir, 'r')
     try {
       mode = fstatSync(fd).mode & 0o777
     }
@@ -185,16 +259,16 @@ function warnIfReadableBeyondOwner(path: string): void {
     }
   }
   catch (error) {
-    // Saying the mode could not be read is the honest form of this function's
-    // only job; silence here reads exactly like "checked, and it was fine".
-    console.warn(`honmoon api: warning: could not read the mode of ${path}: ${String(error)}`)
+    console.warn(
+      `honmoon api: warning: could not read the mode of the management token directory ${dir}: ${String(error)}`,
+    )
     return
   }
-  if ((mode & 0o077) !== 0) {
+  if ((mode & 0o022) !== 0) {
     console.warn(
-      `honmoon api: warning: management token ${path} is mode ${mode.toString(8).padStart(4, '0')} `
-      + '— readable beyond its owner. Any local user it admits can read the whole management API; '
-      + 'delete the file to mint a new one.',
+      `honmoon api: warning: management token directory ${dir} is mode ${mode.toString(8).padStart(4, '0')} `
+      + '— writable beyond its owner. Any local user it admits can substitute the token file and '
+      + 'authenticate to the whole management API; chmod 700 it.',
     )
   }
 }
