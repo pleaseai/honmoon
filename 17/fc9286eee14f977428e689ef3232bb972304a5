@@ -1,0 +1,26 @@
+wiki/getting-started/policy-authoring.md
+  s_74bdd8db3220da::t_0eab22e3643148 409-410,412-413,417-424,429-430,437-441,446,449-450
+  s_74bdd8db3220da::t_77a19ad3fbe27f 411,447-448
+wiki/llms-full.txt
+  s_74bdd8db3220da::t_77a19ad3fbe27f 3103,3139-3140
+  s_74bdd8db3220da::t_0eab22e3643148 3101-3102,3104-3105,3109-3116,3121-3122,3129-3133,3138,3141-3142
+crates/honmoon-cli/tests/policy_validate.rs
+  s_74bdd8db3220da::t_d878f66152bc2c 103-129,154,359-400
+  s_74bdd8db3220da::t_effb0e715dc14e 401-402
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "17fc9286eee14f977428e689ef3232bb972304a5",
+  "prompts": {},
+  "sessions": {
+    "s_74bdd8db3220da": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a2a7decf-3c3f-4518-856f-e78017aab857",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
