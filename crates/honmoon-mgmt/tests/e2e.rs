@@ -14,11 +14,13 @@ use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
 
+use hmac::{Hmac, Mac};
 use honmoon_core::{AuditLog, Decision, PathResolution, Policy};
 use honmoon_mgmt::{AppState, HookSalt};
 use honmoon_proxy::approval::ApprovalRegistry;
 use honmoon_proxy::ca::CaMaterial;
 use honmoon_proxy::gateway::{GatewayState, InterceptPolicy, PiiMode, RedactionState};
+use sha2::Sha256;
 
 /// The management token every gateway in this file is started with.
 ///
@@ -1099,6 +1101,81 @@ fn no_session_cookie_is_a_credential_so_a_sibling_port_has_nothing_to_harvest() 
     assert!(
         with_bearer.starts_with("HTTP/1.1 200"),
         "a bearer write must still work: {with_bearer:?}"
+    );
+}
+
+/// A session secret minted by the release before this one is not a credential.
+///
+/// The migration case #188 leaves behind if nothing is done. Up to `0.1.0` the
+/// management API minted `hex(HMAC-SHA256("honmoon-mgmt-session-v1", token))`
+/// as the `honmoon_session` cookie, and the header that replaces the cookie
+/// accepts a value of exactly that shape. A browser upgraded mid-session still
+/// holds the cookie, so a sibling-port listener that harvested it *before* the
+/// upgrade — the attack this change exists to close — could present the same
+/// bytes in `SESSION_HEADER` afterwards and keep full management access. The
+/// fix is the key's version: `v2` invalidates every `v1` value by construction,
+/// which is what reaches a copy already sitting off-browser, where clearing the
+/// browser's own cookie jar cannot.
+///
+/// Derived here rather than hardcoded so that changing [`MGMT_TOKEN`] cannot
+/// turn this into a test of some unrelated wrong value, and asserted distinct
+/// from the live secret so that reverting the key to `v1` fails here loudly
+/// instead of making the legacy value acceptable again.
+#[test]
+fn a_legacy_cookie_derivation_is_not_a_session() {
+    type HmacSha256 = Hmac<Sha256>;
+    let mut mac = <HmacSha256 as Mac>::new_from_slice(b"honmoon-mgmt-session-v1").unwrap();
+    mac.update(MGMT_TOKEN.as_bytes());
+    let legacy = mac
+        .finalize()
+        .into_bytes()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+
+    let (gw, _held) = gateway_with_a_held_request();
+    let id = await_pending_id(gw.mgmt_port);
+    let login = http_request_raw(
+        gw.mgmt_port,
+        "GET",
+        &format!("/login?token={MGMT_TOKEN}"),
+        &[],
+        "",
+    );
+    assert_ne!(
+        legacy,
+        session_secret(&login),
+        "the derivation key is back to v1, so every pre-upgrade cookie value \
+         authenticates again"
+    );
+
+    for route in READ_ROUTES {
+        let raw = http_request_raw(gw.mgmt_port, "GET", route, &[(SESSION_HEADER, &legacy)], "");
+        assert!(
+            raw.starts_with("HTTP/1.1 401"),
+            "{route} accepted a legacy session value: {raw:?}"
+        );
+        assert!(
+            !raw.contains(MARKER_RULE),
+            "{route} leaked data to a legacy session value: {raw:?}"
+        );
+    }
+
+    let write = http_request_raw(
+        gw.mgmt_port,
+        "POST",
+        &format!("/api/approvals/{id}/approve"),
+        &[(SESSION_HEADER, &legacy)],
+        "",
+    );
+    assert!(
+        write.starts_with("HTTP/1.1 401"),
+        "the approval write accepted a legacy session value: {write:?}"
+    );
+    assert_eq!(
+        await_pending_id(gw.mgmt_port),
+        id,
+        "a legacy session value must not have resolved the approval"
     );
 }
 

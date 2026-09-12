@@ -430,8 +430,20 @@ pub const SESSION_HEADER: &str = "x-honmoon-session";
 ///
 /// The key is a public constant. It domain-separates this derivation from the
 /// hook salt's; unforgeability comes from the token, which is the secret.
+///
+/// Its version is the migration boundary, and `v2` is deliberate. Up to `0.1.0`
+/// this same derivation keyed `v1` was minted as the `honmoon_session` cookie —
+/// the cookie #188 removes, because a sibling loopback listener can harvest it.
+/// A browser upgraded mid-session still holds that cookie, and its value was
+/// byte-identical to what [`SESSION_HEADER`] now accepts: a value harvested
+/// before the upgrade would have replayed in the new header afterwards and
+/// bridged the hole this change closes. Bumping the key retires every
+/// previously minted value by construction, which is the only thing that
+/// reaches the harvested copy — that copy is already off-browser, where no
+/// expiring `Set-Cookie` can follow it. `a_legacy_cookie_derivation_is_not_a_session`
+/// pins the refusal; bump the version again for any future change of this shape.
 fn session_secret(token: &str) -> String {
-    const KEY: &[u8] = b"honmoon-mgmt-session-v1";
+    const KEY: &[u8] = b"honmoon-mgmt-session-v2";
     let mut mac =
         <HmacSha256 as Mac>::new_from_slice(KEY).expect("HMAC accepts a key of any length");
     mac.update(token.as_bytes());
