@@ -117,15 +117,25 @@ rules:
     verdict: deny
 "#;
 
-/// An address `TcpListener::bind` cannot resolve, used to stop a `gateway` run
-/// that got past the policy.
+/// An address no interface owns, used to stop a `gateway` run that got past
+/// the policy.
 ///
 /// `gateway` on a policy it accepts serves until interrupted, so "it exits 0"
 /// is not a thing a test can wait for. Binding is the first step after the
 /// load, though, so a bind that cannot succeed turns "the policy was accepted"
-/// into an immediate, hermetic exit — no port taken, no process left running,
-/// and the error names which of the two stages it reached.
-const UNRESOLVABLE_ADDR: &str = "definitely-not-a-host.invalid:8443";
+/// into an immediate exit — no port taken, no process left running, and the
+/// error names which of the two stages it reached.
+///
+/// It has to be an IP literal to be that. A hostname would send `bind` through
+/// `getaddrinfo` first, which is a resolver round trip this test would then
+/// depend on: measured at ~1.5s here even with a resolver answering, a stall
+/// for the lookup timeout where one does not, and — if something ever answered
+/// for the name with an address this host owns — a gateway that binds, serves,
+/// and hangs the suite, because nothing here puts a timeout on a child.
+/// `192.0.2.1` is TEST-NET-1 (RFC 5737): reserved for documentation, so no
+/// interface carries it and `bind` fails locally with `EADDRNOTAVAIL` in ~25ms,
+/// having asked nothing outside the kernel.
+const UNBINDABLE_ADDR: &str = "192.0.2.1:8443";
 
 /// Three rules the CEL compiler rejects, so "every one of them" has something
 /// to mean.
@@ -414,7 +424,7 @@ fn validate_and_the_gateway_accept_the_same_policy() {
             "--config",
             gateway_policy.to_str().unwrap(),
             "--addr",
-            UNRESOLVABLE_ADDR,
+            UNBINDABLE_ADDR,
         ],
     );
     let stderr = stderr(&started);
