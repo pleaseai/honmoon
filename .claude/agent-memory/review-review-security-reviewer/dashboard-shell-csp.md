@@ -87,6 +87,13 @@ parser handles all four and every later one of that shape, so the only normalisa
 file is the HTML-level character-reference decode that must happen *before* the parser sees the
 value. An unparseable URL is reported, not skipped.
 
+It resolves against **two** stand-in bases and asks whether the results differ, rather than
+comparing to one stand-in's origin: the serving origin is not known at build time (the gateway uses
+whatever `--mgmt-addr` it was given, the demo build Cloudflare Pages), so there is no host to compare
+against, and a URL naming the single stand-in would have read as same-origin. A relative URL follows
+its base and the two differ; an absolute one resolves identically under both and is off-origin
+wherever the shell is served. Do not propose comparing against a configured host — there isn't one.
+
 **`NAMED_REFS` is a deliberate subset and its gaps are closed by reporting, not by growing it.** A
 name the table does not cover is reported — "cannot decode, refusing to pass" — the same stance as
 the unreadable-`<script>` rule, so a finding of the form "the table is missing `&<name>;`" is

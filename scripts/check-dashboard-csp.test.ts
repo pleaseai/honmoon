@@ -186,6 +186,16 @@ describe('checkShell', () => {
     expect(details(off)).toEqual([expect.stringContaining('<link> loads from off this origin')])
   })
 
+  // The serving origin is not known at build time, so a URL that names the
+  // stand-in must not read as same-origin just because it matches it.
+  test('an absolute URL naming a resolution stand-in is still off-origin', () => {
+    const named = BUILT_SHELL.replace(
+      '<div id="root">',
+      '<link rel="stylesheet" href="https://dashboard.invalid/x.css"><div id="root">',
+    )
+    expect(details(named)).toEqual([expect.stringContaining('<link> loads from off this origin')])
+  })
+
   // The table is a subset on purpose, so its gaps have to fail rather than pass.
   test('a reference the table does not cover is refused, not passed through', () => {
     const unknown = BUILT_SHELL.replace(

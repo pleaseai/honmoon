@@ -101,21 +101,26 @@ const OPEN_TAG = new RegExp(String.raw`<([a-z][a-z0-9-]*)\b(${ATTRS})>`, 'gi')
 const URL_ATTR = /\b(src|href)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'>]+))/gi
 
 /**
- * The origin the shell is served from, for resolving the URLs in it.
+ * Two stand-in origins the shell's URLs are resolved against.
  *
- * The host is arbitrary — only "same as this" and "not this" are ever asked —
- * but the resolution is not, and deciding it by pattern is what kept going
- * wrong. `new URL` is the parser a browser uses, so it applies the rules a
- * regex over the raw text cannot see: leading spaces and control characters are
- * stripped before the scheme is read, a tab inside the scheme is removed
+ * `new URL` is the parser a browser uses, and it applies the rules a regex over
+ * the raw text cannot see: leading spaces and control characters are stripped
+ * before the scheme is read, a tab inside the scheme is removed
  * (`java<TAB>script:` *is* a `javascript:` URL), and a backslash stands in for
  * a slash in the authority, so `/\\cdn.example/x` leaves this origin rather
  * than being the path it looks like.
+ *
+ * Two of them, because the real serving origin is not known at build time: the
+ * gateway serves this shell from whatever `--mgmt-addr` it was given, and the
+ * demo build from Cloudflare Pages. So there is no host to compare against, and
+ * comparing against one stand-in would make a URL that *names* that stand-in
+ * read as same-origin. Resolving against two answers the question that actually
+ * matters without naming a host at all: a relative URL follows its base and the
+ * two results differ, while an absolute one — scheme or protocol-relative —
+ * resolves the same way under both, and is off-origin wherever this is served.
  */
 const SHELL_BASE = 'https://dashboard.invalid/index.html'
-
-/** {@link SHELL_BASE}'s origin, the one value every resolved URL is compared to. */
-const SHELL_ORIGIN = new URL(SHELL_BASE).origin
+const OTHER_BASE = 'https://elsewhere.invalid/index.html'
 
 /** A character reference inside an attribute value: `&#x73;`, `&#115;`, `&amp;`. */
 const CHAR_REF = /&(?:#x([0-9a-f]+)|#(\d+)|([a-z][a-z0-9]*));?/gi
@@ -291,9 +296,11 @@ export function checkShell(html: string, shell: string): Problem[] {
         continue
       }
 
-      let resolved: URL
+      let here: URL
+      let there: URL
       try {
-        resolved = new URL(url, SHELL_BASE)
+        here = new URL(url, SHELL_BASE)
+        there = new URL(url, OTHER_BASE)
       }
       catch {
         // Unparseable to this parser is unparseable to the check, while a
@@ -303,15 +310,16 @@ export function checkShell(html: string, shell: string): Problem[] {
         continue
       }
 
-      if (resolved.protocol === 'javascript:') {
+      if (here.protocol === 'javascript:') {
         note(`<${element}> carries a javascript: URL, which \`script-src 'self'\` refuses: ${attr}`)
         continue
       }
       if (name.toLowerCase() === 'href' && NAVIGATION_HREF.has(element)) {
         continue
       }
-      // A fragment link (`href="#/audit"`) resolves to this very document.
-      if (resolved.origin === SHELL_ORIGIN) {
+      // Followed its base, so it is relative — a path, or a fragment link like
+      // `href="#/audit"` that resolves to this very document.
+      if (here.href !== there.href) {
         continue
       }
       note(
