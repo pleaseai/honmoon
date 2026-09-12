@@ -296,11 +296,21 @@ impl fmt::Debug for CompiledConditions {
 /// behaviour `decide` gave before conditions were compiled at load, warning
 /// included.
 ///
-/// A **hit** on a recorded failure declines the same way, and that is the arm
-/// this keeps for policies whose table was not built by the loader: since #191
-/// a loaded policy carries no such entry, because `from_yaml` refuses rather
-/// than returning one. The clone answers whatever is in the table instead of
-/// asserting what cannot be there, which is the fail-closed reading.
+/// A **hit** on a recorded failure would decline the same way, and as of #191 no
+/// `Policy` can present one. `Policy::compiled` is private and written in
+/// exactly one place — `from_yaml`, which refuses the policy when
+/// `inert_rules` is non-empty — and every other way to get a `Policy` (built
+/// in code, deserialized, `Default`) leaves the table *empty*, which is a
+/// miss, not a hit on a failure. So this is not an arm kept for some live
+/// caller: there is none, and saying otherwise would be inventing a use case
+/// for it.
+///
+/// It costs nothing to keep, because the arm is the table's own
+/// `Option<Arc<Program>>` cloned through rather than a guard written for it.
+/// What it buys is that a second writer of `compiled` — the invariant above is
+/// one private field away from a future change, not a type-level guarantee —
+/// meets the fail-closed answer here instead of a program that was never
+/// compiled.
 fn program_for(policy: &Policy, rule: &Rule) -> Option<Arc<Program>> {
     match policy.compiled_conditions().get(&rule.condition) {
         Some(compiled) => compiled.clone(),
@@ -669,9 +679,10 @@ mod tests {
         ));
 
         // A condition that does not compile is *recorded* as failed rather
-        // than left out, which is what keeps a rule from being handed to the
-        // compiler again on every request — the shape `program_for` answers
-        // for a table built outside the loader.
+        // than left out. That is what `validate_compiled_conditions` reads to
+        // name the rule and refuse the policy; it is asserted on a table this
+        // test builds directly, because no `Policy` can carry one — `from_yaml`
+        // is the only writer and it returns `Err` instead.
         let table = CompiledConditions::compile(&[Rule {
             name: "malformed".into(),
             endpoint: "*".into(),
@@ -856,6 +867,43 @@ mod tests {
         .expect("every condition compiles");
         assert_eq!(super::decide(&policy, &http_facts("POST")), Verdict::Allow);
         assert_eq!(super::decide(&policy, &http_facts("GET")), Verdict::Allow);
+        assert_eq!(super::decide(&policy, &Facts::default()), Verdict::Deny);
+    }
+
+    /// A table entry that records a failed compile declines, rather than
+    /// matching or panicking.
+    ///
+    /// Since #191 no `Policy` reaches this state on its own: `compiled` is
+    /// private, `from_yaml` is its only writer, and it returns `Err` instead of
+    /// a policy holding a recorded failure. So this test writes the table by
+    /// hand, which is the one thing that can reach the arm — and the reason to
+    /// pin it is exactly that nothing else does. `program_for`'s doc says the
+    /// arm is kept so a second writer of `compiled` would meet the fail-closed
+    /// answer here; without this, that is a claim about untested code, and a
+    /// later change that added such a writer would find out at runtime.
+    #[test]
+    fn a_recorded_compile_failure_in_the_table_declines() {
+        let mut policy = Policy {
+            egress: crate::Egress {
+                default: Verdict::Deny,
+                ..Default::default()
+            },
+            rules: vec![Rule {
+                name: "malformed".into(),
+                endpoint: "*".into(),
+                condition: "&&".into(),
+                verdict: Verdict::Allow,
+            }],
+            ..Default::default()
+        };
+        policy.compiled = CompiledConditions::compile(&policy.rules);
+
+        // The table hits — this is the arm, not the miss arm the code-built
+        // policies elsewhere in this file exercise.
+        assert!(matches!(policy.compiled_conditions().get("&&"), Some(None)));
+        assert!(super::program_for(&policy, &policy.rules[0]).is_none());
+
+        // And the rule cannot turn the deny default into the allow it asks for.
         assert_eq!(super::decide(&policy, &Facts::default()), Verdict::Deny);
     }
 

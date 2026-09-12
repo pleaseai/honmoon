@@ -283,7 +283,7 @@ Honmoon is designed to **fail closed**, in two layers.
 At **evaluation**, a rule whose condition fails to compile, or which references a fact that has not
 been populated, simply **does not match** — it can never turn a `deny` into an `allow`. Combined
 with the `deny`-by-default egress verdict, an absent or broken rule is always the safe outcome
-([engine.rs:53-58](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/engine.rs#L53-L58), [engine.rs:311-343](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/engine.rs#L311-L343)).
+([engine.rs:53-58](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/engine.rs#L53-L58), [engine.rs:321-353](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/engine.rs#L321-L353)).
 Read "fails to compile" there literally: the CEL compiler **returns an error**, and every outcome
 other than `true` means "no match".
 
@@ -326,14 +326,21 @@ and answers nothing, so an operator who never read that warning was running a po
 the one they wrote. But it does mean a deployment whose policy has a rule nobody noticed was inert
 will fail to boot on upgrade.
 
-The error names every rule and quotes what it carries:
+The error names every rule and quotes what it carries. Both author-written values are printed the
+way Rust prints a string, not in backticks, so a condition made only of invisible characters is
+still visible in the message:
 
 ```
-Error: rule `secrets` (rules[1]) has a `condition` that is not a valid CEL expression: `&&`
+Error: rule "secrets" (rules[1]) has a `condition` that is not a valid CEL expression: "&&"
 ```
 
-To check a policy before rolling it out, load it: `honmoon gateway --config <file>` fails fast, and
-the message is the whole fix list.
+There is no validation-only command to check a policy with first. `honmoonctl validate` is a stub
+(see [Validating a policy](#validating-a-policy) below), the JSON Schema does not parse CEL, and
+starting the gateway is not a dry run: `honmoon gateway --config <file>` refuses a bad policy
+before it binds anything, but on a good one it goes on to serve until you stop it — and it resolves
+the management token first, so it can create `~/.honmoon/mgmt-token` even on the run where the
+policy is what fails. [#198](https://github.com/pleaseai/honmoon/issues/198) tracks a load-and-exit
+mode.
 :::
 
 ```mermaid
@@ -355,7 +362,7 @@ sequenceDiagram
     R-->>E: match → return rule.verdict
   end
 ```
-<!-- Sources: crates/honmoon-core/src/lib.rs:199-224, crates/honmoon-core/src/lib.rs:292-337, crates/honmoon-core/src/engine.rs:287-343, crates/honmoon-core/src/engine.rs:388-434 -->
+<!-- Sources: crates/honmoon-core/src/lib.rs:199-224, crates/honmoon-core/src/lib.rs:292-337, crates/honmoon-core/src/engine.rs:287-353, crates/honmoon-core/src/engine.rs:398-444 -->
 
 This behavior is locked by tests: `unknown_fact_reference_does_not_match` proves a condition
 referencing an unpopulated `sql` fact falls through to the egress default, and

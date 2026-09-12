@@ -495,10 +495,28 @@ pub struct UncompilableRule {
 }
 
 impl fmt::Display for UncompilableRule {
+    /// Both author-written values are rendered with `{:?}` rather than wrapped
+    /// in backticks, which is what the other variants here do with a `name`.
+    ///
+    /// The condition is why. Four of the classes this error exists to catch —
+    /// a lone `U+200B`, BOM, word joiner or soft hyphen — are *invisible*, and
+    /// between backticks they render as nothing: an operator would be told a
+    /// condition is not valid CEL and shown an empty pair of backticks, which
+    /// is precisely the "you would never spot it" problem the check is for.
+    /// `{:?}` prints them as `"\u{200b}"`. It also escapes a newline or a
+    /// control character, which otherwise breaks a report whose clauses are
+    /// joined on one line, and it leaves ordinary CEL alone — `str`'s `Debug`
+    /// escapes `"` and `\` but not `'`, so `sql.verb == 'DROP'` reads
+    /// unchanged.
+    ///
+    /// The `name` follows for the same reason at one remove: it is the other
+    /// value an author controls, it appears in the same joined line, and
+    /// quoting the two halves of one clause differently would read as an
+    /// accident.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "rule `{}` (rules[{}]) has a `condition` that is not a valid CEL expression: `{}`",
+            "rule {:?} (rules[{}]) has a `condition` that is not a valid CEL expression: {:?}",
             self.name, self.index, self.condition
         )
     }
@@ -894,9 +912,9 @@ endpoints:
         let message = error.to_string();
         assert_eq!(
             message,
-            "rule `dup` (rules[0]) has a `condition` that is not a valid CEL expression: `&&`; \
-             rule `dup` (rules[2]) has a `condition` that is not a valid CEL expression: `&&`; \
-             rule `other` (rules[3]) has a `condition` that is not a valid CEL expression: `@`"
+            "rule \"dup\" (rules[0]) has a `condition` that is not a valid CEL expression: \"&&\"; \
+             rule \"dup\" (rules[2]) has a `condition` that is not a valid CEL expression: \"&&\"; \
+             rule \"other\" (rules[3]) has a `condition` that is not a valid CEL expression: \"@\""
         );
     }
 
