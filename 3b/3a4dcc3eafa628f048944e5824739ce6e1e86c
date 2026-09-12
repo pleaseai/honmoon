@@ -1,0 +1,28 @@
+crates/honmoon-core/Cargo.toml
+  s_cdaa9b4042ee3f::t_35742f28692627 25-33
+crates/honmoon-core/src/audit.rs
+  s_cdaa9b4042ee3f::t_8e2f1865395d6e 848-849
+  s_cdaa9b4042ee3f::t_65557022004be4 1025-1056
+  s_cdaa9b4042ee3f::t_dc109f02ea6d03 567,660-666,672-689,695-720
+  s_cdaa9b4042ee3f::t_35742f28692627 383-395,413-421,423-435,445,452-459,461,479-566,568-659,667-671,690-694,721-847,857-863,873-874,1203-1232,1234-1322
+  s_cdaa9b4042ee3f::t_755a1d265396d7 1233,1323-1325
+crates/honmoon-core/tests/audit_sink_relative_path.rs
+  s_cdaa9b4042ee3f::t_4087ddce715354 1-39,44-64
+  s_cdaa9b4042ee3f::t_1a0845f79b0876 40-43
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "3b3a4dcc3eafa628f048944e5824739ce6e1e86c",
+  "prompts": {},
+  "sessions": {
+    "s_cdaa9b4042ee3f": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "b8171202-7996-4219-b687-063de24c3b30",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
