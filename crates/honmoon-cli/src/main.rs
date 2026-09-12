@@ -63,6 +63,16 @@ enum Command {
         /// rotation symlink included. Created owner-only (`0600` before the umask)
         /// when absent; an existing file keeps the mode it has. A refusal aborts
         /// startup rather than running without the audit trail.
+        ///
+        /// The *directories* on the path are checked too (issue #160): honmoon walks
+        /// them one at a time rather than letting the OS resolve the path whole, and
+        /// refuses a symlinked parent directory unless the directory holding that
+        /// symlink is writable by nobody but `root` or honmoon's own user. A
+        /// symlinked `/var`, `/tmp` or `/var/log` installed by root is followed
+        /// normally; one reachable through a directory anyone else can write is not,
+        /// because whoever can write that directory chooses where the records land.
+        /// If this refuses a path you intend, point the flag at the resolved location
+        /// instead — the refusal names the component it stopped on.
         #[arg(long, value_name = "FILE")]
         audit_log: Option<PathBuf>,
         /// Bearer token required by `POST /api/hooks/claude-code`.
@@ -178,11 +188,15 @@ enum Command {
         /// with no arguments.
         ///
         /// Same constraint as `honmoon gateway --audit-log`: a regular file, never
-        /// a symlink, FIFO, socket or device (issue #138). A refused path is
-        /// reported to stderr and the hook carries on — which, per the paragraph
-        /// above, is a channel a non-interactive hook process discards, so a
-        /// degradation recorded nowhere is the cost of pointing this at a target
-        /// the sink will not take (issue #165).
+        /// a symlink, FIFO, socket or device (issue #138), and no symlinked parent
+        /// directory except one only `root` or honmoon's own user could have planted
+        /// (issue #160). A refused path is reported to stderr and the hook carries on
+        /// — which, per the paragraph above, is a channel a non-interactive hook
+        /// process discards, so a degradation recorded nowhere is the cost of
+        /// pointing this at a target the sink will not take (issue #165). The
+        /// parent-directory rule makes that worth re-checking against a path that
+        /// worked before: it is the same file the gateway writes, so a path the
+        /// gateway starts on is one the hook takes too.
         #[arg(long, value_name = "FILE", env = "HONMOON_AUDIT_LOG")]
         audit_log: Option<PathBuf>,
     },
