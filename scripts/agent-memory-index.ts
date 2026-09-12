@@ -73,6 +73,7 @@ export interface NoteEntry {
 }
 
 const FRONTMATTER = /^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/
+
 // Three parts, each load-bearing and none obvious:
 //   - the leading `([ \t]*)` is the line's own indentation, not padding to
 //     discard: `parseFrontmatter` below compares it against the first key it
@@ -104,18 +105,63 @@ const TOP_LEVEL_KEY = /^([ \t]*)([a-z][\w-]*):[ \t]*([^ \t].*)?$/i
 const YAML_PADDING = /^[ \t]+|[ \t]+$/g
 
 /**
- * How far a line is indented, counting only what YAML indents with.
+ * The first character YAML's own character set excludes, if the text holds one.
  *
- * `trimStart` uses JavaScript's whitespace class, so it would count a leading
- * no-break space — which in a frontmatter value is the value's own first
- * character, not indentation.
+ * A transcription of the spec's `c-printable` production, negated. pyyaml
+ * refuses these in its *reader*, before a parse begins, so one anywhere in the
+ * frontmatter makes the note unloadable to every YAML tool — quoting does not
+ * rescue it — while the index published the character verbatim. The escaped
+ * form (`"before\0after"`) is a different thing and stays legal.
+ *
+ * Written as codepoint arithmetic rather than a character class because a
+ * regular expression spelling the C0 controls is what `no-control-regex`
+ * exists to catch, and this file would be the repository's first
+ * `eslint-disable`. Iterating the string yields whole codepoints, so an
+ * astral character is one character here and not two halves.
+ */
+function forbiddenCharacter(text: string): string | undefined {
+  return [...text].find((character) => {
+    const point = character.codePointAt(0) ?? 0
+    return !(point === 0x09 || point === 0x0A || point === 0x0D
+      || (point >= 0x20 && point <= 0x7E)
+      || point === 0x85
+      || (point >= 0xA0 && point <= 0xD7FF)
+      || (point >= 0xE000 && point <= 0xFFFD)
+      || point >= 0x10000)
+  })
+}
+
+/**
+ * A line with YAML's own padding taken off either end.
+ *
+ * `String.prototype.trim` uses JavaScript's whitespace class, which holds the
+ * no-break space — a character YAML pads with nothing and treats as content.
  */
 function yamlTrim(line: string): string {
   return line.replace(YAML_PADDING, '')
 }
 
-function indentWidth(line: string): number {
+/**
+ * How wide a line's leading whitespace prefix is, in characters.
+ *
+ * `trimStart` would count a leading no-break space here too, and in a
+ * frontmatter value that is the value's own first character.
+ */
+function prefixWidth(line: string): number {
   return line.length - line.replace(/^[ \t]+/, '').length
+}
+
+/**
+ * How far a line is *indented*, which is not the same measurement.
+ *
+ * Only a space indents in YAML, so indentation stops at the first tab: under a
+ * mapping indented by two, `  \ttext` is indented by two, and the tab cannot
+ * make up the difference a block scalar's content owes its parent — pyyaml
+ * refuses that document. One space further in the debt is already paid, and
+ * the tab is content.
+ */
+function indentColumns(line: string): number {
+  return /^ */.exec(line)?.[0].length ?? 0
 }
 
 /**
@@ -428,11 +474,16 @@ export function parseFrontmatter(text: string): Frontmatter {
     const text = yamlTrim(candidate)
     return text !== '' && !text.startsWith('#') && text !== '---' && text !== '...'
   })
-  const rootIndent = firstContent === undefined ? 0 : indentWidth(firstContent)
+  const rootIndent = firstContent === undefined ? 0 : prefixWidth(firstContent)
   // A tab never indents in YAML — it is the one whitespace forbidden there —
   // so a mapping indented with one is a document neither reader will load.
   // Measuring its width, which is what made an indented root readable at all,
   // is exactly what let this through.
+  const forbidden = forbiddenCharacter(block[1])
+  if (forbidden !== undefined) {
+    const point = (forbidden.codePointAt(0) ?? 0).toString(16).toUpperCase().padStart(4, '0')
+    problems.push(`the frontmatter holds U+${point}, which YAML does not allow as a character — its reader refuses the note before parsing, so write the character as an escape in a double-quoted value`)
+  }
   if (firstContent !== undefined && /^[ \t]*\t/.test(firstContent)) {
     problems.push('the frontmatter mapping is indented with a tab, which YAML forbids wherever indentation goes — indent it with spaces')
   }
@@ -511,7 +562,7 @@ export function parseFrontmatter(text: string): Frontmatter {
     // document. It is the value's own character on a continuation line, too.
     const bare = yamlTrim(line)
 
-    const atRoot = indentWidth(line) <= rootIndent
+    const atRoot = indentColumns(line) <= rootIndent
 
     // A tab never indents, and the comment in front of which one sits does not
     // exempt it: pyyaml refuses ` \t# note` exactly as it refuses ` \tmore`,
@@ -627,10 +678,10 @@ export function parseFrontmatter(text: string): Frontmatter {
       // Without an explicit indicator the first content line sets the block's
       // indentation, and every later line has to hold it.
       if (blockScalars.has(key) && !blockIndent.has(key)) {
-        blockIndent.set(key, /^ */.exec(line)?.[0].length ?? 0)
+        blockIndent.set(key, indentColumns(line))
       }
       const required = blockIndent.get(key)
-      if (required !== undefined && (/^ */.exec(line)?.[0].length ?? 0) < required) {
+      if (required !== undefined && indentColumns(line) < required) {
         // An outdented line ends the block scalar. If it is a comment, YAML
         // ignores it and the note is fine — folding it in both corrupted the
         // summary and failed a valid note. Outdented *content* is the parse

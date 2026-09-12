@@ -460,6 +460,38 @@ metadata:
     expect(parseFrontmatter(text).problems).toEqual([expect.stringContaining('tab')])
   })
 
+  // Only a space indents. A tab cannot supply the indentation a block scalar's
+  // content owes its parent mapping, so `  description: >` over `  \ttext` is
+  // a document pyyaml refuses — while one space further in, where the block's
+  // own indentation is already met, the tab is content and it loads.
+  test('reports a tab standing in for block indentation', () => {
+    const under = '---\n  name: a-note\n  description: >\n  \ttext\n---\n'
+    const met = '---\n  name: a-note\n  description: >\n   \ttext\n---\n'
+    expect(parseFrontmatter(under).problems).not.toEqual([])
+    expect(parseFrontmatter(met)).toMatchObject({ scalars: { description: 'text' }, problems: [] })
+  })
+
+  // YAML's character set excludes the C0 controls other than tab, newline and
+  // carriage return, U+007F, and the C1 controls other than NEL. A raw one is
+  // refused by the *reader*, before any parse — so the note is unloadable to
+  // every YAML tool while the index published the character verbatim.
+  test('reports a raw control character anywhere in the frontmatter', () => {
+    for (const forbidden of ['\u0000', '\u0008', '\u001F', '\u007F', '\u009F']) {
+      const text = `---\nname: a-note\ndescription: before${forbidden}after\n---\n`
+      expect(parseFrontmatter(text).problems).toEqual([expect.stringContaining('YAML does not allow')])
+    }
+  })
+
+  // ...and the ones YAML does allow stay allowed, escapes included: pyyaml
+  // reads `"before\0after"` as a string holding a NUL.
+  test('keeps the characters YAML allows', () => {
+    for (const allowed of ['\u0009', '\u0085', '\u00A0', '\u2028']) {
+      const text = `---\nname: a-note\ndescription: "before${allowed}after"\n---\n`
+      expect(parseFrontmatter(text).problems).toEqual([])
+    }
+    expect(parseFrontmatter(noteWith(String.raw`"before\0after"`)).problems).toEqual([])
+  })
+
   // `%` opens a directive, and `,`, `]`, `}` close flow collections that were
   // never opened. pyyaml refuses all four; Bun.YAML refuses `%` and disagrees
   // on the rest, which is reason to report either way.
