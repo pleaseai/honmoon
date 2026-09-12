@@ -1,6 +1,6 @@
 ---
 name: pr186-mgmt-token-auth
-description: PR #186 (issue #173) mgmt-token auth docs — README/wiki quick-start/egress-gateway/control-plane's own "every /api route gated" section, SKILL.md, claude-plugin README all verified accurate against mgmt_token.rs/lib.rs/auth.ts; the one gap was control-plane.md's PRE-EXISTING `@honmoon/api` route table (untouched by this diff) still describing /api/audit and /api/audit/stats with no auth note, even though packages/api/src/routes.ts (same PR) gates both
+description: 'PR #186 (issue #173) mgmt-token auth docs — README/wiki quick-start/egress-gateway/control-plane''s own "every /api route gated" section, SKILL.md, claude-plugin README all verified accurate against mgmt_token.rs/lib.rs/auth.ts; the one gap was control-plane.md''s PRE-EXISTING `@honmoon/api` route table (untouched by this diff) still describing /api/audit and /api/audit/stats with no auth note, even though packages/api/src/routes.ts (same PR) gates both'
 metadata:
   type: project
 ---
@@ -20,13 +20,19 @@ Verified accurate: README.md's mint-path/login-URL blurb, wiki/getting-started/q
 `/api`+`/healthz`+`/login` vite proxy list (matches vite.config.ts), and .claude/skills/run-honmoon/
 SKILL.md's `run-honmoon-driver-token` claim (matches driver.mjs `MGMT_TOKEN` default literal).
 
-The one finding: wiki/deep-dive/control-plane.md's new section (lines ~94-100, touched by this PR)
-correctly documents the dashboard's session-cookie flow and says "Every `/api` route requires the
-management token" — but the pre-existing "`@honmoon/api` — the durable audit-query layer" section
-further down (route table for `GET /api/audit`, `GET /api/audit/stats`, `GET /healthz`) was NOT
-touched by this diff and still lists those routes with no auth column/note, even though this same
-PR added the gate (packages/api/src/routes.ts, packages/api/src/index.ts's own doc comment says
-"Every route but `/healthz` requires the management token"). Lesson: when a PR changes auth on an
-already-documented route table, check every doc section that enumerates those routes, not just the
-section the PR's own diff touches — drift between a freshly-accurate section and a stale sibling
-section in the *same file* is easy to miss because the file shows up as "changed" in the diff stat.
+The one finding, **FIXED in the same PR — do not re-report it**:
+wiki/deep-dive/control-plane.md's new section correctly documented the dashboard's session-cookie
+flow, but the pre-existing "`@honmoon/api` — the durable audit-query layer" route table further
+down the *same file* still listed `GET /api/audit` and `GET /api/audit/stats` with no auth note,
+even though this PR gated both. Both route tables in that file now state the credential they
+require and name `/healthz` and the SPA shell as the deliberate exceptions.
+
+Lesson worth keeping: when a PR changes auth on an already-documented route table, check every doc
+section that enumerates those routes, not just the section the PR's own diff touches. Drift
+between a freshly-accurate section and a stale sibling section in the *same file* is easy to miss,
+because the file already shows up as "changed" in the diff stat and so reads as handled.
+
+Also settled in this PR, so not open: the `--mgmt-token` flag row now says to prefer
+`HONMOON_MGMT_TOKEN` (argv is readable by any local user via `ps`) and notes that `@honmoon/api`
+cannot see the flag at all, so a flag-supplied token has to reach that service through the
+variable or the file.
