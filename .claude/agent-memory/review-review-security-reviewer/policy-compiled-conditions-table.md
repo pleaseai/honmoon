@@ -7,7 +7,8 @@ metadata:
 
 `Policy::from_yaml` builds a private `compiled: engine::CompiledConditions`
 (`HashMap<String, Option<Arc<Program>>>`) after `validate_endpoints`/`validate_rules`;
-`decide_with` calls `program_for(policy, rule)` instead of compiling per evaluation.
+`decide_with` calls `program_for(policy, rule)`, which looks the program up when the table
+has it and compiles on the spot when it does not.
 
 **Why:** CEL parsing used to run once per endpoint-matching rule per request. Once, not twice — a
 rule reaching `pii_caused` was compiled a single time and its `Program` reused, so it is

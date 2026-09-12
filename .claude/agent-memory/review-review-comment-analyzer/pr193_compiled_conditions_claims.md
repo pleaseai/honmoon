@@ -5,10 +5,12 @@ metadata:
   type: feedback
 ---
 
-PR #193 (issue #167) moved CEL rule-condition compilation from every `decide` call to
-`Policy::from_yaml`. Its `CompiledConditions` doc justified the move with: "the compile is CEL
-parsing, and it used to run once per endpoint-matching rule per request — twice for a rule that
-reaches `pii_caused`."
+PR #193 (issue #167) gave `Policy` a condition table that `Policy::from_yaml` compiles at load, so
+a loaded policy's rules look their programs up in `decide` instead of compiling there. Compilation
+did not leave `decide`: a table miss — a `Policy` built in code, or a condition reassigned after
+load — still compiles on the spot through `program_for`. Its `CompiledConditions` doc justified the
+move with: "the compile is CEL parsing, and it used to run once per endpoint-matching rule per
+request — twice for a rule that reaches `pii_caused`."
 
 The count was real and attached to the wrong operation. Pre-PR, `Program::compile` ran exactly
 **once** per matching rule — the comment directly above the call site said so ("Compiled once and
