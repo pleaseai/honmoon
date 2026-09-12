@@ -226,14 +226,19 @@ trailer — the RFC 9421 case this ADR is written around — was being dropped o
 `forward` was reproducing a request the client had not signed. `framed_for_trailers` writes
 `Transfer-Encoding: chunked` and the missing `Trailer` names onto a pass-through request that
 carries a trailer frame, and hyper resolves the pair per-protocol, dropping whichever of
-`Content-Length` / `Transfer-Encoding` its leg forbids.
+`Content-Length` / `Transfer-Encoding` its leg forbids — provided, on the HTTP/1.1 side, that it
+could parse the length it is dropping; a `Content-Length` it cannot resolve declines the re-frame
+instead of riding out next to the chunked framing.
 
 That is a header change on a request this ADR promises to forward as signed, so it takes the same
-constraint as every other one: `signed_headers_among` is asked about
-`signed_body::TRAILER_FRAMING_HEADERS` (`content-length`, `transfer-encoding`, `trailer`), and a
-signature over any of them **declines the re-frame** — the request goes on exactly as the client
-framed it, and a `warn` names the covered headers alongside the trailers that will therefore not
-arrive. The asymmetry with the rewrite is deliberate and is what keeps this consistent: the rewrite
+constraint as every other one, and with the same narrowing: `signed_headers_among` is asked about
+the members of `signed_body::TRAILER_FRAMING_HEADERS` (`content-length`, `transfer-encoding`,
+`trailer`) that **this** re-frame would actually touch — the first two only when the request is not
+already chunked, `trailer` only when a retained field is undeclared — and a signature over one of
+those **declines the re-frame**. A signed header the re-frame leaves as it found it blocks nothing,
+exactly as a signed `Content-Encoding` the rewrite never sends does not. On a decline the request
+goes on exactly as the client framed it, and a `warn` names the covered headers alongside the
+trailers that will therefore not arrive. The asymmetry with the rewrite is deliberate and is what keeps this consistent: the rewrite
 *must* act once a secret is found, so it needs a block-or-forward flag to decide how; this re-frame
 never has to act, so declining is a complete answer and needs no flag. The set is its own constant
 rather than `REWRITTEN_FRAMING_HEADERS` because it is a different rewrite — `Content-Encoding` is

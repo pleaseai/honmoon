@@ -116,18 +116,33 @@ overclaim. Whether a trailer *reaches* the upstream has a conditional answer:
 - What finally crosses is then subject to the upstream leg's own framing rules, which honmoon
   supplies rather than inherits since #136. HTTP/1.1 carries a trailer section only under chunked
   framing and only for the fields the request's `Trailer` header names; HTTP/2 requires neither.
-  `framed_for_trailers` writes both headers onto a pass-through request that carries a trailer
-  frame, and hyper resolves them per-protocol — the h1 encoder drops the `Content-Length` once
-  `Transfer-Encoding` is present, the h2 client drops the `Transfer-Encoding` as a
-  connection-specific field and keeps the length — so honmoon never has to know which leg it gets,
-  which it could not: ALPN is negotiated after `handle_request` has returned. Two conditions bound
-  it, and both are the kind that a later reader would otherwise mistake for a guarantee:
-  - It is **declined** when `signed_headers_among` reports a signature over any of
-    `Content-Length`, `Transfer-Encoding` or `Trailer` (`signed_body::TRAILER_FRAMING_HEADERS`).
-    Re-framing would then break the signature the request is being forwarded to preserve — the
-    trade ADR-0006 refuses — so the request goes on exactly as the client framed it and a `warn`
-    names both the covered headers and the trailer fields that will therefore not arrive. Whether
-    honmoon should instead *refuse* such a request is deliberately not decided here (issue 178).
+  `framed_for_trailers` adds `Transfer-Encoding: chunked` and the missing `Trailer` names to a
+  pass-through request that carries a trailer frame. It writes no `Content-Length` — one is there
+  only if the client's own framing put it there — so the request leaves carrying both framing names
+  and hyper resolves the pair per-protocol: the h1 encoder drops the `Content-Length` once
+  `Transfer-Encoding` is present *and it parsed a length to drop*, the h2 client drops the
+  `Transfer-Encoding` as a connection-specific field and keeps the length. honmoon therefore never
+  has to know which leg it gets, which it could not: ALPN is negotiated after `handle_request` has
+  returned. What follows bounds it, each the kind a later reader would otherwise mistake for a
+  guarantee:
+  - It is **declined** when `signed_headers_among` reports a signature over one of the
+    `signed_body::TRAILER_FRAMING_HEADERS` this re-frame would actually touch — `Content-Length`
+    and `Transfer-Encoding` only when the request is not already chunked, `Trailer` only when a
+    retained field is undeclared. Re-framing would then break the signature the request is being
+    forwarded to preserve — the trade ADR-0006 refuses — so the request goes on exactly as the
+    client framed it and a `warn` names both the covered headers and the trailer fields that will
+    therefore not arrive. Whether honmoon should instead *refuse* such a request is deliberately
+    not decided here (issue 178).
+  - It is **declined** when the request's `Content-Length` is not one hyper can resolve to a
+    single length — repeated field lines, a comma-separated list, or a value that is not plain
+    digits. hyper's removal is guarded by `existing_con_len.is_some()`
+    (`proto/h1/role.rs:1424-1427`), so chunked framing added beside such a length would reach an
+    HTTP/1.1 upstream *alongside* it, and honmoon would be the intermediary that made the message
+    ambiguous — the CL.TE shape RFC 9112 §6.1 forbids forwarding. An HTTP/2 client leg can send
+    it: h2 reads only the first `content-length` for its own accounting and rejects no duplicate.
+    `content_length_is_unambiguous` is deliberately stricter than hyper's parser rather than a
+    mirror of it, since drift from a mirror would cost the ambiguity while strictness only costs
+    a trailer on an already-malformed request.
   - It covers **two of `inspect_body`'s four branches**, the two that buffer. A `Trailer` header has
     to be written while the header section is in hand, and on the two over-cap branches the trailer
     frame is still unread at that point, so no declaration can be synthesized for it. An undeclared

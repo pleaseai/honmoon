@@ -145,7 +145,7 @@ enum Forwarded {
     /// trailer frame (deliberately — see [`HonmoonHandler::redacted_request`]).
     Rewritten(Request<Body>),
     /// Answered locally instead of forwarded.
-    Blocked(RequestOrResponse),
+    Blocked(Response<Body>),
 }
 
 /// Outcome of the host-level policy gate.
@@ -381,12 +381,12 @@ impl HonmoonHandler {
         request: Request<Body>,
         input: RedactionInput<'_>,
     ) -> RequestOrResponse {
-        let host = input.host.to_owned();
+        let host = input.host;
         let retained = input.retained_trailers;
         match self.redacted_request(request, input) {
-            Forwarded::PassThrough(request) => framed_for_trailers(request, retained, &host).into(),
+            Forwarded::PassThrough(request) => framed_for_trailers(request, retained, host).into(),
             Forwarded::Rewritten(request) => request.into(),
-            Forwarded::Blocked(response) => response,
+            Forwarded::Blocked(response) => response.into(),
         }
     }
 
@@ -619,10 +619,9 @@ impl HonmoonHandler {
     /// trailer values are never scanned for PII or secrets and never redacted
     /// (headers *are* read, for framing, decoding and signature metadata — what
     /// never happens is a detector running over them; whether a trailer
-    /// is *forwarded* is a separate, conditional matter — `forwarded_request`'s
-    /// redaction rewrite drops the frame, and `trailer_filtered_body` drops the
-    /// field names RFC 9110 §6.5.1 and RFC 9113 §8.2.2 forbid in a trailer
-    /// section, by name and never by value; see ADR-0009) — `facts.pii` stays
+    /// is *forwarded* is a separate matter, decided by its name and by the
+    /// upstream leg's framing and never by its value — see ADR-0009) —
+    /// `facts.pii` stays
     /// empty for them, so no *positive-finding* rule (`pii.count > 0`, a
     /// `pii.types` match) fires on a secret placed in a chunked trailer. An
     /// absence rule still does: the engine binds `pii` with its empty default,
@@ -1241,7 +1240,7 @@ fn redact_json_with_spans(
 /// A `403` explaining that redaction cannot rewrite a request whose signature
 /// covers headers the rewrite has to change — the header-signed counterpart of
 /// [`signed_body_response`].
-fn signed_headers_response(signed: &str) -> RequestOrResponse {
+fn signed_headers_response(signed: &str) -> Response<Body> {
     let reason = format!(
         "honmoon: this request's signature covers {signed}, and wire redaction would rewrite or \
          drop those headers when it replaces the redacted body; the upstream would reject the \
@@ -1259,7 +1258,6 @@ fn signed_headers_response(signed: &str) -> RequestOrResponse {
             reason,
         ))))
         .expect("static response is valid")
-        .into()
 }
 
 /// Every header replacing the body with `new_length` bytes of redacted text
@@ -1323,12 +1321,15 @@ fn reframed_headers(headers: &header::HeaderMap, new_length: usize) -> Vec<heade
 /// honmoon cannot know: ALPN is negotiated inside `hyper_util`'s connection
 /// pool, after `handle_request` has returned. It does not have to. The two
 /// headers are reconciled per-protocol by hyper itself — an h1 leg drops
-/// `Content-Length` once `Transfer-Encoding` is present
-/// (`role.rs:1424-1427`), and an h2 leg drops `Transfer-Encoding` as a
-/// connection-specific field (`strip_connection_headers`,
+/// `Content-Length` once `Transfer-Encoding` is present *and it can parse a
+/// length to drop* (`role.rs:1424-1427` guards the removal with
+/// `existing_con_len.is_some()`), and an h2 leg drops `Transfer-Encoding` as
+/// a connection-specific field (`strip_connection_headers`,
 /// `proto/h2/mod.rs:43`) and keeps the `Content-Length`, which is the h2
 /// behavior that already worked. So the request carries both names out of
-/// here and exactly one of them onto the wire.
+/// here and exactly one of them onto the wire — except where that proviso
+/// fails, which is the case [`content_length_is_unambiguous`] declines
+/// rather than hand an h1 wire both framings at once.
 ///
 /// **Why it can be declined.** `Content-Length`, `Transfer-Encoding` and
 /// `Trailer` are [`TRAILER_FRAMING_HEADERS`], and a signature routinely
@@ -1370,6 +1371,16 @@ fn framed_for_trailers(
         // chunked, hyper drops any `Content-Length` regardless of what
         // honmoon does with it.
         if request.headers().contains_key(header::CONTENT_LENGTH) {
+            if !content_length_is_unambiguous(request.headers()) {
+                tracing::warn!(
+                    domain = %host,
+                    trailers = %join_names(retained),
+                    "trailer re-framing bypassed for a request whose `Content-Length` hyper \
+                     cannot resolve: chunked framing beside it would put a CL.TE ambiguity on \
+                     an HTTP/1.1 wire (fail open)"
+                );
+                return request;
+            }
             reframed.push(header::CONTENT_LENGTH);
         }
         reframed.push(header::TRANSFER_ENCODING);
@@ -1441,7 +1452,7 @@ fn retained_names(
 /// Whether hyper's h1 encoder will read this request as chunked — the last
 /// `Transfer-Encoding` token is `chunked`.
 ///
-/// Mirrors `headers::is_chunked` (`hyper-1.10.1/src/proto/h1/headers.rs`), which
+/// Mirrors `headers::is_chunked` (`hyper-1.10.1/src/headers.rs:120-137`), which
 /// is what actually selects the encoder: the last value of the last field line,
 /// because the RFC requires `chunked` to come last.
 fn transfer_encoding_is_chunked(headers: &header::HeaderMap) -> bool {
@@ -1466,6 +1477,46 @@ fn declares_trailer(headers: &header::HeaderMap, name: &header::HeaderName) -> b
         .flat_map(|value| value.split(','))
         .filter_map(|declared| header::HeaderName::from_bytes(declared.trim().as_bytes()).ok())
         .any(|declared| declared == *name)
+}
+
+/// Whether hyper will be able to drop this request's `Content-Length` once the
+/// re-frame adds `Transfer-Encoding: chunked`.
+///
+/// The removal at `hyper-1.10.1/src/proto/h1/role.rs:1424-1427` is guarded by
+/// `existing_con_len.is_some()`, and `existing_con_len` is
+/// `headers::content_length_parse_all` (`hyper-1.10.1/src/headers.rs:40-70`),
+/// which yields `None` when the field lines disagree, when one carries a
+/// comma-separated list, or when any value is not plain digits. On `None` the
+/// `Content-Length` stays — so adding chunked framing beside it would put both
+/// framings on one HTTP/1.1 wire, the CL.TE ambiguity RFC 9112 §6.1 forbids an
+/// intermediary from forwarding (CWE-444). An h2 client leg reaches this: h2
+/// reads only the first `content-length` for its own accounting
+/// (`h2-0.4.16/src/proto/streams/recv.rs:182`) and rejects no duplicate, and
+/// hyper's h2 server forwards both field lines once its own parse returns
+/// `None`. The h1 client leg cannot — hyper's server decoder rejects the
+/// request outright (`role.rs:281-288`).
+///
+/// Deliberately **stricter** than hyper's parser instead of a third mirror of
+/// it: a repeated `Content-Length` is declined here even when the two values
+/// agree, which `content_length_parse_all` would accept. Being stricter costs
+/// a trailer on a request that was already malformed; a mirror that drifts
+/// from hyper would cost the ambiguity. That is the same fail-closed reading
+/// [`content_length_survives_rewrite`] takes of the same header.
+fn content_length_is_unambiguous(headers: &header::HeaderMap) -> bool {
+    let mut values = headers.get_all(header::CONTENT_LENGTH).iter();
+    let Some(value) = values.next() else {
+        // No length at all is nothing for the chunked framing to contradict.
+        return true;
+    };
+    if values.next().is_some() {
+        return false;
+    }
+    let digits = value.as_bytes();
+    !digits.is_empty()
+        && digits.iter().all(u8::is_ascii_digit)
+        // All-digits still overflows past `u64::MAX`, where hyper's
+        // `from_digits` returns `None` like any other value it cannot read.
+        && std::str::from_utf8(digits).is_ok_and(|length| length.parse::<u64>().is_ok())
 }
 
 /// Header names as one comma-separated string, for a log field.
@@ -1500,7 +1551,7 @@ fn content_length_survives_rewrite(headers: &header::HeaderMap, new_length: usiz
 /// A `403` explaining that redaction cannot rewrite a body-signed request, so
 /// the operator sees an actionable local failure instead of an opaque upstream
 /// signature rejection.
-fn signed_body_response(scheme: SignedBodyScheme) -> RequestOrResponse {
+fn signed_body_response(scheme: SignedBodyScheme) -> Response<Body> {
     let reason = format!(
         "honmoon: request body is covered by {} and contains data that wire redaction would \
          rewrite; the upstream would reject the re-signed body. Remove the sensitive value, or \
@@ -1518,7 +1569,6 @@ fn signed_body_response(scheme: SignedBodyScheme) -> RequestOrResponse {
             reason,
         ))))
         .expect("static response is valid")
-        .into()
 }
 
 /// A `403` explaining that this endpoint is inspected inline, so it must be
@@ -1700,6 +1750,42 @@ mod tests {
         repeated.append(header::CONTENT_LENGTH, "12".parse().expect("length"));
         repeated.append(header::CONTENT_LENGTH, "12".parse().expect("length"));
         assert_eq!(reframed_headers(&repeated, 12), [header::CONTENT_LENGTH]);
+    }
+
+    /// The re-frame may only add chunked framing beside a `Content-Length`
+    /// hyper will go on to remove; a value hyper cannot resolve is a decline,
+    /// because the two framings would otherwise share one HTTP/1.1 wire.
+    #[test]
+    fn only_a_content_length_hyper_can_drop_is_unambiguous() {
+        let lengths = |values: &[&str]| {
+            let mut headers = header::HeaderMap::new();
+            for value in values {
+                headers.append(header::CONTENT_LENGTH, value.parse().expect("length"));
+            }
+            headers
+        };
+
+        assert!(
+            content_length_is_unambiguous(&lengths(&[])),
+            "no length is nothing for chunked framing to contradict"
+        );
+        assert!(content_length_is_unambiguous(&lengths(&["12"])));
+        // hyper's `from_digits` reads a leading zero as the same number and
+        // removes the header it parsed, so this one is not ours to decline.
+        assert!(content_length_is_unambiguous(&lengths(&["012"])));
+
+        assert!(!content_length_is_unambiguous(&lengths(&["12", "13"])));
+        // Stricter than `content_length_parse_all`, which accepts an agreeing
+        // repeat — declining it costs a trailer, mirroring hyper risks drift.
+        assert!(!content_length_is_unambiguous(&lengths(&["12", "12"])));
+        assert!(!content_length_is_unambiguous(&lengths(&["12, 12"])));
+        assert!(!content_length_is_unambiguous(&lengths(&["+12"])));
+        assert!(!content_length_is_unambiguous(&lengths(&["twelve"])));
+        assert!(!content_length_is_unambiguous(&lengths(&[""])));
+        assert!(
+            !content_length_is_unambiguous(&lengths(&["18446744073709551616"])),
+            "all digits still overflows the u64 hyper parses into"
+        );
     }
 
     /// The rewrite strips the body-digest validators as well as re-framing, so
@@ -2153,8 +2239,10 @@ mod tests {
             "hyper emits only the trailer fields the `Trailer` header names"
         );
         // Left as the client sent it: hyper drops it on an h1 leg once
-        // `Transfer-Encoding` is present, and keeps it on an h2 leg, which is
-        // the leg that already carried the trailer correctly.
+        // `Transfer-Encoding` is present and the length is one it can parse,
+        // and keeps it on an h2 leg, which is the leg that already carried the
+        // trailer correctly. A length it cannot parse never gets this far —
+        // see `a_contradictory_content_length_declines_the_reframe`.
         assert_eq!(
             header_values(&forwarded, header::CONTENT_LENGTH),
             [payload.len().to_string()],
@@ -2286,6 +2374,37 @@ mod tests {
         );
     }
 
+    /// hyper drops the `Content-Length` the chunked encoder replaces only when
+    /// it can parse one, so a request carrying two disagreeing lengths would
+    /// reach an h1 upstream with both framings — a CL.TE ambiguity honmoon
+    /// itself would have created (CWE-444). An h2 client leg can send exactly
+    /// that, so the re-frame declines and forwards the request untouched.
+    #[tokio::test]
+    async fn a_contradictory_content_length_declines_the_reframe() {
+        let payload = hudsucker::hyper::body::Bytes::from_static(b"key=value");
+        let forwarded = forwarded_request_with(
+            payload.clone(),
+            Some(payload.len()),
+            Some(digest_trailer()),
+            &[("content-length", "10")],
+        )
+        .await;
+
+        assert!(
+            header_values(&forwarded, header::TRANSFER_ENCODING).is_empty(),
+            "chunked framing must not join a `Content-Length` hyper cannot drop"
+        );
+        assert!(
+            header_values(&forwarded, header::TRAILER).is_empty(),
+            "declining the re-frame must leave the header section untouched"
+        );
+        assert_eq!(
+            header_values(&forwarded, header::CONTENT_LENGTH),
+            [payload.len().to_string(), "10".to_owned()],
+            "the contradictory request goes on exactly as it arrived"
+        );
+    }
+
     /// The same decision for the narrower case: the client already framed the
     /// request as chunked, so the only header the re-frame would write is
     /// `Trailer` — and a signature covering that name declines it on its own.
@@ -2364,6 +2483,105 @@ mod tests {
             wire.ends_with("\r\n0\r\ncontent-digest: sha-256=:ZGlnZXN0:\r\n\r\n"),
             "the trailer section must be written after the last chunk; wire was:\n{wire}"
         );
+    }
+
+    /// The other half of the cross-protocol claim, driven rather than argued:
+    /// the *same* forwarded request on an HTTP/2 connection must arrive with the
+    /// `Transfer-Encoding` gone — h2 forbids it, and hyper's h2 client strips it
+    /// (`strip_connection_headers`, `proto/h2/mod.rs:43`) — with the client's
+    /// `Content-Length` intact, and with the trailer delivered as a trailers
+    /// frame. That is what makes it safe for honmoon to write both framing
+    /// headers without knowing which leg it will get.
+    #[tokio::test]
+    async fn a_reframed_request_keeps_its_h2_framing_and_trailer() {
+        let payload = hudsucker::hyper::body::Bytes::from_static(b"key=value");
+        let forwarded = forwarded_request_with(
+            payload.clone(),
+            Some(payload.len()),
+            Some(digest_trailer()),
+            &[],
+        )
+        .await;
+        assert_eq!(
+            header_values(&forwarded, header::TRANSFER_ENCODING),
+            ["chunked"],
+            "the request leaves honmoon carrying both framing headers"
+        );
+
+        let (headers, trailers) = h2_upstream_request(forwarded).await;
+        assert!(
+            !headers.contains_key(header::TRANSFER_ENCODING),
+            "an HTTP/2 upstream must not receive a connection-specific framing header"
+        );
+        assert_eq!(
+            headers
+                .get(header::CONTENT_LENGTH)
+                .map(header::HeaderValue::as_bytes),
+            Some(payload.len().to_string().as_bytes()),
+            "the length an HTTP/2 leg already carried correctly must survive"
+        );
+        assert_eq!(
+            trailers.expect("the trailer frame reaches the upstream"),
+            digest_trailer()
+        );
+    }
+
+    /// Send `request` over a real hyper HTTP/2 client connection to a loopback
+    /// hyper HTTP/2 server, and return the header section and trailer frame that
+    /// server received. Prior-knowledge h2, so no TLS or ALPN is involved.
+    async fn h2_upstream_request(
+        request: Request<Body>,
+    ) -> (
+        hudsucker::hyper::HeaderMap,
+        Option<hudsucker::hyper::HeaderMap>,
+    ) {
+        use hudsucker::hyper::service::service_fn;
+        use hudsucker::hyper_util::rt::{TokioExecutor, TokioIo};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind upstream");
+        let addr = listener.local_addr().expect("upstream addr");
+        let (sender, receiver) = tokio::sync::oneshot::channel();
+        tokio::spawn(async move {
+            let (socket, _) = listener.accept().await.expect("accept upstream connection");
+            let captured = std::sync::Arc::new(std::sync::Mutex::new(Some(sender)));
+            let service = service_fn(move |received: Request<hudsucker::hyper::body::Incoming>| {
+                let captured = std::sync::Arc::clone(&captured);
+                async move {
+                    let headers = received.headers().clone();
+                    let collected = received
+                        .into_body()
+                        .collect()
+                        .await
+                        .expect("collect upstream body");
+                    if let Some(sender) = captured.lock().expect("capture slot").take() {
+                        let _ = sender.send((headers, collected.trailers().cloned()));
+                    }
+                    Ok::<_, std::convert::Infallible>(Response::new(Body::empty()))
+                }
+            });
+            // The client drops the connection as soon as it has its response,
+            // which surfaces here as an error; the capture already happened.
+            let _ = hudsucker::hyper::server::conn::http2::Builder::new(TokioExecutor::new())
+                .serve_connection(TokioIo::new(socket), service)
+                .await;
+        });
+
+        let stream = tokio::net::TcpStream::connect(addr)
+            .await
+            .expect("connect upstream");
+        let (mut sender, connection) = hudsucker::hyper::client::conn::http2::handshake(
+            TokioExecutor::new(),
+            TokioIo::new(stream),
+        )
+        .await
+        .expect("http/2 handshake");
+        tokio::spawn(connection);
+        let response = sender.send_request(request).await.expect("send request");
+        assert_eq!(response.status(), StatusCode::OK);
+
+        receiver.await.expect("upstream captured the request")
     }
 
     /// Send `request` over a real hyper HTTP/1.1 client connection to a loopback

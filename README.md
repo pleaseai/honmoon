@@ -240,9 +240,14 @@ section only under chunked framing and only for the fields a `Trailer` header na
 requires neither, so honmoon writes `Transfer-Encoding: chunked` and a `Trailer` header naming the
 surviving fields (issue #136). hyper reconciles the two per-protocol — an HTTP/1.1 leg drops the
 `Content-Length`, an HTTP/2 leg drops the `Transfer-Encoding` — so honmoon does not need to know
-which one it will get. Two limits: it is **declined** when the request's signature covers one of
-those three headers, since re-framing would break the signature the request was forwarded to
-preserve (a `warn` names the covered headers and the trailers that will therefore be lost); and it
+which one it will get. Limits: it is **declined** when the request's signature covers one of
+those headers *that this re-frame would actually touch* — `Content-Length` and `Transfer-Encoding`
+only when the request is not already chunked, `Trailer` only when a field is undeclared — since
+re-framing would then break the signature the request was forwarded to preserve (a `warn` names the
+covered headers and the trailers that will therefore be lost); it is **declined** again when the
+request carries a `Content-Length` hyper cannot resolve to a single length, because the HTTP/1.1
+leg only drops a length it could parse and honmoon would otherwise be the one putting both
+framings on one wire; and it
 needs the trailer field names, which honmoon only holds for a body it buffered, so an over-cap body
 still depends on the client's own framing (issue #177). On names, honmoon refuses to forward a trailer whose
 field name could change how the recipient **frames, routes, or authenticates** the request — the
