@@ -1,6 +1,6 @@
 ---
 name: pr163-audit-sink-comment-claims
-description: Four doc-comment claims in audit.rs that were wrong when first written and are now corrected — a drifted cross-crate fn name, an unqualified macOS errno, overstated openat portability, and a self-contradicted libc claim — plus the checks that caught them, which are cheap to repeat
+description: Doc-comment claims in audit.rs that were wrong when first written across PR #163 and PR #179 (issue #160) — drifted names, unqualified/self-contradicted errno claims, overstated portability, a stale one-line fn doc left behind by a more careful comment added nearby — plus the checks that caught them, which are cheap to repeat
 metadata:
   type: project
 ---
@@ -32,6 +32,26 @@ and `man 2 open` on macOS/Darwin.
 Cross-issue references (#131, #137, #138, #160, #161) were all real and accurate — this
 repo's issue-linking discipline in this area is good; do not spend much budget
 re-checking issue existence.
+
+**PR #179 (issue #160, the symlinked-parent-directory walk) repeated the pattern at a
+smaller grain, flagged during review before merge:**
+
+- `open_directory`'s one-line doc said the `openat(O_DIRECTORY|O_NOFOLLOW)` call refuses a
+  symlink "with `ELOOP`" — stated as the only outcome. Fourteen lines below it, in the same
+  file, an inline comment on the retry loop explains the two platforms disagree: Linux
+  reports `ELOOP`, macOS reports `ENOTDIR` — which is *why* the code classifies with
+  `fstatat` instead of trusting the errno at all. The short function doc was a leftover
+  from before that platform split was written up and never got reconciled with the more
+  careful comment sitting right next to it. Lesson: when a file states a general rule in
+  one place and a qualified/contradicting version of the same rule nearby, the short
+  version is usually the stale one — diff both.
+- `unusable_path`'s doc claimed it reports a bad path "before any syscall is made." True
+  for two of its four call sites (an unreachable Windows-only `Component::Prefix` check,
+  and the trailing-slash/no-leaf checks, all before `open_walk_root` runs) — false for the
+  other two, which fire only after the walk has already run several `openat`/`fstatat`/
+  `readlinkat` calls (the `MAX_SYMLINK_HOPS` bound, and a `Component::Prefix` found inside
+  an already-resolved symlink target). A shared helper's doc comment describing "when it
+  runs" needs checking against *every* call site, not just the one nearest the doc.
 
 One correction to draw from this PR about
 [[guard-unnecessary-doc-comment]]: the "**Still accepted, deliberately:**" section was
