@@ -1,0 +1,20 @@
+.claude/agent-memory/review-review-security-reviewer/mgmt-api-auth-model.md
+  s_b7c0aca07e94f1::t_f74816a55c4126 3,32-33,46-53
+  s_b7c0aca07e94f1::t_ef58d83fd30b23 54
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "7edcb3f0e0dc0fccefd41ff8c8b172f51ee8ba75",
+  "prompts": {},
+  "sessions": {
+    "s_b7c0aca07e94f1": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "4951d865-cc4f-4262-a023-49a2ace4a99d",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
