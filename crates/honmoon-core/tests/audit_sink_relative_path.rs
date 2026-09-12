@@ -9,13 +9,13 @@
 //! `/audit.jsonl`, or refuse a path that works today, and only comparing the two
 //! outcomes says which root was used.
 
-use std::os::unix::fs::PermissionsExt;
-
 use honmoon_core::audit::AuditLog;
 
 #[cfg(unix)]
 #[test]
 fn a_relative_audit_path_is_walked_from_the_working_directory() {
+    use std::os::unix::fs::PermissionsExt;
+
     let dir = std::env::temp_dir().join(format!(
         "honmoon-audit-relative-{}-{:?}",
         std::process::id(),

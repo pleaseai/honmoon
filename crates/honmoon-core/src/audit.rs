@@ -685,10 +685,10 @@ const O_TRAVERSE: libc::c_int = libc::O_RDONLY;
 /// real directories only, never an entry whose type is still in question.
 #[cfg(unix)]
 fn open_directory(dir: &std::fs::File, name: &std::ffi::OsStr) -> std::io::Result<std::fs::File> {
-    let name = c_component(name)?;
-    match openat_directory(dir, &name, libc::O_RDONLY) {
+    let c_name = c_component(name)?;
+    match openat_directory(dir, &c_name, libc::O_RDONLY) {
         Err(denied) if denied.raw_os_error() == Some(libc::EACCES) => {
-            openat_directory(dir, &name, O_TRAVERSE)
+            openat_directory(dir, &c_name, O_TRAVERSE)
         }
         attempt => attempt,
     }
@@ -736,17 +736,17 @@ fn openat_directory(
 fn is_symlink_at(dir: &std::fs::File, name: &std::ffi::OsStr) -> bool {
     use std::os::unix::io::AsRawFd as _;
 
-    let Ok(name) = c_component(name) else {
+    let Ok(c_name) = c_component(name) else {
         return false;
     };
     let mut stat = std::mem::MaybeUninit::<libc::stat>::uninit();
-    // SAFETY: `name` is a valid NUL-terminated path for the duration of the call,
+    // SAFETY: `c_name` is a valid NUL-terminated path for the duration of the call,
     // `dir` owns the descriptor resolved against, and `stat` is a live, correctly
     // sized allocation the call writes into only on success.
     let rc = unsafe {
         libc::fstatat(
             dir.as_raw_fd(),
-            name.as_ptr(),
+            c_name.as_ptr(),
             stat.as_mut_ptr(),
             libc::AT_SYMLINK_NOFOLLOW,
         )
@@ -792,15 +792,15 @@ const SINK_OPEN_ATTEMPTS: u32 = 4;
 fn open_leaf(dir: &std::fs::File, name: &std::ffi::OsStr) -> std::io::Result<std::fs::File> {
     use std::os::unix::io::AsRawFd as _;
 
-    let name = c_component(name)?;
+    let c_name = c_component(name)?;
     let mut attempts = 0;
     loop {
-        // SAFETY: as `open_directory` above; the trailing `mode` argument is the
+        // SAFETY: as `openat_directory` above; the trailing `mode` argument is the
         // variadic one `openat` reads only when `O_CREAT` is set, which it is.
         let fd = unsafe {
             libc::openat(
                 dir.as_raw_fd(),
-                name.as_ptr(),
+                c_name.as_ptr(),
                 libc::O_WRONLY
                     | libc::O_CREAT
                     | libc::O_APPEND
