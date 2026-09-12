@@ -1,6 +1,6 @@
 ---
 name: content-length-trailers-h2
-description: honmoon-proxy's Content-Length-buffered inspect_body branch can carry trailers via h2 clients, and body.rs's scripted_body helper makes it cheaply unit-testable.
+description: "honmoon-proxy's Content-Length-buffered inspect_body branch can carry trailers via h2 clients, and body.rs's scripted_body helper makes it cheaply unit-testable — the escape hatch PR #175 (issue #134) used instead of an h2 wire harness."
 metadata:
   type: project
 ---
@@ -27,3 +27,12 @@ argument doesn't hold for h2 clients, and a cheap unit test route already exists
 "HTTP/1.1 makes this unreachable" argument accounts for h2 client support before accepting it as a
 reason to skip a test — and reach for `scripted_body` (or an equivalent frame-scripting helper) as
 the cheap unit-test escape hatch instead of demanding an h2 e2e harness.
+
+**Confirmed reused in PR #175** (issue #134, forbidden-trailer-name filtering): `body.rs` used
+`scripted_body` directly for `trailer_filter_drops_a_frame_it_empties_and_keeps_the_data`, and
+`mitm.rs` used the `buffered_body`-plus-`Content-Length`-header technique to select each
+`inspect_body` branch without a real wire harness. The PR honestly disclosed the same "no h2 e2e
+test" gap `tests/redaction.rs`'s HTTP/1.1-only `raw_proxy_request` harness still cannot close — but
+since the body-level unit tests already exercise the full frame-filtering logic (repeated names,
+frame-emptied-by-filtering, every `inspect_body` branch), that residual gap is not worth demanding
+closed; accept the disclosure rather than re-flagging it.

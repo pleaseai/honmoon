@@ -707,8 +707,11 @@ impl HonmoonHandler {
         // Applied to every branch above at the one point they converge, so the
         // two streaming branches — whose trailers honmoon never holds as a
         // `HeaderMap` — are filtered on the same rule as the buffered ones
-        // (#134).
-        let forwarded = Request::from_parts(parts, trailer_filtered_body(new_body));
+        // (#134). `parts.headers` is read here rather than later because the
+        // request's `Connection` nominations have to be resolved while the
+        // header section is still in hand.
+        let filtered = trailer_filtered_body(new_body, &parts.headers, &host);
+        let forwarded = Request::from_parts(parts, filtered);
 
         // An oversized, over-cap-decoded, or non-text body was not inspected,
         // but the policy engine still runs so HTTP-metadata rules (method,
@@ -1693,6 +1696,17 @@ mod tests {
         content_length: Option<usize>,
         sent: hudsucker::hyper::HeaderMap,
     ) -> Option<hudsucker::hyper::HeaderMap> {
+        forwarded_trailers_with(payload, content_length, sent, &[]).await
+    }
+
+    /// As above, with extra request headers — `Connection` nominations need the
+    /// header section, not just the trailer frame.
+    async fn forwarded_trailers_with(
+        payload: hudsucker::hyper::body::Bytes,
+        content_length: Option<usize>,
+        sent: hudsucker::hyper::HeaderMap,
+        headers: &[(&str, &str)],
+    ) -> Option<hudsucker::hyper::HeaderMap> {
         let policy =
             honmoon_core::Policy::from_yaml("egress:\n  default: allow\n").expect("policy");
         let handler = HonmoonHandler::new(GatewayState::new(policy));
@@ -1702,6 +1716,9 @@ mod tests {
             .uri("https://localhost/submit");
         if let Some(len) = content_length {
             builder = builder.header(header::CONTENT_LENGTH, len.to_string());
+        }
+        for (name, value) in headers {
+            builder = builder.header(*name, *value);
         }
         let req = builder
             .body(buffered_body(payload, Some(sent)))
@@ -1730,7 +1747,10 @@ mod tests {
             ("content-length", "0"),
             ("host", "attacker.example"),
             ("authorization", "Bearer smuggled"),
+            ("proxy-authorization", "Basic smuggled"),
+            ("cookie", "session=smuggled"),
             ("set-cookie", "session=smuggled"),
+            ("connection", "keep-alive"),
             ("x-note", "kept"),
         ] {
             sent.insert(name, header::HeaderValue::from_static(value));
@@ -1744,7 +1764,10 @@ mod tests {
             "content-length",
             "host",
             "authorization",
+            "proxy-authorization",
+            "cookie",
             "set-cookie",
+            "connection",
         ] {
             assert!(
                 !trailers.contains_key(name),
@@ -1797,5 +1820,40 @@ mod tests {
             .await
             .expect("the surviving trailer keeps the frame");
         assert_filtered(&trailers, "unknown length over cap");
+    }
+
+    /// RFC 9110 §7.6.1 forbids an intermediary from forwarding a field the
+    /// request's `Connection` header nominates as hop-by-hop, and RFC 9113
+    /// §8.2.2 forbids an HTTP/2 message from carrying one. hyper applies the
+    /// nomination to the header section only, so before #134 a client could name
+    /// its own field hop-by-hop and still have honmoon forward it — one field
+    /// position over from the gap the issue names.
+    #[tokio::test]
+    async fn a_connection_nominated_trailer_is_dropped_and_an_unnominated_one_is_not() {
+        let payload = hudsucker::hyper::body::Bytes::from_static(b"key=value");
+        let mut sent = hudsucker::hyper::HeaderMap::new();
+        sent.insert("x-hop", header::HeaderValue::from_static("nominated"));
+        sent.insert("x-note", header::HeaderValue::from_static("kept"));
+
+        let trailers = forwarded_trailers_with(
+            payload,
+            None,
+            sent,
+            // Two names, one of them not sent as a trailer, and surrounding
+            // whitespace — the shape hyper's own header-side parse accepts.
+            &[("connection", "x-hop, x-absent")],
+        )
+        .await
+        .expect("the unnominated trailer keeps the frame");
+
+        assert!(
+            !trailers.contains_key("x-hop"),
+            "a `Connection`-nominated field must not be forwarded in a trailer"
+        );
+        assert_eq!(
+            trailers.get("x-note").map(|v| v.as_bytes()),
+            Some(&b"kept"[..]),
+            "a field the `Connection` header does not name is unaffected"
+        );
     }
 }

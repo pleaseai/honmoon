@@ -27,9 +27,13 @@
 //!   two conditions: a wire redaction rewrite replaces the body with `Full`,
 //!   which has no trailer frame, so the client's trailers are dropped there
 //!   (see `mitm::HonmoonHandler::forwarded_request`); and a trailer whose
-//!   *name* is one RFC 9110 §6.5.1 or RFC 9113 §8.2.2 forbids is dropped by
-//!   [`trailer_filtered_body`] on every path. Neither decision reads a value.
-//!   See `.please/docs/decisions/0009-body-only-inspection-contract.md`.
+//!   *name* a trailer section must not carry is dropped by
+//!   [`trailer_filtered_body`] on every **request**-forwarding path. Neither
+//!   decision reads a value. Response trailers are not filtered by name at all
+//!   — [`detokenizing_body`] forwards the upstream's trailer frame to the
+//!   client unmodified — because the hazard #134 is about is a *client*
+//!   laundering a framing token into honmoon's upstream leg. See
+//!   `.please/docs/decisions/0009-body-only-inspection-contract.md`.
 
 use std::borrow::Cow;
 use std::io::Read;
@@ -44,8 +48,8 @@ use hudsucker::hyper::HeaderMap;
 use hudsucker::hyper::body::{Body as HttpBody, Bytes, Frame, SizeHint};
 use hudsucker::hyper::header::{
     AUTHORIZATION, CACHE_CONTROL, CONNECTION, CONTENT_ENCODING, CONTENT_LENGTH, CONTENT_RANGE,
-    CONTENT_TYPE, HOST, HeaderName, MAX_FORWARDS, SET_COOKIE, TE, TRAILER, TRANSFER_ENCODING,
-    UPGRADE,
+    CONTENT_TYPE, COOKIE, HOST, HeaderName, MAX_FORWARDS, PROXY_AUTHENTICATE, PROXY_AUTHORIZATION,
+    SET_COOKIE, TE, TRAILER, TRANSFER_ENCODING, UPGRADE, WWW_AUTHENTICATE,
 };
 
 /// Max request-body bytes buffered in memory (and max inflated output) for PII
@@ -255,24 +259,56 @@ pub(crate) fn buffered_body(bytes: Bytes, trailers: Option<HeaderMap>) -> Body {
 
 /// Field names honmoon refuses to forward in a request trailer section.
 ///
-/// The union of two cited lists, and nothing invented:
+/// RFC 9110 §6.5.1 states this as *categories*, not as a list: a sender must
+/// not put a field in a trailer section when it describes "message framing,
+/// routing, authentication, request modifiers, response controls, or content
+/// format". The names below resolve the subset of those categories that can
+/// change **how a recipient frames, routes, or authenticates the request** —
+/// which is the hazard the same section warns about, and which RFC 7230 §4.1.2
+/// (its obsoleted predecessor, and the source of hyper's own enumeration)
+/// stated outright: a recipient must ignore a forbidden trailer field, "since
+/// processing them as if they were present in the header section might bypass
+/// external security filters."
 ///
-/// - **RFC 9110 §6.5.1** — the fields a sender must not put in a trailer
-///   section: message framing (`Transfer-Encoding`, `Content-Length`), routing
-///   (`Host`), request modifiers for control and authentication
-///   (`Cache-Control`, `Max-Forwards`, `TE`, `Authorization`, `Set-Cookie`) and
-///   fields that determine how to process the payload (`Content-Encoding`,
-///   `Content-Type`, `Content-Range`, `Trailer`). That is exactly hyper's
-///   `is_valid_trailer_field` (`hyper-1.10.1/src/proto/h1/encode.rs:264`), which
-///   the h1 upstream leg already applies on its way out.
-/// - **RFC 9113 §8.2.2** — the connection-specific fields an HTTP/2 message must
-///   not carry at all: `Connection`, `Keep-Alive`, `Proxy-Connection`,
-///   `Transfer-Encoding`, `Upgrade` (and `TE` other than `trailers`; a trailer
-///   section may not carry `TE` at any value, per the list above). hyper strips
-///   those from request *headers* only — `strip_connection_headers`
+/// - **Framing** — `Transfer-Encoding`, `Content-Length`. The CWE-444 case.
+/// - **Routing** — `Host`. (`:authority` needs no entry: `:` is not a valid
+///   `HeaderName` token, so neither hyper's trailer decoder nor `h2` can produce
+///   one.)
+/// - **Authentication** (RFC 9110 §11 and RFC 6265, both named by §6.5.1) —
+///   `Authorization`, `Proxy-Authorization`, `WWW-Authenticate`,
+///   `Proxy-Authenticate`, `Cookie`, `Set-Cookie`. The whole category, not the
+///   two names hyper happens to list: `Cookie` is the request-direction twin of
+///   `Set-Cookie`, and `Proxy-Authorization` of `Authorization`.
+/// - **Content processing** — `Content-Encoding`, `Content-Type`,
+///   `Content-Range`, `Trailer`.
+/// - **Request modifiers** — `Cache-Control`, `Max-Forwards`, `TE`, and only
+///   those. See below.
+/// - **RFC 9113 §8.2.2 connection-specific fields**, which an HTTP/2 message may
+///   not carry at all — `Connection`, `Keep-Alive`, `Proxy-Connection`,
+///   `Upgrade` (`Transfer-Encoding` and `TE` are already above), plus whatever
+///   names a request's `Connection` header nominates, which
+///   [`connection_nominated`] resolves per request. hyper strips exactly this
+///   set from request *headers* — `strip_connection_headers`
 ///   (`proto/h2/mod.rs:43`, called from `proto/h2/client.rs:709`) — and never
-///   from a trailer frame, which is the gap this list closes (#134).
-static FORBIDDEN_TRAILER_FIELDS: [HeaderName; 16] = [
+///   from a trailer frame, which is the gap #134 is about.
+///
+/// **Deliberately not filtered**, so the next reader does not have to re-derive
+/// it: the rest of §6.5.1's "request modifiers" and "response controls"
+/// categories — the conditionals (`If-Match`, `If-None-Match`,
+/// `If-Modified-Since`, `If-Unmodified-Since`, `If-Range`), `Range`, `Expect`,
+/// `Pragma`, and the `Accept*` content-selection family. A trailer carrying one
+/// of those is malformed, but it changes what the recipient *returns*, not how
+/// it frames, routes or authorizes the request, so dropping it buys no security
+/// and widens honmoon's interference with the byte fidelity `--signed-body
+/// forward` promises (ADR-0006). This list is a security filter, not a
+/// conformance enforcer. `Cache-Control`, `Max-Forwards` and `TE` are the
+/// exception only because hyper's h1 encoder already refuses them
+/// (`is_valid_trailer_field`, `hyper-1.10.1/src/proto/h1/encode.rs:264`) — they
+/// stay so the two upstream legs refuse the same names.
+///
+/// The result is a strict superset of hyper's h1 enumeration, so nothing an h1
+/// upstream would have rejected now survives an h2 one.
+static FORBIDDEN_TRAILER_FIELDS: [HeaderName; 20] = [
     AUTHORIZATION,
     CACHE_CONTROL,
     CONNECTION,
@@ -280,23 +316,58 @@ static FORBIDDEN_TRAILER_FIELDS: [HeaderName; 16] = [
     CONTENT_LENGTH,
     CONTENT_RANGE,
     CONTENT_TYPE,
+    COOKIE,
     HOST,
     HeaderName::from_static("keep-alive"),
     MAX_FORWARDS,
+    PROXY_AUTHENTICATE,
+    PROXY_AUTHORIZATION,
     HeaderName::from_static("proxy-connection"),
     SET_COOKIE,
     TE,
     TRAILER,
     TRANSFER_ENCODING,
     UPGRADE,
+    WWW_AUTHENTICATE,
 ];
 
-/// Remove every [`FORBIDDEN_TRAILER_FIELDS`] entry from `trailers`, returning
-/// the names dropped. `HeaderMap::remove` takes the whole entry, so a name sent
-/// several times is removed in full rather than leaving later values behind.
-fn strip_forbidden_trailers(trailers: &mut HeaderMap) -> Vec<&'static str> {
+/// The field names a request's `Connection` header nominates as
+/// connection-specific, which RFC 9110 §7.6.1 forbids an intermediary from
+/// forwarding and RFC 9113 §8.2.2 forbids an HTTP/2 message from carrying.
+///
+/// Parsed exactly as hyper parses it for request headers (`strip_connection_headers`,
+/// `proto/h2/mod.rs:43`) — comma-separated, trimmed, one `HeaderName` each. The
+/// asymmetry this closes is hyper's: it applies the nomination to the header
+/// section and not to the trailer section, so `Connection: X-Foo` plus an
+/// `X-Foo` trailer forwarded a field the client itself marked hop-by-hop.
+///
+/// Returns an empty `Vec` — which allocates nothing — for the overwhelmingly
+/// common request that sends no `Connection` header, or none naming a field.
+fn connection_nominated(headers: &HeaderMap) -> Vec<HeaderName> {
+    headers
+        .get_all(CONNECTION)
+        .iter()
+        .filter_map(|value| value.to_str().ok())
+        .flat_map(|value| value.split(','))
+        .filter_map(|name| HeaderName::from_bytes(name.trim().as_bytes()).ok())
+        .collect()
+}
+
+/// Remove every [`FORBIDDEN_TRAILER_FIELDS`] entry, and every `nominated` name,
+/// from `trailers`, returning the names dropped.
+///
+/// `HeaderMap::remove` takes the whole entry — it follows the extra-value links
+/// before removing (`http-1.5.0/src/header/map.rs`) — so a name sent several
+/// times is removed in full rather than leaving later values behind. A
+/// `nominated` name that is also a static entry removes nothing the second time,
+/// so it is named once in the return.
+fn strip_forbidden_trailers<'a>(
+    trailers: &mut HeaderMap,
+    nominated: &'a [HeaderName],
+) -> Vec<&'a str> {
     FORBIDDEN_TRAILER_FIELDS
         .iter()
+        .chain(nominated.iter())
         .filter(|name| trailers.remove(*name).is_some())
         .map(HeaderName::as_str)
         .collect()
@@ -314,20 +385,36 @@ fn strip_forbidden_trailers(trailers: &mut HeaderMap) -> Vec<&'static str> {
 /// body covers all four with one rule.
 ///
 /// The filter runs regardless of which protocol the upstream leg negotiates,
-/// because ALPN has not happened yet when the request is built. On an h1
-/// upstream hyper applies its own stricter filter afterwards, so this changes
-/// nothing there; on an h2 upstream nothing else would have.
+/// because ALPN has not happened yet when the request is built, and it is not
+/// redundant on either. Hyper's h1 encoder refuses only its own 12-name
+/// enumeration (`is_valid_trailer_field`), which contains neither the
+/// connection-specific names of RFC 9113 §8.2.2 nor the rest of the
+/// authentication category — `is_valid_trailer_field(CONNECTION)` answers
+/// *true*. So on an h1 upstream this is what removes those, and on an h2
+/// upstream it is what removes anything at all.
 ///
 /// A frame left empty by the filter is dropped rather than forwarded: an empty
 /// trailer section carries nothing, hyper's h1 encoder writes nothing for it,
 /// and h2 ends the stream with an empty EOS `DATA` frame instead.
-pub(crate) fn trailer_filtered_body(body: Body) -> Body {
-    Body::from(BoxBody::new(TrailerFilteredBody { inner: body }))
+///
+/// `headers` supplies the request's `Connection` nominations (see
+/// [`connection_nominated`]); `host` only labels the `warn` a drop emits, so an
+/// operator can tell which destination a stripped trailer was bound for.
+pub(crate) fn trailer_filtered_body(body: Body, headers: &HeaderMap, host: &str) -> Body {
+    Body::from(BoxBody::new(TrailerFilteredBody {
+        inner: body,
+        nominated: connection_nominated(headers),
+        host: host.to_owned(),
+    }))
 }
 
 /// An [`HttpBody`] that passes data frames through and filters trailer frames.
 struct TrailerFilteredBody {
     inner: Body,
+    /// Resolved once per request, because the `Connection` header is gone from
+    /// `parts` long before the trailer frame arrives.
+    nominated: Vec<HeaderName>,
+    host: String,
 }
 
 impl HttpBody for TrailerFilteredBody {
@@ -335,11 +422,12 @@ impl HttpBody for TrailerFilteredBody {
     type Error = hudsucker::Error;
 
     fn poll_frame(
-        mut self: Pin<&mut Self>,
+        self: Pin<&mut Self>,
         cx: &mut std::task::Context<'_>,
     ) -> Poll<Option<Result<Frame<Self::Data>, Self::Error>>> {
+        let this = self.get_mut();
         loop {
-            let frame = match std::task::ready!(Pin::new(&mut self.inner).poll_frame(cx)) {
+            let frame = match std::task::ready!(Pin::new(&mut this.inner).poll_frame(cx)) {
                 Some(Ok(frame)) => frame,
                 other => return Poll::Ready(other),
             };
@@ -347,11 +435,12 @@ impl HttpBody for TrailerFilteredBody {
                 Ok(trailers) => trailers,
                 Err(data) => return Poll::Ready(Some(Ok(data))),
             };
-            let dropped = strip_forbidden_trailers(&mut trailers);
+            let dropped = strip_forbidden_trailers(&mut trailers, &this.nominated);
             if !dropped.is_empty() {
                 tracing::warn!(
+                    domain = %this.host,
                     fields = %dropped.join(", "),
-                    "dropped trailer fields forbidden in a trailer section from forwarded request"
+                    "dropped trailer fields a trailer section must not carry from forwarded request"
                 );
             }
             if trailers.is_empty() {
@@ -1006,11 +1095,14 @@ mod tests {
         sent.append("set-cookie", "b=2".parse().unwrap());
         sent.insert("x-note", "kept".parse().unwrap());
 
-        let collected =
-            trailer_filtered_body(buffered_body(Bytes::from_static(b"body"), Some(sent)))
-                .collect()
-                .await
-                .expect("collect filtered body");
+        let collected = trailer_filtered_body(
+            buffered_body(Bytes::from_static(b"body"), Some(sent)),
+            &HeaderMap::new(),
+            "localhost",
+        )
+        .collect()
+        .await
+        .expect("collect filtered body");
         let trailers = collected
             .trailers()
             .cloned()
@@ -1035,7 +1127,7 @@ mod tests {
             Ok(Frame::trailers(sent)),
         ]);
 
-        let collected = trailer_filtered_body(body)
+        let collected = trailer_filtered_body(body, &HeaderMap::new(), "localhost")
             .collect()
             .await
             .expect("collect filtered body");
@@ -1044,5 +1136,35 @@ mod tests {
             "an emptied trailer section must not be forwarded as an empty frame"
         );
         assert_eq!(&collected.to_bytes()[..], b"onetwo");
+    }
+
+    /// A zero-length body yields no data frame at all (`buffered_body` documents
+    /// this), so the trailer frame is the *first* frame the filter sees — an
+    /// empty signed POST carrying only trailers is a real request shape.
+    #[tokio::test]
+    async fn trailer_filter_handles_a_trailer_frame_with_no_data_frame_before_it() {
+        let mut sent = HeaderMap::new();
+        sent.insert("transfer-encoding", "chunked".parse().unwrap());
+        sent.insert("content-digest", "sha-256=:ZGlnZXN0:".parse().unwrap());
+
+        let collected = trailer_filtered_body(
+            buffered_body(Bytes::new(), Some(sent)),
+            &HeaderMap::new(),
+            "localhost",
+        )
+        .collect()
+        .await
+        .expect("collect filtered body");
+        let trailers = collected
+            .trailers()
+            .cloned()
+            .expect("content-digest keeps the frame");
+        assert!(!trailers.contains_key("transfer-encoding"));
+        assert_eq!(
+            trailers.get("content-digest").map(|v| v.as_bytes()),
+            Some(&b"sha-256=:ZGlnZXN0:"[..]),
+            "the digest a signature may cover is not on the forbidden list"
+        );
+        assert!(collected.to_bytes().is_empty());
     }
 }

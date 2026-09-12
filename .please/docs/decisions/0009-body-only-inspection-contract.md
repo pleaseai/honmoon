@@ -2,10 +2,12 @@
 
 ## Status
 
-Accepted (2026-09-11, #133). Amended 2026-09-12 (#134): honmoon now refuses to *forward* a trailer
-whose field name RFC 9110 §6.5.1 or RFC 9113 §8.2.2 forbids in a trailer section. The inspection
-contract below is unchanged — the filter reads names, never values — but the forwarding clauses it
-states conditionally gained a second condition, and they are corrected in place.
+Accepted (2026-09-11, #133). Amended 2026-09-12 (#134): honmoon now refuses to *forward* a request
+trailer whose field name could change how the recipient frames, routes or authenticates the
+request. The inspection contract below is unchanged — the filter reads names, never values — but
+the forwarding clauses it states conditionally gained a second condition, and they are corrected in
+place. ADR-0006 was amended in the same change, since `--signed-body forward` no longer reproduces
+such a trailer.
 
 ## Context
 
@@ -82,15 +84,22 @@ trailer value that went unscanned.
 overclaim. Whether a trailer *reaches* the upstream has a conditional answer:
 
 - On the **pass-through path** — every request honmoon does not rewrite — the trailer frame is
-  replayed, minus any field whose **name** is forbidden in a trailer section. Since #134,
-  `trailer_filtered_body` drops the RFC 9110 §6.5.1 list (`Transfer-Encoding`, `Content-Length`,
-  `Host`, `Cache-Control`, `Max-Forwards`, `TE`, `Authorization`, `Set-Cookie`, `Content-Encoding`,
-  `Content-Type`, `Content-Range`, `Trailer`) together with the RFC 9113 §8.2.2 connection-specific
-  names (`Connection`, `Keep-Alive`, `Proxy-Connection`, `Upgrade`), logging a `warn` that names
-  what it dropped. That is a name decision and not a value one, so it neither widens nor narrows
-  the inspection contract: honmoon still reads no trailer value. It runs on all four branches of
-  `inspect_body` and before the upstream protocol is known, which is the point — hyper's h1 encoder
-  applies the same RFC 9110 list on its way out, and nothing applied it on an h2 upstream leg.
+  replayed, minus any field whose **name** a trailer section must not carry. Since #134,
+  `trailer_filtered_body` drops the names that could change how the recipient frames, routes or
+  authenticates the request — framing (`Transfer-Encoding`, `Content-Length`), routing (`Host`),
+  authentication (`Authorization`, `Proxy-Authorization`, `WWW-Authenticate`, `Proxy-Authenticate`,
+  `Cookie`, `Set-Cookie`), content processing (`Content-Encoding`, `Content-Type`, `Content-Range`,
+  `Trailer`), the three request modifiers hyper's h1 encoder already refuses (`Cache-Control`,
+  `Max-Forwards`, `TE`), the RFC 9113 §8.2.2 connection-specific names (`Connection`, `Keep-Alive`,
+  `Proxy-Connection`, `Upgrade`) and whatever the request's `Connection` header nominates — logging
+  a `warn` that names what it dropped and where it was bound. It deliberately does **not** drop the
+  conditionals, `Range`, `Expect`, `Pragma` or the `Accept*` family, which a trailer section may not
+  carry either but which change only what the recipient returns; the criterion and that exclusion
+  are recorded on `FORBIDDEN_TRAILER_FIELDS`. That is a name decision and not a value one, so it
+  neither widens nor narrows the inspection contract: honmoon still reads no trailer value. It runs
+  on all four branches of `inspect_body` and before the upstream protocol is known, which is the
+  point — and it is not redundant on either leg, since hyper's h1 encoder refuses only its own
+  12-name enumeration and nothing applied even that on an h2 upstream leg.
 - When `--redact-secrets` **rewrites the body**, `forwarded_request` replaces it with `Full`, which
   carries no trailer frame, so the client's trailers are **dropped**. That is deliberate and
   fail-safe: a digest the client computed over the original bytes is stale once those bytes are
@@ -172,7 +181,7 @@ HTTP request**; on the raw-tunnel path none of it applies, because nothing there
 | Ordinary header (`X-Note:`) | **Never** | Yes |
 | Body-digest header (`Digest`, `Content-Digest`, `Content-MD5`, `Repr-Digest`) | **Never** | Stripped when the body is redacted |
 | Framing header (`Content-Length`, `Content-Encoding`, `Transfer-Encoding`) | **Never** — read as metadata only | Re-framed when the body is redacted |
-| Request trailer | **Never** | Only on a pass-through request, only for a field name a trailer section may carry (#134), and only where the upstream leg's framing carries trailers at all (see issue #136) |
+| Request trailer | **Never** | Only on a pass-through request, only for a field name honmoon's #134 filter does not refuse, and only where the upstream leg's framing carries trailers at all (see issue #136). This is the one right-hand-column row that also constrains `--signed-body forward` (ADR-0006) |
 
 **The body row's "yes" is itself conditional.** Three conditions mean no finding is possible at
 all. An over-cap body never reaches the scanner (`scanned` is `None`); a decoded body that

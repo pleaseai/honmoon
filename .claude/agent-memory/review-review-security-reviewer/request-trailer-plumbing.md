@@ -32,6 +32,21 @@ never signed and the upstream rejected the signature.
   `Trailer:` *declaration header* is readable on all four `content_length` branches, so a
   warn-on-trailers signal would not be confined to the buffered paths (an adversary can just omit
   the declaration, which is the real reason it is weak).
+- *Forbidden trailer names (#134, PR #175).* `body.rs::trailer_filtered_body` wraps the forwarded
+  body in `inspect_body` (one call site, after all four `content_length` branches converge) and
+  removes `FORBIDDEN_TRAILER_FIELDS`, plus whatever the request's own `Connection` header
+  nominates (`connection_nominated`), from any trailer frame. **Read the list at HEAD, do not
+  assume hyper's.** It is a deliberate *superset* of hyper's 12 `is_valid_trailer_field` names:
+  the authentication category is completed (`cookie`, `proxy-authorization`, `www-authenticate`,
+  `proxy-authenticate` added alongside `authorization`/`set-cookie`), h2's `CONNECTION_HEADERS`
+  plus `connection` are included, and `Connection`-nominated names are resolved per request. The
+  stated criterion is "could change how the recipient frames, routes, or authenticates the
+  request"; the conditionals, `Range`, `Expect`, `Pragma` and `Accept*` are **deliberately
+  excluded** with the reason recorded on the constant — do not file them as an omission without
+  engaging that reason. Verified once, do not re-derive: hyper's h1 *decoder* (`decode_trailers`,
+  `proto/h1/decode.rs:646`) filters no names on receive; the h2 client sends trailers via
+  `send_trailers` (`proto/h2/mod.rs:223`) with no filter; and hyper's h1 *encoder* filter does
+  **not** cover the connection-specific names, so this filter is load-bearing on both legs.
 - *Framing.* `BufferedBody::size_hint` is exact over data bytes only; `is_end_stream` is false while
   trailers are pending, so hyper uses `write_body` + `write_trailers` instead of
   `write_body_and_end`. With a `Content-Length` (Kind::Length) encoder hyper silently drops the
