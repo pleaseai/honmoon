@@ -1,0 +1,23 @@
+.claude/agent-memory/review-review-comment-analyzer/pr201_policy_validate_claims.md
+  s_74bdd8db3220da::t_e4aed1a53d61bf 17-24
+wiki/getting-started/policy-authoring.md
+  s_74bdd8db3220da::t_8111eedf22cb64 418,430
+wiki/llms-full.txt
+  s_74bdd8db3220da::t_e4aed1a53d61bf 3110,3122
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "c66a3f443ceabc39286fb00910398e9ff4ddbf65",
+  "prompts": {},
+  "sessions": {
+    "s_74bdd8db3220da": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a2a7decf-3c3f-4518-856f-e78017aab857",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
