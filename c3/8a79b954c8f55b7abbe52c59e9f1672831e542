@@ -1,0 +1,28 @@
+crates/honmoon-cli/src/main.rs
+  s_d720448ec7c988::t_715062ed3da4db 89-92
+wiki/deep-dive/egress-gateway.md
+  s_d720448ec7c988::t_715062ed3da4db 233
+wiki/getting-started/quick-start.md
+  s_d720448ec7c988::t_715062ed3da4db 142-146
+packages/api/src/auth.ts
+  s_d720448ec7c988::t_7e4c89f91433a4 18,103,128-132,134,157-196
+  s_d720448ec7c988::t_e02af0aa1814a0 197-198
+packages/api/src/auth.test.ts
+  s_d720448ec7c988::t_bc154921635148 143-163
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "c38a79b954c8f55b7abbe52c59e9f1672831e542",
+  "prompts": {},
+  "sessions": {
+    "s_d720448ec7c988": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "069c4824-e961-4929-8157-1ff587135fd5",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
