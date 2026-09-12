@@ -12,9 +12,11 @@ export default defineConfig({
   },
   // In `vite dev`, forward API calls to a locally-running management API
   // (`honmoon gateway --mgmt-addr 127.0.0.1:8444`). `/login` is proxied too:
-  // the API now requires the management token (#173), and the session cookie
-  // the dev server needs is minted by that route — without it every proxied
-  // `/api` call answers 401 and the HMR dashboard cannot log in.
+  // the API requires the management token (#173), and that route is what hands
+  // the dev server's dashboard its session secret — without it every proxied
+  // `/api` call answers 401 and the HMR dashboard cannot log in. The secret
+  // lands in `sessionStorage` for the *dev* origin (#188), so logging in on
+  // `:5173` is separate from logging in on `:8444`.
   server: {
     proxy: {
       '/api': 'http://127.0.0.1:8444',
