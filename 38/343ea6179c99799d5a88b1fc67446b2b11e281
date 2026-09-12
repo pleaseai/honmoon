@@ -1,0 +1,34 @@
+packages/api/src/auth.ts
+  s_d720448ec7c988::t_c1f23b147cf8f7 97,231-240,242-248
+  s_d720448ec7c988::t_f12b7cc9ecc9a4 241
+packages/api/src/routes.ts
+  s_d720448ec7c988::t_f12b7cc9ecc9a4 32
+  s_d720448ec7c988::t_156feb82016e19 13
+  s_d720448ec7c988::t_c1f23b147cf8f7 27-31,33
+packages/api/src/auth.test.ts
+  s_d720448ec7c988::t_31b75a8f255a93 210-215,217-219
+  s_d720448ec7c988::t_724f436856d3b5 216
+crates/honmoon-cli/src/main.rs
+  s_d720448ec7c988::t_31b75a8f255a93 856-861,870,879-880
+  s_d720448ec7c988::t_156feb82016e19 369-382,384-392,558-561
+  s_d720448ec7c988::t_0d9d2e58213a7f 383,862-869,871-878
+  s_d720448ec7c988::t_cab8e1bcf27b4e 855
+packages/api/src/routes.test.ts
+  s_d720448ec7c988::t_e64d7ad4b1cca2 75-85
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "38343ea6179c99799d5a88b1fc67446b2b11e281",
+  "prompts": {},
+  "sessions": {
+    "s_d720448ec7c988": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "069c4824-e961-4929-8157-1ff587135fd5",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
