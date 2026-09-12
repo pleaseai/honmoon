@@ -235,7 +235,15 @@ findings, and do not read `pii.count == 0` as "no secrets in this request".
 
 Whether a trailer then *reaches* the upstream is a separate question, and not one this contract
 answers. On a pass-through request it is replayed — subject to the upstream leg's framing carrying
-trailers at all (see issue #136). When redaction rewrites the body, the replacement carries no
+trailers at all (see issue #136), and to its *name*. Honmoon refuses to forward a trailer whose
+field name RFC 9110 §6.5.1 forbids in a trailer section (`Transfer-Encoding`, `Content-Length`,
+`Host`, `Cache-Control`, `Max-Forwards`, `TE`, `Authorization`, `Set-Cookie`, `Content-Encoding`,
+`Content-Type`, `Content-Range`, `Trailer`) or RFC 9113 §8.2.2 forbids anywhere in an HTTP/2
+message (`Connection`, `Keep-Alive`, `Proxy-Connection`, `Upgrade`); each drop logs a `warn` naming
+the fields. That is a decision about names, never about values — nothing in it inspects what a
+trailer carries. It applies on every forwarding path and regardless of the upstream protocol, so a
+client cannot launder a framing token past honmoon by having the upstream leg negotiate HTTP/2
+(issue #134). When redaction rewrites the body, the replacement carries no
 trailer frame and the client's trailers are dropped instead (deliberately: a digest over the
 original bytes is stale either way; the stale `Trailer:` header that drop leaves behind is
 issue #135). The same rewrite strips the body-digest headers (`Digest`, `Content-Digest`,

@@ -50,7 +50,7 @@ use hudsucker::{Body, HttpContext, HttpHandler, RequestOrResponse};
 use crate::approval::{HoldOutcome, hold};
 use crate::body::{
     Buffered, MAX_INSPECT_BODY, StrictDecode, buffer_up_to, buffered_body, decode_strict,
-    detokenizing_body, prefixed_body, utf8_prefix,
+    detokenizing_body, prefixed_body, trailer_filtered_body, utf8_prefix,
 };
 use crate::gateway::{
     GatewayState, InterceptPolicy, PiiMode, SignedBodyMode, authority_port, canonical_host,
@@ -582,7 +582,9 @@ impl HonmoonHandler {
     /// (headers *are* read, for framing, decoding and signature metadata — what
     /// never happens is a detector running over them; whether a trailer
     /// is *forwarded* is a separate, conditional matter — `forwarded_request`'s
-    /// redaction rewrite drops the frame; see ADR-0009) — `facts.pii` stays
+    /// redaction rewrite drops the frame, and `trailer_filtered_body` drops the
+    /// field names RFC 9110 §6.5.1 and RFC 9113 §8.2.2 forbid in a trailer
+    /// section, by name and never by value; see ADR-0009) — `facts.pii` stays
     /// empty for them, so no *positive-finding* rule (`pii.count > 0`, a
     /// `pii.types` match) fires on a secret placed in a chunked trailer. An
     /// absence rule still does: the engine binds `pii` with its empty default,
@@ -702,7 +704,11 @@ impl HonmoonHandler {
         let inspected_text = inspected.and_then(utf8_prefix);
         let pii_spans = inspected_text.map(detect_spans).unwrap_or_default();
         let pii = summarize_spans(&pii_spans);
-        let forwarded = Request::from_parts(parts, new_body);
+        // Applied to every branch above at the one point they converge, so the
+        // two streaming branches — whose trailers honmoon never holds as a
+        // `HeaderMap` — are filtered on the same rule as the buffered ones
+        // (#134).
+        let forwarded = Request::from_parts(parts, trailer_filtered_body(new_body));
 
         // An oversized, over-cap-decoded, or non-text body was not inspected,
         // but the policy engine still runs so HTTP-metadata rules (method,
@@ -1674,5 +1680,122 @@ mod tests {
             sent
         );
         assert_eq!(&collected.to_bytes()[..], &payload[..]);
+    }
+
+    /// #134: a trailer section can carry any syntactically valid field name —
+    /// hyper's h1 chunked decoder does no name filtering — and on an h2 upstream
+    /// leg nothing downstream filters it either. honmoon drops the forbidden
+    /// names itself so the upstream protocol does not decide, on every branch of
+    /// `inspect_body`'s `content_length` match. `payload`/`content_length` pick
+    /// the branch; the returned trailers are what the upstream leg would see.
+    async fn forwarded_trailers(
+        payload: hudsucker::hyper::body::Bytes,
+        content_length: Option<usize>,
+        sent: hudsucker::hyper::HeaderMap,
+    ) -> Option<hudsucker::hyper::HeaderMap> {
+        let policy =
+            honmoon_core::Policy::from_yaml("egress:\n  default: allow\n").expect("policy");
+        let handler = HonmoonHandler::new(GatewayState::new(policy));
+
+        let mut builder = Request::builder()
+            .method("POST")
+            .uri("https://localhost/submit");
+        if let Some(len) = content_length {
+            builder = builder.header(header::CONTENT_LENGTH, len.to_string());
+        }
+        let req = builder
+            .body(buffered_body(payload, Some(sent)))
+            .expect("build request");
+
+        let RequestOrResponse::Request(forwarded) = handler.inspect_body(req, HTTPS_PORT).await
+        else {
+            panic!("detect-only inspection must forward the request");
+        };
+        forwarded
+            .into_body()
+            .collect()
+            .await
+            .expect("collect forwarded body")
+            .trailers()
+            .cloned()
+    }
+
+    /// The names the issue calls out, one of each RFC 9110 §6.5.1 category, plus
+    /// an ordinary trailer that must survive so the filter is not just "drop
+    /// everything".
+    fn hostile_trailers() -> hudsucker::hyper::HeaderMap {
+        let mut sent = hudsucker::hyper::HeaderMap::new();
+        for (name, value) in [
+            ("transfer-encoding", "chunked"),
+            ("content-length", "0"),
+            ("host", "attacker.example"),
+            ("authorization", "Bearer smuggled"),
+            ("set-cookie", "session=smuggled"),
+            ("x-note", "kept"),
+        ] {
+            sent.insert(name, header::HeaderValue::from_static(value));
+        }
+        sent
+    }
+
+    fn assert_filtered(trailers: &hudsucker::hyper::HeaderMap, branch: &str) {
+        for name in [
+            "transfer-encoding",
+            "content-length",
+            "host",
+            "authorization",
+            "set-cookie",
+        ] {
+            assert!(
+                !trailers.contains_key(name),
+                "{branch}: `{name}` must not reach the upstream in a trailer"
+            );
+        }
+        assert_eq!(
+            trailers.get("x-note").map(|v| v.as_bytes()),
+            Some(&b"kept"[..]),
+            "{branch}: an ordinary trailer must still be forwarded"
+        );
+    }
+
+    #[tokio::test]
+    async fn forbidden_trailers_are_dropped_on_the_buffered_content_length_path() {
+        let payload = hudsucker::hyper::body::Bytes::from_static(b"key=value");
+        let trailers = forwarded_trailers(payload.clone(), Some(payload.len()), hostile_trailers())
+            .await
+            .expect("the surviving trailer keeps the frame");
+        assert_filtered(&trailers, "Content-Length within cap");
+    }
+
+    #[tokio::test]
+    async fn forbidden_trailers_are_dropped_on_the_buffered_unknown_length_path() {
+        let payload = hudsucker::hyper::body::Bytes::from_static(b"key=value");
+        let trailers = forwarded_trailers(payload, None, hostile_trailers())
+            .await
+            .expect("the surviving trailer keeps the frame");
+        assert_filtered(&trailers, "unknown length within cap");
+    }
+
+    /// The two streaming branches are the ones a filter inside `buffered_body`
+    /// would miss: the body is forwarded untouched and honmoon never holds its
+    /// trailers as a `HeaderMap` at all.
+    #[tokio::test]
+    async fn forbidden_trailers_are_dropped_on_the_declared_over_cap_path() {
+        // The branch is chosen by the *declared* length, which is what an
+        // over-cap upload announces before any of it is read.
+        let payload = hudsucker::hyper::body::Bytes::from_static(b"key=value");
+        let trailers = forwarded_trailers(payload, Some(MAX_INSPECT_BODY + 1), hostile_trailers())
+            .await
+            .expect("the surviving trailer keeps the frame");
+        assert_filtered(&trailers, "declared over cap");
+    }
+
+    #[tokio::test]
+    async fn forbidden_trailers_are_dropped_on_the_overflow_path() {
+        let payload = hudsucker::hyper::body::Bytes::from(vec![b'x'; MAX_INSPECT_BODY + 1]);
+        let trailers = forwarded_trailers(payload, None, hostile_trailers())
+            .await
+            .expect("the surviving trailer keeps the frame");
+        assert_filtered(&trailers, "unknown length over cap");
     }
 }
