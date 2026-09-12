@@ -60,15 +60,19 @@ bun scripts/agent-memory-index.ts            # rebuild (also: mise run agent-mem
 bun scripts/agent-memory-index.ts --check    # CI gate: every note can supply its line
 ```
 
-Quote a `description:` that is anything but plain prose. A plain YAML scalar ends at the first
-` #`, so anything that loads `description: fixed in PR #155, then do X` sees the summary
-`fixed in PR`, while the generator — deliberately not a YAML reader — keeps the whole line. The
-note would then say one thing in its index and another to everything that parses it, and that
-disagreement is what a derived index exists to end. The same split opens for a value beginning
-`[`, `{`, `&`, `*` or `!`, or one that is entirely a number or a date, since YAML resolves those
-to something that is not text. So the generator reports each case rather than picking a side,
-and `--check` fails until the description is quoted — CI catches the disagreement instead of
-letting it reach the repository.
+Quote a `description:` that is anything but plain prose. The generator reads the frontmatter
+with `Bun.YAML` (issue #168), so the index says what a YAML reader resolves — and a plain scalar
+ends at the first ` #`, which makes `description: fixed in PR #155, then do X` resolve to the
+summary `fixed in PR`. Rather than publish a summary that stops mid-sentence, the generator
+reports the cut and `--check` fails until the value is quoted. The same holds for a description
+YAML resolves to something that is not text at all: a flow collection (`[a]`, `{a: b}`) or a
+number (`42`, `1e3`, `0644`). A value of `null` or `~` resolves to no value, which reads as a
+note with no description; a block no reader can load is reported against the frontmatter line
+the reader gave up on.
+
+Not reasons to quote, since the parser resolves them to the text the index then publishes: a
+leading `&`, `*` or `!` (an anchor, an alias, a tag — though an alias naming no anchor is a load
+failure), a bare date, and the YAML 1.1 spellings 1.2 leaves as text such as `1_000` or `12:00`.
 
 Hand-appending a shared index made every concurrent PR that recorded a memory for the same
 agent collide on one line, and duplicated each claim into a second place that drifted from the
