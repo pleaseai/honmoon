@@ -186,12 +186,18 @@ describe('checkShell', () => {
     expect(details(off)).toEqual([expect.stringContaining('<link> loads from off this origin')])
   })
 
-  // The serving origin is not known at build time, so a URL that names the
-  // stand-in must not read as same-origin just because it matches it.
-  test('an absolute URL naming a resolution stand-in is still off-origin', () => {
+  // The serving origin is not known at build time, so a URL that names a
+  // resolution stand-in must not read as same-origin just because it matches
+  // it — and a scheme-bearing reference is relative or absolute depending on
+  // the scheme it is served under, which the gateway makes `http`.
+  test.each([
+    ['naming a stand-in', 'https://dashboard.invalid/x.css'],
+    ['scheme-relative to https', 'https:cdn.example/x.css'],
+    ['scheme-relative to http', 'http:cdn.example/x.css'],
+  ])('an absolute URL (%s) is off-origin wherever the shell is served', (_label, href) => {
     const named = BUILT_SHELL.replace(
       '<div id="root">',
-      '<link rel="stylesheet" href="https://dashboard.invalid/x.css"><div id="root">',
+      `<link rel="stylesheet" href="${href}"><div id="root">`,
     )
     expect(details(named)).toEqual([expect.stringContaining('<link> loads from off this origin')])
   })

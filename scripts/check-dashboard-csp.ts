@@ -111,16 +111,26 @@ const URL_ATTR = /\b(src|href)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'>]+))/gi
  * than being the path it looks like.
  *
  * Two of them, because the real serving origin is not known at build time: the
- * gateway serves this shell from whatever `--mgmt-addr` it was given, and the
- * demo build from Cloudflare Pages. So there is no host to compare against, and
+ * gateway serves this shell from whatever `--mgmt-addr` it was given — over
+ * cleartext `http`, at a loopback port — and the demo build comes off
+ * Cloudflare Pages over `https`. So there is no host to compare against, and
  * comparing against one stand-in would make a URL that *names* that stand-in
- * read as same-origin. Resolving against two answers the question that actually
- * matters without naming a host at all: a relative URL follows its base and the
- * two results differ, while an absolute one — scheme or protocol-relative —
- * resolves the same way under both, and is off-origin wherever this is served.
+ * read as same-origin.
+ *
+ * Asking both — "does this land on the origin it was resolved from?" — needs no
+ * host, and is the property that has to hold: wherever the shell is served, the
+ * URL stays on that origin. They differ in **scheme as well as host**, because
+ * a scheme-bearing relative reference (`src="https:cdn.example/app.js"`) is
+ * relative under an `https` base and absolute under an `http` one, and the
+ * gateway is the `http` case. Two `https` stand-ins agreed it was relative and
+ * passed it, while a browser on the gateway fetches `https://cdn.example`.
  */
 const SHELL_BASE = 'https://dashboard.invalid/index.html'
-const OTHER_BASE = 'https://elsewhere.invalid/index.html'
+const OTHER_BASE = 'http://elsewhere.invalid/index.html'
+
+/** The origin each base names, the value the URL resolved from it must land on. */
+const SHELL_ORIGIN = new URL(SHELL_BASE).origin
+const OTHER_ORIGIN = new URL(OTHER_BASE).origin
 
 /** A character reference inside an attribute value: `&#x73;`, `&#115;`, `&amp;`. */
 const CHAR_REF = /&(?:#x([0-9a-f]+)|#(\d+)|([a-z][a-z0-9]*));?/gi
@@ -317,9 +327,9 @@ export function checkShell(html: string, shell: string): Problem[] {
       if (name.toLowerCase() === 'href' && NAVIGATION_HREF.has(element)) {
         continue
       }
-      // Followed its base, so it is relative — a path, or a fragment link like
-      // `href="#/audit"` that resolves to this very document.
-      if (here.href !== there.href) {
+      // Landed on the origin it was resolved from, both times — a path, or a
+      // fragment link like `href="#/audit"` that stays in this very document.
+      if (here.origin === SHELL_ORIGIN && there.origin === OTHER_ORIGIN) {
         continue
       }
       note(
