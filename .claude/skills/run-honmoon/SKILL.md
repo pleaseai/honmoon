@@ -109,6 +109,12 @@ State lands in `target/honmoon-run/` (gitignored): `gateway.pid`, `gateway.log`,
 Defaults are the CLI's own: proxy `127.0.0.1:8443`, dashboard `127.0.0.1:8444`.
 Override with `HONMOON_ADDR` / `HONMOON_MGMT_ADDR`.
 
+Every `/api` route needs the management token, so the driver starts its gateway
+with a pinned `--mgmt-token` (`run-honmoon-driver-token`, override with
+`HONMOON_MGMT_TOKEN`) and sends it on every call. Hitting `/api/audit` with a
+bare `curl` against a driver-started gateway answers `401` — pass
+`-H "Authorization: Bearer run-honmoon-driver-token"`.
+
 `probe` translates curl's exit code into the verdict — a denied CONNECT is
 `403` and `curl` exits **56**, an approved-after-hold request exits 0, and a
 hold that times out exits 28.
@@ -149,7 +155,10 @@ unconditionally therefore blows up on every clean payload. Treat empty output as
 ```bash
 ./target/debug/honmoon gateway --config policies/agent.yaml --audit-log honmoon-audit.jsonl
 # proxy http://127.0.0.1:8443 · dashboard http://127.0.0.1:8444 · Ctrl-C to stop
-cd apps/dashboard && bun run dev     # dashboard HMR, proxies /api to :8444
+# The startup banner prints a one-click login URL carrying the generated token:
+#   honmoon: dashboard: http://127.0.0.1:8444/login?token=<token>
+# Open that, not the bare address — it sets the cookie the dashboard reads with.
+cd apps/dashboard && bun run dev     # dashboard HMR, proxies /api + /login to :8444
 ```
 
 `honmoon run --policy policies/agent.yaml -- <cmd>` wraps a single command's

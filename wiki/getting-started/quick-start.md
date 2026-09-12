@@ -130,9 +130,18 @@ cargo run -p honmoon-cli -- gateway --config policies/agent.yaml \
 https_proxy=http://127.0.0.1:8443 curl -sS https://github.com
 https_proxy=http://127.0.0.1:8443 curl -sS https://example.com   # blocked (403)
 
-# Open the dashboard (audit log, policy view, approval queue)
-open http://127.0.0.1:8444
+# Open the dashboard (audit log, policy view, approval queue).
+# Every /api route needs the management token, so open the login URL honmoon
+# printed on startup rather than the bare address — it sets the session cookie
+# the dashboard's reads use, then redirects to /:
+#   honmoon: dashboard: http://127.0.0.1:8444/login?token=<token>
+open "http://127.0.0.1:8444/login?token=$(cat ~/.honmoon/mgmt-token)"
 ```
+
+With no `--mgmt-token`, honmoon mints one on first use and persists it at
+`~/.honmoon/mgmt-token` (mode `0600`); set `--mgmt-token` / `HONMOON_MGMT_TOKEN` to pin your own.
+`@honmoon/api` reads the same token, so one credential covers both servers. Scripted callers send
+`Authorization: Bearer <token>` instead of logging in.
 
 The dashboard is embedded in the binary, so it is served directly by the gateway — no separate
 process. For the durable, queryable audit history over the JSONL file, run `@honmoon/api` (see

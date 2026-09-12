@@ -76,8 +76,8 @@ enum Command {
         /// instead — the refusal names the component it stopped on.
         #[arg(long, value_name = "FILE")]
         audit_log: Option<PathBuf>,
-        /// Bearer token required by **every** management API route (`/api/*`):
-        /// the audit, approval and policy reads as well as the Claude Code hook
+        /// Bearer token required by every management API route (`/api/*`): the
+        /// audit, approval and policy reads as well as the Claude Code hook
         /// endpoint (#173).
         ///
         /// Unset (the default), honmoon mints one on first use and persists it
@@ -386,9 +386,11 @@ fn gateway(args: GatewayArgs) -> Result<()> {
         // Printed, not logged: `RUST_LOG` is unset in an ordinary run, so a
         // `tracing::warn!` would be silent exactly where a deprecation has to be
         // read (same reason as the isolation warning in `run`).
-        eprintln!(
-            "honmoon: warning: --hook-token / HONMOON_HOOK_TOKEN is deprecated — use              --mgmt-token / HONMOON_MGMT_TOKEN. The token now authenticates every management              API route, not just the Claude Code hook endpoint (#173)."
-        );
+        eprintln!(concat!(
+            "honmoon: warning: --hook-token / HONMOON_HOOK_TOKEN is deprecated — use ",
+            "--mgmt-token / HONMOON_MGMT_TOKEN. The token now authenticates every ",
+            "management API route, not just the Claude Code hook endpoint (#173)."
+        ));
     }
     let mgmt = mgmt_token::resolve(mgmt_token.or(hook_token), &mgmt_token::default_dir())?;
 

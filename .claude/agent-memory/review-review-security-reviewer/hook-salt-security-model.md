@@ -1,6 +1,6 @@
 ---
 name: hook-salt-security-model
-description: "honmoon-cli hook machine-salt security model — 0600 invariant, HMAC-SHA256 unforgeability key, fail-open fallback; recurring security-review target; `reason` content settled as deliberate (#162), the unauthenticated mgmt reads are #173"
+description: "honmoon-cli hook machine-salt security model — 0600 invariant, HMAC-SHA256 unforgeability key, fail-open fallback; recurring security-review target; `reason` content settled as deliberate (#162); the mgmt read surface is authenticated as of #173, so do not flag it as open"
 metadata:
   type: project
 ---
@@ -51,9 +51,12 @@ and derives per request from the **request body's** `session_id`. Two consequenc
 re-check on any future change here:
 - The mgmt process now retains the **master machine key** (not a derived, scoped salt)
   for its lifetime, reachable through the public `AppState.hook_salt` variant field.
-- `POST /api/hooks/claude-code` (unauthenticated unless `--hook-token`) is a
-  placeholder-minting oracle under a **caller-chosen session salt** — guess-confirmation
-  against another session's placeholders is now possible where it was not before.
+- `POST /api/hooks/claude-code` is a placeholder-minting oracle under a
+  **caller-chosen session salt** — guess-confirmation against another session's
+  placeholders is possible where it was not before. **As of #173 this needs the
+  management token**, as does every other `/api/*` route, so the oracle is
+  reachable only by a caller who already holds the credential; do not report the
+  management reads as unauthenticated.
 - Empty-key guards moved into `HookSalt::fixed`/`per_session`; `hook::machine_key()`
   never returns empty (>=16B file, 32B fresh, or the fallback constant), so the asserts
   are startup-only, not a remote panic.

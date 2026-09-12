@@ -94,7 +94,13 @@ flowchart LR
 ```
 <!-- Sources: crates/honmoon-mgmt/build.rs:1-36, apps/dashboard/vite.config.ts:1-21, crates/honmoon-mgmt/src/lib.rs:30-36 -->
 
-In `vite dev`, API calls are proxied to a locally-running gateway's management API on
+Every `/api` route requires the management token (#173), so the dashboard's own credential is the
+`honmoon_session` cookie that `GET /login?token=…` sets — the URL the gateway prints on startup.
+`api.ts` attaches nothing itself: `fetch` defaults to `credentials: 'same-origin'`, so the browser
+sends the cookie. The static shell and its assets stay open; they are the binary's own bundled code
+and carry no token.
+
+In `vite dev`, API calls (and `/login`) are proxied to a locally-running gateway's management API on
 `127.0.0.1:8444`, so the UI and the binary can iterate independently
 ([vite.config.ts:13-20](https://github.com/pleaseai/honmoon/blob/main/apps/dashboard/vite.config.ts#L13-L20)).
 

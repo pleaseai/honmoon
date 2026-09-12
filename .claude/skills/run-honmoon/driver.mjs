@@ -21,6 +21,16 @@ const PROXY_ADDR = process.env.HONMOON_ADDR ?? '127.0.0.1:8443'
 const MGMT_ADDR = process.env.HONMOON_MGMT_ADDR ?? '127.0.0.1:8444'
 const PROXY_URL = `http://${PROXY_ADDR}`
 const MGMT_URL = `http://${MGMT_ADDR}`
+// Every /api route needs the management token (#173). The driver pins one
+// rather than reading the gateway's generated ~/.honmoon/mgmt-token: this is a
+// throwaway loopback gateway the driver owns end to end, and pinning keeps `up`
+// and a later `probe` in the same process-less session agreeing on one value.
+const MGMT_TOKEN = process.env.HONMOON_MGMT_TOKEN ?? 'run-honmoon-driver-token'
+// What a *browser* opens. `/login` validates the token, sets the session cookie
+// the dashboard's own reads travel on, and 303s to `/`. Opening the bare address
+// instead lands on a shell whose three API calls all answer 401, which shows up
+// as a screenshot of an unreachable dashboard rather than as an error.
+const DASHBOARD_URL = `${MGMT_URL}/login?token=${encodeURIComponent(MGMT_TOKEN)}`
 
 const F = {
   pid: join(RUN, 'gateway.pid'),
@@ -177,6 +187,7 @@ async function up(opts) {
     '--config', policy,
     '--addr', PROXY_ADDR,
     '--mgmt-addr', MGMT_ADDR,
+    '--mgmt-token', MGMT_TOKEN,
     '--audit-log', F.audit,
   ]
   if (opts.mitm) {
@@ -225,7 +236,7 @@ async function up(opts) {
   }
   log(`✓ gateway up (pid ${child.pid})`)
   log(`  proxy     ${PROXY_URL}   (point https_proxy here)`)
-  log(`  dashboard ${MGMT_URL}`)
+  log(`  dashboard ${DASHBOARD_URL}`)
   log(`  policy    ${policy}`)
   log(`  audit     ${F.audit}`)
   if (opts.mitm) log(`  ca cert   ${F.caCert}  (curl --cacert / trust store)`)
@@ -367,7 +378,10 @@ function waitExit(child, ms) {
 // ---------------------------------------------------------------- mgmt API
 
 const api = async (path, init) => {
-  const res = await fetch(`${MGMT_URL}${path}`, init)
+  const res = await fetch(`${MGMT_URL}${path}`, {
+    ...init,
+    headers: { ...init?.headers, Authorization: `Bearer ${MGMT_TOKEN}` },
+  })
   const text = await res.text()
   try {
     return { status: res.status, json: JSON.parse(text) }
@@ -460,7 +474,7 @@ function shot(name = 'dashboard') {
   // hand-started gateway), and agent-browser does not create the directory.
   ensureRun()
   const path = join(F.shots, `${name}.png`)
-  ab(['open', MGMT_URL])
+  ab(['open', DASHBOARD_URL])
   ab(['screenshot', path])
   log('✓ screenshot ->', path)
   return path
@@ -719,7 +733,7 @@ try {
     case 'ui-approve': {
       // agent-browser holds no page until something opens one, so a standalone
       // `ui-approve` would fail with `nav "Approvals" not found in snapshot`.
-      ab(['open', MGMT_URL], { quiet: true })
+      ab(['open', DASHBOARD_URL], { quiet: true })
       clickNav('Approvals')
       await sleep(500)
       const ref = clickFirst(has('--deny') ? 'Deny' : 'Approve')
