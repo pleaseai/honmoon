@@ -140,6 +140,27 @@ describe('resolveToken', () => {
     }
   })
 
+  test.skipIf(process.platform === 'win32')(
+    'warns when the persisted token is readable beyond its owner',
+    () => {
+      // The Rust CLI warns on this same file; surfacing it to one operator and
+      // not the other is the asymmetry, since both processes read one token.
+      const path = join(dir, 'mgmt-token')
+      writeFileSync(path, 'a-persisted-token\n')
+      chmodSync(path, 0o644)
+      const warnings: string[] = []
+      const original = console.warn
+      console.warn = (...args: unknown[]) => warnings.push(args.join(' '))
+      try {
+        expect(resolveToken(dir).source).toBe('persisted')
+      }
+      finally {
+        console.warn = original
+      }
+      expect(warnings.join(' ')).toContain('readable beyond its owner')
+    },
+  )
+
   test('aborts on an unreadable token file instead of minting a second one', () => {
     // A directory where the file should be: the read fails with something other
     // than ENOENT, which must not be recovered from by generating a token that

@@ -15,7 +15,7 @@
  * and no CSRF surface. The dashboard talks to the Rust management API.
  */
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto'
-import { chmodSync, closeSync, mkdirSync, openSync, readFileSync, writeSync } from 'node:fs'
+import { closeSync, fchmodSync, fstatSync, mkdirSync, openSync, readFileSync, writeSync } from 'node:fs'
 import { join } from 'node:path'
 
 /** File under the honmoon directory holding a generated token. */
@@ -100,6 +100,7 @@ export function resolveToken(dir: string = defaultDir()): ResolvedToken {
     const contents = readFileSync(path, 'utf8').trim()
     existed = true
     if (contents !== '') {
+      warnIfReadableBeyondOwner(path)
       return { token: contents, source: 'persisted', path }
     }
   }
@@ -124,8 +125,13 @@ export function resolveToken(dir: string = defaultDir()): ResolvedToken {
       // pre-existing empty `0644` placeholder would otherwise take a live
       // credential at its old mode. Tighten before the bytes land, so the
       // token is never briefly readable beyond its owner.
+      //
+      // Through the descriptor, not the path: if `path` were replaced between
+      // the open and this call, a path-based `chmodSync` would tighten some
+      // other file while the one actually receiving the token stayed
+      // permissive. `fchmodSync` can only affect the inode being written.
       if (existed) {
-        chmodSync(path, 0o600)
+        fchmodSync(fd, 0o600)
       }
       writeSync(fd, token)
     }
@@ -145,6 +151,48 @@ export function resolveToken(dir: string = defaultDir()): ResolvedToken {
       throw new Error(`management token ${path} is empty after a lost create race`)
     }
     return { token: winner, source: 'persisted', path }
+  }
+}
+
+/**
+ * Report — but do not correct — a token file readable beyond its owner.
+ *
+ * The mirror of the Rust CLI's `warn_if_readable_beyond_owner`. Both processes
+ * read one file, so a mode widened long after either minted it (a backup
+ * restore, configuration tooling, an operator's `chmod`) must not be surfaced
+ * by one operator and hidden from the other.
+ *
+ * Warns rather than tightening, for the same reason the Rust side does: a token
+ * another local user could already have read has to be *replaced*, and only the
+ * operator can decide when, since it invalidates their bookmarked login URL and
+ * anything else holding the old value.
+ */
+function warnIfReadableBeyondOwner(path: string): void {
+  if (process.platform === 'win32') {
+    return
+  }
+  let mode: number
+  try {
+    const fd = openSync(path, 'r')
+    try {
+      mode = fstatSync(fd).mode & 0o777
+    }
+    finally {
+      closeSync(fd)
+    }
+  }
+  catch (error) {
+    // Saying the mode could not be read is the honest form of this function's
+    // only job; silence here reads exactly like "checked, and it was fine".
+    console.warn(`honmoon api: warning: could not read the mode of ${path}: ${String(error)}`)
+    return
+  }
+  if ((mode & 0o077) !== 0) {
+    console.warn(
+      `honmoon api: warning: management token ${path} is mode ${mode.toString(8).padStart(4, '0')} `
+      + '— readable beyond its owner. Any local user it admits can read the whole management API; '
+      + 'delete the file to mint a new one.',
+    )
   }
 }
 

@@ -86,9 +86,10 @@ enum Command {
         /// login URL at startup. Auth is on by default; the generated credential
         /// is what keeps that from meaning broken by default.
         ///
-        /// Prefer `HONMOON_MGMT_TOKEN` to this flag: a command line is readable
-        /// by every local user through `ps`, which is the population the token
-        /// exists to exclude. `@honmoon/api` cannot see this flag either — it
+        /// Prefer `HONMOON_MGMT_TOKEN` to this flag: a command line can be read
+        /// by other local users through `ps` — how far that reaches is platform
+        /// and configuration dependent — where the token file is `0600`
+        /// outright. `@honmoon/api` cannot see this flag either — it
         /// reads the environment variable or the file — so a token supplied
         /// here must be given to that service by one of those two routes, or
         /// the two will not agree.
