@@ -14,10 +14,14 @@ the test.
 **On #201 (`honmoon policy validate`, issue #198) every call-graph claim held.**
 `policy_validate`'s "no mgmt token resolved, no audit log opened, no CA read or generated, no
 listener bound" is true because all four live inside `gateway()`, which it never calls.
-`init_tracing`'s "every command keeps the historical ERROR default" is true because
-`EnvFilter::from_default_env()` in tracing-subscriber 0.3.23 *is*
-`builder().with_default_directive(LevelFilter::ERROR).from_env_lossy()` — the new code only
-spells out what was already there.
+`init_tracing`'s "every command keeps the historical ERROR default" is true **of the
+commands it is about**, and the exception is the point of the change: `policy validate`
+moved from `ERROR` to `WARN`, so the loader's two `tracing::warn!` diagnostics reach the
+operator. `run`, `gateway` and `hook` are untouched, and for them the new spelling is the
+old behavior written out — `EnvFilter::from_default_env()` in tracing-subscriber 0.3.23 *is*
+`builder().with_default_directive(LevelFilter::ERROR).from_env_lossy()`. Do not carry away
+"tracing was untouched": a `policy` command's default level and its writer (stderr, not the
+fmt default stdout) both changed.
 
 **The claim that did fail was a different shape, and that is the lesson.** The comment said a
 load failure "names every offending rule (#197)". True of `validate_compiled_conditions`,

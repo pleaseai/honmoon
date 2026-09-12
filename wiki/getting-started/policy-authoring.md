@@ -415,7 +415,7 @@ those take one run each.
 Two properties are worth stating outright, because they are what make it usable.
 
 **It is the gateway's own loader, not a second opinion.** The command reads the file and calls
-`Policy::from_yaml` ([main.rs:1003-1028](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-cli/src/main.rs#L1003-L1028)) — the same
+`Policy::from_yaml` ([main.rs:1027-1052](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-cli/src/main.rs#L1027-L1052)) — the same
 two steps `honmoon gateway --config` performs ([main.rs:562-564](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-cli/src/main.rs#L562-L564)),
 compiled conditions and all ([lib.rs:215-224](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/lib.rs#L215-L224)). A check
 that could accept a policy the gateway then refused would be worse than no check, so there is no
@@ -427,7 +427,7 @@ both refuse, and `validate_and_the_gateway_accept_the_same_policy` on one both a
 There is exactly one thing the check says in its own words, and it refuses nothing extra: a file
 whose top level is not a mapping — plain text, a list, a single value — is named as *not a policy
 document* rather than handed to the parser
-([main.rs:972-982](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-cli/src/main.rs#L972-L982)). The loader refuses those too; what changes is that the
+([main.rs:976-1006](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-cli/src/main.rs#L976-L1006)). The loader refuses those too; what changes is that the
 parser would have quoted the file to say so, and for a document that is one plain scalar the quote
 is the whole file. Pointed at a token file, an SSH key or a `.env` by a mistyped path, that lands
 in the CI log.
