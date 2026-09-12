@@ -316,7 +316,8 @@ Two things are worth keeping in mind when authoring:
   of zero-width characters — fails the load with a message naming the rule and quoting the
   condition. Your editor will not flag it first: the schema checks shape, not CEL, so the loader is
   where you find out. Every offending rule is named in one go, so a policy with three of them takes
-  one run to diagnose, not three.
+  one run to diagnose, not three. `honmoon policy validate <file>` runs that loader on its own, so
+  finding out does not mean starting a gateway.
 
 ::: warning Breaking change in #191: a gateway that starts today may stop starting
 Before [#191](https://github.com/pleaseai/honmoon/issues/191) a policy carrying an uncompilable
@@ -334,13 +335,19 @@ still visible in the message:
 Error: rule "secrets" (rules[1]) has a `condition` that is not a valid CEL expression: "&&"
 ```
 
-There is no validation-only command to check a policy with first. `honmoonctl validate` is a stub
-(see [Validating a policy](#validating-a-policy) below), the JSON Schema does not parse CEL, and
-starting the gateway is not a dry run: `honmoon gateway --config <file>` refuses a bad policy
-before it binds anything, but on a good one it goes on to serve until you stop it — and it resolves
-the management token first, so it can create `~/.honmoon/mgmt-token` even on the run where the
-policy is what fails. [#198](https://github.com/pleaseai/honmoon/issues/198) tracks a load-and-exit
-mode.
+Check the policy before you upgrade, with `honmoon policy validate` — it loads the file through
+this same loader and exits without starting anything (see
+[Validating a policy](#validating-a-policy) below):
+
+```bash
+honmoon policy validate policies/agent.yaml
+```
+
+Nothing else answers this question. The JSON Schema does not parse CEL, `honmoonctl validate` is
+still a stub, and starting the gateway is not a dry run: `honmoon gateway --config <file>` refuses
+a bad policy before it binds anything, but on a good one it goes on to serve until you stop it —
+and it resolves the management token first, so it creates `~/.honmoon/mgmt-token` even on the run
+where the policy is what fails.
 :::
 
 ```mermaid
@@ -377,9 +384,101 @@ keeps its own message rather than being folded into the compile error.
 
 | Method | Status | Notes |
 |--------|--------|-------|
-| Editor (`yaml-language-server` + JSON Schema) | <span class="status-done">works</span> | Live validation via the modeline |
-| `Policy::from_yaml` (Rust) | <span class="status-done">works</span> | Used by `honmoon run` / `gateway` to load policy | 
-| `honmoonctl validate <file>` | <span class="status-planned">stub</span> | Reads the file but YAML parse + schema check are a `TODO` ([cli/src/index.ts:14-23](https://github.com/pleaseai/honmoon/blob/main/packages/cli/src/index.ts#L14-L23)) |
+| `honmoon policy validate <file>` | <span class="status-done">works</span> | The CLI check. Runs the same loader the gateway does, binds nothing, writes nothing |
+| Editor (`yaml-language-server` + JSON Schema) | <span class="status-done">works</span> | Live validation via the modeline — shape only, never CEL |
+| `Policy::from_yaml` (Rust) | <span class="status-done">works</span> | The loader itself: what `honmoon run` / `gateway` and the command above all call |
+| `honmoonctl validate <file>` | <span class="status-planned">stub</span> | Reads the file but YAML parse + schema check are a `TODO` ([cli/src/index.ts:14-23](https://github.com/pleaseai/honmoon/blob/main/packages/cli/src/index.ts#L14-L23)). Prefer `honmoon policy validate` — see below |
+
+### `honmoon policy validate`
+
+```bash
+honmoon policy validate policies/agent.yaml
+# honmoon: policies/agent.yaml: policy is valid (3 rules, 2 endpoints)
+```
+
+It is a load-and-exit check, so what it accepts is what a gateway accepts:
+
+| | |
+|---|---|
+| **Exit 0** | The policy loads. The gateway would start on it |
+| **Exit non-zero** | The policy does not load, and the loader's diagnosis is on stderr |
+| **stdout** | Empty. Everything it says goes to stderr, so a CI step can pipe stdout without catching diagnostics |
+
+How much of that diagnosis you get depends on the fault, because that is how the loader reports.
+Every rule whose `condition` does not compile is named in one go
+([lib.rs:321-337](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/lib.rs#L321-L337)), so three of them take one run to
+find. The loader's other checks — an unusable `endpoints` entry
+([lib.rs:240-257](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/lib.rs#L240-L257)), a blank `condition`
+([lib.rs:280-290](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/lib.rs#L280-L290)) — return on the first offender, so
+those take one run each.
+
+Two properties are worth stating outright, because they are what make it usable.
+
+**It is the gateway's own loader, not a second opinion.** The command reads the file and calls
+`Policy::from_yaml` ([main.rs:1027-1052](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-cli/src/main.rs#L1027-L1052)) — the same
+two steps `honmoon gateway --config` performs ([main.rs:562-564](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-cli/src/main.rs#L562-L564)),
+compiled conditions and all ([lib.rs:215-224](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/lib.rs#L215-L224)). A check
+that could accept a policy the gateway then refused would be worse than no check, so there is no
+separate implementation here to drift from that one. Two integration tests run both paths over one
+file and require the same verdict — `validate_and_the_gateway_report_the_same_refusal` on a policy
+both refuse, and `validate_and_the_gateway_accept_the_same_policy` on one both accept
+([tests/policy_validate.rs](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-cli/tests/policy_validate.rs)).
+
+There is exactly one thing the check says in its own words, and it refuses nothing extra: a file
+whose top level is not a mapping — plain text, a list, a single value — is named as *not a policy
+document* rather than handed to the parser
+([main.rs:976-1006](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-cli/src/main.rs#L976-L1006)). The loader refuses those too; what changes is that the
+parser would have quoted the file to say so, and for a document that is one plain scalar the quote
+is the whole file. Pointed at a token file, an SSH key or a `.env` by a mistyped path, that lands
+in the CI log.
+
+An empty file is **not** in this class — it is a valid policy. YAML reads it as `null`, and every
+`Policy` field carries `#[serde(default)]`
+([lib.rs:51-80](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/lib.rs#L51-L80)),
+so a document with no fields in it loads as deny-by-default with no rules. `honmoon gateway
+--config` starts on one, and `a_file_that_is_not_a_policy_is_named_rather_than_quoted` pins that
+`validate` accepts it — the shape guard has to let `null` through, because refusing it would refuse
+a policy the gateway runs.
+
+**It has no side effects.** No listener is bound, no audit log is opened, no CA is read or
+generated, and — the one that is easy to miss — the management token is never resolved. All four
+live inside the `gateway` function, which this path never enters. Starting a gateway resolves that
+token at [main.rs:556](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-cli/src/main.rs#L556), *before* it reads the policy at
+[main.rs:562](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-cli/src/main.rs#L562), so `honmoon gateway --config <bad file>`
+creates `~/.honmoon/mgmt-token` on its way to telling you the policy is broken. Checking a policy should
+not mint a credential, least of all on the run where the policy is what failed, so this path never
+reaches that code (`validating_a_bad_policy_creates_nothing_under_home` pins it, against a control
+that shows the gateway doing exactly that).
+
+It reports the loader's **warnings** too — an unreachable rule
+([lib.rs:388-397](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/lib.rs#L388-L397)), a rule naming an endpoint
+`endpoints` does not declare ([lib.rs:364-374](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/lib.rs#L364-L374)) —
+which `tracing` filters out of an ordinary gateway run, because this command asks for a `warn`
+default and its own stderr writer ([main.rs:391-414](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-cli/src/main.rs#L391-L414)). They do not
+change the exit code: the gateway starts on a policy carrying one, so this accepts it too.
+
+They arrive through `tracing`, and the `warn` level this command asks for is only a *default*. A
+`RUST_LOG` you export for other reasons replaces it, and one that is stricter (`RUST_LOG=error`,
+`off`) silences these warnings with nothing on screen to say so. If a policy you expected a warning
+about comes back clean, check `RUST_LOG` first — `RUST_LOG=warn` puts them back.
+
+```yaml
+# .github/workflows/policy.yml
+- run: honmoon policy validate policies/agent.yaml
+```
+
+A policy that loads is summarised by a count of what loaded, never by its contents. An endpoint map
+names the hosts an operator cares most about, and a CI log is not somewhere they chose to put them.
+What a *problem* prints is the problem: a rejected rule is quoted, and a warning names the rule and
+the endpoint it is about, because that is the diagnosis and the thing to go and fix. So a clean run
+says nothing about your policy, and a run with a warning names the rules the warning is about —
+worth knowing before you make that log public.
+
+`honmoonctl validate` remains the stub it was. Making it real is its own job
+([#198](https://github.com/pleaseai/honmoon/issues/198) deliberately left it alone), and it could
+not share this implementation anyway: it is TypeScript, so filling it in would mean a second
+validator against the second policy model that **TD-001** already tracks. Until then, the command
+above is the one that answers the question.
 
 ::: warning Dual model, kept in sync by hand
 The Rust model (`honmoon-core`) and the TS model (`@honmoon/policy`) describe the same policy

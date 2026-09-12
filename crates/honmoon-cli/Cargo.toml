@@ -23,6 +23,10 @@ tracing-subscriber.workspace = true
 # `honmoon hook` (Claude Code plugin backend): parse the hook JSON payload the
 # shared salt derivation reads the session from (#19/#20).
 serde_json.workspace = true
+# `honmoon policy validate` classifies a document's top-level shape before the
+# loader does, so a file that is not a policy is named as one rather than quoted
+# into a CI log (#198). Shape only — every policy check stays in `honmoon-core`.
+serde_yaml.workspace = true
 
 # The cross-transport hook tests re-derive the salt by hand, so they check the
 # shared derivation against an independent computation rather than itself.
