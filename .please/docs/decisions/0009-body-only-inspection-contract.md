@@ -2,7 +2,12 @@
 
 ## Status
 
-Accepted (2026-09-11, #133).
+Accepted (2026-09-11, #133). Amended 2026-09-12 (#134): honmoon now refuses to *forward* a request
+trailer whose field name could change how the recipient frames, routes or authenticates the
+request. The inspection contract below is unchanged — the filter reads names, never values — but
+the forwarding clauses it states conditionally gained a second condition, and they are corrected in
+place. ADR-0006 was amended in the same change, since `--signed-body forward` no longer reproduces
+such a trailer.
 
 ## Context
 
@@ -79,7 +84,22 @@ trailer value that went unscanned.
 overclaim. Whether a trailer *reaches* the upstream has a conditional answer:
 
 - On the **pass-through path** — every request honmoon does not rewrite — the trailer frame is
-  replayed and honmoon changes nothing in it.
+  replayed, minus any field whose **name** a trailer section must not carry. Since #134,
+  `trailer_filtered_body` drops the names that could change how the recipient frames, routes or
+  authenticates the request — framing (`Transfer-Encoding`, `Content-Length`), routing (`Host`),
+  authentication (`Authorization`, `Proxy-Authorization`, `WWW-Authenticate`, `Proxy-Authenticate`,
+  `Cookie`, `Set-Cookie`), content processing (`Content-Encoding`, `Content-Type`, `Content-Range`,
+  `Trailer`), the three request modifiers hyper's h1 encoder already refuses (`Cache-Control`,
+  `Max-Forwards`, `TE`), the RFC 9113 §8.2.2 connection-specific names (`Connection`, `Keep-Alive`,
+  `Proxy-Connection`, `Upgrade`) and whatever the request's `Connection` header nominates — logging
+  a `warn` that names what it dropped and where it was bound. It deliberately does **not** drop the
+  conditionals, `Range`, `Expect`, `Pragma` or the `Accept*` family, which a trailer section may not
+  carry either but which change only what the recipient returns; the criterion and that exclusion
+  are recorded on `FORBIDDEN_TRAILER_FIELDS`. That is a name decision and not a value one, so it
+  neither widens nor narrows the inspection contract: honmoon still reads no trailer value. It runs
+  on all four branches of `inspect_body` and before the upstream protocol is known, which is the
+  point — and it is not redundant on either leg, since hyper's h1 encoder refuses only its own
+  12-name enumeration and nothing applied even that on an h2 upstream leg.
 - When `--redact-secrets` **rewrites the body**, `forwarded_request` replaces it with `Full`, which
   carries no trailer frame, so the client's trailers are **dropped**. That is deliberate and
   fail-safe: a digest the client computed over the original bytes is stale once those bytes are
@@ -111,6 +131,11 @@ This is recorded in three places so it cannot be rediscovered as a surprise:
    excluded from. A regression that started scanning trailers on the `Content-Length` branch alone
    would therefore pass the suite — the narrowest real gap this contract leaves, and the first
    thing to close if that branch ever grows its own inspection path.
+
+Since #134, `mitm.rs`'s `forbidden_trailers_are_dropped_on_the_*` tests drive all four branches of
+that same `content_length` match through `inspect_body`. They pin the *forwarding* filter on each
+of them and say nothing about inspection, so they neither close nor narrow the gap point 3
+describes — that boundary is still pinned by point 3 alone.
 
 Scanning header-shaped fields remains a **separate, open product decision**, not an implied
 obligation deferred by this ADR.
@@ -156,7 +181,7 @@ HTTP request**; on the raw-tunnel path none of it applies, because nothing there
 | Ordinary header (`X-Note:`) | **Never** | Yes |
 | Body-digest header (`Digest`, `Content-Digest`, `Content-MD5`, `Repr-Digest`) | **Never** | Stripped when the body is redacted |
 | Framing header (`Content-Length`, `Content-Encoding`, `Transfer-Encoding`) | **Never** — read as metadata only | Re-framed when the body is redacted |
-| Request trailer | **Never** | Only on a pass-through request, and only where the upstream leg's framing carries trailers at all (see issue #136) |
+| Request trailer | **Never** | Only on a pass-through request, only for a field name honmoon's #134 filter does not refuse, and only where the upstream leg's framing carries trailers at all (see issue #136). This is the one right-hand-column row that also constrains `--signed-body forward` (ADR-0006) |
 
 **The body row's "yes" is itself conditional.** Three conditions mean no finding is possible at
 all. An over-cap body never reaches the scanner (`scanned` is `None`); a decoded body that
@@ -185,10 +210,11 @@ recorded as the would-be verdict and forwarded (`decide_pii_audit_only`). What f
 is the wire rewrite, not the inspection.
 
 **Only the middle column is this ADR's contract.** The right-hand column is transport behaviour that
-varies with the redaction path and the upstream protocol, and it presupposes `--redact-secrets`:
-without it no rewrite happens, so nothing is stripped or re-framed and a trailer survives every
-branch of `inspect_body` — still subject, as everywhere in the right-hand column, to whether the
-upstream leg's framing carries trailers at all (#136). It is recorded so that nobody reads the middle column as a delivery guarantee, which
+varies with the redaction path and the upstream protocol, and most of it presupposes
+`--redact-secrets`: without it no rewrite happens, so nothing is stripped or re-framed and a
+trailer survives every branch of `inspect_body` — still subject, as everywhere in the right-hand
+column, to whether the upstream leg's framing carries trailers at all (#136), and to the #134 name
+filter, which is the one part of that column that runs whether or not `--redact-secrets` is on. It is recorded so that nobody reads the middle column as a delivery guarantee, which
 is the error this document kept making about itself.
 
 **And `pii.count == 0` does not mean "no secrets here".** `eval_program` always binds `pii` with
@@ -205,9 +231,13 @@ header-shaped fields as uncontrolled, not to present a destination control as if
 
 **If scanning is added later**, the contract text and the pinning test are the things to change
 first, deliberately. The property that must be settled then, and is not settled here, is
-**coverage**: trailers are only *visible* to the scanner on the two buffered branches — the
-over-cap branches never read them — so a scan lands on two of four paths and is silently absent on
-the rest. A guarantee that holds on half the paths is weaker than the one its presence implies.
+**coverage**: trailers are only visible *in time to decide* on the two buffered branches — the
+over-cap branches have not read them when `decide_explained` runs — so a scan lands on two of four
+paths and is silently absent on the rest. A guarantee that holds on half the paths is weaker than
+the one its presence implies. #134's filter is not a counter-example: it sees the trailer frame on
+every branch precisely because it runs *later*, while the body streams upstream, which is after the
+verdict is fixed. Seeing a trailer in time to drop it by name and seeing one in time to let it
+change a verdict are different problems, and only the first is solved.
 
 **Redaction of a found trailer is a smaller obstacle than it first appears**, and that is worth
 stating plainly here because this document is what a future implementer will weigh. On an
@@ -219,10 +249,17 @@ through the gate `forwarded_request` already applies: `SignedBodyMode::Forward` 
 mechanism and breaks no promise that body redaction does not already break. Coverage is the
 load-bearing objection; redaction is not.
 
-**Relationship to the open trailer issues.** This ADR constrains none of them, but it does place
-one: #134 (h2 trailer allowlist) becomes the natural home for *controlling* trailer content,
-because an allowlist restricts which trailers cross the boundary without claiming to understand
-their values — which is the lever this contract leaves available. #135 (stale `Trailer` header
+**Relationship to the open trailer issues.** This ADR constrains none of them, but it did place
+one: #134 (h2 trailer allowlist) was the natural home for *controlling* trailer content, because a
+name filter restricts which trailers cross the boundary without claiming to understand their
+values — the lever this contract leaves available. #134 has since landed, and what it built is a
+**denylist of forbidden names, not an intersection with the client's `Trailer:` declaration**. The
+reasoning is the one this document already records about `Trailer:` being advisory and routinely
+omitted: an attacker who wants `transfer-encoding` forwarded simply declares
+`Trailer: transfer-encoding`, so the intersection stops nothing it is the only thing stopping,
+while it would silently drop the undeclared trailers honest HTTP/2 clients send — including a
+`Content-Digest` an RFC 9421 signature covers under `--signed-body forward` (ADR-0006). The
+forbidden-name list does the whole of the security work; the intersection only has a cost. #135 (stale `Trailer` header
 after a redaction rewrite) and #136 (h2 `Content-Length` trailers dropped on an h1 upstream) are
 framing and transport-mapping bugs, independent of whether values are inspected.
 
@@ -253,6 +290,15 @@ framing and transport-mapping bugs, independent of whether values are inspected.
   send it — so a declaration-driven warn is trivially switched off by the same adversary it
   watches for, while still firing on ordinary gRPC traffic where trailers are protocol machinery.
   A signal the adversary can disable and the honest client cannot is not a control.
+
+  *Amended (#134).* The frame-driven half of that reasoning was wrong about mechanism, though not
+  about the conclusion. A body adapter wrapping the forwarded body observes the trailer frame on
+  **all four** branches, because it is polled while the body streams upstream rather than before
+  the verdict — which is how `trailer_filtered_body` filters the over-cap paths at all. So a
+  frame-driven warn was always possible; what it could never be is *an input to the decision*,
+  since it arrives after the decision. Honmoon does emit a `warn` there now, but only when it
+  actually drops a field — reporting an action it took, like the other fail-open warns, rather
+  than narrating that a trailer went by.
 
 - **Leave the behavior undocumented and close #133 as working-as-intended.** Rejected. The
   behavior is intended, but "intended" was not written down anywhere, and the fail-modes section

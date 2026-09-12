@@ -235,7 +235,24 @@ findings, and do not read `pii.count == 0` as "no secrets in this request".
 
 Whether a trailer then *reaches* the upstream is a separate question, and not one this contract
 answers. On a pass-through request it is replayed — subject to the upstream leg's framing carrying
-trailers at all (see issue #136). When redaction rewrites the body, the replacement carries no
+trailers at all (see issue #136), and to its *name*. Honmoon refuses to forward a trailer whose
+field name could change how the recipient **frames, routes, or authenticates** the request — the
+hazard RFC 9110 §6.5.1 describes, and which RFC 7230 §4.1.2 stated outright: a recipient must
+ignore such a field, "since processing them as if they were present in the header section might
+bypass external security filters". Concretely: `Transfer-Encoding`, `Content-Length`, `Host`,
+`Authorization`, `Proxy-Authorization`, `WWW-Authenticate`, `Proxy-Authenticate`, `Cookie`,
+`Set-Cookie`, `Content-Encoding`, `Content-Type`, `Content-Range`, `Trailer`, `Cache-Control`,
+`Max-Forwards`, `TE`, plus the connection-specific names RFC 9113 §8.2.2 bars from an HTTP/2
+message (`Connection`, `Keep-Alive`, `Proxy-Connection`, `Upgrade`) and any field the request's own
+`Connection` header nominates. Each drop logs a `warn` naming the fields and the destination.
+
+Conditionals (`If-*`), `Range`, `Expect`, `Pragma` and the `Accept*` family are **not** dropped,
+though a trailer section may not carry them either: they change what the recipient returns, not how
+it frames, routes or authorizes, so refusing them would buy no security while widening honmoon's
+interference with byte fidelity. This is a decision about names, never about values — nothing in it
+inspects what a trailer carries. It applies on every request-forwarding path and regardless of the
+upstream protocol, so a client cannot launder a framing token past honmoon by having the upstream
+leg negotiate HTTP/2 (issue #134). Response trailers are not filtered. When redaction rewrites the body, the replacement carries no
 trailer frame and the client's trailers are dropped instead (deliberately: a digest over the
 original bytes is stale either way; the stale `Trailer:` header that drop leaves behind is
 issue #135). The same rewrite strips the body-digest headers (`Digest`, `Content-Digest`,
@@ -289,7 +306,10 @@ sends none, in the `X-Amz-Content-Sha256` query parameter presigning hoists that
 its own its signature covers the request and the headers it names, not the uploaded bytes. So is a
 bare payload hash with no AWS authentication on the request — that is an integrity check, not a
 signature. The covered list is parsed rather than assumed, and only headers the rewrite would actually
-change count. A signed request with nothing to redact is always forwarded untouched. See [ADR-0006](.please/docs/decisions/0006-signed-body-requests-under-wire-redaction.md).
+change count. A signed request with nothing to redact is forwarded with its body and headers
+unchanged — the one exception being a trailer whose field name a trailer section must not carry,
+which is dropped by the #134 filter before any of this is consulted (see the trailer paragraph
+above; `Content-Digest` is not on that list). See [ADR-0006](.please/docs/decisions/0006-signed-body-requests-under-wire-redaction.md).
 
 ### What `honmoon run` enforces, and what it costs
 

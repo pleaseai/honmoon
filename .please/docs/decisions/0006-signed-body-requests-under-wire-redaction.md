@@ -7,6 +7,11 @@ recorded — a presigned URL and a bare `x-amz-content-sha256` payload hash no l
 own. The Decision below is the current rule; the reasoning for the change is in the Context and
 Consequences.
 
+Amended 2026-09-12 (#134): `forward`'s "untouched" is no longer unqualified. A trailer whose field
+name a trailer section must not carry is dropped before the request leaves honmoon, by a filter
+that runs ahead of — and independently of — every decision this ADR describes. The qualification is
+stated where each claim is made below.
+
 ## Context
 
 `--redact-secrets` rewrites intercepted request bodies: detected secrets and Tier-1 PII are
@@ -171,8 +176,9 @@ two signals that assert nothing about a payload-covering signature; it does not 
 one into proof, and `forward` stays the documented fail-open hole it always was.
 
 **The decision point is after redaction has been computed**, i.e. only when `outcome.redacted` is
-true. A signed request with nothing to redact is forwarded byte-identical and logs nothing, so
-signed traffic that carries no secrets is entirely unaffected.
+true. A signed request with nothing to redact is forwarded with its body and headers byte-identical
+and logs nothing, so signed traffic that carries no secrets is unaffected by *this* ADR's
+machinery — with the one exception #134 introduced, below.
 
 **The policy is a gateway-wide flag, `--signed-body <block|forward>`, defaulting to `block`**
 (`SignedBodyMode` on `RedactionState`; requires `--redact-secrets`):
@@ -181,9 +187,26 @@ signed traffic that carries no secrets is entirely unaffected.
   header, and a plain-text explanation naming the scheme and the escape hatch, and records an
   audit event (`Decision::Denied`, `Verdict::Deny`, rule `wire-redaction/signed-body`). The
   secret is never sent, and an opaque upstream signature failure becomes an actionable local one.
-- `forward` returns the original request untouched — same bytes, same headers, no mapping recorded
-  — mirroring the existing `Content-Range` fail-open branch, for operators who trust the signed
-  upstream more than they fear the leak.
+- `forward` returns the original request unchanged by redaction — same body bytes, same headers, no
+  mapping recorded — mirroring the existing `Content-Range` fail-open branch, for operators who
+  trust the signed upstream more than they fear the leak.
+
+**The one thing `forward` does not reproduce verbatim (#134).** `trailer_filtered_body` drops a
+forwarded trailer whose field name a trailer section must not carry — framing, routing,
+authentication, content-processing and connection-specific names (the list and its criterion are in
+`crates/honmoon-proxy/src/body.rs`). It wraps the body in `inspect_body`, upstream of
+`forwarded_request`, so it runs **before** and independently of the `SignedBodyMode` decision: a
+`forward`-mode request loses such a trailer without the fail-open `warn` this ADR's branches emit,
+and a `block`-mode one loses it without the `403`. It logs its own `warn` naming the dropped fields
+and the destination.
+
+That is a deliberate, bounded exception rather than an oversight. Every name on the list is one the
+RFCs forbid in a trailer section and hyper's h1 encoder already refuses on that leg, so a signature
+covering one was already unreproducible on an h1 upstream before honmoon existed; and forwarding a
+framing token because a signature happens to cover it is exactly the laundering #134 exists to
+stop. The trailer a signature realistically covers — `Content-Digest`, the RFC 9421 case this ADR
+is written around — is **not** on the list and is unaffected, which
+`signed_body_request_keeps_its_digest_trailer_in_forward_mode` pins.
 
 `block` is the default because it is the only mode that preserves the guarantee `--redact-secrets`
 is bought for: a flag the operator turned on to stop secrets crossing the wire must not silently
