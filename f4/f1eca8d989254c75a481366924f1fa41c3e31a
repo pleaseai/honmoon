@@ -1,0 +1,31 @@
+crates/honmoon-cli/src/mgmt_token.rs
+  s_d720448ec7c988::t_9b3bbbd512a3e1 121-126
+packages/api/src/auth.test.ts
+  s_d720448ec7c988::t_6676529a00327b 164-189
+packages/api/src/auth.ts
+  s_d720448ec7c988::t_d56e1d26b3878a 100,103-104,117-122,156,161-163,168-202,215-245,247,253,262-264,269-271
+  s_d720448ec7c988::t_6676529a00327b 267
+crates/honmoon-mgmt/src/lib.rs
+  s_d720448ec7c988::t_9b3bbbd512a3e1 204-208,210-211
+.claude/agent-memory/review-review-silent-failure-hunter/project_pr186_warn_if_readable_beyond_owner.md
+  s_d720448ec7c988::t_8f695054dd313d 3,22-30
+crates/honmoon-cli/src/main.rs
+  s_d720448ec7c988::t_d3ba214ccf61cf 369-397,826-840
+  s_d720448ec7c988::t_ee8fad877dcbfd 91-95,537-540
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "f4f1eca8d989254c75a481366924f1fa41c3e31a",
+  "prompts": {},
+  "sessions": {
+    "s_d720448ec7c988": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "069c4824-e961-4929-8157-1ff587135fd5",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
