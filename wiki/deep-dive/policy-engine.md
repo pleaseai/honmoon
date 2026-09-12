@@ -127,17 +127,17 @@ is `other` ([engine.rs:154-174](https://github.com/pleaseai/honmoon/blob/main/cr
 | `bad.gh.io` (deny) | `bad.gh.io` | ❌ deny | deny checked before allow |
 
 The test `egress_allow_deny_and_default` locks all four cases, including "deny wins"
-([engine.rs:383-407](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/engine.rs#L383-L407)).
+([engine.rs:444-467](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/engine.rs#L444-L467)).
 
 ## CEL evaluation
 
 A rule's condition is a [CEL](https://github.com/google/cel-spec) expression compiled by `cel`.
 The compile happens **once, at load**: `Policy::from_yaml` hands every distinct condition to
 `Program::compile` and carries the results on the policy
-([lib.rs:205-225](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/lib.rs#L205-L225),
-[engine.rs:185-247](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/engine.rs#L185-L247)).
+([lib.rs:206-226](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/lib.rs#L206-L226),
+[engine.rs:185-281](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/engine.rs#L185-L281)).
 Evaluating a rule then looks its program up rather than parsing CEL again
-([engine.rs:249-263](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/engine.rs#L249-L263)).
+([engine.rs:283-300](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/engine.rs#L283-L300)).
 
 That table is keyed by the **condition text**, not by the rule's position or name, so it cannot go
 stale: `Rule::condition` is a public field, and a reassigned condition misses the table and is
@@ -149,7 +149,7 @@ policy did before [#167](https://github.com/pleaseai/honmoon/issues/167).
 (`http`, `sql`, `k8s`, and always `pii`), and runs the program. **Only `Ok(Bool(true))` counts as a
 match** — every other outcome (runtime error, non-bool, `false`) means "no match", and so does a
 condition that never compiled
-([engine.rs:320-361](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/engine.rs#L320-L361)).
+([engine.rs:375-421](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/engine.rs#L375-L421)).
 
 ```mermaid
 sequenceDiagram
@@ -165,7 +165,13 @@ sequenceDiagram
     CEL-->>L: Program → stored under the condition text
   end
   D->>D: look the rule's program up by its condition text
-  alt no program (inert, or built in code)
+  alt hit
+    D->>D: use the program compiled at load
+  else miss (built in code, or condition reassigned since load)
+    D->>CEL: Program::compile(condition) on the spot
+    CEL-->>D: Program, or Err → warn! naming the rule
+  end
+  alt no program
     D->>D: rule does not match, try the next rule
   else program
     D->>EP: program + facts
@@ -175,7 +181,7 @@ sequenceDiagram
     EP-->>D: matches!(result, Ok(Bool(true)))
   end
 ```
-<!-- Sources: crates/honmoon-core/src/lib.rs:205-225, crates/honmoon-core/src/engine.rs:185-263, crates/honmoon-core/src/engine.rs:320-361 -->
+<!-- Sources: crates/honmoon-core/src/lib.rs:206-226, crates/honmoon-core/src/engine.rs:185-300, crates/honmoon-core/src/engine.rs:375-421 -->
 
 Each fact sub-struct derives `Serialize`, and `cel::to_value` converts it into a CEL
 value bound under its name — so `http.method`, `sql.verb`, and `k8s.resource` are addressable in
@@ -188,18 +194,18 @@ The engine cannot be tricked into allowing by a broken rule. Three mechanisms co
 | Mechanism | Effect | Source |
 |-----------|--------|--------|
 | `Egress::default = Deny` | Unmatched domain denies | [lib.rs:48-60](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/lib.rs#L48-L60) |
-| Compile error → no program | A malformed condition never matches | [engine.rs:288-313](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/engine.rs#L288-L313) |
-| Missing fact → `false` | A condition on an unpopulated fact never matches | [engine.rs:352-359](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/engine.rs#L352-L359) |
+| Compile error → no program | A malformed condition never matches | [engine.rs:302-333](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/engine.rs#L302-L333) |
+| Missing fact → `false` | A condition on an unpopulated fact never matches | [engine.rs:408-419](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/engine.rs#L408-L419) |
 
 `unknown_fact_reference_does_not_match` proves that a `sql.verb == 'DROP'` rule, evaluated when
 no `sql` fact is present, falls through to the egress default rather than erroring open
-([engine.rs:661-669](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/engine.rs#L661-L669)).
+([engine.rs:807-815](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/engine.rs#L807-L815)).
 
 ## Worked example: end-to-end
 
 The test `protocol_facts_drive_policy_end_to_end` exercises the whole path — raw bytes →
 parser → `decide()` — against a multi-rule policy
-([engine.rs:671-742](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/engine.rs#L671-L742)):
+([engine.rs:817-868](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/engine.rs#L817-L868)):
 
 | Input | Endpoint | Parsed facts | Verdict | Why |
 |-------|----------|--------------|---------|-----|
@@ -210,7 +216,7 @@ parser → `decide()` — against a multi-rule policy
 A companion test, `shipped_example_policy_fires`, loads the **real** `policies/agent.yaml` via
 `include_str!` and asserts its rules still fire for the facts the parsers emit — guarding the
 shipped policy against parser/condition drift
-([engine.rs:1020-1044](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/engine.rs#L1020-L1044)).
+([engine.rs:1166-1190](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/engine.rs#L1166-L1190)).
 
 ## Error handling
 

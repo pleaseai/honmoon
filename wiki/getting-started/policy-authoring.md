@@ -281,7 +281,7 @@ http.method == 'POST' && http.body_size > 10485760
 Honmoon is designed to **fail closed**: a rule whose condition fails to compile, or references a
 fact that has not been populated, simply **does not match** — it can never turn a `deny` into an
 `allow`. Combined with the `deny`-by-default egress verdict, an absent or broken rule is always
-the safe outcome ([engine.rs:51-53](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/engine.rs#L51-L53), [engine.rs:288-313](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/engine.rs#L288-L313)).
+the safe outcome ([engine.rs:51-53](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/engine.rs#L51-L53), [engine.rs:302-333](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/engine.rs#L302-L333)).
 
 Read "fails to compile" there literally: the CEL compiler **returns an error**, Honmoon logs a
 warning naming the rule, and the rule goes inert. It cannot match, so the `deny`-by-default egress
@@ -289,7 +289,7 @@ verdict answers instead.
 
 Conditions are compiled when the policy is **loaded**, not on each request, so that warning reaches
 your log at startup — you do not have to wait for a request that would have matched the rule to
-find out it never will ([lib.rs:205-225](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/lib.rs#L205-L225)).
+find out it never will ([lib.rs:206-226](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/lib.rs#L206-L226)).
 A policy carrying such a rule still loads; see the second bullet below.
 
 This used to carry an exception worth knowing about. On the previous CEL crate a whole class of
@@ -331,14 +331,14 @@ sequenceDiagram
     R-->>E: match → return rule.verdict
   end
 ```
-<!-- Sources: crates/honmoon-core/src/lib.rs:205-225, crates/honmoon-core/src/engine.rs:249-313, crates/honmoon-core/src/engine.rs:320-361 -->
+<!-- Sources: crates/honmoon-core/src/lib.rs:206-226, crates/honmoon-core/src/engine.rs:283-333, crates/honmoon-core/src/engine.rs:375-421 -->
 
 This behavior is locked by tests: `unknown_fact_reference_does_not_match` proves a condition
 referencing an unpopulated `sql` fact falls through to the egress default
-([engine.rs:661-669](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/engine.rs#L661-L669)), and
+([engine.rs:807-815](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/engine.rs#L807-L815)), and
 `a_condition_that_does_not_compile_still_loads_and_only_its_own_rule_goes_inert` proves a policy
 carrying `"&&"` loads, denies, and leaves the rule below it deciding
-([engine.rs:631-650](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/engine.rs#L631-L650)).
+([engine.rs:777-796](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/engine.rs#L777-L796)).
 
 ## Validating a policy
 

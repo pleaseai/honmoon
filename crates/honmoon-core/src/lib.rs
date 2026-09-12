@@ -68,12 +68,13 @@ pub struct Policy {
     /// [`Policy::from_yaml`] and carried so [`decide`] evaluates rather than
     /// compiles.
     ///
-    /// Private, and there is no way to set it: it is an optimization the engine
-    /// owns, and a `Policy` that does not have one (built in code, or
-    /// deserialized straight through `serde`) simply compiles at evaluation
-    /// time as before. See [`engine::CompiledConditions`] for why keying it by
-    /// the condition text is what keeps a reassigned
-    /// [`Rule::condition`] from being answered with a stale program.
+    /// Private, so no caller outside this crate can set or observe it: it is an
+    /// optimization the engine owns, and a `Policy` that does not have one
+    /// (built in code, or deserialized straight through `serde`) simply
+    /// compiles at evaluation time as before. Nothing breaks if it is wrong or
+    /// absent — see [`engine::CompiledConditions`] for why keying it by the
+    /// condition text is what keeps a reassigned [`Rule::condition`] from being
+    /// answered with a stale program.
     #[serde(skip)]
     compiled: engine::CompiledConditions,
 }
