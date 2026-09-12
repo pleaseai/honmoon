@@ -525,13 +525,16 @@ struct Degradation<'a> {
 /// with the key the engine is about to mint placeholders with".
 ///
 /// Which degradation it is comes off `rule`, the discriminator every other audit
-/// event already carries: [`HOOK_SALT_FALLBACK_RULE`] for a key that is not the
+/// event already carries. The three this function can return are the three about
+/// the key in use: [`HOOK_SALT_FALLBACK_RULE`] for a key that is not the
 /// persisted one, [`HOOK_SALT_EXPOSED_RULE`] for a persisted key whose file is
 /// readable beyond its owner, [`HOOK_SALT_WAS_EXPOSED_RULE`] for one whose file
-/// was and no longer is. On the fallback rule `key_source` then says which
-/// guarantee was lost — unforgeability under [`MachineKeySource::Fallback`],
-/// byte-stability under [`MachineKeySource::Unpersisted`]. On both exposure rules
-/// it stays `persisted`, because that is what the key is.
+/// was and no longer is. ([`HOOK_SALT_REPLACED_UNREAD_RULE`] is the fourth and is
+/// not one of them — it is about a key that is gone, and [`degradations`] adds
+/// it.) On the fallback rule `key_source` then says which guarantee was lost —
+/// unforgeability under [`MachineKeySource::Fallback`], byte-stability under
+/// [`MachineKeySource::Unpersisted`]. On both exposure rules it stays
+/// `persisted`, because that is what the key is.
 fn key_in_use_degradation(status: &MachineKeyStatus) -> Option<Degradation<'_>> {
     let (key_source, rule, reason) = match (&status.source, &status.exposure) {
         (MachineKeySource::Persisted, None) => return None,
@@ -625,10 +628,14 @@ fn key_source_label(source: honmoon_core::RedactionKeySource) -> &'static str {
 /// event already carries: [`HOOK_SALT_FALLBACK_RULE`] for a key that is not the
 /// persisted one, [`HOOK_SALT_EXPOSED_RULE`] for a persisted key whose file is
 /// readable beyond its owner, [`HOOK_SALT_WAS_EXPOSED_RULE`] for one whose file
-/// was and no longer is. On the fallback rule `key_source` then says which
-/// guarantee was lost — unforgeability under [`MachineKeySource::Fallback`],
-/// byte-stability under [`MachineKeySource::Unpersisted`]. On both exposure rules
-/// it stays `persisted`, because that is what the key is.
+/// was and no longer is, [`HOOK_SALT_REPLACED_UNREAD_RULE`] for a key that
+/// replaced a salt file the loader could not read. On the fallback rule
+/// `key_source` then says which guarantee was lost — unforgeability under
+/// [`MachineKeySource::Fallback`], byte-stability under
+/// [`MachineKeySource::Unpersisted`]. On the other three it stays `persisted`,
+/// because that is what the key in use is; on the replaced-unread rule that is
+/// also why `rule` has to be read before `reason`, which is about a different
+/// key.
 ///
 /// The audit log is the one channel in this system a human reviews after the
 /// fact — a JSONL file the query API and the dashboard read — which is what the

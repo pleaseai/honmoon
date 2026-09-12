@@ -106,6 +106,13 @@ export interface K8sFacts {
  * exposure rules the provenance is genuinely fine. (Not on `hook-salt-fallback`,
  * where the provenance is exactly what is broken: `key_source` there is
  * `unpersisted` or `fallback`, never `persisted`.)
+ *
+ * A fourth rule is not about the key in use at all: `hook-salt-replaced-unread`
+ * says the loader overwrote a salt file it could not read, so what it discarded
+ * — and whether any invocation had been adopting it as a key — is unknown. Its
+ * `key_source` is `persisted` because that is the key that landed, so read
+ * `rule` before `reason` here: the reason describes the file that was replaced,
+ * not the key the rest of the record is about.
  */
 export interface RedactionFacts {
   /**
@@ -115,7 +122,9 @@ export interface RedactionFacts {
    * unforgeability is gone rather than weakened. `persisted` appears on the
    * `hook-salt-exposed` and `hook-salt-was-exposed` rules, where the bytes came
    * from the salt file as usual but that file is — or was, until the loader
-   * tightened it — readable by other local users.
+   * tightened it — readable by other local users, and on
+   * `hook-salt-replaced-unread`, where the bytes are a fresh secret and the
+   * event is about the file they replaced.
    */
   key_source: 'persisted' | 'unpersisted' | 'fallback'
   /**
@@ -127,7 +136,10 @@ export interface RedactionFacts {
    * What the loader observed, in its own words: why the persisted key was
    * unavailable, or the modes it saw on a salt file readable beyond its owner —
    * the one it was left with under `hook-salt-exposed`, the one it was found with
-   * under `hook-salt-was-exposed`.
+   * under `hook-salt-was-exposed`. Under `hook-salt-replaced-unread` it describes
+   * a different file from the key in use: the one the loader replaced without
+   * reading, the error that stopped it reading, and the mode that file carried
+   * when it went.
    *
    * **Deliberately untrimmed** (issue #162), so it may carry a local path and a
    * raw OS error. For the `honmoon hook` transport this record is the only
