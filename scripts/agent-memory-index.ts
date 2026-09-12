@@ -74,356 +74,6 @@ export interface NoteEntry {
 
 const FRONTMATTER = /^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/
 
-// Three parts, each load-bearing and none obvious:
-//   - the leading `([ \t]*)` is the line's own indentation, not padding to
-//     discard: `parseFrontmatter` below compares it against the first key it
-//     saw, so a mapping indented as a whole still reads as the root one while a
-//     deeper `metadata:` member does not.
-//   - the `?` on the value group is what makes a bare `metadata:` capture
-//     `undefined` instead of `''`, which is how `parseFrontmatter` tells a
-//     nested-mapping opener apart from a scalar whose value is empty. Verified:
-//     with `(.*)` the group captures `''` for `metadata:` and the distinction
-//     is gone.
-//   - the value starts at `[^ \t]` rather than `\S` so that the class stays
-//     disjoint from the `[ \t]*` before it — the two cannot match the same
-//     character, so the match stays linear (eslint
-//     `regexp/no-super-linear-backtracking`) — *without* excluding the
-//     characters `\s` holds and YAML does not treat as space. `\S` rejected a
-//     value opening on a no-break space, which dropped the description
-//     entirely. It does not affect what is captured: `[ \t]*` is greedy, so
-//     the group captures the same text `(.*)?` would.
-const TOP_LEVEL_KEY = /^([ \t]*)([a-z][\w-]*):[ \t]*([^ \t][^\r\n]*)?$/i
-
-/**
- * The two line terminators JavaScript has and YAML does not.
- *
- * `.` never matches `U+2028` or `U+2029`, so a value holding one stopped the
- * key pattern dead and the description did not drift — it vanished, with
- * nothing reported. Both readers treat them as ordinary characters, which is
- * why the value group spells its own class rather than using `.`: this is the
- * only place the two definitions of "a line" disagree, and a description is
- * one line by construction here.
- *
- * Unquoted they are a different answer, and that one *is* a disagreement:
- * pyyaml refuses the document, Bun.YAML reads it.
- */
-const PLAIN_LINE_SEPARATOR = /[\u2028\u2029]/
-
-/**
- * The separators YAML actually pads a scalar with, for trimming a value's edges.
- *
- * `String.prototype.trim` uses JavaScript's whitespace class, which holds the
- * no-break space: trimming with it ate one off either edge of a description,
- * and the value is content, not padding. Only a space and a tab separate a
- * scalar from its key in YAML, so only those come off.
- */
-const YAML_PADDING = /^[ \t]+|[ \t]+$/g
-
-/**
- * The first character YAML's own character set excludes, if the text holds one.
- *
- * A transcription of the spec's `c-printable` production, negated. pyyaml
- * refuses these in its *reader*, before a parse begins, so one anywhere in the
- * frontmatter makes the note unloadable to every YAML tool — quoting does not
- * rescue it — while the index published the character verbatim. The escaped
- * form (`"before\0after"`) is a different thing and stays legal.
- *
- * Written as codepoint arithmetic rather than a character class because a
- * regular expression spelling the C0 controls is what `no-control-regex`
- * exists to catch, and this file would be the repository's first
- * `eslint-disable`. Iterating the string yields whole codepoints, so an
- * astral character is one character here and not two halves.
- */
-function forbiddenCharacter(text: string): string | undefined {
-  return [...text].find((character) => {
-    const point = character.codePointAt(0) ?? 0
-    return !(point === 0x09 || point === 0x0A || point === 0x0D
-      || (point >= 0x20 && point <= 0x7E)
-      || point === 0x85
-      || (point >= 0xA0 && point <= 0xD7FF)
-      || (point >= 0xE000 && point <= 0xFFFD)
-      || point >= 0x10000)
-  })
-}
-
-/**
- * A line with YAML's own padding taken off either end.
- *
- * `String.prototype.trim` uses JavaScript's whitespace class, which holds the
- * no-break space — a character YAML pads with nothing and treats as content.
- */
-function yamlTrim(line: string): string {
-  return line.replace(YAML_PADDING, '')
-}
-
-/**
- * How wide a line's leading whitespace prefix is, in characters.
- *
- * `trimStart` would count a leading no-break space here too, and in a
- * frontmatter value that is the value's own first character.
- */
-function prefixWidth(line: string): number {
-  return line.length - line.replace(/^[ \t]+/, '').length
-}
-
-/**
- * How far a line is *indented*, which is not the same measurement.
- *
- * Only a space indents in YAML, so indentation stops at the first tab: under a
- * mapping indented by two, `  \ttext` is indented by two, and the tab cannot
- * make up the difference a block scalar's content owes its parent — pyyaml
- * refuses that document. One space further in the debt is already paid, and
- * the tab is content.
- */
-function indentColumns(line: string): number {
-  return /^ */.exec(line)?.[0].length ?? 0
-}
-
-/**
- * Whether a line could be a mapping key at all — a colon with a space or the
- * line end after it.
- *
- * Deliberately looser than `TOP_LEVEL_KEY`, which matches only the two keys
- * this index reads. YAML admits far more (`foo.bar:`, `2fa:`, `"odd key":`),
- * and the unkeyed-line check has no business deciding what a key looks like:
- * reporting those failed CI for notes that load perfectly well. It only names
- * a line that cannot be a key under any spelling.
- */
-const COULD_BE_KEY = /:(?:[ \t]|$)/
-
-/**
- * A YAML block-scalar header — `>` or `|`, with an optional explicit indent
- * (a single digit) and chomping indicator (`+`/`-`) in **either** order, which
- * is what the YAML block-header production allows: `>-`, `|+`, `>2`, `|2-`,
- * `>+2` are all legal.
- *
- * The value is carried by the indented lines that follow, so the header itself
- * must not become the value: `description: >` would otherwise index as the
- * literal `>` with the real text folded onto it. A header may carry a trailing
- * comment, the same allowance the quoted forms get — and for the same reason,
- * that failing to recognise the header does not fail loudly, it indexes the
- * header text as though the note had written it.
- */
-const BLOCK_SCALAR = /^[|>](?:([1-9])[+-]?|[+-]([1-9])?)?(?:[ \t]+(?:#.*)?)?$/
-
-/**
- * The YAML double-quoted escapes that stand for one character.
- *
- * Unescaping only `\"` and `\\` is not enough: in a double-quoted scalar every
- * one of these is the character, not the two letters, so leaving them alone
- * puts a literal `\n` in the index where the note said a space.
- */
-const DOUBLE_QUOTED_ESCAPES: Record<string, string> = {
-  '0': '\0',
-  'a': '\x07',
-  'b': '\b',
-  't': '\t',
-  'n': '\n',
-  'v': '\v',
-  'f': '\f',
-  'r': '\r',
-  'e': '\x1B',
-  ' ': ' ',
-  '"': '"',
-  '/': '/',
-  '\\': '\\',
-  'N': '\x85',
-  '_': '\xA0',
-  'L': '\u2028',
-  'P': '\u2029',
-}
-
-/**
- * Resolve the escape sequences of a YAML double-quoted scalar's body.
- *
- * An escape this cannot resolve is reported through `onInvalid` rather than
- * quietly kept as its two literal characters. The text is kept either way — a
- * guess would be worse — but the note has to be flagged, because a description
- * whose YAML is invalid is one where this reader and the reader that loads the
- * note into an agent's context can disagree. Two readers disagreeing about one
- * claim is the drift this index was derived to remove; it cannot be allowed
- * back in through the parser.
- */
-/**
- * The one problem `unquote` reports about a scalar's *contents* rather than its
- * shape. Every reporter below hands back a complete predicate — "is …", "opens
- * with …", "starts with …" — because a caller that has only a bare token left
- * has to guess a clause to wrap it in, and the guess was wrong for three of the
- * four reporters: an unterminated `'…` and a plain `&anchor` were both
- * announced as double-quoted, each with a whole report nested inside another.
- */
-function undefinedEscape(escape: string): string {
-  return `is double-quoted and holds \`${escape}\`, which YAML does not define — this reader keeps it literally, the reader that loads the note may not`
-}
-
-function unescapeDoubleQuoted(body: string, onInvalid: (problem: string) => void): string {
-  return body.replace(
-    /\\(x[0-9A-Fa-f]{2}|u[0-9A-Fa-f]{4}|U[0-9A-Fa-f]{8}|[\s\S])/g,
-    (match, escape: string) => {
-      if (escape.length > 1) {
-        // `\U` admits eight digits, which reach far past the last code point,
-        // and `String.fromCodePoint` throws on those. A malformed note has to
-        // come back as a reported problem, never as a crash that takes the
-        // whole run — and every other note with it — down with it.
-        const codePoint = Number.parseInt(escape.slice(1), 16)
-        if (codePoint > 0x10FFFF) {
-          onInvalid(undefinedEscape(match))
-          return match
-        }
-        // Every surrogate is *under* that ceiling, so the range check above
-        // waves them through — and `String.fromCodePoint` does not throw on
-        // one, it returns a lone surrogate. That is not a character: it cannot
-        // be encoded as UTF-8, so writing it to the index yields a replacement
-        // character, and Bun.YAML rejects the escape outright.
-        if (codePoint >= 0xD800 && codePoint <= 0xDFFF) {
-          onInvalid(`is double-quoted and holds \`${match}\`, which names a surrogate code point rather than a character — YAML does not admit one, and it cannot be written to the index`)
-          return match
-        }
-        return String.fromCodePoint(codePoint)
-      }
-
-      const resolved = DOUBLE_QUOTED_ESCAPES[escape]
-      if (resolved === undefined) {
-        onInvalid(undefinedEscape(match))
-        return match
-      }
-      return resolved
-    },
-  )
-}
-
-/**
- * Strip one layer of YAML quoting from a scalar.
- *
- * The memory tool writes plain scalars, but a `description:` containing `": "`
- * has to be quoted to stay valid YAML, so both forms must round-trip.
- */
-/**
- * YAML 1.1's `int` and `float` resolvers, transcribed from its type registry.
- *
- * They are wider than 1.2's core schema in two ways worth naming: every digit
- * run admits `_` as a separator, and a colon-separated value is base 60. So a
- * 1.1 reader makes `1_000` the number 1000 and `12:00` the number 720 where a
- * 1.2 one leaves both as text — the same disagreement `1e3` has, in the other
- * direction, and the same reason to report rather than pick a side.
- */
-const YAML_11_INT = String.raw`[-+]?0b[01_]+|[-+]?0[0-7_]+|[-+]?(?:0|[1-9][\d_]*)|[-+]?0x[\da-f_]+|[-+]?[1-9][\d_]*(?::[0-5]?\d)+`
-const YAML_11_FLOAT = String.raw`[-+]?\d[\d_]*\.[\d_]*(?:e[-+]\d+)?|\.\d[\d_]*(?:e[-+]\d+)?|[-+]?\d[\d_]*(?::[0-5]?\d)+\.[\d_]*|[-+]?\.(?:inf|nan)`
-
-/**
- * YAML 1.1's `timestamp` resolver, which 1.2's core schema does not carry.
- *
- * A description that is a bare date is a `Date` to a 1.1 reader and text to a
- * 1.2 one, so it is ambiguous for the same reason the numbers above are.
- */
-const YAML_11_TIMESTAMP = String.raw`\d{4}-\d{2}-\d{2}|\d{4}-\d{1,2}-\d{1,2}(?:t|[ \t]+)\d{1,2}:\d{2}:\d{2}(?:\.\d*)?(?:[ \t]*(?:z|[-+]\d{1,2}(?::\d{2})?))?`
-
-/**
- * The numbers 1.2's core schema resolves and 1.1 does not: an exponent needs
- * neither a fraction nor a signed power, a leading zero does not mean octal,
- * and octal is written with an `0o` prefix instead.
- */
-const YAML_12_NUMBER = String.raw`[-+]?0o[0-7]+|[-+]?\d+(?:\.\d*)?(?:e[-+]?\d+)?|[-+]?\.\d+(?:e[-+]?\d+)?`
-
-/**
- * A plain scalar YAML resolves to something that is not a string.
- *
- * `description: null` is not the word "null", it is the *absence* of a value,
- * and `true` and `42` are a boolean and an integer. Storing the source spelling
- * made a note with no summary advertise `null` as its summary. Only a whole
- * value matches — a description reading `42 ways to fail` is text and stays
- * text — and only a plain one, since `"null"` is genuinely the string.
- */
-const NON_STRING_SCALAR = new RegExp(`^(?:${[
-  // `y` and `n` are in YAML 1.1's `bool` type alongside `yes`/`no`/`on`/`off`,
-  // though neither pyyaml nor Bun.YAML resolves them — pyyaml documents the
-  // deviation. Listed anyway, because the two costs are not symmetric: naming
-  // one reports a description that is the single letter `y`, which no summary
-  // is, while omitting one ships an index line the note's frontmatter does not
-  // yield to a reader that follows the type.
-  String.raw`[~yn]|null|true|false|yes|no|on|off`,
-  YAML_11_INT,
-  YAML_11_FLOAT,
-  YAML_12_NUMBER,
-  YAML_11_TIMESTAMP,
-].join('|')})$`, 'i')
-
-/** A leading YAML node indicator, which makes the rest a decoration, not text. */
-const NODE_INDICATOR = /^([&*!@`%,\]}]|[?-](?=[ \t]|$))/
-const INDICATOR_NAMES: Record<string, string> = {
-  '&': 'anchor',
-  '*': 'alias',
-  '!': 'tag',
-  // Only when a space or the line end follows: `-5` is a number and `-summary`
-  // is a word, while `- summary` opens a sequence entry and `? summary` a
-  // mapping key — neither of which a value may be.
-  '?': 'mapping key',
-  '-': 'sequence entry',
-  // Reserved: YAML gives `@` and a backtick no meaning at the head of a scalar
-  // and refuses the document rather than guessing one. Only at the head, so
-  // `mail me @ home` is untouched.
-  '@': 'reserved indicator',
-  '`': 'reserved indicator',
-  // `%` opens a directive, and these close a flow collection that was never
-  // opened. Head-only, so `50% faster` and `a, b` are ordinary text.
-  '%': 'directive indicator',
-  ',': 'flow separator',
-  ']': 'flow sequence end',
-  '}': 'flow mapping end',
-}
-
-/**
- * A whole double- or single-quoted scalar, with the body captured.
- *
- * Matched as a unit rather than tested with `startsWith`/`endsWith`, which
- * cannot see either end of the interesting cases: `"unfinished \"` *ends* with
- * a quote that is escaped and therefore closes nothing, while a valid
- * `"text" # note` does not end with one at all. Consuming the body as "not the
- * quote, or an escape and whatever it escapes" settles both, and the trailing
- * group is YAML's inline comment — which is only a comment out here, never
- * inside the quotes, where these descriptions keep their issue references.
- */
-const DOUBLE_QUOTED = /^"((?:[^"\\]|\\[\s\S])*)"(?:[ \t]+#.*)?$/
-const SINGLE_QUOTED = /^'((?:[^']|'')*)'(?:[ \t]+#.*)?$/
-
-function unquote(value: string, onInvalid: (problem: string) => void): string {
-  // A plain scalar cannot begin with a quote, so one that does is a quoted
-  // scalar, and one that does not parse as a whole quoted scalar is a note
-  // whose YAML does not load. Returning it raw would list it as though it were
-  // fine.
-  if (value.startsWith('"')) {
-    const body = DOUBLE_QUOTED.exec(value)?.[1]
-    if (body === undefined) {
-      onInvalid('opens with " and never closes it, so the frontmatter is not valid YAML')
-      return value
-    }
-    return unescapeDoubleQuoted(body, onInvalid)
-  }
-
-  if (value.startsWith('\'')) {
-    const body = SINGLE_QUOTED.exec(value)?.[1]
-    if (body === undefined) {
-      onInvalid('opens with \' and never closes it, so the frontmatter is not valid YAML')
-      return value
-    }
-    return body.replace(/''/g, '\'')
-  }
-
-  // `&`, `*` and `!` are node indicators, not text: a plain scalar cannot begin
-  // with one, so a value that does is an anchor, an alias or a tag. Keeping the
-  // decoration as the index text would put `&summary concrete summary` in the
-  // index where the note's value is `concrete summary`, and an alias cannot be
-  // resolved here at all without carrying an anchor table — which is a YAML
-  // parser, and this deliberately is not one. Reported rather than guessed at.
-  const indicator = NODE_INDICATOR.exec(value)?.[1]
-  if (indicator !== undefined) {
-    onInvalid(`starts with the YAML ${INDICATOR_NAMES[indicator]} indicator \`${indicator}\`, which this reader does not resolve — write the value as a plain, quoted or block scalar`)
-    return value
-  }
-
-  return value
-}
-
 /**
  * Whitespace that would break the index's single line, or pad its edges.
  *
@@ -446,13 +96,468 @@ export interface Frontmatter {
 }
 
 /**
+ * The first character YAML's own character set excludes, if the text holds one.
+ *
+ * A transcription of the spec's `c-printable` production, negated, and the one
+ * piece of YAML written out here rather than asked of the parser — because
+ * `Bun.YAML` does not implement this production. Measured on Bun 1.4.2: of
+ * U+0000, U+0001, U+0008, U+001F, U+007F, U+0080, U+009F it refuses only
+ * U+0000 and reads the rest through into the value, where they would be
+ * written verbatim into a generated markdown index.
+ *
+ * That is worth keeping a rule for, and it is not the kind of rule this file
+ * stopped keeping: it is a closed set of code points, not a judgement about
+ * what a scalar's *source* looked like, so it needs nothing the parser knows
+ * and cannot be widened by the next shape of YAML anyone writes. A stricter
+ * reader refuses these in its *reader*, before a parse begins, so one anywhere
+ * in the frontmatter makes the note unloadable — quoting does not rescue it.
+ * The escaped form (`"before\0after"`) is a different thing and stays legal.
+ *
+ * Written as codepoint arithmetic rather than a character class because a
+ * regular expression spelling the C0 controls is what `no-control-regex`
+ * exists to catch, and this file would be the repository's first
+ * `eslint-disable`. Iterating the string yields whole codepoints, so an
+ * astral character is one character here and not two halves.
+ */
+function forbiddenCharacter(text: string): string | undefined {
+  return [...text].find((character) => {
+    const point = character.codePointAt(0) ?? 0
+    return !(point === 0x09 || point === 0x0A || point === 0x0D
+      || (point >= 0x20 && point <= 0x7E)
+      || point === 0x85
+      || (point >= 0xA0 && point <= 0xD7FF)
+      || (point >= 0xE000 && point <= 0xFFFD)
+      || point >= 0x10000)
+  })
+}
+
+/** A YAML mapping, which is the only shape a frontmatter block may have. */
+type Mapping = Record<string, unknown>
+
+/**
+ * Whether a parsed document is a mapping this reader can take keys from.
+ *
+ * A sequence is the only other object `Bun.YAML` builds. It resolves no scalar
+ * to a `Date` — a bare `2026-09-13`, an ISO datetime and an explicit
+ * `!!timestamp` tag all come back as text, because YAML 1.2's core schema has
+ * no timestamp type — so there is no third object shape to exclude here.
+ */
+function isMapping(value: unknown): value is Mapping {
+  return typeof value === 'object'
+    && value !== null
+    && !Array.isArray(value)
+}
+
+/** A parsed document, or the reason the parser refused it. */
+type Read = { document: unknown } | { reason: string }
+
+/**
+ * `Bun.YAML.parse`, with a throw turned into a reason.
+ *
+ * Every malformed note has to come back as a *reported problem*: this script
+ * rebuilds every agent's index in one pass, so an uncaught throw would take
+ * every other note's index down with the one bad note (#156 fixed exactly that
+ * failure mode once already, for a different cause).
+ */
+function readYaml(source: string): Read {
+  try {
+    return { document: Bun.YAML.parse(source) }
+  }
+  catch (error) {
+    return { reason: error instanceof Error ? error.message : String(error) }
+  }
+}
+
+/**
+ * The frontmatter line at which the document stops being readable.
+ *
+ * `Bun.YAML`'s `SyntaxError` carries no position — its `line`/`column` point at
+ * the `parse` call site in this file, not into the YAML — and "not valid YAML"
+ * with no location is not an actionable report for someone holding a twenty
+ * line frontmatter block. The location is recovered from the parser instead of
+ * guessed at: the longest prefix of lines that still reads is the last line
+ * that can be right, so the line after it is where the reader gave up.
+ *
+ * The *longest* readable prefix, not the first unreadable one. A quoted scalar
+ * that wraps makes its own opening line unreadable on its own (`description: "a`
+ * closes nothing yet) and readable again once the closing line arrives, so the
+ * first prefix that throws is routinely a line with nothing wrong with it.
+ *
+ * One parse per line over a block whose own length grows with the line count is
+ * quadratic work, so the scan is bounded. Every committed note's frontmatter is
+ * five or six lines and no note has a reason to be longer, but nothing in the
+ * format stops one — a body pasted inside the fence would reach here on a path
+ * that runs in CI, in `mise run install` and in every new worktree's setup.
+ * Past the bound the block goes unlocated rather than slow: a note that large
+ * is malformed in a way its author can see without a line number.
+ */
+const LOCATABLE_LINES = 200
+
+function failingLine(lines: string[]): { number: number, text: string } | undefined {
+  if (lines.length > LOCATABLE_LINES) {
+    return undefined
+  }
+  let readable = 0
+  for (let count = 1; count <= lines.length; count++) {
+    if (!('reason' in readYaml(lines.slice(0, count).join('\n')))) {
+      readable = count
+    }
+  }
+  const line = lines[readable]
+  // Only the trailing edge is trimmed. A line's *leading* whitespace is often
+  // the defect being reported — a tab where indentation goes, a block scalar's
+  // content one column short — so trimming it away would hide the thing the
+  // reader is being pointed at.
+  return line === undefined ? undefined : { number: readable + 1, text: line.replace(/\s+$/, '') }
+}
+
+/**
+ * Two characters the note does not already use, to stand in for the ones a
+ * comment probe masks.
+ *
+ * Private-use code points: YAML admits them as ordinary characters, and nothing
+ * a note is written in resolves to one. They are *found* rather than fixed,
+ * because a fixed pair only holds while no note contains it — a note that did
+ * would have turned the probe off, and turning a check off on the strength of
+ * the note's own content is how a reader stops reading. There are 6400 of them
+ * and two are needed, so a note has to carry 6399 distinct ones to run this out.
+ *
+ * Both the source *and* what it resolves to are searched, because those differ:
+ * `description: "quoted \\uE000 # still text"` holds no private-use character as
+ * text, and holds one after the parser decodes the escape. Searching the source
+ * alone picks U+E000, the restore step then rewrites the note's own character
+ * along with the mask, and a correctly quoted value is reported as cut. The
+ * comparison is against resolved values, so that is where the stand-ins have to
+ * be absent from.
+ */
+const PRIVATE_USE_FIRST = 0xE000
+const PRIVATE_USE_LAST = 0xF8FF
+
+function probeCharacters(source: string, mapping: Mapping): [string, string] | undefined {
+  const resolved = Object.values(mapping).filter(value => typeof value === 'string').join('')
+  let first: string | undefined
+  for (let point = PRIVATE_USE_FIRST; point <= PRIVATE_USE_LAST; point++) {
+    const character = String.fromCodePoint(point)
+    if (source.includes(character) || resolved.includes(character)) {
+      continue
+    }
+    if (first === undefined) {
+      first = character
+      continue
+    }
+    return [first, character]
+  }
+  return undefined
+}
+
+/**
+ * A mapping key the note does not already carry, to rename one occurrence of a
+ * key to while the parser is asked whether that key was written twice. Suffixed
+ * until it is absent, for the same reason the probe characters are searched
+ * for: a name that collides must not read as "nothing to check here".
+ *
+ * Absent from the *resolved keys* as well as the source text, and for the same
+ * reason the mask characters are: those differ. A note can spell a top-level
+ * key `"agent-memory-index-duplicate-probe":`, which no `source.includes`
+ * sees and which the parser resolves to the probe name. The test after the
+ * rename is `key in probed.document`, and that only means "the rename put it
+ * there" while the note did not have it already — otherwise a nomination that
+ * lands in a block scalar or a nested mapping, creating no root key at all,
+ * still reads as one, and valid frontmatter is rejected as a duplicate.
+ */
+function probeKey(source: string, mapping: Mapping): string {
+  let key = 'agent-memory-index-duplicate-probe'
+  for (let suffix = 0; source.includes(key) || key in mapping; suffix++) {
+    key = `agent-memory-index-duplicate-probe-${suffix}`
+  }
+  return key
+}
+
+/**
+ * Offsets of every `#` in `source` that could open a comment mid-line.
+ *
+ * YAML starts a comment at a `#` that follows a space or a tab. Two are left
+ * out, because neither can cut text out of a value and masking either changes
+ * what the document *is*:
+ *
+ *   - a `#` with no separator in front of it (`covers (#154) fully`) is
+ *     ordinary text to every reader;
+ *   - a `#` that is the first thing on its line is a whole-line comment, and
+ *     turning one into content puts a bare scalar where the reader expects a
+ *     key — the probe would fail to parse rather than answer anything.
+ */
+function* inlineHashes(source: string): Generator<number> {
+  let lineStart = 0
+  for (let offset = 0; offset < source.length; offset++) {
+    const character = source[offset]
+    if (character === '\n' || character === '\r') {
+      lineStart = offset + 1
+      continue
+    }
+    if (character !== '#') {
+      continue
+    }
+    const before = source.slice(lineStart, offset)
+    // Ends with a separator, so the `#` opens a comment; and holds something
+    // that is not one, so the comment does not start the line.
+    if (/[ \t]$/.test(before) && /[^ \t]/.test(before)) {
+      yield offset
+    }
+  }
+}
+
+/**
+ * A copy of `source` in which the `#` at `offset` no longer opens a comment.
+ *
+ * The `#` is not the only thing that has to change. Everything after it was
+ * comment text, written under no grammar at all, and once the `#` stops hiding
+ * it the parser reads it as YAML — so a comment holding `: ` (`description:
+ * fixed in PR #155: see docs`) turns the line into an attempted nested mapping
+ * and the probe fails to parse. That failure is indistinguishable from the one
+ * a probe is *supposed* to skip, so the probe would answer "nothing to see" for
+ * exactly the value it was asked about. Masking the line's remaining `:` as
+ * well leaves it a plain scalar; both stand-ins are put back before the
+ * comparison, so the value being compared is the note's own text.
+ */
+function maskComment(source: string, offset: number, hash: string, colon: string): string {
+  const rest = source.slice(offset).search(/[\r\n]/)
+  const stop = rest === -1 ? source.length : offset + rest
+  const masked = source.slice(offset, stop).replaceAll('#', hash).replaceAll(':', colon)
+  return `${source.slice(0, offset)}${masked}${source.slice(stop)}`
+}
+
+/**
+ * Report an indexed value whose text YAML cut at a comment.
+ *
+ * The commonest thing a YAML reader does *silently* to a scalar, and the defect
+ * that forced 36 of the committed notes to be quoted (#156): the author writes
+ * `description: fixed in PR #155, so do X` and every reader resolves
+ * `fixed in PR`, so the index would advertise a summary that stops mid-sentence
+ * and nothing would say why.
+ *
+ * Asked of the parser rather than decided here. Masking one `#` and reading the
+ * document again says exactly what that `#` hid — no rule about which scalars
+ * are plain, which is the enumeration this file was rewritten to stop keeping:
+ * a `#` inside quotes or block content comes back in the same place and the
+ * values match, while one that opened a comment comes back with the rest of the
+ * line attached.
+ *
+ * One `#` at a time, so a probe the parser still refuses costs only that one
+ * `#`. Every refusal left is a comment following a **closed node** — a quoted
+ * scalar (`description: "text" # note`) or a flow collection
+ * (`description: [a, b] # note`) — where unmasking puts content where a key
+ * belongs. That is the one class where the skip costs nothing: the node ended
+ * before the `#`, so no comment cut it. A quoted scalar comes back whole, and a
+ * flow collection is not text at all and is reported as such by the caller.
+ * Measured over 1890 probes across the scalar and comment shapes, no other
+ * shape refuses, and an oracle over 306 plain values missed no cut.
+ */
+function commentedOut(source: string, mapping: Mapping, problems: string[]): void {
+  // Nothing to mask means nothing to answer, and a note with no inline `#` is
+  // not owed a report about the reader's ability to probe one.
+  const offsets = [...inlineHashes(source)]
+  if (offsets.length === 0) {
+    return
+  }
+  const probes = probeCharacters(source, mapping)
+  if (probes === undefined) {
+    problems.push('the frontmatter uses every private-use character, leaving this reader nothing to mask a `#` with — it cannot check whether a comment cut a value short')
+    return
+  }
+  const [hash, colon] = probes
+  const reported = new Set<string>()
+  for (const offset of offsets) {
+    if (reported.size === INDEXED_KEYS.length) {
+      return
+    }
+    const probed = readYaml(maskComment(source, offset, hash, colon))
+    if ('reason' in probed || !isMapping(probed.document)) {
+      continue
+    }
+    for (const name of INDEXED_KEYS) {
+      const resolved = mapping[name]
+      const whole = probed.document[name]
+      // Only a value that survived as text can have had text cut off it. A
+      // value the comment consumed entirely (`description: # write this later`)
+      // is null, which is the *absence* of a description — `noteEntry` reports
+      // that, and reporting it twice, once as a truncation, says the note has a
+      // summary it does not have.
+      if (reported.has(name) || typeof resolved !== 'string' || typeof whole !== 'string') {
+        continue
+      }
+      if (whole.replaceAll(hash, '#').replaceAll(colon, ':') !== resolved) {
+        reported.add(name)
+        problems.push(`\`${name}:\` is unquoted and contains \` #\`, which YAML reads as the start of a comment — quote the value so it survives`)
+      }
+    }
+  }
+}
+
+/**
+ * A quoted scalar sitting where a mapping key goes, with its quotes.
+ *
+ * Written to be *wide*: what it selects is ruled on by the parser, so a quoted
+ * value picked up by mistake costs one tiny parse and a quoted key missed costs
+ * a report.
+ *
+ * `[\s\S]` after the backslash, not `.`, because a backslash escapes the *next
+ * character* and JavaScript's `.` stops at a line terminator. A double-quoted
+ * scalar may be continued across lines by escaping the newline, and where YAML
+ * allows a multi-line key — an explicit key, or inside a flow mapping —
+ * `? "descri\<newline>  ption"` is the key `description`. Matching only up to
+ * the line end would end the token in the middle and nominate nothing.
+ */
+const QUOTED_KEY = /(['"])(?:\\[\s\S]|(?!\1)[^\\])*\1(?=[ \t\r\n]*[:\r\n])/g
+
+/**
+ * Where in the block a key is written, over every spelling of it.
+ *
+ * Three shapes reach the same mapping key and discard a repeat as silently as
+ * each other: the bare `description:`, an explicit key (`? description` over
+ * `: text`), and any quoted spelling — `"description":`, `'description':`, and
+ * `"description":`, which is the same key to a reader that decodes escapes.
+ *
+ * That last one is why the quoted spellings are not matched by name. Deciding
+ * from the source what `"description"` spells means decoding YAML escapes
+ * here, and a transcription of the escape table is the scanner this file
+ * replaced. The parser is asked instead: a quoted key token *is* a YAML
+ * document, so reading it says which key it is, and no escape rule is written
+ * here at all.
+ *
+ * Each offset carries a length because the rename replaces what was matched:
+ * the name for a bare key, the whole token — quotes and all — for a quoted one.
+ *
+ * **Where this stops, on purpose.** What is nominated is a key whose spelling is
+ * lexically *here*, at the key position. A key whose identity is defined
+ * somewhere else in the document is not: `? &k description` / `: first` over
+ * `? *k` / `: second` resolves both entries to `description` and drops `first`
+ * without a word (#205). Covering it means resolving anchors — finding anchor
+ * definitions, mapping each to the key it spells, then finding alias tokens in
+ * key position — three more source patterns, which is how the scanner this file
+ * replaced reached thirty-one review rounds.
+ *
+ * The line is drawn here rather than one spelling further along because nothing
+ * closes this set while the parser exposes no structure: `Bun.YAML` gives no
+ * CST, no token stream and no positions, so locating a key is lexical work that
+ * cannot be delegated. What *is* delegated is every semantic question — the
+ * parser says what a token spells and whether an occurrence is really a repeat.
+ * The index stays correct either way: it publishes what the parser resolved, so
+ * a missed report costs the author a warning, never the reader a wrong summary.
+ */
+function keyOccurrences(source: string, name: string): { at: number, length: number }[] {
+  // Loose on purpose: this only *nominates* offsets for the parser to rule on,
+  // so one nominated wrongly costs a probe and one missed costs a report, never
+  // a wrong one. `String.raw`, because a plain template literal decodes the
+  // `\s`/`\t` and puts the characters themselves in the pattern — which matches
+  // much the same thing but reads as an accident.
+  const bare = new RegExp(String.raw`(^|[\s{,])((?:\?[ \t]+)?)${name}[ \t]*(?=[:\r\n])`, 'g')
+  const found = [...source.matchAll(bare)].map(match => ({
+    at: match.index + match[1].length + match[2].length,
+    length: name.length,
+  }))
+  for (const match of source.matchAll(QUOTED_KEY)) {
+    const spelled = readYaml(match[0])
+    if (!('reason' in spelled) && spelled.document === name) {
+      found.push({ at: match.index, length: match[0].length })
+    }
+  }
+  return found
+}
+
+/**
+ * Report an indexed key the note gives more than once.
+ *
+ * The second silent discard. YAML requires a mapping key to be unique;
+ * Bun.YAML and pyyaml both keep the last of a repeat rather than refusing the
+ * document, so the index would not *drift* from them — but the author wrote two
+ * summaries and one disappeared without a word, and a stricter reader (js-yaml)
+ * rejects the note outright.
+ *
+ * Asked of the parser for the same reason as the comment probe: renaming one
+ * occurrence and reading the document again answers "was this key at the root
+ * twice" without this file having to decide where the root is. That decision is
+ * what round 30 of #156 got wrong — an outer key the scanner could not spell
+ * (`my.key:`) left the root indentation undecided and a nested `description:`
+ * was published as the note's own. A rename of a *nested* occurrence puts the
+ * probe key inside the nested mapping, where this test does not see it.
+ *
+ * Occurrences are nominated by offset in the block rather than by line, and
+ * across every spelling that reaches the same key — see `keyOccurrences`. Which
+ * of them is *really* a repeat is still the parser's answer, not the pattern's.
+ */
+function repeated(source: string, mapping: Mapping, problems: string[]): void {
+  const key = probeKey(source, mapping)
+  for (const name of INDEXED_KEYS) {
+    if (!(name in mapping)) {
+      continue
+    }
+    const occurrences = keyOccurrences(source, name)
+    if (occurrences.length < 2) {
+      continue
+    }
+    for (const { at, length } of occurrences) {
+      const probed = readYaml(`${source.slice(0, at)}${key}${source.slice(at + length)}`)
+      if ('reason' in probed || !isMapping(probed.document)) {
+        continue
+      }
+      if (key in probed.document && name in probed.document) {
+        problems.push(`\`${name}:\` is given more than once, and YAML requires a mapping key to be unique — keep the one that is the summary and delete the other`)
+        break
+      }
+    }
+  }
+}
+
+/** Name what YAML resolved a value to, for a note that meant it as text. */
+function describeValue(value: unknown): string {
+  if (Array.isArray(value)) {
+    return 'a sequence'
+  }
+  if (isMapping(value)) {
+    return 'a mapping'
+  }
+  // `String`, not `JSON.stringify`: `description: .inf` resolves to `Infinity`,
+  // which JSON has no spelling for and stringifies as `null` — a report naming
+  // the wrong value is worse than one naming none.
+  return `the ${typeof value} \`${String(value)}\``
+}
+
+/**
+ * Flatten a resolved value onto the one line an index entry is.
+ *
+ * Runs on what the parser returned, not on the source spelling, so it applies
+ * to every notation equally: a block scalar's trailing newline, a folded
+ * scalar's line breaks and a double-quoted `\n` all reach here as the
+ * characters they stand for. Only the one space folding can add is stripped
+ * from the edges — a no-break space at either end is the note's own character.
+ */
+function foldOntoOneLine(value: string): string {
+  return value.replace(LINE_WHITESPACE, ' ').replace(/^ | $/g, '')
+}
+
+/**
  * Read the top-level scalars out of a note's frontmatter block.
  *
- * Deliberately not a YAML parser: it needs `name` and `description` and nothing
- * else. A key whose value is empty (`metadata:`) opens a nested mapping whose
- * indented lines are skipped; a key whose value is not empty absorbs following
- * indented lines as a folded continuation, which is how a long `description:`
- * wraps.
+ * The frontmatter is read by `Bun.YAML`, a real YAML parser, rather than by a
+ * scanner written here. The scanner this replaces was eleven review rounds of
+ * an enumeration that does not terminate (#168): every round found another
+ * shape of YAML it and a real reader resolved differently, and three of the
+ * fixes moved a boundary the other rules had been written against. A parser has
+ * those interactions settled by its grammar.
+ *
+ * What a parser does *not* do is report, and reporting is the load-bearing half
+ * here — the index must not quietly advertise something other than what the
+ * note's frontmatter yields. So four things are reported rather than resolved:
+ *
+ *   - a character YAML does not admit at all, which `Bun.YAML` mostly does not
+ *     refuse (it stops only at U+0000) and would otherwise carry into the index
+ *     verbatim;
+ *   - a block the parser refuses, which is a note no reader can load;
+ *   - a value that resolves to something that is not text (`42`, `[a]`), which
+ *     is not a summary whatever it is;
+ *   - the two things YAML discards in silence — the text after an inline `#`,
+ *     and every occurrence but the last of a repeated key. Both are asked of
+ *     the parser, by reading a doctored copy of the block and comparing.
  */
 export function parseFrontmatter(text: string): Frontmatter {
   const block = FRONTMATTER.exec(text)
@@ -460,395 +565,58 @@ export function parseFrontmatter(text: string): Frontmatter {
     return { scalars: {}, problems: [] }
   }
 
+  const source = block[1]
   const problems: string[] = []
-  const scalars: Record<string, string | undefined> = {}
-  const blockScalars = new Set<string>()
-  const repeated = new Set<string>()
-  const seen = new Set<string>()
-  // An explicit indentation indicator (`|2`) is a promise the content has to
-  // keep: both readers refuse a block whose lines fall short of it.
-  const blockIndent = new Map<string, number>()
-  const underIndented = new Set<string>()
-  const tabIndented = new Set<string>()
-  const tabInPlain = new Set<string>()
-  const separatorInPlain = new Map<string, string>()
-  const closedByComment = new Set<string>()
-  const brokenByBlank = new Set<string>()
-  // A frontmatter mapping may be indented as a whole; what makes a key a *root*
-  // key is sitting at the mapping's own indentation, not at column zero.
-  // Anything deeper is nested or a continuation, which is what keeps
-  // `metadata:`'s own lines out of the top level.
-  //
-  // That indentation is the *first content line's*, not the first line that
-  // happens to look like an indexable key: an outer key `TOP_LEVEL_KEY` cannot
-  // spell — `my.key:`, whose dot puts it out of reach — would otherwise leave
-  // the root undecided until its own members matched, and the index published
-  // a nested `description:` as the note's own. Comments and document markers
-  // set no indentation in YAML, so they are passed over here too.
-  const lines = block[1].split(/\r?\n/)
-  const firstContent = lines.find((candidate) => {
-    const text = yamlTrim(candidate)
-    return text !== '' && !text.startsWith('#') && text !== '---' && text !== '...'
-  })
-  const rootIndent = firstContent === undefined ? 0 : prefixWidth(firstContent)
-  // A tab never indents in YAML — it is the one whitespace forbidden there —
-  // so a mapping indented with one is a document neither reader will load.
-  // Measuring its width, which is what made an indented root readable at all,
-  // is exactly what let this through.
-  const forbidden = forbiddenCharacter(block[1])
+
+  const forbidden = forbiddenCharacter(source)
   if (forbidden !== undefined) {
     const point = (forbidden.codePointAt(0) ?? 0).toString(16).toUpperCase().padStart(4, '0')
-    problems.push(`the frontmatter holds U+${point}, which YAML does not allow as a character — its reader refuses the note before parsing, so write the character as an escape in a double-quoted value`)
+    problems.push(`the frontmatter holds U+${point}, which YAML does not allow as a character — a reader may refuse the note over it or carry it into the index unchanged, so write it as an escape in a double-quoted value`)
   }
-  if (firstContent !== undefined && /^[ \t]*\t/.test(firstContent)) {
-    problems.push('the frontmatter mapping is indented with a tab, which YAML forbids wherever indentation goes — indent it with spaces')
+
+  const read = readYaml(source)
+  if ('reason' in read) {
+    const at = failingLine(source.split(/\r?\n/))
+    problems.push(`the frontmatter is not valid YAML — ${read.reason}${
+      at ? ` (line ${at.number}: \`${at.text}\`)` : ''}`)
+    return { scalars: {}, problems }
   }
-  const resumedAfterComment = new Set<string>()
-  const afterClose = new Set<string>()
-  const badHeader = new Set<string>()
-  let key: string | null = null
 
-  for (const line of lines) {
-    const top = TOP_LEVEL_KEY.exec(line)
-    if (top && top[1].length === rootIndent) {
-      const [, , name, value] = top
-      // `key: # text` is a key with a *comment*, and YAML gives it a null value.
-      // Capturing the comment as the value is how `description: # write this
-      // later` reached an index as though it were the summary, when what the
-      // note actually has is no description at all.
-      // YAML requires mapping keys to be unique. pyyaml and Bun.YAML both take
-      // the last of a repeat rather than refusing the document, so the index
-      // would not drift from them — but the author wrote two summaries and one
-      // disappeared without a word, and a stricter reader (js-yaml) rejects the
-      // note outright. Reported rather than silently overwritten.
-      // Tracked on the key itself, not on whether it produced a value: a first
-      // `description: # todo` never reaches `scalars`, so testing that map left
-      // a repeat after a comment-only occurrence invisible.
-      if (seen.has(name)) {
-        repeated.add(name)
-      }
-      seen.add(name)
-      key = value === undefined || value.startsWith('#') ? null : name
-      if (key) {
-        // A block-scalar header opens a value the following indented lines
-        // carry, so start empty and let the continuation branch fill it. Both
-        // `>` and `|` end up folded onto one line, which is all an index line
-        // can be.
-        // `>` and `|` always open a block header, so a value starting with one
-        // that is not a *valid* header carries text where YAML allows only an
-        // indicator or a comment — `> summary` and `>summary` alike are refused
-        // by both readers. Caught here, where whether it parsed is already known.
-        const header = BLOCK_SCALAR.exec(value)
-        if (!header && /^[|>]/.test(value)) {
-          badHeader.add(key)
-        }
-        if (header) {
-          scalars[key] = ''
-          blockScalars.add(key)
-          const explicit = header[1] ?? header[2]
-          if (explicit !== undefined) {
-            // The indicator counts from the node's own indentation, not from
-            // column zero: under a mapping indented by two, `|2` requires four
-            // spaces, and pyyaml refuses three. Storing the bare indicator was
-            // right only while every key sat at column zero.
-            blockIndent.set(key, rootIndent + Number(explicit))
-          }
-        }
-        else {
-          scalars[key] = value
-          // pyyaml refuses a tab in a plain scalar wherever it sits, not only
-          // on a continuation line, so the key's own line is held to the same
-          // rule. Quoting is the form that carries a tab to every reader.
-          if (!/^['"]/.test(value) && value.includes('\t')) {
-            tabInPlain.add(key)
-          }
-          const separator = !/^['"]/.test(value) && PLAIN_LINE_SEPARATOR.exec(value)
-          if (separator) {
-            separatorInPlain.set(key, separator[0])
-          }
-        }
-      }
-      continue
-    }
-    // A column-zero line that is neither a key nor blank nor a comment is
-    // content with no key to hang it on, and both readers refuse the document.
-    // The continuation branch below only looks at indented lines, so this fell
-    // through every check and the note indexed as though it were well formed.
-    // Trimmed with YAML's separators, not JavaScript's whitespace class. The two
-    // differ on the no-break space, and every decision below is made on `bare`:
-    // `trim` dropped a leading one and read a no-break space before a `#` as
-    // the start of a comment, where
-    // YAML sees content at a column that has to hold a key and refuses the
-    // document. It is the value's own character on a continuation line, too.
-    const bare = yamlTrim(line)
+  // An empty block yields no document at all. That is a note with no `name:`
+  // and no `description:`, which `noteEntry` reports as such; it is not a
+  // separate defect, and calling it "not a mapping" would say the frontmatter
+  // is malformed when it is merely blank.
+  if (read.document === null || read.document === undefined) {
+    return { scalars: {}, problems }
+  }
 
-    const atRoot = indentColumns(line) <= rootIndent
+  if (!isMapping(read.document)) {
+    problems.push(`the frontmatter is ${describeValue(read.document)}, not a mapping of \`name:\` and \`description:\` — this reader has no keys to take from it`)
+    return { scalars: {}, problems }
+  }
 
-    // A tab never indents, and the comment in front of which one sits does not
-    // exempt it: pyyaml refuses ` \t# note` exactly as it refuses ` \tmore`,
-    // while Bun.YAML reads past both — the disagreement this reader exists to
-    // report. Trimming the line first, which is what makes the comment tests
-    // below work at all, is precisely what hid the tab.
-    //
-    // The one place a tab is ordinary is inside a block scalar at or past its
-    // indentation, where it is content and both readers keep it. That case is
-    // measured further down, once the block's indentation is known; here it is
-    // only held back from this rule.
-    const inBlockContent = key !== null && blockScalars.has(key) && !atRoot
-    if (bare !== '' && !inBlockContent && /^[ \t]*\t/.test(line)) {
-      if (key === null) {
-        problems.push('a line is indented with a tab, which YAML does not accept as indentation — indent with spaces')
-      }
-      else {
-        tabIndented.add(key)
-      }
-      continue
-    }
-
-    // A comment at column zero closes the value above it — a block scalar ends
-    // there, and so does a plain one. Nothing is wrong with the comment itself;
-    // what YAML refuses is indented content *after* it, which lands where a key
-    // is expected. Recorded here and reported at the continuation below.
-    if (bare.startsWith('#') && atRoot) {
-      if (key) {
-        closedByComment.add(key)
-      }
-      continue
-    }
-
-    if (bare !== '' && atRoot && !bare.startsWith('#') && bare !== '---' && bare !== '...' && !COULD_BE_KEY.test(line)) {
-      problems.push(`\`${bare}\` is not a key, and YAML expects one at the start of a line in this mapping — indent it to continue the value above, or give it a key`)
-      key = null
-      continue
-    }
-
-    // Any other line at column zero ends the value above it too — a key this
-    // index does not read, `---`, `...`. Leaving the previous key open folded
-    // *its* wrapped value onto the one before, so the index rendered text the
-    // note never put there.
-    if (bare !== '' && atRoot) {
-      key = null
-      continue
-    }
-
-    // A blank line inside a value is itself a line break. It matters only for
-    // the escaped-continuation join below, which joins with nothing: YAML
-    // applies that to the line immediately after the backslash, so a blank line
-    // in between puts the break back and `"one\` + `` + `two"` is `one\ntwo`,
-    // not `onetwo`.
-    if (key && bare === '') {
-      brokenByBlank.add(key)
-    }
-
-    // Only an *indented* line continues the previous non-empty scalar — that is
-    // what folding means in YAML, and it is also what keeps a column-0 comment
-    // line out of the value above it. An indented `#` is left alone on purpose:
-    // inside a folded scalar it is literal text, and these descriptions are full
-    // of issue references that a comment-stripping parser would eat.
-    if (key && !atRoot && bare !== '') {
-      if (closedByComment.has(key)) {
-        // A further comment is still a comment — YAML drops it and loads the
-        // note. Only content lands where a key is expected, and reporting the
-        // comment too failed a note pyyaml reads without complaint.
-        if (!bare.startsWith('#')) {
-          resumedAfterComment.add(key)
-        }
-        continue
-      }
-
-      const soFarRaw = (scalars[key] ?? '').replace(YAML_PADDING, '')
-      const quoted = /^['"]/.test(soFarRaw)
-      const plainScalar = !blockScalars.has(key) && !quoted
-
-      // A tab is forbidden where indentation goes, and only there. A leading one
-      // is always wrong, whatever follows it — both readers refuse it.
-      if (/^\t/.test(line)) {
-        tabIndented.add(key)
-        continue
-      }
-
-      // A comment after a plain scalar is dropped before anything measures it,
-      // so a tab *inside* one is not indentation and does not make the note
-      // unreadable — pyyaml loads it fine. Checking the tab first rejected a
-      // valid note over text YAML had already discarded.
-      if (plainScalar && bare.startsWith('#')) {
-        continue
-      }
-
-      // Past a block scalar's indent a tab is ordinary content and both readers
-      // keep it, so rejecting `  \tfoo` was a valid note failing CI. In a plain
-      // continuation the readers split — pyyaml refuses the document, Bun.YAML
-      // folds the tab in — and a value that depends on which reader loads it is
-      // exactly the drift this reports.
-      if (plainScalar && /\t/.test(line)) {
-        tabInPlain.add(key)
-        continue
-      }
-
-      const separator = plainScalar && PLAIN_LINE_SEPARATOR.exec(line)
-      if (separator) {
-        separatorInPlain.set(key, separator[0])
-        continue
-      }
-
-      // A quoted scalar that has already closed is finished. A comment may
-      // still follow it — YAML drops that — but content cannot: it lands where
-      // a key is expected and neither reader will parse it.
-      if (quoted && (DOUBLE_QUOTED.test(soFarRaw) || SINGLE_QUOTED.test(soFarRaw))) {
-        if (!bare.startsWith('#')) {
-          afterClose.add(key)
-        }
-        continue
-      }
-
-      // Without an explicit indicator the first content line sets the block's
-      // indentation, and every later line has to hold it.
-      if (blockScalars.has(key) && !blockIndent.has(key)) {
-        blockIndent.set(key, indentColumns(line))
-      }
-      const required = blockIndent.get(key)
-      if (required !== undefined && indentColumns(line) < required) {
-        // An outdented line ends the block scalar. If it is a comment, YAML
-        // ignores it and the note is fine — folding it in both corrupted the
-        // summary and failed a valid note. Outdented *content* is the parse
-        // error it always was.
-        //
-        // But the block is over either way: a comment ends it here just as one
-        // at column zero does, so the close is recorded rather than only the
-        // line skipped. Leaving the block open folded the next indented line
-        // into the summary and reported nothing, for a document pyyaml refuses.
-        // Outdented is outside the block, so the exemption above has ended
-        // too — a tab in front of this comment is indentation again.
-        if (/^[ \t]*\t/.test(line)) {
-          tabIndented.add(key)
-          continue
-        }
-        if (bare.startsWith('#')) {
-          closedByComment.add(key)
-          continue
-        }
-        underIndented.add(key)
-      }
-      const soFar = scalars[key] ?? ''
-      // Inside a double-quoted scalar a trailing backslash escapes the line
-      // break itself: YAML drops the break *and* the indentation and joins with
-      // nothing, where every other continuation joins with a space. Folding
-      // both the same way turned `"one\` + `two"` into `one two` — and then the
-      // decoder read the `\ ` it had just created as an escaped space, so the
-      // index said something the note never did. The count has to be odd: a
-      // `\\` at the end is an escaped backslash, not an escaped break.
-      if (!brokenByBlank.has(key) && soFar.startsWith('"') && /(?:^|[^\\])(?:\\\\)*\\$/.test(soFar)) {
-        scalars[key] = `${soFar.slice(0, -1)}${bare}`
-      }
-      else {
-        // The trailing backslash is dropped here as well when a blank line
-        // broke the join: it escaped a break that the blank line has already
-        // supplied, so keeping it would leave a stray `\` in the summary.
-        // Only a double-quoted scalar uses a trailing backslash to escape the
-        // break, so only there is it the escape the blank line made redundant.
-        // In a plain or single-quoted scalar it is literal text, and dropping
-        // it edited the note's own summary.
-        const escaped = brokenByBlank.delete(key) && soFar.startsWith('"') && soFar.endsWith('\\')
-        const head = escaped ? soFar.slice(0, -1) : soFar
-        scalars[key] = `${head} ${bare}`
-      }
+  const mapping = read.document
+  const scalars: Record<string, string | undefined> = {}
+  for (const [key, value] of Object.entries(mapping)) {
+    if (typeof value === 'string') {
+      scalars[key] = foldOntoOneLine(value)
     }
   }
 
-  // Collapsed after unquoting, not before, and that order is load-bearing: an
-  // index entry is one line of a markdown list, and a double-quoted `\n` only
-  // becomes a newline once `unquote` has decoded it. Folding here means no
-  // description can split its own list item, whatever notation wrote it.
-  // Only these two reach the index, and a defect is only a defect if it can
-  // change what the index says. A note carrying its own `version: 2` is not
-  // malformed, and failing `--check` over a field nothing renders turned a
-  // valid note into a broken build.
   for (const name of INDEXED_KEYS) {
-    const value = scalars[name]
-    if (value === undefined) {
+    const value = mapping[name]
+    // Absent, or `null` — which is what YAML resolves `description:`,
+    // `description: null`, `description: ~` and `description: # todo` alike to.
+    // All four are the absence of a description, and `noteEntry` reports that
+    // once, in the words the author needs to hear.
+    if (value === undefined || value === null || typeof value === 'string') {
       continue
     }
-    const raw = value.replace(YAML_PADDING, '')
-
-    if (resumedAfterComment.has(name)) {
-      problems.push(`\`${name}:\` resumes after a comment that ended the value — YAML expects a key next, not more text`)
-    }
-
-    if (tabIndented.has(name)) {
-      problems.push(`\`${name}:\` is continued by a line indented with a tab, which YAML does not accept as indentation — indent with spaces`)
-    }
-
-    const separator = separatorInPlain.get(name)
-    if (separator !== undefined) {
-      const point = (separator.codePointAt(0) ?? 0).toString(16).toUpperCase()
-      problems.push(`\`${name}:\` holds a line separator (U+${point}) in a plain scalar, which pyyaml refuses to load and Bun.YAML keeps — quote the value so every reader sees the same text`)
-    }
-
-    if (tabInPlain.has(name)) {
-      problems.push(`\`${name}:\` holds a tab in a plain scalar, which pyyaml refuses to load and Bun.YAML keeps — quote the value so every reader sees the same text`)
-    }
-
-    if (afterClose.has(name)) {
-      problems.push(`\`${name}:\` continues after its closing quote, and YAML expects a key there rather than more text — fold the remainder inside the quotes`)
-    }
-
-    if (badHeader.has(name)) {
-      problems.push(`\`${name}:\` opens a block scalar whose header carries text, where YAML allows only an indentation or chomping indicator and a comment — move the text to the indented line below`)
-    }
-
-    if (underIndented.has(name)) {
-      problems.push(`\`${name}:\` opens a block scalar with an explicit indentation indicator its content does not meet, which YAML refuses to load — indent the content to match, or drop the indicator`)
-    }
-
-    if (repeated.has(name)) {
-      problems.push(`\`${name}:\` is given more than once, and YAML requires a mapping key to be unique — keep the one that is the summary and delete the other`)
-    }
-
-    // In a plain scalar — and only there — whitespace followed by `#` starts a
-    // comment, so YAML reads `fixed in PR #155, so do X` as `fixed in PR`. This
-    // reader keeps the whole line, and that difference is the drift the derived
-    // index exists to end: the note would say one thing here and another to the
-    // reader that loads it. Reported rather than truncated, because the text
-    // after the `#` is what the author meant; quoting the value keeps it.
-    const plain = !blockScalars.has(name) && !raw.startsWith('"') && !raw.startsWith('\'')
-    if (plain && /[ \t]#/.test(raw)) {
-      problems.push(`\`${name}:\` is unquoted and contains \` #\`, which YAML reads as the start of a comment — quote the value so it survives`)
-    }
-
-    // `[summary]` is a sequence and `{summary: text}` a mapping — valid YAML,
-    // and not a summary. Kept with the scalar checks because the failure is the
-    // same one: the index would advertise the source spelling as the text.
-    // `summary: detail` is not a scalar holding a colon, it is a mapping — and
-    // a nested one where YAML allows no value, so both readers stop with a hard
-    // parse error rather than misreading it. The note cannot be loaded at all,
-    // which makes this the one defect that costs more than a wrong index line.
-    // Only a colon *followed by a space or the line end* does it; `3:1` and
-    // `summary:detail` are ordinary text and stay that way. A flow collection
-    // is excluded too: `{a: b}` really is a mapping, and a valid one, so it is
-    // the check below that has something to say about it.
-    const flow = raw.startsWith('[') || raw.startsWith('{')
-    if (plain && !flow && /:(?:[ \t]|$)/.test(raw)) {
-      problems.push(`\`${name}:\` is unquoted and contains \`:\` followed by a space, which YAML reads as a nested mapping and refuses to load — quote the value`)
-    }
-
-    if (plain && flow) {
-      problems.push(`\`${name}:\` is a flow ${raw.startsWith('[') ? 'sequence' : 'mapping'}, not text — quote it if the brackets are part of the summary`)
-    }
-
-    if (plain && NON_STRING_SCALAR.test(raw)) {
-      problems.push(`\`${name}:\` is \`${raw}\`, which YAML resolves to a ${raw === '~' || /^null$/i.test(raw) ? 'null' : 'non-string'} rather than text — quote it if the value really is that word`)
-    }
-
-    // A block scalar's content is literal — a leading `&`, `!` or quote there is
-    // text, not scalar syntax — so only a plain or quoted value is unquoted.
-    // Running block content through it stripped a note's real quotes and
-    // reported its literal `&` as an anchor.
-    scalars[name] = (blockScalars.has(name)
-      ? raw
-      : unquote(raw, problem => problems.push(`\`${name}:\` ${problem}`)))
-      .replace(LINE_WHITESPACE, ' ')
-      .replace(/^ | $/g, '')
+    problems.push(`\`${name}:\` is ${describeValue(value)} rather than text — quote it if the value really is that word`)
   }
+
+  commentedOut(source, mapping, problems)
+  repeated(source, mapping, problems)
 
   return { scalars, problems }
 }
@@ -1122,6 +890,22 @@ function report(problems: string[], code: number): number {
  */
 export function main(argv: string[], root: string = MEMORY_DIR, cwd: string = REPO_ROOT): number {
   const check = argv.includes('--check')
+
+  // Before anything reads a note. `Bun.YAML` arrived in a Bun release younger
+  // than some installed ones, and `readYaml` turns *every* throw into "this
+  // note is not valid YAML" — so on a Bun without it, a repository of perfectly
+  // good notes reports as a repository of broken ones and the real cause is
+  // named nowhere. Every entry point here is this CLI (`mise run install`, the
+  // CI step, `orca.yaml`'s worktree setup, `bun run agent-memory:index`), so
+  // one check covers them; the run stops having written nothing, which is what
+  // `EXIT_INVARIANT` is for.
+  if (typeof (Bun as { YAML?: unknown }).YAML !== 'object') {
+    return report([
+      `this Bun does not provide \`Bun.YAML\` (running ${Bun.version}), which this script reads note `
+      + 'frontmatter with (issue #168) — upgrade Bun, or run it through mise, which resolves the '
+      + 'version this repository expects',
+    ], EXIT_INVARIANT)
+  }
 
   // Checked *and acted on* before rebuilding, not after: `rebuild` writes, and
   // a run that ends in a non-zero exit has written by then. A tracked index is

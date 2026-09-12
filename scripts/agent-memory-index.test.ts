@@ -110,6 +110,32 @@ metadata:
       .toEqual([expect.stringContaining('YAML reads as the start of a comment')])
   })
 
+  // The comment text is written under no grammar, so unmasking its `#` can put
+  // YAML syntax into the line. A `: ` in it reads as a nested mapping key and
+  // the probe stops parsing — on the very line it was asked about, which is the
+  // one refusal the probe may not answer "nothing here" to. Masking the line's
+  // remaining `:` alongside the `#` keeps it a plain scalar.
+  test('reports a cut whose comment text holds a colon', () => {
+    for (const value of ['fixed in PR #155: see docs', 'note #1: do X, not Y', 'see #12: and #13: too']) {
+      const text = note('a-note', 'placeholder').replace('description: placeholder', `description: ${value}`)
+      expect(parseFrontmatter(text).problems)
+        .toEqual([expect.stringContaining('YAML reads as the start of a comment')])
+    }
+  })
+
+  // The stand-ins are put back before the comparison, so a `:` that is genuinely
+  // part of a quoted value is compared as itself and reports nothing.
+  test('accepts a quoted value holding both a `#` and a colon', () => {
+    const text = note('a-note', 'placeholder').replace(
+      'description: placeholder',
+      String.raw`description: "quoted #155: still text"`,
+    )
+    expect(parseFrontmatter(text)).toMatchObject({
+      scalars: { description: 'quoted #155: still text' },
+      problems: [],
+    })
+  })
+
   // The fix the report asks for has to actually clear it, and `(#154)` — no space
   // before the `#` — is not a comment and must not be reported.
   test('accepts the quoted form, and a `#` with no space before it', () => {
@@ -126,39 +152,151 @@ metadata:
   fixed in PR #155, so do X`))).toMatchObject({ scalars: { description: 'fixed in PR #155, so do X' }, problems: [] })
   })
 
-  // `description: null` is the absence of a value, not the word — storing the
-  // source spelling advertised `null` as a note's summary.
+  // The cut can happen on a *continuation* line as easily as on the key's own,
+  // and the probe finds it there for the same reason it finds anything: it
+  // masks one `#` and reads the block again, rather than holding a rule about
+  // which lines a plain scalar may span.
+  test('reports a value cut at a comment on a continuation line', () => {
+    const text = noteWith(`one
+  two #3 four`)
+    expect(parseFrontmatter(text)).toMatchObject({
+      scalars: { description: 'one two' },
+      problems: [expect.stringContaining('YAML reads as the start of a comment')],
+    })
+  })
+
+  // A comment that follows a *closed* quoted scalar is valid, and masking its
+  // `#` makes the document stop parsing — which says nothing about that comment
+  // and must not be reported. It must also not swallow a real cut on another
+  // line, which is why one `#` is masked at a time rather than all of them.
+  // The refusal class the probe skips is a comment after a *closed node*, and a
+  // flow collection is one as much as a quoted scalar is. Nothing was cut from
+  // either — the quoted value comes back whole, and the collection is reported
+  // as not-text by the caller — so the skip costs no report in either case.
+  test('skips the probe after a closed flow collection, which loses no report', () => {
+    const withValue = (value: string): string =>
+      note('a-note', 'placeholder').replace('description: placeholder', `description: ${value}`)
+
+    expect(parseFrontmatter(withValue('[a, b] # a trailing note')).problems)
+      .toEqual([expect.stringContaining('is a sequence rather than text')])
+    expect(parseFrontmatter(withValue('{a: b} # a trailing note')).problems)
+      .toEqual([expect.stringContaining('is a mapping rather than text')])
+    expect(parseFrontmatter(withValue(`'single' # a trailing note`)))
+      .toMatchObject({ scalars: { description: 'single' }, problems: [] })
+  })
+
+  test('still reports a cut key when another line ends in a valid comment', () => {
+    const text = `---\nname: cut at #1 here\ndescription: "quoted" # a real comment\n---\n`
+    expect(parseFrontmatter(text)).toMatchObject({
+      scalars: { name: 'cut at', description: 'quoted' },
+      problems: [expect.stringContaining('`name:` is unquoted')],
+    })
+  })
+
+  // The stand-ins are searched for in the source *and* in what it resolves to,
+  // because those differ. `"quoted  # still text"` holds no private-use
+  // character as text and holds one after the escape is decoded; a stand-in
+  // chosen from the source alone would be rewritten by the restore step along
+  // with the mask, and this correctly quoted value would be reported as cut.
+  test('does not report a quoted value whose escape decodes to a probe character', () => {
+    const text = `---\nname: a-note\ndescription: "quoted \\uE000 # still text"\n---\n`
+    expect(parseFrontmatter(text)).toMatchObject({
+      scalars: { description: 'quoted \u{E000} # still text' },
+      problems: [],
+    })
+  })
+
+  // Running out of stand-ins is only a problem when there is a `#` to mask. A
+  // note with none is owed no report about the reader's ability to probe one.
+  test('says nothing about exhausted probes when there is no comment to check', () => {
+    let every = ''
+    for (let point = 0xE000; point <= 0xF8FF; point++) {
+      every += String.fromCodePoint(point)
+    }
+    expect(parseFrontmatter(`---\nname: a-note\ndescription: "${every}"\n---\n`).problems).toEqual([])
+  })
+
+  // The probe stands private-use code points in for the characters it masks.
+  // They are searched for in the note rather than fixed, so a note that happens
+  // to hold one is still probed — a stand-in that collided would have turned the
+  // check off, and a note's own content must not be able to do that.
+  test('probes a note that already holds a private-use character', () => {
+    const text = noteWith('holds \u{E000} and a cut at #1')
+    expect(parseFrontmatter(text)).toMatchObject({
+      scalars: { description: 'holds \u{E000} and a cut at' },
+      problems: [expect.stringContaining('YAML reads as the start of a comment')],
+    })
+  })
+
+  // `description: 42` is an integer and `description: [a]` a sequence — valid
+  // YAML, and not a summary. Publishing the source spelling as the index text
+  // advertised a description the frontmatter does not yield.
   test('reports a value YAML resolves to something that is not text', () => {
-    // `1e3` is a string under YAML 1.1 and the number 1000 under 1.2's core
-    // schema — two readers disagreeing is reason to report, not to pick a side.
-    for (const value of ['null', '~', 'true', 'no', '42', '3.14', '.inf', '1e3', '-1E3', 'y', 'N']) {
+    // `.inf` is `Infinity`, which is the reason the report renders the value
+    // with `String` and not `JSON.stringify` — JSON has no spelling for it and
+    // would name the value `null`.
+    for (const value of ['true', '42', '3.14', '.inf', '1e3', '-1E3', '0644']) {
       const text = note('a-note', 'placeholder').replace('description: placeholder', `description: ${value}`)
       expect(parseFrontmatter(text).problems).toEqual([expect.stringContaining('rather than text')])
     }
+    expect(parseFrontmatter(note('a-note', '.inf')).problems)
+      .toEqual([expect.stringContaining('`Infinity`')])
   })
 
-  // YAML 1.1 resolves numbers 1.2's core schema leaves as text: every digit run
-  // admits `_` as a separator, and a colon-separated value is base 60, so a 1.1
-  // reader makes `1_000` the number 1000 and `12:00` the number 720. Reported
-  // for the reason `1e3` is — the two readers disagree about the same bytes.
-  test('reports the YAML 1.1 number spellings 1.2 leaves as text', () => {
+  // Every spelling of nothing resolves to the same thing, and a parser cannot
+  // tell them apart: `~`, `null` and the comment-only value the test above
+  // covers are one value — the absence of one. So the report is the one they
+  // share, and it is `noteEntry`'s: the note has no summary. The scanner this
+  // replaced called `description: null` a non-string and `description: # todo`
+  // no value at all, which was two reports for one state of the document (#168).
+  test('treats every spelling of a null description as no description', () => {
+    for (const value of ['null', 'Null', 'NULL', '~']) {
+      const text = note('a-note', 'placeholder').replace('description: placeholder', `description: ${value}`)
+      expect(parseFrontmatter(text).scalars.description).toBeUndefined()
+      expect(parseFrontmatter(text).problems).toEqual([])
+      expect(noteEntry('n.md', text).problems).toEqual([expect.stringContaining('no `description:`')])
+    }
+  })
+
+  // Dropped with the scanner (#168), deliberately. These spellings are numbers
+  // to a YAML 1.1 reader (pyyaml) and text to a 1.2 one, and `Bun.YAML` is a
+  // 1.2 reader — it resolves each to exactly the text the index publishes, so
+  // there is no longer a disagreement between this reader and the value.
+  //
+  // Reporting them again would need this file to decide from the *source*
+  // whether the value was written plain, because a quoted `"12:00"` is text to
+  // every reader. That decision is the scanner, and the scanner is what thirty
+  // one review rounds could not finish enumerating. What is guarded instead is
+  // the case that survives every reader: a value this parser resolves to
+  // something that is not text, in the test above.
+  test('leaves the YAML 1.1 number spellings 1.2 resolves as text alone', () => {
     for (const value of ['1_000', '0xDE_AD', '0b1_01', '01_7', '+1_0', '100_', '1_0.5', '12:00', '190:20:30', '12:00.5', '2026-09-12', '2026-9-1t10:00:00.5-05:00']) {
       const text = note('a-note', 'placeholder').replace('description: placeholder', `description: ${value}`)
-      expect(parseFrontmatter(text).problems).toEqual([expect.stringContaining('rather than text')])
+      expect(parseFrontmatter(text)).toMatchObject({ scalars: { description: value }, problems: [] })
+    }
+  })
+
+  // The same call, for the YAML 1.1 booleans 1.2 leaves as text.
+  test('leaves the YAML 1.1 boolean spellings 1.2 resolves as text alone', () => {
+    for (const value of ['yes', 'no', 'on', 'off', 'y', 'N']) {
+      const text = note('a-note', 'placeholder').replace('description: placeholder', `description: ${value}`)
+      expect(parseFrontmatter(text)).toMatchObject({ scalars: { description: value }, problems: [] })
     }
   })
 
   // Only a whole plain value resolves that way: prose that merely starts with
   // one of those words is text, and a quoted one really is the string.
   // A flow sequence or mapping is valid YAML and is not a summary.
-  // Verified against both readers: `description: summary: detail` is a hard
-  // parse error ("mapping values are not allowed here" / "Unexpected token"),
-  // so the note cannot be loaded at all — the one defect class that makes the
-  // whole file unreadable rather than merely misread.
+  // `description: summary: detail` is a hard parse error to every reader
+  // ("mapping values are not allowed here" / "Unexpected token"), so the note
+  // cannot be loaded at all — the one defect class that makes the whole file
+  // unreadable rather than merely misread. The parser is the one that says so
+  // now, which is why the report is the refusal and not a sentence about
+  // mappings written here (#168).
   test('reports a plain description holding a mapping separator', () => {
     for (const value of ['summary: detail', 'summary:']) {
       const text = note('a-note', 'placeholder').replace('description: placeholder', `description: ${value}`)
-      expect(parseFrontmatter(text).problems).toEqual([expect.stringContaining('mapping')])
+      expect(parseFrontmatter(text).problems).toEqual([expect.stringContaining('not valid YAML')])
     }
   })
 
@@ -168,14 +306,15 @@ metadata:
     expect(parseFrontmatter(text).problems).toEqual([])
   })
 
-  // The range guard below this one stops at 0x10FFFF, and every surrogate is
-  // under it, so `\uD800` slipped through into `String.fromCodePoint` — which
-  // does not throw on one. That put a lone surrogate in the index text, where
-  // it cannot be encoded as UTF-8. Bun.YAML rejects the input outright.
+  // A lone surrogate is not a character: it cannot be encoded as UTF-8, so
+  // writing one to the index yields a replacement character. The scanner had to
+  // be taught that its own 0x10FFFF range guard let every surrogate through;
+  // `Bun.YAML` rejects the escape outright, which is the whole class of
+  // "an escape this reader resolves and a real one refuses" settled at once.
   test('reports a double-quoted escape naming a surrogate code point', () => {
     for (const value of [String.raw`"\uD800"`, String.raw`"\U0000DFFF"`]) {
       const text = note('a-note', 'placeholder').replace('description: placeholder', `description: ${value}`)
-      expect(parseFrontmatter(text).problems).toEqual([expect.stringContaining('surrogate')])
+      expect(parseFrontmatter(text).problems).toEqual([expect.stringContaining('not valid YAML')])
     }
   })
 
@@ -244,18 +383,20 @@ metadata:
   })
 
   // A tab never indents in YAML, so a mapping indented with one is a document
-  // neither reader will load. Measuring the tab as a width accepted it.
+  // no reader will load. Measuring the tab as a width accepted it; the parser
+  // refuses it and says so in as many words.
   test('reports a root mapping indented with a tab', () => {
     const text = '---\n\tname: a-note\n\tdescription: summary\n---\n'
-    expect(parseFrontmatter(text).problems).toEqual([expect.stringContaining('tab')])
+    expect(parseFrontmatter(text).problems)
+      .toEqual([expect.stringContaining('Tab characters cannot be used as indentation')])
   })
 
   // An outdented comment ends a block scalar the same way a column-zero one
-  // does. Skipping it and leaving the block open folded the line after it in,
-  // so the index carried a summary from a document pyyaml refuses to parse.
+  // does, so the content after it lands where a key belongs and the note does
+  // not load at all.
   test('reports block content that resumes after an outdented comment', () => {
     const text = '---\nname: a-note\ndescription: >\n  first\n # note\n  second\n---\n'
-    expect(parseFrontmatter(text).problems).toEqual([expect.stringContaining('resumes after a comment')])
+    expect(parseFrontmatter(text).problems).toEqual([expect.stringContaining('not valid YAML')])
   })
 
   // ...but only *content* resumes. A second comment after the one that ended
@@ -268,11 +409,11 @@ metadata:
   })
 
   // A no-break space is not indentation and not a separator, so a line opening
-  // on one is content — pyyaml refuses the document. Deciding with
-  // `String.prototype.trim` dropped it and read `\u00A0# note` as a comment.
+  // on one is content where a key belongs, and the document does not load.
+  // Deciding this with `String.prototype.trim` read that line as a comment.
   test('does not read a no-break space before a hash as a comment', () => {
     const text = `---\nname: a-note\ndescription: summary\n\u00A0# note\n---\n`
-    expect(parseFrontmatter(text).problems).toEqual([expect.stringContaining('is not a key')])
+    expect(parseFrontmatter(text).problems).toEqual([expect.stringContaining('not valid YAML')])
   })
 
   // The same class on a continuation line, where trimming it edited the value:
@@ -286,11 +427,13 @@ metadata:
 
   // An explicit indicator counts from the mapping's own indentation, not from
   // column zero: under a mapping indented by two, `|2` requires four spaces.
-  // pyyaml refuses three and accepts four.
+  // A reader refuses three and accepts four. Counting the indicator from column
+  // zero was a defect the scanner needed a review round to find; the parser has
+  // never needed telling where the mapping starts.
   test('counts an explicit block indicator from the root indentation', () => {
     const short = '---\n  name: a-note\n  description: |2\n   text\n---\n'
     const met = '---\n  name: a-note\n  description: |2\n    text\n---\n'
-    expect(parseFrontmatter(short).problems).toEqual([expect.stringContaining('indentation indicator')])
+    expect(parseFrontmatter(short).problems).toEqual([expect.stringContaining('not valid YAML')])
     expect(parseFrontmatter(met)).toMatchObject({ scalars: { description: 'text' }, problems: [] })
   })
 
@@ -352,7 +495,7 @@ metadata:
   test('reports content resumed after a column-zero comment', () => {
     for (const opening of ['>', 'first']) {
       expect(parseFrontmatter(noteWith(`${opening}\n# comment\n  actual`, '')).problems)
-        .toEqual([expect.stringContaining('comment')])
+        .toEqual([expect.stringContaining('not valid YAML')])
     }
   })
 
@@ -388,7 +531,7 @@ metadata:
   // ...while outdented *content* is still the parse error it was.
   test('still reports outdented block content', () => {
     const text = noteWith('>\n  first\n second', '')
-    expect(parseFrontmatter(text).problems).toEqual([expect.stringContaining('indent')])
+    expect(parseFrontmatter(text).problems).toEqual([expect.stringContaining('not valid YAML')])
   })
 
   // A column-zero line that is neither a key nor a delimiter is content with no
@@ -396,15 +539,30 @@ metadata:
   // looks at indented lines, skipped it in silence.
   test('reports an unkeyed line at column zero', () => {
     const text = noteWith('summary', 'stray\nmetadata:\n  type: project')
-    expect(parseFrontmatter(text).problems).toEqual([expect.stringContaining('not a key')])
+    expect(parseFrontmatter(text).problems).toEqual([expect.stringContaining('not valid YAML')])
   })
 
-  // A tab in a *plain* scalar is refused by pyyaml wherever it sits, not only
-  // on a continuation line, so the key's own line is reported the same way.
-  // Quoting is the form that carries a tab to every reader.
-  test('reports a tab in a plain scalar on the key line', () => {
+  // The tests from here to `reports a tab indenting a line before the first key`
+  // pin a class of note this reader deliberately stopped reporting in #168.
+  //
+  // Each is a document `Bun.YAML` loads and pyyaml — a YAML 1.1 reader, and a
+  // stricter one about where a tab may sit — refuses. The scanner reported them
+  // because it was not a reader at all: a second, independent reader was the
+  // only evidence it could offer that a value was ambiguous. A real parser
+  // resolves each of these to exactly the text the index publishes, so there is
+  // nothing left for this reader to disagree with.
+  //
+  // Reporting them again would need this file to decide, from the source,
+  // whether a scalar was written *plain* — a tab inside a quoted scalar is
+  // unambiguous, and the test below pins that it stays accepted. That decision
+  // is the scanner, and thirty-one review rounds on #156 could not finish
+  // enumerating it. The guard that replaces them is the one no enumeration is
+  // needed for: a document the parser refuses is reported, whatever refused it.
+  test('accepts a tab in a plain scalar on the key line', () => {
     const text = note('a-note', 'placeholder').replace('description: placeholder', 'description: first\tsecond')
-    expect(parseFrontmatter(text).problems).toEqual([expect.stringContaining('tab')])
+    // Folded to a space like every other break-or-tab, because an index entry
+    // is one line — asserted, so a parser that dropped the tail would not pass.
+    expect(parseFrontmatter(text)).toMatchObject({ scalars: { description: 'first second' }, problems: [] })
   })
 
   test('keeps a tab that is quoted', () => {
@@ -420,29 +578,29 @@ metadata:
     expect(parseFrontmatter(text)).toMatchObject({ scalars: { description: 'first' }, problems: [] })
   })
 
-  // ...but a comment line that *starts* with a tab still puts one where the
-  // indentation goes, which YAML refuses.
-  test('reports a comment line indented with a tab', () => {
+  // ...and a comment line that *starts* with a tab is one more of the same
+  // class: pyyaml calls that tab indentation and refuses, `Bun.YAML` reads past
+  // the comment and yields `first`, which is what the note says.
+  test('accepts a comment line indented with a tab', () => {
     const text = noteWith(`first
 \t# note`)
-    expect(parseFrontmatter(text).problems).toEqual([expect.stringContaining('tab')])
+    expect(parseFrontmatter(text)).toMatchObject({ scalars: { description: 'first' }, problems: [] })
   })
 
-  // ...and the comment in front of which a tab sits does not exempt it. pyyaml
-  // refuses ` \t# note` exactly as it refuses ` \tmore`; Bun.YAML reads past
-  // both. Trimming the line before testing for a comment hid the tab entirely.
-  test('reports a tab before a comment that follows a plain scalar', () => {
+  // The same, with the tab behind a space rather than at the line's head.
+  test('accepts a tab before a comment that follows a plain scalar', () => {
     for (const indent of [' \t', '  \t']) {
       const text = noteWith(`summary\n${indent}# note`, '')
-      expect(parseFrontmatter(text).problems).toEqual([expect.stringContaining('tab')])
+      expect(parseFrontmatter(text)).toMatchObject({ scalars: { description: 'summary' }, problems: [] })
     }
   })
 
-  // A comment outdented out of a block scalar has left the block, so the
-  // block's exemption for a tab has ended with it.
-  test('reports a tab before a comment that ends a block scalar', () => {
+  // The same again, where the comment also ends a block scalar. The scanner
+  // needed a rule of its own for this seam — the block's exemption for a tab
+  // ends with the block — and the parser needs none.
+  test('accepts a tab before a comment that ends a block scalar', () => {
     const text = noteWith(`>\n  first\n \t# note`)
-    expect(parseFrontmatter(text).problems).toEqual([expect.stringContaining('tab')])
+    expect(parseFrontmatter(text)).toMatchObject({ scalars: { description: 'first' }, problems: [] })
   })
 
   // ...but at or past the block's own indentation a `#` is not a comment at
@@ -458,11 +616,10 @@ metadata:
     expect(parseFrontmatter(text)).toMatchObject({ scalars: { description: 'first # note' }, problems: [] })
   })
 
-  // A tab-indented line reaching no key at all still puts a tab where the
-  // indentation goes, and the note never becomes loadable later.
-  test('reports a tab indenting a line before the first key', () => {
+  // ...and the last of the class: a tab-indented comment ahead of the first key.
+  test('accepts a tab indenting a comment before the first key', () => {
     const text = '---\n\t# note\nname: a-note\ndescription: summary\n---\n'
-    expect(parseFrontmatter(text).problems).toEqual([expect.stringContaining('tab')])
+    expect(parseFrontmatter(text)).toMatchObject({ scalars: { description: 'summary' }, problems: [] })
   })
 
   // Only a space indents. A tab cannot supply the indentation a block scalar's
@@ -477,14 +634,44 @@ metadata:
   })
 
   // YAML's character set excludes the C0 controls other than tab, newline and
-  // carriage return, U+007F, and the C1 controls other than NEL. A raw one is
-  // refused by the *reader*, before any parse — so the note is unloadable to
-  // every YAML tool while the index published the character verbatim.
+  // carriage return, U+007F, and the C1 controls other than NEL. A strict
+  // reader refuses one before any parse — so the note is unloadable to that
+  // tool while the index published the character verbatim.
+  //
+  // This is the one rule `parseFrontmatter` still spells out itself after #168,
+  // because `Bun.YAML` does not implement the production: it refuses U+0000 and
+  // reads every other forbidden control point straight through into the value.
+  // The loop below is the evidence — four of these five parse without a word.
   test('reports a raw control character anywhere in the frontmatter', () => {
     for (const forbidden of ['\u0000', '\u0008', '\u001F', '\u007F', '\u009F']) {
       const text = `---\nname: a-note\ndescription: before${forbidden}after\n---\n`
-      expect(parseFrontmatter(text).problems).toEqual([expect.stringContaining('YAML does not allow')])
+      expect(parseFrontmatter(text).problems[0]).toEqual(expect.stringContaining('YAML does not allow'))
     }
+  })
+
+  // The character and a refused parse are separate reports, and the character
+  // does not stand in for the refusal. U+0000 is the one forbidden point
+  // Bun.YAML does refuse, so it earns both; the other four leave the block
+  // readable, so the character is the only thing wrong with it.
+  test('reports a refused parse alongside the character, not instead of it', () => {
+    const refused = `---\nname: a-note\ndescription: before\u0000after\n---\n`
+    expect(parseFrontmatter(refused).problems).toEqual([
+      expect.stringContaining('YAML does not allow'),
+      expect.stringContaining('not valid YAML'),
+    ])
+    const readable = `---\nname: a-note\ndescription: before\u007Fafter\n---\n`
+    expect(parseFrontmatter(readable).problems).toEqual([expect.stringContaining('YAML does not allow')])
+  })
+
+  // ...and a parse failure the character did not cause is still reported. The
+  // suppression this replaces named the character alone, so an unterminated
+  // quote three lines below a stray U+007F went unmentioned.
+  test('reports a parse failure a forbidden character did not cause', () => {
+    const text = `---\nname: a-note\u007F\ndescription: "unterminated\nmetadata:\n  type: project\n---\n`
+    expect(parseFrontmatter(text).problems).toEqual([
+      expect.stringContaining('YAML does not allow'),
+      expect.stringContaining('not valid YAML'),
+    ])
   })
 
   // ...and the ones YAML does allow stay allowed, escapes included: pyyaml
@@ -514,23 +701,33 @@ metadata:
     }
   })
 
-  // Unquoted is a different answer: pyyaml refuses the document and Bun.YAML
-  // reads it, which is the disagreement this reader exists to report.
-  test('reports a line separator in a plain scalar', () => {
+  // Unquoted is the same class as the tabs above (#168): pyyaml refuses the
+  // document, `Bun.YAML` folds the separator like any other line break, and the
+  // folded value is what the index publishes either way.
+  test('accepts a line separator in a plain scalar, folding it like a break', () => {
     for (const separator of ['\u2028', '\u2029']) {
       const text = `---\nname: a-note\ndescription: a${separator}b\n---\n`
-      expect(parseFrontmatter(text).problems).toEqual([expect.stringContaining('line separator')])
+      expect(parseFrontmatter(text)).toMatchObject({ scalars: { description: 'a b' }, problems: [] })
     }
   })
 
-  // `%` opens a directive, and `,`, `]`, `}` close flow collections that were
-  // never opened. pyyaml refuses all four; Bun.YAML refuses `%` and disagrees
-  // on the rest, which is reason to report either way.
+  // `%` opens a directive, and `]`, `}` close flow collections that were never
+  // opened: the parser refuses all three, so the note is reported as the
+  // unloadable document it is.
   test('reports a description opening with a flow or directive indicator', () => {
-    for (const value of ['%summary', ',summary', ']summary', '}summary']) {
+    for (const value of ['%summary', ']summary', '}summary']) {
       const text = note('a-note', 'placeholder').replace('description: placeholder', `description: ${value}`)
-      expect(parseFrontmatter(text).problems).not.toEqual([])
+      expect(parseFrontmatter(text).problems).toEqual([expect.stringContaining('not valid YAML')])
     }
+  })
+
+  // A leading `,` is not one of them. It closes nothing, because a comma is an
+  // indicator only inside a flow collection — `Bun.YAML` reads the value as the
+  // text it is, and the index publishes that text. (pyyaml refuses it; that
+  // disagreement is the class #168 stopped reporting, above.)
+  test('reads a description opening with a comma as the text it is', () => {
+    const text = note('a-note', 'placeholder').replace('description: placeholder', 'description: ,summary')
+    expect(parseFrontmatter(text)).toMatchObject({ scalars: { description: ',summary' }, problems: [] })
   })
 
   test('leaves those characters alone away from the head', () => {
@@ -556,12 +753,12 @@ metadata:
     expect(parseFrontmatter(text).problems).toEqual([])
   })
 
-  // In a plain continuation the readers disagree — pyyaml refuses the document,
-  // Bun.YAML folds the tab in — which is the drift this reader reports.
-  test('reports a tab inside a plain continuation', () => {
+  // ...and in a plain continuation, where the readers disagree, the same #168
+  // call applies: `Bun.YAML` folds the tab in and the index says so.
+  test('accepts a tab inside a plain continuation', () => {
     const text = noteWith(`first
   second\tthird`)
-    expect(parseFrontmatter(text).problems).toEqual([expect.stringContaining('tab')])
+    expect(parseFrontmatter(text)).toMatchObject({ scalars: { description: 'first second third' }, problems: [] })
   })
 
   // Without an explicit indicator the first content line sets the indentation,
@@ -570,7 +767,7 @@ metadata:
     const text = noteWith(`>
   first
  second`)
-    expect(parseFrontmatter(text).problems).toEqual([expect.stringContaining('indent')])
+    expect(parseFrontmatter(text).problems).toEqual([expect.stringContaining('not valid YAML')])
   })
 
   test('accepts block content that holds the inferred indentation', () => {
@@ -607,7 +804,7 @@ metadata:
   test('reports a tab used as indentation', () => {
     const text = noteWith(`first
 \tsecond`)
-    expect(parseFrontmatter(text).problems).toEqual([expect.stringContaining('tab')])
+    expect(parseFrontmatter(text).problems).toEqual([expect.stringContaining('not valid YAML')])
   })
 
   // `-` and `?` open a sequence entry and a mapping key, and `>`/`|` always
@@ -630,7 +827,7 @@ metadata:
 
     // `-5` is reported, but as the number it is — not as a sequence entry.
     const negative = note('a-note', 'placeholder').replace('description: placeholder', 'description: -5')
-    expect(parseFrontmatter(negative).problems).toEqual([expect.stringContaining('non-string')])
+    expect(parseFrontmatter(negative).problems).toEqual([expect.stringContaining('the number `-5` rather than text')])
   })
 
   test('still accepts every valid block header', () => {
@@ -642,12 +839,12 @@ metadata:
   })
 
   // A block header may carry an explicit indentation indicator, and then the
-  // content must actually meet it: both readers refuse `|2` over a line with
-  // one space. The continuation branch accepted any indentation at all.
+  // content must actually meet it: a reader refuses `|2` over a line with one
+  // space. The continuation branch accepted any indentation at all.
   test('reports block content under an explicit indentation indicator', () => {
     const text = noteWith(`|2
  first`)
-    expect(parseFrontmatter(text).problems).toEqual([expect.stringContaining('indentation indicator')])
+    expect(parseFrontmatter(text).problems).toEqual([expect.stringContaining('not valid YAML')])
   })
 
   test('accepts block content that meets the indicator', () => {
@@ -673,6 +870,131 @@ description: second`)
     expect(parseFrontmatter(text).problems).toEqual([expect.stringContaining('more than once')])
   })
 
+  // The duplicate is found by renaming one occurrence and asking the parser
+  // whether the key is *still* at the root, so a same-named key one level down
+  // is not a repeat: the probe lands inside the nested mapping, where the test
+  // does not see it. Deciding this from the source is what round 30 of #156 got
+  // wrong, in the other direction — an outer key the scanner could not spell
+  // left the root undecided and published a nested summary as the note's own.
+  test('does not call a nested key of the same name a repeat', () => {
+    const text = `---\nname: a-note\ndescription: real\nmetadata:\n  name: nested\n  description: nested summary\n---\n`
+    expect(parseFrontmatter(text)).toMatchObject({ scalars: { description: 'real' }, problems: [] })
+  })
+
+  // ...and it is still a repeat when a nested occurrence comes first, which is
+  // why every candidate line is probed rather than only the first.
+  test('reports a repeat that a nested occurrence precedes', () => {
+    const text = `---\nmetadata:\n  description: nested\nname: a-note\ndescription: first\ndescription: second\n---\n`
+    expect(parseFrontmatter(text).problems).toEqual([expect.stringContaining('more than once')])
+  })
+
+  // A flow mapping puts both occurrences on one line, and YAML discards the
+  // first exactly as silently as it does in the block form. Occurrences are
+  // nominated by offset rather than by line so that shape is nominated too.
+  test('reports a repeat written inside a flow mapping', () => {
+    const text = `---\n{name: a-note, name: other, description: real}\n---\n`
+    expect(parseFrontmatter(text)).toMatchObject({
+      scalars: { name: 'other', description: 'real' },
+      problems: [expect.stringContaining('more than once')],
+    })
+  })
+
+  // A quoted key is the same key: `"description":` and `description:` resolve to one
+  // mapping entry, and a repeat across the two spellings is discarded as
+  // silently as a bare one. So is an explicit key (`? name` over `: text`).
+  test('reports a repeat spelled with a quoted or explicit key', () => {
+    const quoted = `---\nname: a-note\ndescription: first\n"description": second\n---\n`
+    expect(parseFrontmatter(quoted)).toMatchObject({
+      scalars: { description: 'second' },
+      problems: [expect.stringContaining('more than once')],
+    })
+
+    const single = `---\nname: a-note\n'description': first\ndescription: second\n---\n`
+    expect(parseFrontmatter(single).problems).toEqual([expect.stringContaining('more than once')])
+
+    const explicit = `---\nname: a-note\n? description\n: second\ndescription: first\n---\n`
+    expect(parseFrontmatter(explicit).problems).toEqual([expect.stringContaining('more than once')])
+  })
+
+  // The probe key is picked against the resolved keys as well as the source,
+  // because those differ: `"agent-memory-index-duplicate-probe":` is
+  // invisible to `source.includes` and is that key once the parser decodes it.
+  // With it already at the root, `key in probed.document` stops meaning "the
+  // rename put it there", and a nomination landing in a block scalar or a
+  // nested mapping — creating no root key at all — reads as a duplicate.
+  test('does not report a duplicate when a key decodes to the probe name', () => {
+    const probe = `"\\u0061gent-memory-index-duplicate-probe": value`
+    const cases = [
+      `description: |\n  a line with "description": inside`,
+      `description: >\n  a line with "description": inside`,
+      `description: real\nmetadata:\n  "description": nested`,
+    ]
+    for (const value of cases) {
+      expect(parseFrontmatter(`---\nname: a-note\n${value}\n${probe}\n---\n`).problems).toEqual([])
+    }
+  })
+
+  // ...and a value that merely wraps onto a line reading like the key is not a
+  // repeat. The nomination is deliberately wide, so the parser is what rules.
+  test('does not call a wrapped value that reads like the key a repeat', () => {
+    const text = `---\nname: a-note\ndescription: see the\n  description\n  field\n---\n`
+    expect(parseFrontmatter(text)).toMatchObject({
+      scalars: { description: 'see the description field' },
+      problems: [],
+    })
+  })
+
+  // A quoted key may spell itself with escapes, and `"description":` is the
+  // same key as `description:` to any reader that decodes them. Deciding that
+  // from the source means transcribing YAML's escape table, which is the
+  // scanner this file replaced — so the parser is asked what the token spells.
+  test('reports a repeat whose key is spelled with an escape', () => {
+    const text = `---\nname: a-note\ndescription: first\n"descrip\\u0074ion": second\n---\n`
+    expect(parseFrontmatter(text)).toMatchObject({
+      scalars: { description: 'second' },
+      problems: [expect.stringContaining('more than once')],
+    })
+  })
+
+  // A backslash escapes the *next character*, a newline included, so a quoted
+  // key may be continued across lines where YAML allows a multi-line key — an
+  // explicit key, or inside a flow mapping. The token matcher has to follow the
+  // escape past the line end or it ends the token mid-key and nominates nothing.
+  test('reports a repeat whose quoted key is continued across a line', () => {
+    const explicit = `---\nname: a-note\ndescription: first\n? "descri\\\n  ption"\n: second\n---\n`
+    expect(parseFrontmatter(explicit)).toMatchObject({
+      scalars: { description: 'second' },
+      problems: [expect.stringContaining('more than once')],
+    })
+
+    const flow = `---\n{name: a-note, description: first, "descri\\\n  ption": second}\n---\n`
+    expect(parseFrontmatter(flow).problems).toEqual([expect.stringContaining('more than once')])
+  })
+
+  // ...and a quoted token that is not the key must not be nominated as one,
+  // which is what asking the parser rather than matching the name buys.
+  test('does not call another quoted key an occurrence of an indexed one', () => {
+    const text = `---\nname: a-note\ndescription: only one\n"metadata":\n  "type": project\n---\n`
+    expect(parseFrontmatter(text)).toMatchObject({
+      scalars: { description: 'only one' },
+      problems: [],
+    })
+  })
+
+  // The key name appearing inside a *value* is not an occurrence of the key.
+  // The nomination is loose on purpose, so what settles it is the parser: the
+  // rename lands in the value, the probe key is not at the root, nothing fires.
+  test('does not call the key name inside a value a repeat', () => {
+    const text = `---\nname: a-note\ndescription: a name: like this is text\n---\n`
+    expect(parseFrontmatter(text).problems)
+      .toEqual([expect.stringContaining('not valid YAML')])
+    const quoted = `---\nname: a-note\ndescription: "a name: like this is text"\n---\n`
+    expect(parseFrontmatter(quoted)).toMatchObject({
+      scalars: { description: 'a name: like this is text' },
+      problems: [],
+    })
+  })
+
   // Block scalar content is literal: a leading `&`, `!` or quote is text, not
   // scalar syntax, so it must not be run through the quoted-scalar reader.
   test('keeps block scalar content literal', () => {
@@ -692,9 +1014,11 @@ description: second`)
   })
 
   test('reports a flow collection used as a description', () => {
-    for (const value of ['[summary]', '{summary: text}']) {
+    const kinds = { '[summary]': 'a sequence', '{summary: text}': 'a mapping' }
+    for (const [value, kind] of Object.entries(kinds)) {
       const text = note('a-note', 'placeholder').replace('description: placeholder', `description: ${value}`)
-      expect(parseFrontmatter(text).problems).toEqual([expect.stringContaining('not text')])
+      expect(parseFrontmatter(text).problems)
+        .toEqual([expect.stringContaining(`is ${kind} rather than text`)])
     }
   })
 
@@ -714,6 +1038,41 @@ description: "note: a colon forces quoting"
 description: 'it''s quoted'
 ---
 `).scalars.description).toBe('it\'s quoted')
+  })
+
+  // A frontmatter block is a mapping of `name:` and `description:`. Anything
+  // else is valid YAML and has no keys to take, so it is reported rather than
+  // silently indexed as a note with neither. `Bun.YAML` also answers an array
+  // for a *multi-document* block, which lands in the same report.
+  test('reports frontmatter that is not a mapping', () => {
+    for (const body of ['- one\n- two', 'just a sentence', '42']) {
+      const text = `---\n${body}\n---\n`
+      expect(parseFrontmatter(text)).toMatchObject({
+        scalars: {},
+        problems: [expect.stringContaining('not a mapping')],
+      })
+    }
+  })
+
+  // An empty block is not malformed, only empty: the note has no `name:` and no
+  // `description:`, and `noteEntry` says exactly that. Calling it "not a
+  // mapping" would report a defect the frontmatter does not have.
+  test('treats an empty frontmatter block as a note with no keys', () => {
+    const text = '---\n\n---\n'
+    expect(parseFrontmatter(text)).toEqual({ scalars: {}, problems: [] })
+    expect(noteEntry('n.md', text).problems).toEqual([
+      expect.stringContaining('no `name:`'),
+      expect.stringContaining('no `description:`'),
+    ])
+  })
+
+  // `name:` is judged the same way `description:` is — it is the index entry's
+  // link text, so a number there is a label the frontmatter does not yield.
+  test('reports a name that YAML resolves to something that is not text', () => {
+    const text = '---\nname: 42\ndescription: real\n---\n'
+    expect(parseFrontmatter(text).problems).toEqual([expect.stringContaining('`name:` is the number `42`')])
+    // ...and the entry falls back to the file stem rather than listing `42`.
+    expect(noteEntry('a-note.md', text).name).toBe('a-note')
   })
 
   test('returns nothing for a note with no frontmatter', () => {
@@ -1030,31 +1389,23 @@ describe('parseFrontmatter — quoted scalars', () => {
     expect(parseFrontmatter(text).scalars.description).toBe('café café')
   })
 
-  // `\U` admits eight digits, so it can name something that is not a code
-  // point. That is a note to report, not a crash that takes every note with it.
-  test('leaves an out-of-range code point alone instead of throwing', () => {
-    const text = note('a-note', 'placeholder').replace(
-      'description: placeholder',
-      String.raw`description: "over \UFFFFFFFF the end"`,
-    )
-    expect(() => parseFrontmatter(text)).not.toThrow()
-    const { scalars, problems } = parseFrontmatter(text)
-    // The text is kept — a guess would be worse — but the note is flagged, so
-    // the difference between this reader and the one that loads the note into
-    // an agent's context cannot pass CI unnoticed.
-    expect(scalars.description).toBe(String.raw`over \UFFFFFFFF the end`)
-    expect(problems).toEqual([expect.stringContaining(String.raw`\UFFFFFFFF`)])
-  })
-
-  // An escape YAML does not define is invalid YAML, not something to guess at.
-  test('leaves an undefined escape exactly as written', () => {
-    const text = note('a-note', 'placeholder').replace(
-      'description: placeholder',
-      String.raw`description: "a\qb"`,
-    )
-    const { scalars, problems } = parseFrontmatter(text)
-    expect(scalars.description).toBe(String.raw`a\qb`)
-    expect(problems).toEqual([expect.stringContaining(String.raw`\q`)])
+  // An escape YAML does not define is invalid YAML, and `\U` admits eight
+  // digits, so it can also name something that is not a code point at all. The
+  // scanner had to decode escapes itself, which is why it needed a rule for
+  // each: an undefined letter, a value past 0x10FFFF, a surrogate. The parser
+  // refuses all three, and the only thing that still has to be true here is
+  // that a note it refuses comes back as a *report* — not as a throw that takes
+  // every other note's index down with it.
+  test('reports an escape YAML does not define, rather than throwing', () => {
+    for (const value of [String.raw`"over \UFFFFFFFF the end"`, String.raw`"a\qb"`]) {
+      const text = note('a-note', 'placeholder').replace('description: placeholder', `description: ${value}`)
+      expect(() => parseFrontmatter(text)).not.toThrow()
+      const { scalars, problems } = parseFrontmatter(text)
+      // No text is carried over from a document that does not parse: guessing
+      // at half of it is what put a value in the index that no reader yields.
+      expect(scalars.description).toBeUndefined()
+      expect(problems).toEqual([expect.stringContaining('not valid YAML')])
+    }
   })
 
   // A quote that never closes is not a plain scalar — the note's YAML does not
@@ -1064,16 +1415,21 @@ describe('parseFrontmatter — quoted scalars', () => {
     // is escaped. `endsWith` cannot tell those from a terminator.
     for (const broken of ['"unfinished', '\'unfinished', String.raw`"unfinished \"`, '"', String.raw`"a\"`]) {
       const text = note('a-note', 'placeholder').replace('description: placeholder', `description: ${broken}`)
-      expect(parseFrontmatter(text).problems).toEqual([expect.stringContaining('never closes it')])
+      expect(parseFrontmatter(text).problems).toEqual([expect.stringContaining('not valid YAML')])
     }
   })
 
-  // One callback carried two unrelated problem kinds, and only one of them
-  // passed a bare token: the other passed a whole sentence, which the caller
-  // then wrapped in "is double-quoted and holds `…`". So an unterminated
-  // single quote and a plain `&anchor` were both reported as double-quoted,
-  // each with a complete report nested inside another one.
-  test('describes a malformed scalar as the kind it actually is', () => {
+  // The scanner wrote a sentence per defect, and got the sentence wrong: one
+  // callback carried two unrelated problem kinds and wrapped a whole report
+  // inside another, so an unterminated single quote and a plain `&anchor` were
+  // both announced as double-quoted. `Bun.YAML`'s refusal is terse and always
+  // accurate instead — but terse is not actionable on a twenty-line block, and
+  // its `SyntaxError` carries no position into the YAML.
+  //
+  // So the position is recovered from the parser, and that is what this pins:
+  // every malformed spelling is reported against the frontmatter line it sits
+  // on, and no report nests a second one inside it.
+  test('names the frontmatter line a malformed scalar sits on', () => {
     const report = (value: string): string =>
       parseFrontmatter(`---
 name: a-note
@@ -1083,15 +1439,27 @@ metadata:
 ---
 `).problems[0] ?? ''
 
-    expect(report(String.raw`"holds \q here`.concat('"'))).toContain('is double-quoted and holds')
-    expect(report('&anchor')).toContain('anchor indicator')
-    expect(report(String.raw`'unclosed`)).toContain('never closes it')
-
-    // None of the others is double-quoted, and none nests a second report.
-    for (const value of [String.raw`"unclosed`, String.raw`'unclosed`, '&anchor', '*alias', '!tag']) {
-      expect(report(value)).not.toContain('is double-quoted and holds')
-      expect(report(value)).not.toContain('which YAML does not define')
+    for (const value of [String.raw`"holds \q here`.concat('"'), String.raw`"unclosed`, String.raw`'unclosed`, '*alias', '@tag']) {
+      expect(report(value)).toContain(`(line 2: \`description: ${value}\`)`)
+      expect(report(value)).toStartWith('the frontmatter is not valid YAML — ')
     }
+
+    // The line is the *last* one that still reads, not the first that fails: a
+    // quoted scalar that wraps cannot close on its own line, so reporting the
+    // first prefix that throws would name a line with nothing wrong with it.
+    expect(parseFrontmatter('---\nname: a-note\ndescription: "wraps\n  fine"\nstray: : x\n---\n').problems)
+      .toEqual([expect.stringContaining('(line 4: `stray: : x`)')])
+  })
+
+  // Locating the line costs one parse per line over a block whose own length
+  // grows with the line count, so the scan is bounded. Past the bound the
+  // refusal is still reported — it is the location that is dropped, and a
+  // block that large is malformed in a way its author can see unaided.
+  test('reports an oversized malformed block without locating the line', () => {
+    const filler = Array.from({ length: 300 }, (unused, at) => `key${at}: value`).join('\n')
+    const text = `---\nname: a-note\ndescription: "unterminated\n${filler}\n---\n`
+    expect(parseFrontmatter(text).problems).toEqual([expect.stringContaining('not valid YAML')])
+    expect(parseFrontmatter(text).problems[0]).not.toContain('(line ')
   })
 
   // Valid YAML: the comment is outside the quotes. Rejecting it would fail a
@@ -1110,19 +1478,33 @@ metadata:
     expect(parseFrontmatter(withComment('"the text" # a trailing note')).problems).toEqual([])
   })
 
-  // `&`, `*` and `!` cannot begin a plain scalar, so a value starting with one
-  // is a decoration this reader does not resolve — and keeping it would put the
-  // decoration in the index where the note's value is the text after it.
-  test('reports an anchor, alias or tag instead of indexing the decoration', () => {
+  // `&`, `*` and `!` cannot begin a plain scalar: a value starting with one is
+  // an anchor, an alias or a tag, and the text is what follows it. The scanner
+  // reported all three, because resolving an alias needs an anchor table and an
+  // anchor table is a YAML parser. Now there is one, so they resolve — and the
+  // index carries the text the note's value actually is, which is what it was
+  // reporting *for* (#168).
+  test('resolves an anchor, alias or tag to the text it stands for', () => {
     const cases: Record<string, string> = {
-      '&summary concrete summary': 'anchor',
-      '*summary': 'alias',
-      '!!str concrete summary': 'tag',
+      '&summary concrete summary': 'concrete summary',
+      '!!str concrete summary': 'concrete summary',
+      // A tag is also how a note writes a summary that would otherwise resolve
+      // to a number, so this one must come back as text and not be reported.
+      '!!str 42': '42',
     }
-    for (const [value, name] of Object.entries(cases)) {
+    for (const [value, resolved] of Object.entries(cases)) {
       const text = note('a-note', 'placeholder').replace('description: placeholder', `description: ${value}`)
-      expect(parseFrontmatter(text).problems).toEqual([expect.stringContaining(name)])
+      expect(parseFrontmatter(text)).toMatchObject({ scalars: { description: resolved }, problems: [] })
     }
+
+    // An alias resolves against the anchor it names...
+    const anchored = '---\nname: &summary a-note\ndescription: *summary\n---\n'
+    expect(parseFrontmatter(anchored)).toMatchObject({ scalars: { description: 'a-note' }, problems: [] })
+
+    // ...and one that names nothing is a document no reader can load, which is
+    // reported rather than indexed as the four characters `*sum`.
+    const dangling = note('a-note', 'placeholder').replace('description: placeholder', 'description: *summary')
+    expect(parseFrontmatter(dangling).problems).toEqual([expect.stringContaining('Unresolved alias')])
   })
 
   // YAML drops an escaped line break *and* the indentation after it, where
@@ -1142,14 +1524,20 @@ metadata:
     expect(scalars.description).toBe('one\\ two')
   })
 
-  // A note whose frontmatter this reader and the real one may read differently
-  // has to fail the gate, not list with text neither of them agreed on.
+  // A note no reader can load has to fail the gate, not list with text nothing
+  // agreed on. Asserted through `noteEntry`, because that is the path `--check`
+  // takes: a block the parser refuses yields no `name:` and no `description:`
+  // either, and all three lines are true of the note at once.
   test('an undefined escape makes the note fail --check', () => {
     const text = note('a-note', 'placeholder').replace(
       'description: placeholder',
       String.raw`description: "a\qb"`,
     )
-    expect(noteEntry('n.md', text).problems).toEqual([expect.stringContaining(String.raw`\q`)])
+    expect(noteEntry('n.md', text).problems).toEqual([
+      expect.stringContaining('not valid YAML'),
+      expect.stringContaining('no `name:`'),
+      expect.stringContaining('no `description:`'),
+    ])
   })
 })
 
