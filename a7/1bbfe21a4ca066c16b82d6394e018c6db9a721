@@ -1,0 +1,19 @@
+.claude/agent-memory/review-review-silent-failure-hunter/project_pr194_session_ts_storage_swallow.md
+  s_b7c0aca07e94f1::t_e20a3e000b03d6 3,17-21,37-39
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "a71bbfe21a4ca066c16b82d6394e018c6db9a721",
+  "prompts": {},
+  "sessions": {
+    "s_b7c0aca07e94f1": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "4951d865-cc4f-4262-a023-49a2ace4a99d",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
