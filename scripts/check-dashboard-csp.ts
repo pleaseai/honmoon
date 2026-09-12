@@ -103,6 +103,50 @@ const URL_ATTR = /\b(src|href)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'>]+))/gi
  */
 const JAVASCRIPT_URL = /^\s*javascript:/i
 
+/** A character reference inside an attribute value: `&#x73;`, `&#115;`, `&amp;`. */
+const CHAR_REF = /&(?:#x([0-9a-f]+)|#(\d+)|([a-z][a-z0-9]*));?/gi
+
+/** The named references that can appear in a scheme or in one that hides a scheme. */
+const NAMED_REFS: Record<string, string> = {
+  amp: '&',
+  colon: ':',
+  lt: '<',
+  gt: '>',
+  quot: '"',
+  apos: '\'',
+  tab: '\t',
+  newline: '\n',
+  NewLine: '\n',
+}
+
+/**
+ * An attribute value as the *browser* sees it, not as the file spells it.
+ *
+ * The HTML parser resolves character references before anything reads the value
+ * as a URL, so `href="java&#x73;cript:go()"` is a `javascript:` URL to a browser
+ * while a raw-prefix test sees a relative path — it bypassed both the scheme
+ * check and {@link OFF_ORIGIN}, since `&` ends the scheme grammar there too.
+ *
+ * Decoded once, deliberately: `&amp;#x73;` is the literal text `&#x73;` in the
+ * DOM, not a second reference, so decoding twice would invent a finding.
+ * Control characters are dropped because a browser strips them from a scheme
+ * (`java\tscript:` navigates), which is the other half of the same evasion.
+ */
+export function decodeAttr(value: string): string {
+  return value
+    .replace(CHAR_REF, (whole, hex, dec, name) => {
+      if (hex !== undefined) {
+        return String.fromCodePoint(Number.parseInt(hex, 16))
+      }
+      if (dec !== undefined) {
+        return String.fromCodePoint(Number.parseInt(dec, 10))
+      }
+      return NAMED_REFS[name] ?? NAMED_REFS[name.toLowerCase()] ?? whole
+    })
+    // eslint-disable-next-line no-control-regex -- stripping them is the point
+    .replace(/[\u0000-\u0020\u007F]/g, c => (c === ' ' ? ' ' : ''))
+}
+
 /**
  * Elements whose `href` is a *navigation*, not a subresource load.
  *
@@ -184,7 +228,8 @@ export function checkShell(html: string, shell: string): Problem[] {
   for (const [, tag, attrs] of html.matchAll(OPEN_TAG)) {
     const element = tag.toLowerCase()
     for (const [attr, name, doubleQuoted, singleQuoted, bare] of attrs.matchAll(URL_ATTR)) {
-      const url = doubleQuoted ?? singleQuoted ?? bare ?? ''
+      const raw = doubleQuoted ?? singleQuoted ?? bare ?? ''
+      const url = decodeAttr(raw)
       if (JAVASCRIPT_URL.test(url)) {
         note(`<${element}> carries a javascript: URL, which \`script-src 'self'\` refuses: ${attr}`)
         continue

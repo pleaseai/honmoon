@@ -73,7 +73,10 @@ vacuously. `scripts/check-dashboard-csp.ts` is the guard instead: it runs after 
 `href` on a *subresource* element, a `javascript:` URL anywhere, an inline handler (quoted or not), a
 `<base>`, a `<form>`, a `<script>` opening tag it could not read to a `</script>` — and a shell with
 no `<script>` at all, which is how it refuses to pass on that placeholder. Attribute values need not
-be quoted, and a quoted `>` does not end a tag; both were misses fixed under review.
+be quoted, a quoted `>` does not end a tag, and values are decoded the way the HTML parser decodes
+them (`java&#x73;cript:`, `javascript&colon;`, an embedded tab) before the scheme is read — all
+three were misses fixed under review, so do not re-report them. Decoding is deliberately one pass:
+`&amp;#x73;` is literal text in the DOM, and a second pass would invent a finding on a working link.
 
 **An external `<a href>` is deliberately NOT a finding** and re-reporting it is wrong: CSP governs
 what the document fetches, not where a link takes the reader, so failing CI over a working link

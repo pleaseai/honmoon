@@ -139,6 +139,28 @@ describe('checkShell', () => {
     expect(details(BUILT_SHELL.replace('<div id="root">', '<a href="#/audit">a</a><div id="root">')))
       .toEqual([])
   })
+
+  // The HTML parser resolves these before anything reads the value as a URL, so
+  // a raw-prefix test sees a relative path where the browser sees script.
+  test.each([
+    ['hex', 'java&#x73;cript:go()'],
+    ['decimal', 'java&#115;cript:go()'],
+    ['a named colon', 'javascript&colon;go()'],
+    ['an embedded tab', 'java\tscript:go()'],
+  ])('an entity-hidden javascript: URL (%s) still fails', (_label, href) => {
+    const hidden = BUILT_SHELL.replace('<div id="root">', `<a href="${href}">a</a><div id="root">`)
+    expect(details(hidden)).toEqual([expect.stringContaining('javascript: URL')])
+  })
+
+  // `&amp;#x73;` is the literal text `&#x73;` in the DOM, not a second
+  // reference — decoding twice would invent a finding on a working link.
+  test('a doubly-escaped reference is text, not a scheme', () => {
+    const literal = BUILT_SHELL.replace(
+      '<div id="root">',
+      '<a href="/audit?q=java&amp;#x73;cript">a</a><div id="root">',
+    )
+    expect(details(literal)).toEqual([])
+  })
 })
 
 describe('checkShells', () => {
