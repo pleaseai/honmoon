@@ -1491,7 +1491,7 @@ fn declares_trailer(headers: &header::HeaderMap, name: &header::HeaderName) -> b
 /// framings on one HTTP/1.1 wire, the CL.TE ambiguity RFC 9112 §6.1 forbids an
 /// intermediary from forwarding (CWE-444). An h2 client leg reaches this: h2
 /// reads only the first `content-length` for its own accounting
-/// (`h2-0.4.16/src/proto/streams/recv.rs:182`) and rejects no duplicate, and
+/// (`h2-0.4.15/src/proto/streams/recv.rs:179`) and rejects no duplicate, and
 /// hyper's h2 server forwards both field lines once its own parse returns
 /// `None`. The h1 client leg cannot — hyper's server decoder rejects the
 /// request outright (`role.rs:281-288`).

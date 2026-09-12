@@ -61,7 +61,9 @@ never signed and the upstream rejected the signature.
 **Framing headers honmoon writes itself (#136, PR #180).** `mitm.rs::framed_for_trailers` appends
 `Transfer-Encoding: chunked` + `Trailer: <names>` to a pass-through request that carries a retained
 trailer frame, and relies on hyper to reconcile the pair per leg. Verified once in hyper 1.10.1 /
-h2 0.4.16 / hyper-util 0.1.20 / hudsucker 0.24.1 — do not re-derive:
+h2 0.4.15 / hyper-util 0.1.20 / hudsucker 0.24.1 (the versions `Cargo.lock` resolves — the
+registry cache also holds an h2 0.4.16, which is *not* what this workspace builds) — do not
+re-derive:
 - h1 `set_length` (`proto/h1/role.rs:1350-1428`) removes `Content-Length` only when
   `should_remove_con_len && existing_con_len.is_some()`, and `content_length_parse_all` returns
   `None` for *conflicting or unparseable duplicate* CL fields. So "the h1 leg drops the
@@ -75,7 +77,8 @@ h2 0.4.16 / hyper-util 0.1.20 / hudsucker 0.24.1 — do not re-derive:
   `a_contradictory_content_length_declines_the_reframe` and
   `only_a_content_length_hyper_can_drop_is_unambiguous`. Do not re-flag; do re-check the guard
   still fronts the `Transfer-Encoding` append if `framed_for_trailers` is restructured.
-- That input is reachable: h2 0.4.16 `recv_headers` reads CL with `fields().get()` (first value
+- That input is reachable: h2 0.4.15 `recv_headers` (`proto/streams/recv.rs:179`) reads CL with
+  `fields().get()` (first value
   only) and never rejects a duplicate; hyper's h2 server keeps both fields; hudsucker
   `normalize_request` joins `Cookie` and forces `HTTP_11` but does not touch `Content-Length`.
   hyper's *h1* server does reject conflicting CL, so the vector is the h2 client leg only.
