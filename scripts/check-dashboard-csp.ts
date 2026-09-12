@@ -29,6 +29,13 @@
  * over a working link would be its own version of "a CSP that breaks the
  * dashboard is worse than none".
  *
+ * Every URL it does judge is resolved with `new URL`, not matched by pattern.
+ * Four rounds of review found four ways a pattern reads a URL differently from
+ * the browser that will fetch it — a hidden scheme, a hidden authority, a
+ * leading space, a backslash — so the parser decides, and this file only
+ * decodes the character references that come before it (an HTML-level step the
+ * URL parser does not do).
+ *
  * **Scope: the shell's own markup, not the code it loads.** This reads
  * `index.html` and nothing else, so it is a guard on the shell's `<script>`
  * tags rather than on everything `script-src 'self'` implies. It would not see
@@ -94,14 +101,21 @@ const OPEN_TAG = new RegExp(String.raw`<([a-z][a-z0-9-]*)\b(${ATTRS})>`, 'gi')
 const URL_ATTR = /\b(src|href)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'>]+))/gi
 
 /**
- * A `javascript:` URL — script, wherever it is carried.
+ * The origin the shell is served from, for resolving the URLs in it.
  *
- * `script-src 'self'` refuses one (it needs `'unsafe-inline'`), so it is a
- * finding even in an `href` the navigation exemption below would otherwise skip:
- * that exemption exists because a *navigation* is not a fetch, and this is not a
- * navigation, it is code.
+ * The host is arbitrary — only "same as this" and "not this" are ever asked —
+ * but the resolution is not, and deciding it by pattern is what kept going
+ * wrong. `new URL` is the parser a browser uses, so it applies the rules a
+ * regex over the raw text cannot see: leading spaces and control characters are
+ * stripped before the scheme is read, a tab inside the scheme is removed
+ * (`java<TAB>script:` *is* a `javascript:` URL), and a backslash stands in for
+ * a slash in the authority, so `/\\cdn.example/x` leaves this origin rather
+ * than being the path it looks like.
  */
-const JAVASCRIPT_URL = /^\s*javascript:/i
+const SHELL_BASE = 'https://dashboard.invalid/index.html'
+
+/** {@link SHELL_BASE}'s origin, the one value every resolved URL is compared to. */
+const SHELL_ORIGIN = new URL(SHELL_BASE).origin
 
 /** A character reference inside an attribute value: `&#x73;`, `&#115;`, `&amp;`. */
 const CHAR_REF = /&(?:#x([0-9a-f]+)|#(\d+)|([a-z][a-z0-9]*));?/gi
@@ -132,52 +146,65 @@ const NAMED_REFS: Record<string, string> = {
 }
 
 /**
- * A named reference {@link NAMED_REFS} does not cover, left in place by the decode.
+ * A named reference {@link NAMED_REFS} does not cover.
  *
- * The `;` is required, so an ordinary query separator (`?a=1&b=2`) is not read
- * as one — the four legacy names a browser honours unterminated (`&amp`, `&lt`,
- * `&gt`, `&quot`) cannot spell a scheme or an authority, so nothing hides there.
+ * Matched against the raw attribute token by token, not against what the decode
+ * left behind: `&amp;hellip;` is one reference the table knows followed by the
+ * literal text `hellip;`, and scanning the decoded value would read that text
+ * back as a second reference and fail the build over a working link. A `;` is
+ * required for the same reason — `?a=1&b=2` is a query string, and the four
+ * legacy names a browser honours unterminated (`&amp`, `&lt`, `&gt`, `&quot`)
+ * spell neither a scheme nor an authority.
  */
-const UNKNOWN_REF = /&[a-z][a-z0-9]*;/i
+const UNKNOWN_REF = /^[a-z][a-z0-9]*$/i
 
 /**
- * An attribute value as the *browser* sees it, not as the file spells it.
+ * A numeric reference's character, the way the HTML parser resolves one.
  *
- * The HTML parser resolves character references before anything reads the value
- * as a URL, so `href="java&#x73;cript:go()"` is a `javascript:` URL to a browser
- * while a raw-prefix test sees a relative path — it bypassed both the scheme
- * check and {@link OFF_ORIGIN}, since `&` ends the scheme grammar there too.
- *
- * Decoded once, deliberately: `&amp;#x73;` is the literal text `&#x73;` in the
- * DOM, not a second reference, so decoding twice would invent a finding.
- * Control characters are dropped because a browser strips them from a scheme
- * (`java\tscript:` navigates), which is the other half of the same evasion.
- *
- * A name outside {@link NAMED_REFS} is left as written, which the caller then
- * reports — the table's gaps have to fail the build rather than pass it, the
- * same stance the unreadable-`<script>` rule takes above.
+ * `&#0;`, a lone surrogate, and anything past the last plane all parse to
+ * U+FFFD per the spec. `String.fromCodePoint` throws a `RangeError` on each,
+ * which in CI is a stack trace where a finding belongs — and the shell that
+ * produced it goes unchecked either way.
  */
 function fromCodePoint(code: number): string {
-  // What a browser does with one the spec calls out: `&#0;`, a lone surrogate,
-  // and anything past the last plane all parse to U+FFFD. `fromCodePoint`
-  // throws a `RangeError` on each, which in CI is a stack trace where a finding
-  // belongs — and the shell that produced it goes unchecked either way.
   if (code === 0 || code > 0x10FFFF || (code >= 0xD800 && code <= 0xDFFF)) {
     return '\uFFFD'
   }
   return String.fromCodePoint(code)
 }
 
-export function decodeAttr(value: string): string {
-  return value
-    .replace(CHAR_REF, (whole, hex, dec, name) => {
-      if (hex !== undefined || dec !== undefined) {
-        return fromCodePoint(Number.parseInt(hex ?? dec, hex === undefined ? 10 : 16))
-      }
-      return NAMED_REFS[name] ?? whole
-    })
-    // eslint-disable-next-line no-control-regex -- stripping them is the point
-    .replace(/[\u0000-\u0020\u007F]/g, c => (c === ' ' ? ' ' : ''))
+/**
+ * An attribute value with its character references resolved, as the HTML parser
+ * resolves them before anything reads the value as a URL.
+ *
+ * Without this, `href="java&#x73;cript:go()"` reads as a relative path here and
+ * as a `javascript:` URL in a browser.
+ *
+ * Decoded once, deliberately: `&amp;#x73;` is the literal text `&#x73;` in the
+ * DOM, not a second reference, so decoding twice would invent a finding.
+ *
+ * `unknown` names a reference the table does not cover, for the caller to
+ * report. Its gaps have to fail the build rather than pass it — the stance the
+ * unreadable-`<script>` rule takes above — because an undecoded name could be
+ * standing in for the `:` or the `/` the caller is about to look for.
+ *
+ * Nothing else is normalised here: whitespace, control characters and
+ * backslashes are the URL parser's business, and {@link SHELL_BASE} says why
+ * deciding them with a pattern is what kept going wrong.
+ */
+export function decodeAttr(value: string): { url: string, unknown: string | null } {
+  let unknown: string | null = null
+  const url = value.replace(CHAR_REF, (whole, hex, dec, name) => {
+    if (hex !== undefined || dec !== undefined) {
+      return fromCodePoint(Number.parseInt(hex ?? dec, hex === undefined ? 10 : 16))
+    }
+    const decoded = NAMED_REFS[name]
+    if (decoded === undefined && whole.endsWith(';') && UNKNOWN_REF.test(name)) {
+      unknown ??= whole
+    }
+    return decoded ?? whole
+  })
+  return { url, unknown }
 }
 
 /**
@@ -200,12 +227,6 @@ const NAVIGATION_HREF = new Set(['a', 'area'])
  * pass a shell the browser would break on.
  */
 const EVENT_ATTR = /\son[a-z]+\s*=/i
-
-/**
- * A URL that leaves this origin: any scheme (`https:`, `data:`, `blob:`) or a
- * protocol-relative `//host`. A path — `/assets/x.js`, `./demo-mode.js` — stays.
- */
-const OFF_ORIGIN = /^(?:[a-z][a-z0-9+.-]*:|\/\/)/i
 
 /** One thing wrong with one shell. */
 export interface Problem {
@@ -261,24 +282,36 @@ export function checkShell(html: string, shell: string): Problem[] {
   for (const [, tag, attrs] of html.matchAll(OPEN_TAG)) {
     const element = tag.toLowerCase()
     for (const [attr, name, doubleQuoted, singleQuoted, bare] of attrs.matchAll(URL_ATTR)) {
-      const raw = doubleQuoted ?? singleQuoted ?? bare ?? ''
-      const url = decodeAttr(raw)
-      if (UNKNOWN_REF.test(url)) {
+      const { url, unknown } = decodeAttr(doubleQuoted ?? singleQuoted ?? bare ?? '')
+      if (unknown !== null) {
         note(
-          `<${element}> carries a character reference this check cannot decode, so it cannot `
-          + `tell where the URL points — refusing to pass on it: ${attr}`,
+          `<${element}> carries the character reference \`${unknown}\`, which this check cannot `
+          + `decode, so it cannot tell where the URL points — refusing to pass on it: ${attr}`,
         )
         continue
       }
-      if (JAVASCRIPT_URL.test(url)) {
+
+      let resolved: URL
+      try {
+        resolved = new URL(url, SHELL_BASE)
+      }
+      catch {
+        // Unparseable to this parser is unparseable to the check, while a
+        // browser may still make something of it — so it fails rather than
+        // passes, as everything else this file cannot read does.
+        note(`<${element}> carries a URL this check could not parse: ${attr}`)
+        continue
+      }
+
+      if (resolved.protocol === 'javascript:') {
         note(`<${element}> carries a javascript: URL, which \`script-src 'self'\` refuses: ${attr}`)
         continue
       }
       if (name.toLowerCase() === 'href' && NAVIGATION_HREF.has(element)) {
         continue
       }
-      // A fragment link (`href="#/audit"`) never leaves the document.
-      if (url.startsWith('#') || !OFF_ORIGIN.test(url)) {
+      // A fragment link (`href="#/audit"`) resolves to this very document.
+      if (resolved.origin === SHELL_ORIGIN) {
         continue
       }
       note(

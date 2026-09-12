@@ -78,14 +78,24 @@ them (`java&#x73;cript:`, `javascript&colon;`, an embedded tab) before the schem
 three were misses fixed under review, so do not re-report them. Decoding is deliberately one pass:
 `&amp;#x73;` is literal text in the DOM, and a second pass would invent a finding on a working link.
 
-**`NAMED_REFS` is a deliberate subset and its gaps are closed by `UNKNOWN_REF`, not by growing it.**
-A name the table does not cover is left in place and then *reported* — "cannot decode, refusing to
-pass" — the same stance as the unreadable-`<script>` rule, so a finding of the form "the table is
-missing `&<name>;`" is answered by that rule rather than by an edit. The `;` is required there so an
-ordinary query separator (`?a=1&b=2`) is not read as a reference; the four legacy names a browser
-honours unterminated cannot spell a scheme or an authority. Malformed numeric references
-(`&#x110000;`, a lone surrogate, `&#0;`) decode to U+FFFD as the spec says rather than throwing —
-a `RangeError` in CI is a stack trace where a finding belongs, and leaves the shell unchecked.
+**Whether a URL is off-origin or `javascript:` is decided by `new URL`, not by a pattern — and a
+finding proposing a pattern for it is going backwards.** Four review rounds found four ways a regex
+reads a URL differently from the browser that will fetch it: a hidden scheme (`java&#x73;cript:`), a
+hidden authority (`&sol;&sol;host`), a leading space (` https://host`, which a browser strips before
+reading the scheme), and a backslash authority (`/\host`, which a browser reads as `//host`). The
+parser handles all four and every later one of that shape, so the only normalisation left in this
+file is the HTML-level character-reference decode that must happen *before* the parser sees the
+value. An unparseable URL is reported, not skipped.
+
+**`NAMED_REFS` is a deliberate subset and its gaps are closed by reporting, not by growing it.** A
+name the table does not cover is reported — "cannot decode, refusing to pass" — the same stance as
+the unreadable-`<script>` rule, so a finding of the form "the table is missing `&<name>;`" is
+answered by that rule rather than by an edit. Two guards keep that from failing a working link, and
+both are tested: the scan runs over the *raw* attribute token by token, so `&amp;hellip;` is one
+known reference plus literal text rather than an unknown one; and a `;` is required, so `?a=1&b=2`
+is a query string. Malformed numeric references (`&#x110000;`, a lone surrogate, `&#0;`) decode to
+U+FFFD as the spec says rather than throwing — a `RangeError` in CI is a stack trace where a finding
+belongs, and leaves the shell unchecked.
 
 **An external `<a href>` is deliberately NOT a finding** and re-reporting it is wrong: CSP governs
 what the document fetches, not where a link takes the reader, so failing CI over a working link

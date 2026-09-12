@@ -171,6 +171,21 @@ describe('checkShell', () => {
     expect(details(query)).toEqual([])
   })
 
+  // A browser strips the space before reading the scheme, and reads a backslash
+  // as a slash in the authority. Deciding either by pattern is what `new URL`
+  // is here to stop.
+  test.each([
+    ['leading whitespace', ' https://cdn.example/app.js'],
+    ['a backslash authority', '/\\cdn.example/app.js'],
+    ['a protocol-relative URL', '//cdn.example/app.js'],
+  ])('an off-origin URL normalised by the browser (%s) fails', (_label, href) => {
+    const off = BUILT_SHELL.replace(
+      '<div id="root">',
+      `<link rel="stylesheet" href="${href}"><div id="root">`,
+    )
+    expect(details(off)).toEqual([expect.stringContaining('<link> loads from off this origin')])
+  })
+
   // The table is a subset on purpose, so its gaps have to fail rather than pass.
   test('a reference the table does not cover is refused, not passed through', () => {
     const unknown = BUILT_SHELL.replace(
@@ -193,6 +208,17 @@ describe('checkShell', () => {
 
   // `&amp;#x73;` is the literal text `&#x73;` in the DOM, not a second
   // reference — decoding twice would invent a finding on a working link.
+  // `&amp;hellip;` is one reference the table knows plus the literal text
+  // `hellip;` — scanning what the decode left behind would read that back as a
+  // second reference and fail the build over a working link.
+  test('a doubly-escaped unknown name is text, not an undecodable reference', () => {
+    const literal = BUILT_SHELL.replace(
+      '<div id="root">',
+      '<a href="/audit?q=&amp;hellip;">a</a><div id="root">',
+    )
+    expect(details(literal)).toEqual([])
+  })
+
   test('a doubly-escaped reference is text, not a scheme', () => {
     const literal = BUILT_SHELL.replace(
       '<div id="root">',
