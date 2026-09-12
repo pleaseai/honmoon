@@ -1,12 +1,15 @@
 ---
 name: audit-symlink-walk-untested-branches
-description: "What is and is not covered in the audit sink's openat walk (crates/honmoon-core/src/audit.rs) as merged by PR #179 — plus the macOS /var -> private/var effect that makes one branch's coverage platform-dependent, and which two gaps were left open deliberately"
+description: "What is and is not covered in the audit sink's openat walk (crates/honmoon-core/src/audit.rs) as merged by PR #179 — plus the macOS /var -> private/var effect that makes one branch's coverage platform-dependent, and which three gaps were left open deliberately"
 metadata:
   type: project
 ---
 
 `open_sink_file` in `crates/honmoon-core/src/audit.rs` walks an audit path
 component-by-component with `openat(O_NOFOLLOW|O_DIRECTORY)` (issue #160, PR #179).
+A directory open denied with `EACCES` is retried once for traversal only (`O_SEARCH`
+on macOS, `O_PATH` on Linux), because resolving a path needs search permission while
+opening a directory `O_RDONLY` also needs read.
 The inline test module is thorough — strong `err.kind()` plus message-substring
 assertions throughout, never bare `is_err()`.
 
@@ -33,8 +36,11 @@ directory being untrusted, which pins `mode & 0o022` against a narrowing to
 `0o002` (note `0o750` does *not* test this — group `r-x` has no write bit, a
 mistake worth not repeating); a relative symlink target; a 48-link chain past the
 40-hop budget, paired with a 4-link chain that still resolves so the test cannot
-pass by refusing symlinks outright; concurrent creation of one new sink; and the
-three path shapes that name a directory rather than a file.
+pass by refusing symlinks outright; concurrent creation of one new sink; a sink opened under a
+search-only (`0o311`) parent, which pins the `EACCES` traversal retry and asserts
+the host actually denies a read-open of that directory first, so the test cannot
+pass on a host where the restriction was never enforced; and the three path shapes
+that name a directory rather than a file.
 
 **Left uncovered deliberately, with the reasons** — do not re-file these without
 new argument:
@@ -43,6 +49,13 @@ new argument:
   `--audit-log` arrives through argv and `HONMOON_AUDIT_LOG` through environ, both
   NUL-terminated by the OS. It is defence-in-depth over an unreachable input, and a
   test would be testing `CString::new`.
+- **The traversal retry's own failure arm.** When the `O_TRAVERSE` re-attempt also
+  fails, its error is returned. Reaching it needs a directory that denies both read
+  and search, whose `EACCES` is then indistinguishable from the first attempt's —
+  the assertion would not tell the two arms apart, so it would not be evidence.
+  Likewise the `not(macos, linux)` arm where `O_TRAVERSE` is `O_RDONLY` and the
+  retry repeats the failed attempt: CI runs no such target, so a test for it would
+  not execute anywhere.
 - **`SINK_OPEN_ATTEMPTS` (4) exhaustion.** Covered probabilistically by the
   concurrent-create race test. Driving the loop to its bound deterministically needs
   syscall injection this crate has no harness for.

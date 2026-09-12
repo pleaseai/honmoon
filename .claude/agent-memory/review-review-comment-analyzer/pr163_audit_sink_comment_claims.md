@@ -46,9 +46,10 @@ smaller grain, flagged during review before merge:**
   one place and a qualified/contradicting version of the same rule nearby, the short
   version is usually the stale one — diff both.
 - `unusable_path`'s doc claimed it reports a bad path "before any syscall is made." True
-  for two of its four call sites (an unreachable Windows-only `Component::Prefix` check,
-  and the trailing-slash/no-leaf checks, all before `open_walk_root` runs) — false for the
-  other two, which fire only after the walk has already run several `openat`/`fstatat`/
+  for three of its five call sites in `open_sink_file` (an unreachable Windows-only
+  `Component::Prefix` check, the "names a directory" check, and the "has no final
+  file-name component" check, all before `open_walk_root` runs) — false for the other
+  two, which fire only after the walk has already run several `openat`/`fstatat`/
   `readlinkat` calls (the `MAX_SYMLINK_HOPS` bound, and a `Component::Prefix` found inside
   an already-resolved symlink target). A shared helper's doc comment describing "when it
   runs" needs checking against *every* call site, not just the one nearest the doc.

@@ -8,6 +8,9 @@ metadata:
 `crates/honmoon-core/src/audit.rs::open_sink_file` (PR #179, closing #160) replaces the single
 `O_NOFOLLOW` open (which only guarded the final path component) with a component-by-component
 `openat(O_NOFOLLOW | O_DIRECTORY)` walk from a trusted root (`/` for absolute, cwd for relative).
+A directory open refused with `EACCES` is retried once with a traversal-only access mode
+(`O_SEARCH` on macOS, `O_PATH` on Linux), so a search-but-not-readable parent still resolves
+the way the whole-path `open` it replaced did.
 A symlinked directory component is followed only when the directory holding it is writable by
 nobody but root/euid (`mode & 0o022 == 0` and `uid == 0 || uid == euid`); the followed target's
 components are spliced back into the walk queue (front-pushed in reverse order — verified
