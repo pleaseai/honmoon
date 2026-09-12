@@ -1,0 +1,43 @@
+crates/honmoon-core/src/lib.rs
+  s_7db3fc1f2a128c::t_d45e5cb87a442a 21-22
+crates/honmoon-core/tests/audit_sink_exposure.rs
+  s_c76fd182d547f6::t_303e0b51fb1ed8 1-10,13-59,65,71-116,121-122
+  s_c76fd182d547f6::t_0ddbd204db9735 11-12
+  s_c76fd182d547f6::t_4eb54217c74861 60-64,66-70,117-120
+crates/honmoon-core/src/audit.rs
+  s_7db3fc1f2a128c::t_cbddd466d556e1 382-392,395-396,400-402,611,616-617,628-717,723-731
+  s_c76fd182d547f6::t_9dd31d3a47595c 718-722
+  s_c76fd182d547f6::t_88fd4fa1f50c1c 1971-1974,1998-2001,2006-2008,2014-2045,2049-2062,2067-2107
+  s_c76fd182d547f6::t_8d74c358632b0d 2063-2066
+  s_7db3fc1f2a128c::t_d45e5cb87a442a 579-582,602-610
+  s_c76fd182d547f6::t_55fa4b349e33e8 195-196
+  s_c76fd182d547f6::t_ace67c6872989e 227
+  s_7db3fc1f2a128c::t_d24ac5a9d6a4b5 60-61,177-194,197-204,206-226,228-273,293-298,311
+  s_c76fd182d547f6::t_d1c00787447fd0 205
+  s_c76fd182d547f6::t_4eb54217c74861 2002-2005,2009-2013
+  s_c76fd182d547f6::t_7af3413cf97dff 2108
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "43c239f0c0057a19e57b18ef75d6cf929c4cc191",
+  "prompts": {},
+  "sessions": {
+    "s_7db3fc1f2a128c": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "544346df-e5b2-41b1-a74f-caed9493ccf6",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    },
+    "s_c76fd182d547f6": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "4b37fffc-f5b8-4ce5-a33b-d8be2892e2a7",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
