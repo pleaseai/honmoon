@@ -221,15 +221,24 @@ function failingLine(lines: string[]): { number: number, text: string } | undefi
  * would have turned the probe off, and turning a check off on the strength of
  * the note's own content is how a reader stops reading. There are 6400 of them
  * and two are needed, so a note has to carry 6399 distinct ones to run this out.
+ *
+ * Both the source *and* what it resolves to are searched, because those differ:
+ * `description: "quoted \\uE000 # still text"` holds no private-use character as
+ * text, and holds one after the parser decodes the escape. Searching the source
+ * alone picks U+E000, the restore step then rewrites the note's own character
+ * along with the mask, and a correctly quoted value is reported as cut. The
+ * comparison is against resolved values, so that is where the stand-ins have to
+ * be absent from.
  */
 const PRIVATE_USE_FIRST = 0xE000
 const PRIVATE_USE_LAST = 0xF8FF
 
-function probeCharacters(source: string): [string, string] | undefined {
+function probeCharacters(source: string, mapping: Mapping): [string, string] | undefined {
+  const resolved = Object.values(mapping).filter(value => typeof value === 'string').join('')
   let first: string | undefined
   for (let point = PRIVATE_USE_FIRST; point <= PRIVATE_USE_LAST; point++) {
     const character = String.fromCodePoint(point)
-    if (source.includes(character)) {
+    if (source.includes(character) || resolved.includes(character)) {
       continue
     }
     if (first === undefined) {
@@ -335,14 +344,20 @@ function maskComment(source: string, offset: number, hash: string, colon: string
  * shape refuses, and an oracle over 306 plain values missed no cut.
  */
 function commentedOut(source: string, mapping: Mapping, problems: string[]): void {
-  const probes = probeCharacters(source)
+  // Nothing to mask means nothing to answer, and a note with no inline `#` is
+  // not owed a report about the reader's ability to probe one.
+  const offsets = [...inlineHashes(source)]
+  if (offsets.length === 0) {
+    return
+  }
+  const probes = probeCharacters(source, mapping)
   if (probes === undefined) {
     problems.push('the frontmatter uses every private-use character, leaving this reader nothing to mask a `#` with — it cannot check whether a comment cut a value short')
     return
   }
   const [hash, colon] = probes
   const reported = new Set<string>()
-  for (const offset of inlineHashes(source)) {
+  for (const offset of offsets) {
     if (reported.size === INDEXED_KEYS.length) {
       return
     }
@@ -370,6 +385,53 @@ function commentedOut(source: string, mapping: Mapping, problems: string[]): voi
 }
 
 /**
+ * A quoted scalar sitting where a mapping key goes, with its quotes.
+ *
+ * Written to be *wide*: what it selects is ruled on by the parser, so a quoted
+ * value picked up by mistake costs one tiny parse and a quoted key missed costs
+ * a report.
+ */
+const QUOTED_KEY = /(['"])(?:\\.|(?!\1)[^\\])*\1(?=[ \t]*[:\r\n])/g
+
+/**
+ * Where in the block a key is written, over every spelling of it.
+ *
+ * Three shapes reach the same mapping key and discard a repeat as silently as
+ * each other: the bare `description:`, an explicit key (`? description` over
+ * `: text`), and any quoted spelling — `"description":`, `'description':`, and
+ * `"description":`, which is the same key to a reader that decodes escapes.
+ *
+ * That last one is why the quoted spellings are not matched by name. Deciding
+ * from the source what `"description"` spells means decoding YAML escapes
+ * here, and a transcription of the escape table is the scanner this file
+ * replaced. The parser is asked instead: a quoted key token *is* a YAML
+ * document, so reading it says which key it is, and no escape rule is written
+ * here at all.
+ *
+ * Each offset carries a length because the rename replaces what was matched:
+ * the name for a bare key, the whole token — quotes and all — for a quoted one.
+ */
+function keyOccurrences(source: string, name: string): { at: number, length: number }[] {
+  // Loose on purpose: this only *nominates* offsets for the parser to rule on,
+  // so one nominated wrongly costs a probe and one missed costs a report, never
+  // a wrong one. `String.raw`, because a plain template literal decodes the
+  // `\s`/`\t` and puts the characters themselves in the pattern — which matches
+  // much the same thing but reads as an accident.
+  const bare = new RegExp(String.raw`(^|[\s{,])((?:\?[ \t]+)?)${name}[ \t]*(?=[:\r\n])`, 'g')
+  const found = [...source.matchAll(bare)].map(match => ({
+    at: match.index + match[1].length + match[2].length,
+    length: name.length,
+  }))
+  for (const match of source.matchAll(QUOTED_KEY)) {
+    const spelled = readYaml(match[0])
+    if (!('reason' in spelled) && spelled.document === name) {
+      found.push({ at: match.index, length: match[0].length })
+    }
+  }
+  return found
+}
+
+/**
  * Report an indexed key the note gives more than once.
  *
  * The second silent discard. YAML requires a mapping key to be unique;
@@ -387,11 +449,8 @@ function commentedOut(source: string, mapping: Mapping, problems: string[]): voi
  * probe key inside the nested mapping, where this test does not see it.
  *
  * Occurrences are nominated by offset in the block rather than by line, and
- * across every spelling of a key that resolves to the same one: a duplicate
- * inside a flow mapping (`{name: a, name: b}`), a quoted key (`"name":`) and an
- * explicit key (`? name` over `: text`) all discard a repeat as silently as the
- * bare block form, so all are nominated. Which of them is *really* a repeat is
- * still the parser's answer, not this pattern's.
+ * across every spelling that reaches the same key — see `keyOccurrences`. Which
+ * of them is *really* a repeat is still the parser's answer, not the pattern's.
  */
 function repeated(source: string, mapping: Mapping, problems: string[]): void {
   const key = probeKey(source)
@@ -399,23 +458,12 @@ function repeated(source: string, mapping: Mapping, problems: string[]): void {
     if (!(name in mapping)) {
       continue
     }
-    // Loose on purpose: this only *nominates* offsets for the parser to rule
-    // on, so one it nominates wrongly costs a probe and one it misses costs a
-    // report, never a wrong one. Hence the spellings admitted here are wide:
-    // a key may be quoted (`"description":` is the same key as `description:` to every
-    // reader) or written as an explicit key (`? description` over `: text`),
-    // and both discard a repeat as silently as the bare form. `String.raw`,
-    // because a plain template literal decodes the `\s`/`\t` and puts the
-    // characters themselves in the pattern — which matches much the same
-    // thing but reads as an accident.
-    const keyStart = new RegExp(String.raw`(^|[\s{,])((?:\?[ \t]+)?)(['"]?)${name}\3[ \t]*(?=[:\r\n])`, 'g')
-    const occurrences = [...source.matchAll(keyStart)]
-      .map(match => match.index + match[1].length + match[2].length + match[3].length)
+    const occurrences = keyOccurrences(source, name)
     if (occurrences.length < 2) {
       continue
     }
-    for (const at of occurrences) {
-      const probed = readYaml(`${source.slice(0, at)}${key}${source.slice(at + name.length)}`)
+    for (const { at, length } of occurrences) {
+      const probed = readYaml(`${source.slice(0, at)}${key}${source.slice(at + length)}`)
       if ('reason' in probed || !isMapping(probed.document)) {
         continue
       }

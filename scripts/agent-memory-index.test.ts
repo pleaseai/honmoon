@@ -193,6 +193,29 @@ metadata:
     })
   })
 
+  // The stand-ins are searched for in the source *and* in what it resolves to,
+  // because those differ. `"quoted  # still text"` holds no private-use
+  // character as text and holds one after the escape is decoded; a stand-in
+  // chosen from the source alone would be rewritten by the restore step along
+  // with the mask, and this correctly quoted value would be reported as cut.
+  test('does not report a quoted value whose escape decodes to a probe character', () => {
+    const text = `---\nname: a-note\ndescription: "quoted \\uE000 # still text"\n---\n`
+    expect(parseFrontmatter(text)).toMatchObject({
+      scalars: { description: 'quoted \u{E000} # still text' },
+      problems: [],
+    })
+  })
+
+  // Running out of stand-ins is only a problem when there is a `#` to mask. A
+  // note with none is owed no report about the reader's ability to probe one.
+  test('says nothing about exhausted probes when there is no comment to check', () => {
+    let every = ''
+    for (let point = 0xE000; point <= 0xF8FF; point++) {
+      every += String.fromCodePoint(point)
+    }
+    expect(parseFrontmatter(`---\nname: a-note\ndescription: "${every}"\n---\n`).problems).toEqual([])
+  })
+
   // The probe stands private-use code points in for the characters it masks.
   // They are searched for in the note rather than fixed, so a note that happens
   // to hold one is still probed — a stand-in that collided would have turned the
@@ -899,6 +922,28 @@ description: second`)
     const text = `---\nname: a-note\ndescription: see the\n  description\n  field\n---\n`
     expect(parseFrontmatter(text)).toMatchObject({
       scalars: { description: 'see the description field' },
+      problems: [],
+    })
+  })
+
+  // A quoted key may spell itself with escapes, and `"description":` is the
+  // same key as `description:` to any reader that decodes them. Deciding that
+  // from the source means transcribing YAML's escape table, which is the
+  // scanner this file replaced — so the parser is asked what the token spells.
+  test('reports a repeat whose key is spelled with an escape', () => {
+    const text = `---\nname: a-note\ndescription: first\n"descrip\\u0074ion": second\n---\n`
+    expect(parseFrontmatter(text)).toMatchObject({
+      scalars: { description: 'second' },
+      problems: [expect.stringContaining('more than once')],
+    })
+  })
+
+  // ...and a quoted token that is not the key must not be nominated as one,
+  // which is what asking the parser rather than matching the name buys.
+  test('does not call another quoted key an occurrence of an indexed one', () => {
+    const text = `---\nname: a-note\ndescription: only one\n"metadata":\n  "type": project\n---\n`
+    expect(parseFrontmatter(text)).toMatchObject({
+      scalars: { description: 'only one' },
       problems: [],
     })
   })
