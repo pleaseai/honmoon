@@ -167,7 +167,7 @@ dangling name would fail open for every other rule
 
 That tolerance covers *undefined references only*. An unusable `endpoints` entry is a **load-time
 error** — the policy is rejected outright
-([lib.rs:198-223](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/lib.rs#L198-L223)):
+([lib.rs:199-224](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/lib.rs#L199-L224)):
 
 | Mistake | Why it fails the load |
 |---------|-----------------------|
@@ -245,11 +245,11 @@ Error: rule `blank` (rules[0]) has a blank `condition`; write `"true"` for a rul
 ```
 
 Whitespace does not help — `" "`, `"\n"` and a non-breaking or ideographic space are rejected the
-same way. A condition made only of **zero-width** characters is not, though: it looks empty in an
-editor but is not whitespace, so it loads, and the CEL compiler then rejects it like any other
-unparseable condition — the rule declines and the egress default answers (see
-[Fail-closed semantics](#fail-closed-semantics)). Give every rule a real condition; write
-`"true"` when you mean always.
+same way. A condition made only of **zero-width** characters is not blank, though: it looks empty
+in an editor but is not whitespace. It fails the load one step later instead, at the compile check,
+with the message for a condition that is not valid CEL (see
+[Fail-closed semantics](#fail-closed-semantics)). Either way you find out at startup. Give every
+rule a real condition; write `"true"` when you mean always.
 :::
 
 ### Facts available to conditions
@@ -278,19 +278,24 @@ http.method == 'POST' && http.body_size > 10485760
 
 ## Fail-closed semantics
 
-Honmoon is designed to **fail closed**: a rule whose condition fails to compile, or references a
-fact that has not been populated, simply **does not match** — it can never turn a `deny` into an
-`allow`. Combined with the `deny`-by-default egress verdict, an absent or broken rule is always
-the safe outcome ([engine.rs:53-58](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/engine.rs#L53-L58), [engine.rs:302-333](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/engine.rs#L302-L333)).
+Honmoon is designed to **fail closed**, in two layers.
 
-Read "fails to compile" there literally: the CEL compiler **returns an error**, Honmoon logs a
-warning naming the rule, and the rule goes inert. It cannot match, so the `deny`-by-default egress
-verdict answers instead.
+At **evaluation**, a rule whose condition fails to compile, or which references a fact that has not
+been populated, simply **does not match** — it can never turn a `deny` into an `allow`. Combined
+with the `deny`-by-default egress verdict, an absent or broken rule is always the safe outcome
+([engine.rs:53-58](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/engine.rs#L53-L58), [engine.rs:311-343](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/engine.rs#L311-L343)).
+Read "fails to compile" there literally: the CEL compiler **returns an error**, and every outcome
+other than `true` means "no match".
 
-Conditions are compiled when the policy is **loaded**, not on each request, so that warning reaches
-your log at startup — you do not have to wait for a request that would have matched the rule to
-find out it never will ([lib.rs:206-226](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/lib.rs#L206-L226)).
-A policy carrying such a rule still loads; see the second bullet below.
+At **load**, a condition that fails to compile does not get that far. Conditions are compiled when
+the policy is loaded rather than on each request, and since
+[#191](https://github.com/pleaseai/honmoon/issues/191) a condition the compiler rejects is a
+**load failure**, not a warning: `Policy::from_yaml` refuses the policy and names every rule
+responsible
+([lib.rs:292-337](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/lib.rs#L292-L337)).
+So the evaluation layer above is not what you meet when you start a gateway — it is what answers
+for a `Policy` built in code, which the library API accepts without going through the loader, and
+for a `condition` reassigned on a policy after it loaded.
 
 This used to carry an exception worth knowing about. On the previous CEL crate a whole class of
 malformed condition **panicked** rather than returning an error — crashing the decision path
@@ -300,17 +305,36 @@ nothing in an editor. That was tracked as
 [#154](https://github.com/pleaseai/honmoon/issues/154) and is **fixed**: every one of those inputs
 now returns an error and declines like any other unparseable condition.
 
-Two things still hold, and both are worth keeping in mind when authoring:
+Two things are worth keeping in mind when authoring:
 
-- A **blank** condition is rejected at load. `Policy::from_yaml` refuses a policy containing one,
-  because a rule with no expression can never match and would sit in your policy looking active.
-  See [Rule order and unreachable rules](#rule-order-and-unreachable-rules) above.
-- **Neither the loader nor the JSON Schema rejects invalid CEL.** A non-blank condition that is
-  not a valid expression — `"&&"`, a stray `"@"`, a condition made only of zero-width characters —
-  loads cleanly, and you find out it is inert from a warning in the log rather than from a load
-  failure. The loader does compile it, so the warning arrives at startup; it is still a warning
-  and not an error. It fails closed, but it is not doing what you wrote it to do. Give every rule
-  a condition you have seen evaluate.
+- A **blank** condition is rejected at load, with its own message. `Policy::from_yaml` refuses a
+  policy containing one, because a rule with no expression can never match and would sit in your
+  policy looking active. See
+  [Rule order and unreachable rules](#rule-order-and-unreachable-rules) above.
+- **Invalid CEL is rejected at load too — but the JSON Schema still does not catch it.** A
+  non-blank condition that is not a valid expression — `"&&"`, a stray `"@"`, a condition made only
+  of zero-width characters — fails the load with a message naming the rule and quoting the
+  condition. Your editor will not flag it first: the schema checks shape, not CEL, so the loader is
+  where you find out. Every offending rule is named in one go, so a policy with three of them takes
+  one run to diagnose, not three.
+
+::: warning Breaking change in #191: a gateway that starts today may stop starting
+Before [#191](https://github.com/pleaseai/honmoon/issues/191) a policy carrying an uncompilable
+condition **loaded**, and you found out the rule was inert from a `warn` line — if anyone read the
+log. Now the gateway refuses to start. That is the point: an inert rule looks active in the file
+and answers nothing, so an operator who never read that warning was running a policy weaker than
+the one they wrote. But it does mean a deployment whose policy has a rule nobody noticed was inert
+will fail to boot on upgrade.
+
+The error names every rule and quotes what it carries:
+
+```
+Error: rule `secrets` (rules[1]) has a `condition` that is not a valid CEL expression: `&&`
+```
+
+To check a policy before rolling it out, load it: `honmoon gateway --config <file>` fails fast, and
+the message is the whole fix list.
+:::
 
 ```mermaid
 sequenceDiagram
@@ -320,7 +344,7 @@ sequenceDiagram
   participant R as rule.condition (CEL)
   L->>R: compile("sql.verb == 'DROP'")
   alt compile fails
-    R-->>L: Err → log warn naming the rule; the rule is inert
+    R-->>L: Err → load fails, naming every rule that carries an uncompilable condition
   else compiles
     R-->>L: Program, kept for every later request
   end
@@ -331,14 +355,16 @@ sequenceDiagram
     R-->>E: match → return rule.verdict
   end
 ```
-<!-- Sources: crates/honmoon-core/src/lib.rs:206-226, crates/honmoon-core/src/engine.rs:283-333, crates/honmoon-core/src/engine.rs:375-421 -->
+<!-- Sources: crates/honmoon-core/src/lib.rs:199-224, crates/honmoon-core/src/lib.rs:292-337, crates/honmoon-core/src/engine.rs:287-343, crates/honmoon-core/src/engine.rs:388-434 -->
 
 This behavior is locked by tests: `unknown_fact_reference_does_not_match` proves a condition
-referencing an unpopulated `sql` fact falls through to the egress default
-([engine.rs:807-815](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/engine.rs#L807-L815)), and
-`a_condition_that_does_not_compile_still_loads_and_only_its_own_rule_goes_inert` proves a policy
-carrying `"&&"` loads, denies, and leaves the rule below it deciding
-([engine.rs:777-796](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/engine.rs#L777-L796)).
+referencing an unpopulated `sql` fact falls through to the egress default, and
+`a_condition_that_does_not_compile_fails_the_load_for_the_whole_policy` proves a policy carrying
+`"&&"` is refused — sound rules and all — while the same policy with the condition repaired loads
+and decides. On the loader side,
+`names_every_rule_whose_condition_does_not_compile` pins that all three of a three-fault policy are
+reported at once, and `a_blank_condition_is_still_reported_as_blank` pins that a blank condition
+keeps its own message rather than being folded into the compile error.
 
 ## Validating a policy
 
