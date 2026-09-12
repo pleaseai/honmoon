@@ -1,0 +1,45 @@
+apps/dashboard/src/session.ts
+  s_b7c0aca07e94f1::t_e5b0ddaf7f10be 17
+  s_b7c0aca07e94f1::t_fadcb9865b5cad 11-15
+  s_b7c0aca07e94f1::t_603cb618160f07 1-10,16,18-107
+apps/dashboard/src/api.test.ts
+  s_b7c0aca07e94f1::t_9c1a5fb3ac06b0 5-9
+  s_b7c0aca07e94f1::t_0efc36a417593c 1-4,10-68
+apps/dashboard/src/hooks.test.tsx
+  s_b7c0aca07e94f1::t_9c1a5fb3ac06b0 7-11
+crates/honmoon-mgmt/src/lib.rs
+  s_b7c0aca07e94f1::t_5242467e269652 448,450-453,455-456,459-475,483,485-487
+  s_b7c0aca07e94f1::t_2a20587ff1356b 531-532,538-553,572-575,659-670
+  s_b7c0aca07e94f1::t_cfac6b3c06eb2a 208
+  s_b7c0aca07e94f1::t_136cc2468b7964 11,152,165,393-415,417,420-426,430
+  s_b7c0aca07e94f1::t_c12014fcf12e51 492-506,512
+apps/dashboard/src/api.ts
+  s_b7c0aca07e94f1::t_603cb618160f07 9-21,24,49,57
+apps/dashboard/src/session.test.ts
+  s_b7c0aca07e94f1::t_ff42b006c04c69 1-5,11-14,16-20,24-43,45-80
+  s_b7c0aca07e94f1::t_9c1a5fb3ac06b0 6-10
+  s_b7c0aca07e94f1::t_25e9409610aa5a 15,21-23,44
+crates/honmoon-mgmt/tests/e2e.rs
+  s_b7c0aca07e94f1::t_521ca5e8e910bf 1053
+  s_b7c0aca07e94f1::t_f4b1ae373e386d 18,873-877,888-918,920-923,925,932-936,946-947,949,951-952,955,960,964-972,975,983-984,988-989,991-997,999,1009,1011,1014-1015,1019-1020,1024,1026-1035,1037,1047,1050-1052,1054-1088,1090-1092,1096,1100-1101,1105-1106,1108,1111-1112,1115-1116,1119,1123
+  s_b7c0aca07e94f1::t_2a20587ff1356b 957,1113
+apps/dashboard/src/main.tsx
+  s_b7c0aca07e94f1::t_603cb618160f07 4,7-9
+  s_b7c0aca07e94f1::t_cda3789782a586 10
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "d5db7174aaf98b0e8f4cb2fc395370c27017923b",
+  "prompts": {},
+  "sessions": {
+    "s_b7c0aca07e94f1": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "4951d865-cc4f-4262-a023-49a2ace4a99d",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
