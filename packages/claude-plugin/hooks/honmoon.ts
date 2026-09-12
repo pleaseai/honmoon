@@ -12,7 +12,7 @@
 //
 // `$` may never be passed as an argument (the host's module validator rejects
 // it), so each hook hands the shared logic small closures over its own `$`.
-import type { Hook, HttpInit, HttpResponse, MatchedHook, PluginOptions, Register } from 'claude-code'
+import type { CatchHandler, Hook, HookFailure, HttpInit, HttpResponse, MatchedHook, PluginOptions, Register } from 'claude-code'
 
 /**
  * One budget per hook invocation, shared by the session lookups and every
@@ -23,8 +23,12 @@ import type { Hook, HttpInit, HttpResponse, MatchedHook, PluginOptions, Register
 const HOOK_BUDGET_MS = 8_000
 /** Placeholder shape minted by honmoon-core's tokenizer. */
 const PLACEHOLDER = /<<hs:[^>]*>>/g
-/** Tools whose output is scanned. Read is additionally checked before it runs. */
-const TOOL_MATCHER = { tool: ['Read', 'Bash', 'Grep', 'WebFetch'] } as const
+/**
+ * Tools whose output is scanned. Read is additionally checked before it runs.
+ * MCP tools reach `tool.call` under `mcp__<server>__<tool>`, so the one-of
+ * carries a RegExp: a matcher tests a scalar leaf as a string.
+ */
+const TOOL_MATCHER = { tool: ['Read', 'Bash', 'Grep', 'WebFetch', /^mcp__/] } as const
 
 type Json = Record<string, unknown>
 /** A parsed hook verdict, or why the engine could not produce one. */
@@ -281,6 +285,22 @@ function engineToolName(tool: string): string {
  * state rather than a closure; the unit tests call this before driving a hook.
  */
 let config: Config = configure({})
+/** An MCP tool call, as core spells it at `tool.call`. */
+function isMcp(tool: string): boolean {
+  return tool.startsWith('mcp__')
+}
+
+/**
+ * Whether an unreachable engine withholds this tool's output.
+ *
+ * `failMode: "closed"` governs the tools the plugin has always covered. MCP is
+ * deliberately exempt: it was added to gain redaction, not to introduce a new
+ * denial path, so an engine failure leaves an MCP call exactly as it behaved
+ * before the tool was matched at all. `failMode: "open"` still opens everything.
+ */
+function failsClosed(tool: string): boolean {
+  return config.failClosed && !isMcp(tool)
+}
 /** The session id keys the engine's placeholder salt (stable across turns). */
 let sessionId: Promise<string> | undefined
 /** The session cwd, which the engine anchors relative `file_path`s against. */
@@ -349,6 +369,7 @@ async function denyBeforeRead(engine: Engine, e: ToolEvent, facts: SessionFacts)
   if (e.tool !== 'Read') {
     return undefined
   }
+  // Read is never an MCP tool, so `config.failClosed` is this call's own rule.
   const pre = await engine.ask({
     hook_event_name: 'PreToolUse',
     tool_name: 'Read',
@@ -399,7 +420,7 @@ function scannable(e: ToolEvent, r: ToolResult): boolean {
  * string would fail core's output-schema check, which fails open). A `deny`
  * reaches the model as an error result, so a redacted error goes out as one.
  */
-async function redactError(engine: Engine, r: ToolResult, session_id: string): Promise<ToolResult> {
+async function redactError(engine: Engine, r: ToolResult, session_id: string, closed: boolean): Promise<ToolResult> {
   // The model reads `text`; the transcript stores `result`. Both are scanned
   // in one call: the engine walks any JSON value it is given.
   const errored: Record<string, string> = {}
@@ -420,11 +441,11 @@ async function redactError(engine: Engine, r: ToolResult, session_id: string): P
     session_id,
   })
   if (!post.ok) {
-    return config.failClosed ? { deny: unavailable(post.cause) } : r
+    return closed ? { deny: unavailable(post.cause) } : r
   }
   const wrong = misrouted(post.verdict, 'PostToolUse', NOT_POST)
   if (wrong !== undefined) {
-    return config.failClosed ? { deny: unavailable(wrong) } : r
+    return closed ? { deny: unavailable(wrong) } : r
   }
   const updated = updatedOutput(post.verdict) as Partial<Record<'text' | 'result', unknown>> | undefined
   if (updated === undefined) {
@@ -432,13 +453,13 @@ async function redactError(engine: Engine, r: ToolResult, session_id: string): P
   }
   const text = [updated.text, updated.result].find(v => typeof v === 'string')
   if (typeof text !== 'string') {
-    return config.failClosed ? { deny: unavailable('engine returned an unexpected shape') } : r
+    return closed ? { deny: unavailable('engine returned an unexpected shape') } : r
   }
   return { deny: `${text}\n\n${redactionNote(updated)}` }
 }
 
 /** Redact a settled call's record; `r` itself when nothing was redacted. */
-async function redactResult(engine: Engine, e: ToolEvent, r: ToolResult, session_id: string): Promise<ToolResult> {
+async function redactResult(engine: Engine, e: ToolEvent, r: ToolResult, session_id: string, closed: boolean): Promise<ToolResult> {
   const post = await engine.ask({
     hook_event_name: 'PostToolUse',
     tool_name: engineToolName(e.tool),
@@ -447,11 +468,11 @@ async function redactResult(engine: Engine, e: ToolEvent, r: ToolResult, session
     session_id,
   })
   if (!post.ok) {
-    return config.failClosed ? { deny: unavailable(post.cause) } : r
+    return closed ? { deny: unavailable(post.cause) } : r
   }
   const wrong = misrouted(post.verdict, 'PostToolUse', NOT_POST)
   if (wrong !== undefined) {
-    return config.failClosed ? { deny: unavailable(wrong) } : r
+    return closed ? { deny: unavailable(wrong) } : r
   }
   const updated = updatedOutput(post.verdict)
   // Nothing redacted: hand back exactly what `next` resolved to, so core reuses
@@ -461,7 +482,7 @@ async function redactResult(engine: Engine, e: ToolEvent, r: ToolResult, session
   }
   // A record comes back a record; anything else is not the engine talking.
   if (!sameShape(updated, r.result)) {
-    return config.failClosed ? { deny: unavailable('engine returned an unexpected shape') } : r
+    return closed ? { deny: unavailable('engine returned an unexpected shape') } : r
   }
   return {
     result: updated as typeof r.result,
@@ -510,13 +531,15 @@ export const toolHook: MatchedHook<'tool.call', typeof TOOL_MATCHER> = async ($,
   // (measured on 2.1.263). Mirror that: one budget before the tool, a fresh
   // one after, so a slow tool never denies its own redaction.
   const pre = engineFor($)
+  // One rule for the whole call, read once: MCP is exempt from `closed`.
+  const closed = failsClosed(e.tool)
   let session_id: string
   try {
     const facts = await sessionFacts($, pre)
     if (!facts.ok) {
       // No per-session salt means no redaction worth trusting: closed denies
       // before the tool runs, open behaves as if the module were absent.
-      return config.failClosed ? { deny: unavailable(facts.cause) } : next(e)
+      return closed ? { deny: unavailable(facts.cause) } : next(e)
     }
     const denied = await denyBeforeRead(pre, e, facts.value)
     if (denied) {
@@ -533,7 +556,7 @@ export const toolHook: MatchedHook<'tool.call', typeof TOOL_MATCHER> = async ($,
   }
   const post = engineFor($)
   try {
-    return await (r.isError ? redactError(post, r, session_id) : redactResult(post, e, r, session_id))
+    return await (r.isError ? redactError(post, r, session_id, closed) : redactResult(post, e, r, session_id, closed))
   }
   finally {
     post.close()
@@ -624,11 +647,45 @@ export const promptHook: Hook<'prompt.submit'> = async ($, e, next) => {
   }
 }
 
+/**
+ * Why the host, not the module, ended the hook. `budget` is the grace the
+ * handler itself runs under, so a handler must decide and return — not work.
+ */
+function caught(error: HookFailure): string {
+  return error.message ? `hook ${error.kind}: ${error.message}` : `hook ${error.kind}`
+}
+
+/**
+ * The host's own backstop, one per registration (Claude Code 2.1.268+).
+ *
+ * The module budgets its engine calls at 8 s inside the host's 10 s, but the
+ * work that turns a verdict into a result — `sameShape` over a large record,
+ * the `JSON.stringify` in `redactionNote` — runs *after* that budget has been
+ * released. A slow engine and a large tool result can therefore still cross
+ * the host's limit, and the declarations are blunt about what follows: without
+ * a `.catch` "a failed hook is absent", i.e. the unredacted result reaches the
+ * model. That is precisely what `failMode: "closed"` promises it will not.
+ *
+ * `undefined` is the host's spelling of "the hook was absent", so the
+ * fail-open branch returns it explicitly rather than falling off the end —
+ * and the fail-closed branch never does, whatever `next.called` says: once the
+ * hook has failed, replaying `next(e)` would hand back the very bytes the
+ * redactor never got to read.
+ */
+export const toolCatch: CatchHandler<typeof toolHook> = ($, e, next) =>
+  failsClosed(e.tool) ? { deny: unavailable(caught(next.error)) } : undefined
+
+export const promptCatch: CatchHandler<typeof promptHook> = ($, e, next) =>
+  config.failClosed
+    ? { drop: `honmoon: redaction engine unavailable (${caught(next.error)}); prompt not sent` }
+    : undefined
+
 export const register: Register = (on, options) => {
   applyOptions(options)
-  // One registration covers both placements: on 2.1.263 a second
-  // `on("tool.call", …)` from the same plugin silently replaces the first, so
+  // One registration covers both placements: a plugin's registrations nest in
+  // order and a repeat of one pattern throws (2.1.268; on 2.1.263 a second
+  // `on("tool.call", …)` from the same plugin silently replaced the first), so
   // the before-check (PreToolUse on Read) and the after-redaction share a hook.
-  on('tool.call', TOOL_MATCHER, toolHook)
-  on('prompt.submit', promptHook)
+  on('tool.call', TOOL_MATCHER, toolHook).catch(toolCatch)
+  on('prompt.submit', promptHook).catch(promptCatch)
 }
