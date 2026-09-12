@@ -126,7 +126,11 @@ const URL_ATTR = /\b(src|href)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'>]+))/gi
  * passed it, while a browser on the gateway fetches `https://cdn.example`.
  */
 const SHELL_BASE = 'https://dashboard.invalid/index.html'
-const OTHER_BASE = 'http://elsewhere.invalid/index.html'
+// Neither host resolves — `.invalid` is reserved (RFC 2606) — and neither base
+// is ever fetched: both are inputs to `new URL`, and the cleartext scheme is
+// the point rather than an oversight, since it is the one the gateway serves
+// under and the one a scheme-relative reference is absolute against.
+const OTHER_BASE = 'http://elsewhere.invalid/index.html' // NOSONAR: not a request, a parser fixture
 
 /** The origin each base names, the value the URL resolved from it must land on. */
 const SHELL_ORIGIN = new URL(SHELL_BASE).origin
