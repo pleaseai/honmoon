@@ -541,11 +541,19 @@ fn audit_machine_key_status(audit_log: Option<&Path>, status: &MachineKeyStatus)
 /// the path rather than being trimmed to an error kind; a path the reader cannot
 /// resolve is that decision paying for nothing.
 ///
-/// Lexical, not [`std::fs::canonicalize`]: the file may not exist yet on the
-/// create path, and resolving symlinks would report a location the operator did
-/// not configure. It fails where the working directory cannot be read (and on an
-/// empty path, which [`honmoon_dir`] never returns), leaving the path as given —
-/// no worse than before — with a stderr line saying so.
+/// Lexical, not [`std::fs::canonicalize`]: the *directory* may not exist yet on
+/// the create path, and resolving symlinks would report a location the operator
+/// did not configure. On Unix that leaves `..` components alone, so the resolved
+/// path traverses what the given one did; Windows' `GetFullPathName` collapses
+/// them instead, which this reasoning does not cover — the exposure machinery
+/// reading these paths is `#[cfg(unix)]` either way.
+///
+/// It fails where the working directory cannot be read — and on an empty path,
+/// which [`honmoon_dir`] never returns even for `HOME=""` — and then leaves the
+/// path as given. That string is byte-for-byte what this loader recorded before
+/// issue #162, so nothing regresses; it is not *marked* as unresolved either,
+/// which is the gap issue #176 carries. Marking it needs the resolution state
+/// threaded through all five `reason` producers, so it is not folded in here.
 fn absolute_salt_dir(dir: &Path) -> PathBuf {
     std::path::absolute(dir).unwrap_or_else(|e| {
         eprintln!(

@@ -68,8 +68,8 @@ buffer on `O_APPEND` — not a hard atomicity guarantee on NFS/short writes); th
 opened with `create(true).append(true)`, so it follows symlinks and blocks on a FIFO in a
 process contracted to exit fast; and `reason` is an `anyhow` chain that embeds `$HOME`
 paths and OS errors, surfaced by the unauthenticated `GET /api/audit` and the dashboard
-— **settled, see the #162 entry below; do not re-raise it as a finding against this
-field.** No key bytes are serialized — `MachineKey`/`MachineKeySource` derive no `Debug`.
+— **that content is settled, see the #162 entry below.** No key bytes are serialized —
+`MachineKey`/`MachineKeySource` derive no `Debug`.
 
 **2026-09 (#141) — exposure is a second axis on the key status.** `MachineKeySource`
 (provenance) is now wrapped in `MachineKeyStatus { source, exposure }`;
@@ -121,8 +121,21 @@ directory. `load_or_create_machine_salt` now resolves `dir` through `absolute_sa
 
 **The missing auth layer on the management reads is the real exposure and is tracked
 as #173** — `/api/audit`, `/api/approvals` and `/api/policy` all skip the `authorized()`
-helper that `POST /api/hooks/claude-code` calls. When reviewing this area, raise 173,
-not the content of `reason`.
+helper that `POST /api/hooks/claude-code` calls. When reviewing this area, raise 173
+rather than the salt path and OS error.
+
+**Scope of that settlement, exactly: two payloads — a local salt path, and an OS error.
+Not the field.** Three things it does NOT cover, all still reportable:
+- A *future* producer putting something else in this `String`. Nothing has reviewed that.
+- The working-directory axis the absolutization itself introduces. `$HOME` is recoverable
+  from `passwd`, so naming it discloses little to a local reader; a `HOME`-less gateway
+  (a systemd unit with no `Environment=HOME`, a container entrypoint, `env -i`) now has
+  its **cwd** filled in instead, and nothing else in the response reveals that. Accepted
+  in #162 as the price of a followable path, and argued there — but it is a disclosure
+  delta, not the neutral change the first draft of that PR called it.
+- A resolution that failed: `absolute_salt_dir` falls back to the path as given and says
+  so on stderr only, so the record cannot distinguish "tried and could not read the cwd"
+  from "never tried". Tracked as **#176** — report it against that, not as new.
 
 Still open, tracked as **#171**: the `must_overwrite` arm is also reached when `read`
 fails with a non-`NotFound` error, where the discarded file may have held a valid salt
