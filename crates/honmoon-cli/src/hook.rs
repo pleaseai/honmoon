@@ -250,6 +250,9 @@ const HOOK_SALT_WAS_EXPOSED_RULE: &str = "hook-salt-was-exposed";
 /// `create_dir_all` or [`write_secret_file`] then fails, on
 /// [`HOOK_SALT_FALLBACK_RULE`] via the error [`machine_key_in`] turns into a
 /// fallback key. So it needs no event of its own, and neither outcome is silent.
+/// (On that second outcome the `reason` is the write failure rather than the
+/// read one — the file was not replaced there, so there is nothing to say about
+/// a replacement, and the fallback key is the larger news anyway.)
 ///
 /// **Volume.** Once per unreadable file: the replacement is readable and `0600`,
 /// so the next loader adopts it and says nothing. Like
