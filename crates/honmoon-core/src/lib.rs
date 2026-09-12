@@ -60,6 +60,22 @@ pub struct Policy {
     pub endpoints: BTreeMap<String, Endpoint>,
     #[serde(default)]
     pub rules: Vec<Rule>,
+    /// Every `rules` condition compiled once, at load.
+    ///
+    /// Not part of the policy document — `#[serde(skip)]`, so it neither reads
+    /// from nor writes to the YAML and JSON shapes TD-001 keeps in sync with
+    /// the TypeScript model and the JSON Schema. It is derived state, built by
+    /// [`Policy::from_yaml`] and carried so [`decide`] evaluates rather than
+    /// compiles.
+    ///
+    /// Private, and there is no way to set it: it is an optimization the engine
+    /// owns, and a `Policy` that does not have one (built in code, or
+    /// deserialized straight through `serde`) simply compiles at evaluation
+    /// time as before. See [`engine::CompiledConditions`] for why keying it by
+    /// the condition text is what keeps a reassigned
+    /// [`Rule::condition`] from being answered with a stale program.
+    #[serde(skip)]
+    compiled: engine::CompiledConditions,
 }
 
 /// A named network target: the `(host, port)` a client dials, plus the wire
@@ -187,12 +203,25 @@ impl Policy {
     /// [`Policy::warn_undefined_endpoints`] and
     /// [`Policy::warn_shadowed_rules`]).
     pub fn from_yaml(src: &str) -> Result<Self, Error> {
-        let policy: Self = serde_yaml::from_str(src).map_err(Error::Parse)?;
+        let mut policy: Self = serde_yaml::from_str(src).map_err(Error::Parse)?;
         policy.validate_endpoints()?;
         policy.validate_rules()?;
         policy.warn_undefined_endpoints();
         policy.warn_shadowed_rules();
+        // Last, and only on a policy that passed validation: a condition that
+        // fails to compile is *not* a load failure — it warns here and the rule
+        // declines at evaluation exactly as it did when the compile happened
+        // there. Rejecting such a policy would change when an operator learns
+        // about a bad rule, which is its own change (#164's follow-up list, and
+        // the second half of #167).
+        policy.compiled = engine::CompiledConditions::compile(&policy.rules);
         Ok(policy)
+    }
+
+    /// The load-time compiled conditions, empty for a `Policy` that was not
+    /// built by [`Policy::from_yaml`].
+    pub(crate) fn compiled_conditions(&self) -> &engine::CompiledConditions {
+        &self.compiled
     }
 
     /// Reject `endpoints` entries that could never resolve or that resolve

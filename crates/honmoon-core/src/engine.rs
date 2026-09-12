@@ -1,5 +1,7 @@
 //! Policy decision engine: protocol-aware CEL rules + egress domain lists.
 
+use std::collections::HashMap;
+use std::fmt;
 use std::sync::{Arc, OnceLock};
 
 use cel::{Context, Env, Program, Value};
@@ -109,9 +111,9 @@ fn decide_with(policy: &Policy, facts: &Facts, pii_weight: PiiWeight) -> Outcome
         if !endpoint_matches(&rule.endpoint, facts.endpoint.as_deref()) {
             continue;
         }
-        // Compiled once and reused for the attribution check below, which
+        // Looked up once and reused for the attribution check below, which
         // re-runs the very same condition.
-        let Some(program) = compile_condition(rule) else {
+        let Some(program) = program_for(policy, rule) else {
             continue;
         };
         if !eval_program(&program, facts, facts.pii.as_ref()) {
@@ -180,6 +182,86 @@ pub fn matches_domain(pattern: &str, domain: &str) -> bool {
     }
 }
 
+/// Rule conditions compiled ahead of evaluation, keyed by the condition text
+/// they were compiled from.
+///
+/// [`Policy::from_yaml`](crate::Policy::from_yaml) fills one of these so
+/// [`decide`] evaluates rather than compiles: the compile is CEL parsing, and
+/// it used to run once per endpoint-matching rule per request — twice for a
+/// rule that reaches [`pii_caused`].
+///
+/// **Keyed by the condition text, not by rule position or name**, so the table
+/// cannot serve a stale program. [`Rule::condition`](crate::Rule::condition) is
+/// a public field an owner of the `Policy` may reassign at any time; an entry
+/// here is by construction the program for that exact string, so a reassigned
+/// condition misses the table and [`program_for`] compiles it, rather than
+/// answering with the program for the condition the rule used to carry. That is
+/// what separates this from the per-[`Rule`](crate::Rule) cache #167 declined —
+/// there the cached program hung off the rule and outlived the string it came
+/// from.
+///
+/// An entry is present for every condition the loader saw, including the ones
+/// that did not compile: `Some(None)` records "this text was tried and failed",
+/// which is what keeps a malformed rule from being recompiled (and re-warned
+/// about) on every request.
+#[derive(Clone, Default)]
+pub(crate) struct CompiledConditions(HashMap<String, Option<Arc<Program>>>);
+
+impl CompiledConditions {
+    /// Compile every distinct condition in `rules`, warning about the ones that
+    /// fail. Identical conditions share one entry, so the compile runs once per
+    /// distinct expression rather than once per rule.
+    pub(crate) fn compile(rules: &[Rule]) -> Self {
+        let mut compiled: HashMap<String, Option<Arc<Program>>> = HashMap::new();
+        for rule in rules {
+            if compiled.contains_key(&rule.condition) {
+                continue;
+            }
+            compiled.insert(rule.condition.clone(), compile_condition(rule));
+        }
+        Self(compiled)
+    }
+
+    /// The entry for `condition`: `Some(Some(program))` compiled,
+    /// `Some(None)` was tried and failed, `None` was never seen.
+    fn get(&self, condition: &str) -> Option<&Option<Arc<Program>>> {
+        self.0.get(condition)
+    }
+
+    /// How many distinct conditions the table holds. Test-facing.
+    #[cfg(test)]
+    pub(crate) fn len(&self) -> usize {
+        self.0.len()
+    }
+}
+
+impl fmt::Debug for CompiledConditions {
+    /// The compiled syntax trees are an implementation detail far larger than
+    /// the policy that produced them, and [`Policy`](crate::Policy) derives
+    /// `Debug`. Print the entry count, not the trees.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_tuple("CompiledConditions")
+            .field(&self.0.len())
+            .finish()
+    }
+}
+
+/// The compiled program for `rule`, from the policy's load-time table when it
+/// is there and by compiling on the spot when it is not.
+///
+/// A table miss is not an error state. A [`Policy`](crate::Policy) built in code
+/// rather than loaded carries an empty table, and so does one whose
+/// `condition` has been reassigned since it was loaded; both get exactly the
+/// behaviour `decide` gave before conditions were compiled at load, warning
+/// included. What changes on a hit is only *when* the compile happened — a
+/// recorded failure declines here as it did there.
+fn program_for(policy: &Policy, rule: &Rule) -> Option<Arc<Program>> {
+    match policy.compiled_conditions().get(&rule.condition) {
+        Some(compiled) => compiled.clone(),
+        None => compile_condition(rule),
+    }
+}
+
 /// Compile a rule condition. A condition that does not compile cannot match,
 /// which keeps a malformed rule from turning a deny into an allow.
 ///
@@ -198,7 +280,12 @@ pub fn matches_domain(pattern: &str, domain: &str) -> bool {
 /// just the same. The two answers differ on purpose: the loader is reading the
 /// author's file and says so loudly, while here the rule declines like any
 /// other condition that cannot compile.
-fn compile_condition(rule: &Rule) -> Option<Program> {
+///
+/// Called from two places now: [`CompiledConditions::compile`] at load, and
+/// [`program_for`] for a rule the load-time table does not cover. The warnings
+/// below therefore fire once per distinct condition at load for a loaded
+/// policy, where they used to fire on every evaluation of the offending rule.
+fn compile_condition(rule: &Rule) -> Option<Arc<Program>> {
     // Both arms name the rule. A policy that reached here was built in code
     // rather than loaded, so there is no file and line to point an operator at,
     // and `condition` alone does not identify which rule went inert — least of
@@ -213,7 +300,7 @@ fn compile_condition(rule: &Rule) -> Option<Program> {
         return None;
     }
     match Program::compile(&rule.condition) {
-        Ok(program) => Some(program),
+        Ok(program) => Some(Arc::new(program)),
         Err(_) => {
             tracing::warn!(
                 rule = %rule.name,
@@ -280,6 +367,16 @@ mod tests {
     fn domain_facts(domain: &str) -> Facts {
         Facts {
             domain: Some(domain.to_string()),
+            ..Default::default()
+        }
+    }
+
+    fn http_facts(method: &str) -> Facts {
+        Facts {
+            http: Some(HttpFacts {
+                method: method.to_string(),
+                ..Default::default()
+            }),
             ..Default::default()
         }
     }
@@ -459,6 +556,106 @@ mod tests {
                 "condition {condition:?}"
             );
         }
+    }
+
+    /// #167: a loaded policy carries its conditions already compiled, so
+    /// `decide` looks a program up instead of parsing CEL once per
+    /// endpoint-matching rule per request (twice for one that reaches
+    /// attribution).
+    ///
+    /// Structural rather than behavioural on purpose. Compiling at load is
+    /// meant to be invisible in what `decide` answers — the tests around this
+    /// one are the guard on that — so the only thing left to pin is that the
+    /// table the lookup reads is populated, including for the condition that
+    /// failed to compile: a recorded failure is what keeps a malformed rule
+    /// from being handed to the compiler again on the next request.
+    #[test]
+    fn a_loaded_policy_compiles_each_distinct_condition_once_at_load() {
+        let policy = Policy::from_yaml(
+            "egress:\n  default: deny\nrules:\n  - name: post\n    endpoint: '*'\n    condition: \"http.method == 'POST'\"\n    verdict: deny\n  - name: post-too\n    endpoint: '*'\n    condition: \"http.method == 'POST'\"\n    verdict: pause\n  - name: malformed\n    endpoint: '*'\n    condition: \"&&\"\n    verdict: allow\n",
+        )
+        .unwrap();
+
+        // Three rules, two distinct conditions: the repeated expression is
+        // compiled once and both rules read the same program.
+        let compiled = policy.compiled_conditions();
+        assert_eq!(compiled.len(), 2);
+        assert!(matches!(
+            compiled.get("http.method == 'POST'"),
+            Some(Some(_))
+        ));
+        assert!(matches!(compiled.get("&&"), Some(None)));
+
+        // A `Policy` built in code never passed through the loader, so it
+        // carries no table and compiles where it always did.
+        let built = Policy {
+            rules: vec![Rule {
+                name: "post".into(),
+                endpoint: "*".into(),
+                condition: "http.method == 'POST'".into(),
+                verdict: Verdict::Deny,
+            }],
+            ..Default::default()
+        };
+        assert_eq!(built.compiled_conditions().len(), 0);
+        assert_eq!(super::decide(&built, &http_facts("POST")), Verdict::Deny);
+    }
+
+    /// The load-time table is keyed by the condition *text*, so a
+    /// [`Rule::condition`](crate::Rule::condition) reassigned after the load
+    /// misses it and is compiled afresh rather than answered with the program
+    /// its old text produced.
+    ///
+    /// This is the staleness #167 declined a per-`Rule` cache over: there the
+    /// compiled program hung off the rule and outlived the string it came
+    /// from. `condition` is a public field, so nothing stops an owner of the
+    /// `Policy` from doing this.
+    #[test]
+    fn a_reassigned_condition_decides_on_its_new_text() {
+        let mut policy = Policy::from_yaml(
+            "egress:\n  default: allow\nrules:\n  - name: method\n    endpoint: '*'\n    condition: \"http.method == 'POST'\"\n    verdict: deny\n",
+        )
+        .unwrap();
+
+        assert_eq!(super::decide(&policy, &http_facts("POST")), Verdict::Deny);
+        assert_eq!(super::decide(&policy, &http_facts("GET")), Verdict::Allow);
+
+        policy.rules[0].condition = "http.method == 'GET'".into();
+
+        // The program compiled at load would still deny POST and let GET
+        // through. The rule's current text is what decides.
+        assert_eq!(super::decide(&policy, &http_facts("POST")), Verdict::Allow);
+        assert_eq!(super::decide(&policy, &http_facts("GET")), Verdict::Deny);
+    }
+
+    /// #167 moves *when* a condition compiles, not what happens to one that
+    /// never will. A policy carrying a malformed condition still loads: the
+    /// rule goes inert, fails closed, and the rules around it are untouched.
+    ///
+    /// Refusing to load it instead is a real improvement and a real behaviour
+    /// change — it moves the moment an operator learns about a bad rule from
+    /// the first matching request to startup — so it is tracked on its own
+    /// rather than folded into a performance change.
+    #[test]
+    fn a_condition_that_does_not_compile_still_loads_and_only_its_own_rule_goes_inert() {
+        let policy = Policy::from_yaml(
+            "egress:\n  default: deny\nrules:\n  - name: broken\n    endpoint: '*'\n    condition: \"&&\"\n    verdict: allow\n  - name: sound\n    endpoint: '*'\n    condition: \"http.method == 'GET'\"\n    verdict: allow\n",
+        )
+        .expect("a condition that fails to compile is not a load failure");
+
+        // The inert rule cannot turn the deny default into an allow...
+        assert_eq!(super::decide(&policy, &Facts::default()), Verdict::Deny);
+        // ...and the rule below it still decides.
+        assert_eq!(super::decide(&policy, &http_facts("GET")), Verdict::Allow);
+    }
+
+    /// The proxy shares one `Policy` across connection tasks (`Arc<Policy>` in
+    /// `GatewayState`), so the compiled programs it now carries have to cross
+    /// threads with it.
+    #[test]
+    fn a_policy_is_shareable_across_threads() {
+        fn assert_send_sync<T: Send + Sync>() {}
+        assert_send_sync::<Policy>();
     }
 
     #[test]
