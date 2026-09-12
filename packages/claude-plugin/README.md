@@ -271,7 +271,11 @@ export HONMOON_AUDIT_LOG=honmoon-audit.jsonl   # the file `honmoon gateway --aud
 Each degraded derivation then appends one `"decision":"degraded"` event naming the
 transport and what the loader observed. Only degradations are written from the hook,
 never per-invocation verdicts, so a healthy host leaves the file untouched: an event
-appearing there at all is the signal.
+appearing there at all is the signal. If the configured file refuses the record — a
+symlink or FIFO planted at that path, an unwritable directory — the hook carries the
+same `rule` / `key_source` / `reason` back to Claude Code as a `systemMessage`, which is
+shown to you and not added to the model's context. That message is the only trace of
+that degradation, so treat one as a reason to fix the log path (#165).
 
 Two independent things can be wrong with the key, so `rule` says which one this event
 is about — and the exposure half splits again, because a window still open and a window

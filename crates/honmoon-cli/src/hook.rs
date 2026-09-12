@@ -11,7 +11,8 @@
 //! to a fixed-key salt and still redacts (only placeholder unforgeability is
 //! relaxed — see [`machine_key`]), and records that degradation in the audit log
 //! when one is configured (`--audit-log` / `HONMOON_AUDIT_LOG`), since a
-//! non-interactive hook's stderr reaches nobody.
+//! non-interactive hook's stderr reaches nobody. A configured log that refuses
+//! the record puts it on the hook response instead, as `systemMessage` (#165).
 //!
 //! Handlers by event:
 //! - `PostToolUse` (the plugin matches `Read`, `Bash`, and `Grep` — a secret
@@ -35,8 +36,10 @@ use serde_json::Value;
 /// fails the process for expected error conditions (see module docs).
 ///
 /// `audit_log`, when given, is the JSONL file a degraded machine key is reported
-/// to (see [`record_machine_key_status`]); without it the degradation still only
-/// reaches stderr.
+/// to (see [`record_machine_key_status`]), falling back to the response's
+/// `systemMessage` when that file refuses the record (see
+/// [`audit_machine_key_status`]); without it the degradation still only reaches
+/// stderr.
 pub fn run(salt_context: Option<&str>, audit_log: Option<&Path>) -> Result<()> {
     let mut input = String::new();
     if let Err(e) = std::io::stdin().read_to_string(&mut input) {
@@ -52,9 +55,18 @@ pub fn run(salt_context: Option<&str>, audit_log: Option<&Path>) -> Result<()> {
     };
 
     let machine_key = machine_key();
-    audit_machine_key_status(audit_log, &machine_key.status);
+    let unrecorded = audit_machine_key_status(audit_log, &machine_key.status);
     let salt = session_salt(&payload, salt_context, &machine_key);
-    let verdict = handle_hook(&payload, &salt);
+    let mut verdict = handle_hook(&payload, &salt);
+    // A degradation the configured sink refused has nowhere else to go, so it
+    // rides back on the response — the one channel a local actor who owns the
+    // audit path cannot reach (issue #165). `systemMessage` is a common hook
+    // field, independent of any decision: it is shown to the user and is *not*
+    // added to the model's context, so this neither changes the verdict nor
+    // feeds the transcript honmoon exists to keep clean.
+    if let Some(warning) = unrecorded {
+        attach_system_message(&mut verdict, warning);
+    }
     if verdict != serde_json::json!({}) {
         // Never propagate a stdout-write failure (e.g. a broken pipe if Claude
         // Code detaches early): propagating would exit non-zero and surface as a
@@ -64,6 +76,23 @@ pub fn run(salt_context: Option<&str>, audit_log: Option<&Path>) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// Put `message` on a verdict as the Claude Code `systemMessage` common field.
+///
+/// A no-op verdict is `{}` (the `#27` empty-stdout convention), and this is what
+/// turns that into a one-field object the caller then writes: the convention is
+/// that a hook says nothing when it has nothing to say, not that it stays silent
+/// when it does. Every other verdict keeps its own keys — `systemMessage` sits
+/// beside `hookSpecificOutput`/`decision` rather than replacing them.
+///
+/// Defensive on the shape: core only ever produces an object here, and a future
+/// non-object would drop the message rather than overwrite a verdict Claude Code
+/// is about to act on.
+fn attach_system_message(verdict: &mut Value, message: String) {
+    if let Some(object) = verdict.as_object_mut() {
+        object.insert("systemMessage".to_string(), Value::String(message));
+    }
 }
 
 /// Resolve symlinks best-effort, then delegate the transport-independent verdict
@@ -343,12 +372,6 @@ impl MachineKeyStatus {
             exposure: None,
         }
     }
-
-    /// Whether there is anything to record — a key that is not the persisted
-    /// one, or a persisted one whose file was readable beyond its owner.
-    fn is_degraded(&self) -> bool {
-        !matches!(self.source, MachineKeySource::Persisted) || self.exposure.is_some()
-    }
 }
 
 /// The machine secret that keys every hook salt derivation, plus what is worth
@@ -416,9 +439,24 @@ fn machine_key_in(dir: &Path) -> MachineKey {
     }
 }
 
-/// Record a machine key the engine should not be running on; a healthy key —
-/// the persisted one, owner-only when the loader looked — records nothing, so
-/// presence in the log is itself the signal.
+/// What a degraded key is reported as, on every channel that reports it.
+///
+/// One value shared by the durable record and the hook-response fallback rather
+/// than a spelling in each: the two describe the same degradation, and the
+/// second exists precisely because the first did not land, so a drift between
+/// them would surface only on the path where nothing else is left to check
+/// against (issue #165).
+struct Degradation<'a> {
+    key_source: honmoon_core::RedactionKeySource,
+    rule: &'static str,
+    /// The loader's own words — see [`honmoon_core::RedactionFacts::reason`],
+    /// which is where this ends up and where its deliberate untrimmedness is
+    /// argued (issues #162, #174).
+    reason: &'a str,
+}
+
+/// Classify a machine key, or `None` when there is nothing to report — the
+/// persisted key, owner-only when the loader looked.
 ///
 /// Which degradation it is comes off `rule`, the discriminator every other audit
 /// event already carries: [`HOOK_SALT_FALLBACK_RULE`] for a key that is not the
@@ -428,26 +466,9 @@ fn machine_key_in(dir: &Path) -> MachineKey {
 /// guarantee was lost — unforgeability under [`MachineKeySource::Fallback`],
 /// byte-stability under [`MachineKeySource::Unpersisted`]. On both exposure rules
 /// it stays `persisted`, because that is what the key is.
-///
-/// The audit log is the one channel in this system a human reviews after the
-/// fact — a JSONL file the query API and the dashboard read — which is what the
-/// single `eprintln!` on the fallback path is not: `honmoon hook` runs
-/// non-interactively under the agent, so its stderr usually reaches nobody.
-/// One event per derivation, deliberately: on a host that cannot persist a salt
-/// every invocation is separately degraded, and a log that says so once would
-/// understate how much of a transcript was redacted under a public key.
-///
-/// Returns whether the durable sink took the record — `Ok(())` when the key was
-/// persisted and there was nothing to say. The caller must not discard an
-/// `Err`: this record is the degradation's only durable trace, so a sink that
-/// refused it has to be reported through whatever channel that caller does have.
-pub fn record_machine_key_status(
-    audit: &honmoon_core::AuditLog,
-    transport: honmoon_core::RedactionTransport,
-    status: &MachineKeyStatus,
-) -> std::io::Result<()> {
+fn degradation(status: &MachineKeyStatus) -> Option<Degradation<'_>> {
     let (key_source, rule, reason) = match (&status.source, &status.exposure) {
-        (MachineKeySource::Persisted, None) => return Ok(()),
+        (MachineKeySource::Persisted, None) => return None,
         // The key genuinely is the persisted one, so `key_source` stays true and
         // `rule` carries the orthogonal bad news (issues #141, #143).
         (MachineKeySource::Persisted, Some(SaltExposure::Open { reason })) => (
@@ -476,6 +497,69 @@ pub fn record_machine_key_status(
             reason,
         ),
     };
+    Some(Degradation {
+        key_source,
+        rule,
+        reason,
+    })
+}
+
+/// How a [`honmoon_core::RedactionKeySource`] is spelled in a record an operator
+/// reads, matching the `lowercase` serde rename the audit event serializes with
+/// so the hook-response fallback and the JSONL event name the same value.
+///
+/// A second spelling of that rename, pinned against it by
+/// `the_response_spells_key_source_the_way_the_audit_event_does` — the alternative
+/// is a `serde_json::to_value` round-trip in the one path that exists for when
+/// things are already going wrong.
+fn key_source_label(source: honmoon_core::RedactionKeySource) -> &'static str {
+    match source {
+        honmoon_core::RedactionKeySource::Persisted => "persisted",
+        honmoon_core::RedactionKeySource::Unpersisted => "unpersisted",
+        honmoon_core::RedactionKeySource::Fallback => "fallback",
+    }
+}
+
+/// Record a machine key the engine should not be running on; a healthy key —
+/// the persisted one, owner-only when the loader looked — records nothing, so
+/// presence in the log is itself the signal.
+///
+/// Which degradation it is comes off `rule`, the discriminator every other audit
+/// event already carries: [`HOOK_SALT_FALLBACK_RULE`] for a key that is not the
+/// persisted one, [`HOOK_SALT_EXPOSED_RULE`] for a persisted key whose file is
+/// readable beyond its owner, [`HOOK_SALT_WAS_EXPOSED_RULE`] for one whose file
+/// was and no longer is. On the fallback rule `key_source` then says which
+/// guarantee was lost — unforgeability under [`MachineKeySource::Fallback`],
+/// byte-stability under [`MachineKeySource::Unpersisted`]. On both exposure rules
+/// it stays `persisted`, because that is what the key is.
+///
+/// The audit log is the one channel in this system a human reviews after the
+/// fact — a JSONL file the query API and the dashboard read — which is what the
+/// single `eprintln!` on the fallback path is not: `honmoon hook` runs
+/// non-interactively under the agent, so its stderr usually reaches nobody.
+/// One event per derivation, deliberately: on a host that cannot persist a salt
+/// every invocation is separately degraded, and a log that says so once would
+/// understate how much of a transcript was redacted under a public key.
+///
+/// Returns whether the durable sink took the record — `Ok(())` when the key was
+/// persisted and there was nothing to say. The caller must not discard an
+/// `Err`: this record is the degradation's only durable trace, so a sink that
+/// refused it has to be reported through whatever channel that caller does have
+/// — for the hook that is [`audit_machine_key_status`]'s return value, which
+/// travels back to Claude Code on the hook response (issue #165).
+pub fn record_machine_key_status(
+    audit: &honmoon_core::AuditLog,
+    transport: honmoon_core::RedactionTransport,
+    status: &MachineKeyStatus,
+) -> std::io::Result<()> {
+    let Some(Degradation {
+        key_source,
+        rule,
+        reason,
+    }) = degradation(status)
+    else {
+        return Ok(());
+    };
     let (_, written) = audit.record_durable(honmoon_core::AuditDraft {
         decision: honmoon_core::Decision::Degraded,
         // What happened to the traffic, not to the guarantee: nothing was
@@ -487,7 +571,7 @@ pub fn record_machine_key_status(
             redaction: Some(honmoon_core::RedactionFacts {
                 key_source,
                 transport,
-                reason: reason.clone(),
+                reason: reason.to_string(),
             }),
             ..Default::default()
         },
@@ -504,29 +588,65 @@ pub fn record_machine_key_status(
 /// agent environment, which is all the plugin's dispatcher can pass). It
 /// deliberately does not default under `~/.honmoon`: an unwritable `~/.honmoon`
 /// is one of the conditions that produces a fallback key in the first place, so
-/// that default would be unwritable exactly when it had something to say. Every
-/// failure here is swallowed after a stderr line — the fail-open contract owns
-/// this process, and reporting a degradation must not itself become one.
-fn audit_machine_key_status(audit_log: Option<&Path>, status: &MachineKeyStatus) {
-    if !status.is_degraded() {
-        return;
-    }
-    let Some(path) = audit_log else {
-        return;
-    };
+/// that default would be unwritable exactly when it had something to say.
+///
+/// Returns the line [`run`] must put on the hook response when a configured sink
+/// would not take the record, and `None` when there is nothing to report or the
+/// record landed. Nothing here fails the process: the fail-open contract owns
+/// it, and reporting a degradation must not itself become one (issue #165).
+///
+/// **Why the response and not a second file.** Both remaining channels were
+/// weighed. A fallback under `~/.honmoon` shares a failure mode with the very
+/// condition it would report — an unwritable `~/.honmoon` is what produces a
+/// fallback key — and it would be one more operator-independent path in the
+/// filesystem an attacker who can already reach the configured sink may be able
+/// to reach too, needing the whole `open_sink` hardening (#163, #179) a second
+/// time. The response is not in the filesystem at all: it is the pipe Claude
+/// Code is already reading, so the local actor who plants a symlink or FIFO at
+/// the audit path to suppress this record cannot suppress it here. It is also
+/// not durable — shown once, to whoever is driving the session — so it is the
+/// fallback and not a replacement for the log. It is carried as the
+/// [`systemMessage`][run] common field rather than `additionalContext`: shown
+/// to the user, never added to the model's context, so a degradation report
+/// does not itself feed the transcript honmoon exists to keep clean.
+///
+/// [run]: run
+fn audit_machine_key_status(audit_log: Option<&Path>, status: &MachineKeyStatus) -> Option<String> {
+    let Degradation {
+        key_source,
+        rule,
+        reason,
+    } = degradation(status)?;
+    // No sink configured is the documented opt-out (the plugin README's "Make
+    // that degradation visible"), not a sink that refused: nothing was taken
+    // away, so nothing is escalated here.
+    let path = audit_log?;
     // Opened-then-failed earns the same line as never-opened: this process keeps
     // no ring anyone can query afterwards, and with no `RUST_LOG` its `tracing`
     // warnings are filtered out before they are written — so when the sink does
-    // not take the record, stderr is all that is left.
-    let recorded = honmoon_core::AuditLog::with_file(1, path).and_then(|audit| {
-        record_machine_key_status(&audit, honmoon_core::RedactionTransport::Hook, status)
-    });
-    if let Err(e) = recorded {
-        eprintln!(
-            "honmoon hook: could not record the degraded salt in {} ({e}) — reported to stderr only",
-            path.display()
-        );
-    }
+    // not take the record, the response is all that is left.
+    let error = honmoon_core::AuditLog::with_file(1, path)
+        .and_then(|audit| {
+            record_machine_key_status(&audit, honmoon_core::RedactionTransport::Hook, status)
+        })
+        .err()?;
+    // Kept for a hand-run `honmoon hook`, where a terminal is attached and this
+    // is the more readable of the two. It is not the channel — that is the
+    // return value — so it names the response rather than claiming to be it.
+    eprintln!(
+        "honmoon hook: could not record the degraded salt in {} ({error}) — reported on the hook response instead",
+        path.display()
+    );
+    // The audit event's own field names, so the plugin README's `rule` and
+    // `key_source` tables (which carry the remedy for each) are read off this
+    // line unchanged.
+    Some(format!(
+        "honmoon: redaction ran on a degraded key and the audit log would not take the record, \
+         so this message is its only trace. rule={rule} key_source={key_source} reason={reason} \
+         sink={sink} sink_error={error}",
+        key_source = key_source_label(key_source),
+        sink = path.display(),
+    ))
 }
 
 /// `dir` resolved against the process's working directory, so every path this
@@ -2080,10 +2200,84 @@ mod tests {
             honmoon_core::AuditLog::with_file(1, &blocked_log).is_err(),
             "the log path must be unopenable for this test to mean anything"
         );
-        // The hook swallows it after a stderr line — reporting a degradation
-        // must not itself become one — so this asserts only that it does not
-        // panic or propagate, leaving the process's exit-0 contract intact.
-        audit_machine_key_status(Some(&blocked_log), &machine_key_in(&unusable).status);
+        // The hook must not fail on it — reporting a degradation must not
+        // itself become one — but it must not swallow it either: the line for
+        // the hook response comes back, naming the degradation the way the
+        // audit event would have (issue #165).
+        let message =
+            audit_machine_key_status(Some(&blocked_log), &machine_key_in(&unusable).status)
+                .expect("a refused sink is reported on the response");
+        assert!(
+            message.contains("rule=hook-salt-fallback"),
+            "the response names the rule: {message}"
+        );
+        assert!(
+            message.contains("key_source=fallback"),
+            "the response names the key source: {message}"
+        );
+        assert!(
+            message.contains(&format!("sink={}", blocked_log.display())),
+            "the response names the sink that refused: {message}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_planted_symlink_at_the_sink_cannot_suppress_the_degradation() {
+        // The issue #165 scenario itself: since #163 a symlink at the audit
+        // path is refused rather than followed, so a local actor who can write
+        // the log's directory can plant one and reliably keep the record out of
+        // the file. The record then has to reach the response instead.
+        let tmp = TempDir::new("sink-symlink");
+        let unusable = unusable_salt_dir(&tmp);
+        let elsewhere = tmp.path().join("elsewhere.jsonl");
+        let planted = tmp.path().join("audit.jsonl");
+        std::os::unix::fs::symlink(&elsewhere, &planted).expect("plant a symlink at the sink");
+
+        let message = audit_machine_key_status(Some(&planted), &machine_key_in(&unusable).status)
+            .expect("the refused symlink is reported on the response");
+        assert!(
+            message.contains("rule=hook-salt-fallback") && message.contains("sink_error="),
+            "the response carries the degradation and why the sink refused it: {message}"
+        );
+        assert!(
+            !elsewhere.exists(),
+            "the symlink was refused, not followed — nothing landed at its target"
+        );
+    }
+
+    #[test]
+    fn the_response_spells_key_source_the_way_the_audit_event_does() {
+        // `key_source_label` is a second spelling of the audit event's serde
+        // rename, so the README's `key_source` table reads off either channel.
+        for source in [
+            honmoon_core::RedactionKeySource::Persisted,
+            honmoon_core::RedactionKeySource::Unpersisted,
+            honmoon_core::RedactionKeySource::Fallback,
+        ] {
+            let serialized = serde_json::to_value(source).expect("serializes");
+            assert_eq!(
+                serialized,
+                serde_json::Value::String(key_source_label(source).into())
+            );
+        }
+    }
+
+    #[test]
+    fn the_warning_rides_on_the_verdict_without_replacing_it() {
+        // A no-op verdict becomes a one-field object — the response is now the
+        // only channel, so `{}`-means-silent must not eat it — and a real
+        // verdict keeps every key Claude Code is about to act on.
+        let mut quiet = serde_json::json!({});
+        attach_system_message(&mut quiet, "degraded".into());
+        assert_eq!(quiet, serde_json::json!({ "systemMessage": "degraded" }));
+
+        let mut deny = serde_json::json!({
+            "hookSpecificOutput": { "hookEventName": "PreToolUse", "permissionDecision": "deny" }
+        });
+        attach_system_message(&mut deny, "degraded".into());
+        assert_eq!(deny["hookSpecificOutput"]["permissionDecision"], "deny");
+        assert_eq!(deny["systemMessage"], "degraded");
     }
 
     #[test]
@@ -2117,7 +2311,11 @@ mod tests {
         let unusable = unusable_salt_dir(&tmp);
         let log = tmp.path().join("audit.jsonl");
 
-        audit_machine_key_status(Some(&log), &machine_key_in(&unusable).status);
+        let escalated = audit_machine_key_status(Some(&log), &machine_key_in(&unusable).status);
+        assert_eq!(
+            escalated, None,
+            "a record that landed has nothing left to escalate"
+        );
         let line = std::fs::read_to_string(&log).expect("the audit log was written");
         let event: honmoon_core::AuditEvent =
             serde_json::from_str(line.trim()).expect("one JSONL event per line");
@@ -2129,8 +2327,18 @@ mod tests {
 
         // A healthy key writes nothing at all — not even an empty file.
         let quiet = tmp.path().join("quiet.jsonl");
-        audit_machine_key_status(Some(&quiet), &machine_key_in(tmp.path()).status);
+        assert_eq!(
+            audit_machine_key_status(Some(&quiet), &machine_key_in(tmp.path()).status),
+            None
+        );
         assert!(!quiet.exists(), "the working path leaves the log untouched");
+
+        // No sink configured is the documented opt-out, not a refusal: nothing
+        // was taken away, so nothing is escalated to the response.
+        assert_eq!(
+            audit_machine_key_status(None, &machine_key_in(&unusable).status),
+            None
+        );
     }
 
     #[cfg(unix)]
