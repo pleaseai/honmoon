@@ -1,0 +1,25 @@
+packages/api/src/auth.test.ts
+  s_d720448ec7c988::t_5f17349bd14ada 190-195,200-208
+crates/honmoon-cli/src/mgmt_token.rs
+  s_d720448ec7c988::t_5f17349bd14ada 194
+wiki/deep-dive/control-plane.md
+  s_d720448ec7c988::t_5f17349bd14ada 83-89
+wiki/getting-started/quick-start.md
+  s_d720448ec7c988::t_5f17349bd14ada 142-144
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "bdeb5ea95a05236332d6a17862bb497005715eb2",
+  "prompts": {},
+  "sessions": {
+    "s_d720448ec7c988": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "069c4824-e961-4929-8157-1ff587135fd5",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
