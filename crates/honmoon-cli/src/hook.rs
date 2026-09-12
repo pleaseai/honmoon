@@ -226,14 +226,13 @@ const HOOK_SALT_WAS_EXPOSED_RULE: &str = "hook-salt-was-exposed";
 /// not read, so what it discarded — and who could read that — is unknown
 /// (issue #171).
 ///
-/// The only rule here that is not about the key in use. `key_source` stays
-/// [`honmoon_core::RedactionKeySource::Persisted`] and is true of the key that
-/// *landed*: a fresh secret written into a file already corrected to `0600`
-/// before the bytes arrive (see [`write_secret_file`], which #170 pinned). The
-/// bad news is about the bytes that were there first, and `rule` is where "which
-/// degradation is this" already lives — the same carve #141 chose over a fourth
-/// [`honmoon_core::RedactionKeySource`] variant, for the same reason: a
-/// `key_source` naming a key other than the one in use would be false.
+/// The only rule here that is not about the key in use. `key_source` still names
+/// that key rather than the discarded one — the same carve #141 chose over a
+/// fourth [`honmoon_core::RedactionKeySource`] variant, for the same reason: a
+/// `key_source` naming a key other than the one in use would be false. It is
+/// **not** always `persisted`, and [`degradations`] reads it off the status for
+/// that reason: where the loader destroyed the file and then could not write the
+/// replacement, the key in use is the fallback and the record says so.
 ///
 /// **It claims no exposure, because none was observed.** The loader never read
 /// the file, so whether it held a salt other invocations were adopting is
@@ -245,19 +244,26 @@ const HOOK_SALT_WAS_EXPOSED_RULE: &str = "hook-salt-was-exposed";
 ///
 /// **It is also the record for the unreadable file itself.** A non-`NotFound`
 /// `Err` on a file honmoon owns is worth knowing however it ends — a mode
-/// changed underneath it, a directory swapped in, an I/O error — and on this arm
-/// it ends in exactly one of two places: here, or, when [`random_bytes`],
-/// `create_dir_all` or [`write_secret_file`] then fails, on
-/// [`HOOK_SALT_FALLBACK_RULE`] via the error [`machine_key_in`] turns into a
-/// fallback key. So it needs no event of its own, and neither outcome is silent.
-/// (On that second outcome the `reason` is the write failure rather than the
-/// read one — the file was not replaced there, so there is nothing to say about
-/// a replacement, and the fallback key is the larger news anyway.)
+/// changed underneath it, a directory swapped in, an I/O error — and no outcome
+/// of this arm is silent. Where the replacement lands, this rule is the record.
+/// Where it does not, what happened to the *file* decides: a failure at
+/// [`write_secret_file`]'s truncating open destroyed nothing, so only
+/// [`HOOK_SALT_FALLBACK_RULE`] fires and there is no replacement to report; a
+/// failure after it destroyed the file anyway, so **both** fire — the fallback
+/// rule for the key now in use, this one for the bytes that are gone. A failure
+/// in [`random_bytes`] or `create_dir_all` is the first case: they run before the
+/// open.
 ///
-/// **Volume.** Once per unreadable file: the replacement is readable and `0600`,
-/// so the next loader adopts it and says nothing. Like
-/// [`HOOK_SALT_WAS_EXPOSED_RULE`] it repeats only where something keeps
-/// recreating the condition.
+/// **Volume.** Once per unreadable file *that the loader can go on to read* —
+/// the replacement lands at `0600` and the next loader adopts it without a word.
+/// The replacement is only readable if the `chmod` took, though, and it cannot
+/// take on a file this process does not own: there the next invocation fails the
+/// same read, replaces again, and emits this rule alongside
+/// [`HOOK_SALT_EXPOSED_RULE`] every single time. That is worth naming for what it
+/// is — the machine key is being rotated on every invocation, so placeholders
+/// stop being byte-stable across turns and transports (issues #20, #98) — and it
+/// is a condition the loader cannot clear rather than one something keeps
+/// recreating.
 ///
 /// **The remedy is not a file to fix.** The loader has already applied the one
 /// an operator would have reached for: it rotated. What is left is the audit
@@ -348,15 +354,20 @@ enum SaltExposure {
 /// Everything about a machine key that is worth recording: where its bytes came
 /// from, and what the loader observed about who else can read them.
 ///
-/// Two fields rather than one wider enum, because the two are orthogonal — a key
-/// can genuinely be the persisted one *and* have been left group/world-readable
-/// (issue #141). Folding exposure into [`MachineKeySource`] would make whichever
-/// variant won the fold false about the other axis.
-/// The fields are private and reachable only through the three constructors
-/// below, so that "a non-persisted key carries no exposure" is enforced rather
-/// than merely documented: [`record_machine_key_status`] matches on the pair and
-/// would otherwise silently drop an exposure some future caller paired with a
-/// [`MachineKeySource::Fallback`].
+/// Three fields rather than one wider enum, because all three are orthogonal. A
+/// key can genuinely be the persisted one *and* have been left
+/// group/world-readable (issue #141), and either of those can also have been
+/// written over a file the loader never read (issue #171) — a fact about bytes
+/// that are gone, not about these. Folding any of them into [`MachineKeySource`]
+/// would make whichever variant won the fold false about the other axes.
+///
+/// The fields are private, which keeps them out of reach of the other modules
+/// but **not** of this one: `mod tests` is a child module and builds the struct
+/// literally. So treat the constructors as the place each axis is answered
+/// deliberately, not as a type-level guarantee about which combinations exist —
+/// [`degradations`] is written to be correct for every combination rather than
+/// to rely on some being unreachable, which is why it reads `key_source` off
+/// [`Self::source`] instead of assuming the one its rule usually carries.
 pub struct MachineKeyStatus {
     source: MachineKeySource,
     exposure: Option<SaltExposure>,
@@ -412,23 +423,32 @@ impl MachineKeyStatus {
 
     /// A private random key that never reached disk. There is no salt file this
     /// process adopted, so there is no mode it could have observed.
-    /// Nor a file it replaced: the arms that produce these bytes
-    /// ([`publish_secret_atomically`]'s lost race) never reach the overwrite
-    /// path, so there is no unread predecessor either.
-    fn unpersisted(reason: String) -> Self {
+    ///
+    /// `replaced_unread` is still taken rather than assumed absent. It is `None`
+    /// on every arm that reaches here today ([`publish_secret_atomically`]'s lost
+    /// race never overwrites anything), but "this constructor cannot be told
+    /// about a destroyed file" is a claim about today's call sites, not about the
+    /// type — and a constructor that drops a fact it was handed is exactly how an
+    /// observation goes missing.
+    fn unpersisted(reason: String, replaced_unread: Option<String>) -> Self {
         Self {
             source: MachineKeySource::Unpersisted { reason },
             exposure: None,
-            replaced_unread: None,
+            replaced_unread,
         }
     }
 
     /// [`FALLBACK_MACHINE_KEY`], for the same reason: no adopted file, no mode.
-    fn fallback(reason: String) -> Self {
+    ///
+    /// This one genuinely does carry a `replaced_unread` on a reachable path: the
+    /// loader destroys a salt file it could not read and *then* fails to write
+    /// the replacement, so the key in use falls back while the record for the
+    /// destroyed file is still owed (issue #171, [`SecretWriteError`]).
+    fn fallback(reason: String, replaced_unread: Option<String>) -> Self {
         Self {
             source: MachineKeySource::Fallback { reason },
             exposure: None,
-            replaced_unread: None,
+            replaced_unread,
         }
     }
 }
@@ -484,20 +504,27 @@ fn machine_key_in(dir: &Path) -> MachineKey {
             replaced_unread,
         }) => MachineKey {
             bytes,
-            // An unpersisted salt comes off a path that never overwrites
-            // anything, so the two other observations are `None` there by
-            // construction rather than by being dropped here — see
-            // [`MachineKeyStatus::unpersisted`].
+            // `replaced_unread` reaches every arm rather than being dropped on
+            // the ones that "cannot" carry it: what a derivation destroyed unread
+            // is independent of where its own bytes came from, and a constructor
+            // that silently discarded it is how the #170 defect was shaped.
             status: match unpersisted {
-                Some(reason) => MachineKeyStatus::unpersisted(reason),
+                Some(reason) => MachineKeyStatus::unpersisted(reason, replaced_unread),
                 None => MachineKeyStatus::persisted(exposed, replaced_unread),
             },
         },
-        Err(e) => {
-            eprintln!("honmoon hook: using fallback salt ({e:#})");
+        Err(SaltLoadFailure {
+            error,
+            replaced_unread,
+        }) => {
+            eprintln!("honmoon hook: using fallback salt ({error:#})");
             MachineKey {
                 bytes: FALLBACK_MACHINE_KEY.to_vec(),
-                status: MachineKeyStatus::fallback(format!("{e:#}")),
+                // A failure that destroyed a salt file unread still owes that
+                // record, and the key in use here is the fallback — so this is
+                // the one path where a replaced-unread event does not carry
+                // `key_source: persisted` (issue #171).
+                status: MachineKeyStatus::fallback(format!("{error:#}"), replaced_unread),
             }
         }
     }
@@ -539,41 +566,40 @@ struct Degradation<'a> {
 /// [`MachineKeySource::Unpersisted`]. On both exposure rules it stays
 /// `persisted`, because that is what the key is.
 fn key_in_use_degradation(status: &MachineKeyStatus) -> Option<Degradation<'_>> {
-    let (key_source, rule, reason) = match (&status.source, &status.exposure) {
+    let (rule, reason) = match (&status.source, &status.exposure) {
         (MachineKeySource::Persisted, None) => return None,
         // The key genuinely is the persisted one, so `key_source` stays true and
         // `rule` carries the orthogonal bad news (issues #141, #143).
-        (MachineKeySource::Persisted, Some(SaltExposure::Open { reason })) => (
-            honmoon_core::RedactionKeySource::Persisted,
-            HOOK_SALT_EXPOSED_RULE,
-            reason,
-        ),
-        (MachineKeySource::Persisted, Some(SaltExposure::Closed { reason })) => (
-            honmoon_core::RedactionKeySource::Persisted,
-            HOOK_SALT_WAS_EXPOSED_RULE,
-            reason,
-        ),
+        (MachineKeySource::Persisted, Some(SaltExposure::Open { reason })) => {
+            (HOOK_SALT_EXPOSED_RULE, reason)
+        }
+        (MachineKeySource::Persisted, Some(SaltExposure::Closed { reason })) => {
+            (HOOK_SALT_WAS_EXPOSED_RULE, reason)
+        }
         // A key that never reached disk, and the compiled-in constant, have no
-        // adopted salt file whose mode could have been observed. The
-        // constructors are the only way to build a `MachineKeyStatus` and set
-        // `exposure: None` on both, so these arms ignore a field that cannot be
-        // anything else.
-        (MachineKeySource::Unpersisted { reason }, _) => (
-            honmoon_core::RedactionKeySource::Unpersisted,
-            HOOK_SALT_FALLBACK_RULE,
-            reason,
-        ),
-        (MachineKeySource::Fallback { reason }, _) => (
-            honmoon_core::RedactionKeySource::Fallback,
-            HOOK_SALT_FALLBACK_RULE,
-            reason,
-        ),
+        // adopted salt file whose mode could have been observed, so these arms
+        // report the provenance failure and ignore `exposure`.
+        (MachineKeySource::Unpersisted { reason }, _) => (HOOK_SALT_FALLBACK_RULE, reason),
+        (MachineKeySource::Fallback { reason }, _) => (HOOK_SALT_FALLBACK_RULE, reason),
     };
     Some(Degradation {
-        key_source,
+        key_source: key_source_of(&status.source),
         rule,
         reason,
     })
+}
+
+/// The wire spelling of where a key's bytes came from.
+///
+/// One mapping rather than one per call site: every event a derivation emits
+/// names the key *in use*, including the one whose `reason` is about a different
+/// key entirely, so the answer must not depend on which rule is being built.
+fn key_source_of(source: &MachineKeySource) -> honmoon_core::RedactionKeySource {
+    match source {
+        MachineKeySource::Persisted => honmoon_core::RedactionKeySource::Persisted,
+        MachineKeySource::Unpersisted { .. } => honmoon_core::RedactionKeySource::Unpersisted,
+        MachineKeySource::Fallback { .. } => honmoon_core::RedactionKeySource::Fallback,
+    }
 }
 
 /// Every degradation this derivation owes a record for, in the order they are
@@ -590,16 +616,19 @@ fn key_in_use_degradation(status: &MachineKeyStatus) -> Option<Degradation<'_>> 
 /// and #170 already paid once for dropping an observation that a second,
 /// unrelated one could not be made.
 ///
-/// `key_source` on the replaced-key event is the key in use, which is the
-/// persisted one wherever this fires: only [`MachineKeyStatus::persisted`]
-/// carries a `replaced_unread`, and the constructors are the only way to build
-/// the type.
+/// `key_source` on the replaced-key event is **read off the status**, never
+/// assumed. It is `persisted` on the ordinary arm — the replacement landed, so
+/// the key in use came out of the salt file — and `fallback` where the loader
+/// destroyed the file and then could not write its replacement
+/// ([`SecretWriteError`]). Hard-coding `persisted` here would have made the
+/// record false on exactly the path where the news is worst, and the field is
+/// private-but-same-module, so nothing in the type would have caught it.
 fn degradations(status: &MachineKeyStatus) -> Vec<Degradation<'_>> {
     let mut owed: Vec<Degradation<'_>> = Vec::new();
     owed.extend(key_in_use_degradation(status));
     if let Some(reason) = &status.replaced_unread {
         owed.push(Degradation {
-            key_source: honmoon_core::RedactionKeySource::Persisted,
+            key_source: key_source_of(&status.source),
             rule: HOOK_SALT_REPLACED_UNREAD_RULE,
             reason,
         });
@@ -661,18 +690,25 @@ pub fn record_machine_key_status(
     transport: honmoon_core::RedactionTransport,
     status: &MachineKeyStatus,
 ) -> std::io::Result<()> {
-    let mut refused = None;
+    let mut refused: Option<(std::io::ErrorKind, Vec<String>)> = None;
     for degradation in degradations(status) {
         // Every owed record is attempted even after one is refused: they are
         // separate facts about separate keys, and a sink that takes the second
-        // has still preserved that one. The first error is what the caller
-        // escalates.
+        // has still preserved that one.
         if let Err(e) = record_degradation(audit, transport, &degradation) {
-            refused.get_or_insert(e);
+            let (_, lost) = refused.get_or_insert_with(|| (e.kind(), Vec::new()));
+            lost.push(format!("{rule}: {e}", rule = degradation.rule));
         }
     }
+    // One `Err`, because the caller's channel is one line — but it names every
+    // rule that did not land rather than only the first. The gateway logs this
+    // through a single `tracing::warn!`, so an error reading "could not record"
+    // with no rule in it would leave an operator unable to tell which of two
+    // independently-true facts about the key was lost. The hook transport does
+    // not come through here: it reports per record on the response, which is the
+    // only trace it has (issue #165).
     match refused {
-        Some(e) => Err(e),
+        Some((kind, lost)) => Err(std::io::Error::new(kind, lost.join("; "))),
         None => Ok(()),
     }
 }
@@ -907,6 +943,36 @@ impl LoadedSalt {
     }
 }
 
+/// A salt load that produced no persisted key, plus anything the loader had
+/// already observed and must not lose by failing.
+///
+/// The loader's failure becomes a [`MachineKeySource::Fallback`] key, and before
+/// issue #171's follow-up that conversion threw away everything except the error
+/// — including a salt file the loader had already destroyed unread. The record
+/// for that file is owed from the truncating open onward (see
+/// [`SecretWriteError`]), so it has to survive the failure that stopped the
+/// replacement from landing.
+#[derive(Debug)]
+struct SaltLoadFailure {
+    error: anyhow::Error,
+    /// `Some(reason)` when the loader destroyed a salt file it never read. The
+    /// key in use is then the *fallback*, not the persisted one, which is why
+    /// [`degradations`] reads `key_source` off the status instead of assuming it.
+    replaced_unread: Option<String>,
+}
+
+impl From<anyhow::Error> for SaltLoadFailure {
+    /// Every other way this loader fails: nothing had been destroyed, so there is
+    /// nothing owed beyond the error. Lets `?` keep working on the `anyhow` calls
+    /// around it rather than making each one restate that.
+    fn from(error: anyhow::Error) -> Self {
+        Self {
+            error,
+            replaced_unread: None,
+        }
+    }
+}
+
 /// What [`load_or_create_machine_salt`] found where the salt file should be,
 /// and — on the one arm that has anything to say about it — what it can record
 /// about what it is about to destroy.
@@ -939,8 +1005,8 @@ enum SaltFileState {
 /// loader just set it, and the observation would be of its own correction.
 fn replaced_unread_reason(path: &Path, error: &std::io::Error) -> String {
     format!(
-        "salt file {} could not be read ({error}) and was replaced; {}, and its contents were \
-         never seen, so whether it held a key other invocations adopted is unknown",
+        "salt file {} could not be read ({error}) and its contents were discarded unread, so \
+         whether it held a key other invocations adopted is unknown; {}",
         path.display(),
         replaced_file_mode(path),
     )
@@ -957,10 +1023,12 @@ fn replaced_unread_reason(path: &Path, error: &std::io::Error) -> String {
 fn replaced_file_mode(path: &Path) -> String {
     match mode_of(path) {
         Some(mode) if mode & 0o077 != 0 => format!(
-            "it was {} (mode {mode:04o}) when the loader replaced it",
+            "it was {} (mode {mode:04o}) when the loader last looked, just before discarding it",
             access_beyond_owner(mode)
         ),
-        Some(mode) => format!("it was owner-only (mode {mode:04o}) when the loader replaced it"),
+        Some(mode) => format!(
+            "it was owner-only (mode {mode:04o}) when the loader last looked, just before discarding it"
+        ),
         None => "its mode could not be read either".to_string(),
     }
 }
@@ -973,7 +1041,9 @@ fn replaced_file_mode(_path: &Path) -> String {
     "its permissions are not something honmoon reads on this platform".to_string()
 }
 
-fn load_or_create_machine_salt(requested_dir: &Path) -> Result<LoadedSalt> {
+fn load_or_create_machine_salt(
+    requested_dir: &Path,
+) -> std::result::Result<LoadedSalt, SaltLoadFailure> {
     let resolved = absolute_salt_dir(requested_dir);
     let dir = resolved.as_path();
     let path = dir.join("hook-salt");
@@ -1024,14 +1094,15 @@ fn load_or_create_machine_salt(requested_dir: &Path) -> Result<LoadedSalt> {
         // overwrite it. (A concurrent second corrupt-recovery is negligible — the
         // damaged state is already anomalous.)
         SaltFileState::Corrupt => {
-            let exposed = write_secret_file(&path, &salt)
-                .with_context(|| format!("writing {}", path.display()))?;
+            let exposed =
+                write_secret_file(&path, &salt).map_err(|e| write_failure(&path, e).error)?;
             return Ok(LoadedSalt::persisted(salt, exposed));
         }
         SaltFileState::Unread(replaced) => {
-            let exposed = write_secret_file(&path, &salt)
-                .with_context(|| format!("writing {}", path.display()))?;
-            return Ok(LoadedSalt::persisted_over_unread(salt, exposed, replaced));
+            return match write_secret_file(&path, &salt) {
+                Ok(exposed) => Ok(LoadedSalt::persisted_over_unread(salt, exposed, replaced)),
+                Err(e) => Err(replacement_failure(&path, replaced, e)),
+            };
         }
         SaltFileState::Absent => {}
     }
@@ -1039,7 +1110,33 @@ fn load_or_create_machine_salt(requested_dir: &Path) -> Result<LoadedSalt> {
     // First use: publish atomically so a concurrent first-run process cannot
     // persist a *different* machine key, and so the target file is never visible
     // in a half-written state. If we lose the link race, adopt the winner's salt.
-    publish_secret_atomically(dir, &path, &salt)
+    Ok(publish_secret_atomically(dir, &path, &salt)?)
+}
+
+/// A [`write_secret_file`] failure as the loader reports it: the error with the
+/// context its siblings carry, and nothing owed yet. The caller that destroyed
+/// something unread answers that separately, in [`replacement_failure`].
+fn write_failure(path: &Path, e: SecretWriteError) -> SaltLoadFailure {
+    SaltLoadFailure {
+        error: anyhow::Error::new(e.error).context(format!("writing {}", path.display())),
+        replaced_unread: None,
+    }
+}
+
+/// The same, for a write that was replacing a salt file the loader never read:
+/// `replaced` is owed exactly when [`write_secret_file`] got past its truncating
+/// open, because that is the instant the predecessor stopped existing.
+///
+/// Its own function so the decision is reachable from a test. A whole loader run
+/// cannot demonstrate both sides of it — reaching the truncated side needs a file
+/// this process can open for writing but not write to, which no portable fixture
+/// produces — and "the record is owed from the open onward" is the entire point
+/// of [`SecretWriteError`] carrying that flag.
+fn replacement_failure(path: &Path, replaced: String, e: SecretWriteError) -> SaltLoadFailure {
+    let truncated = e.truncated;
+    let mut failure = write_failure(path, e);
+    failure.replaced_unread = truncated.then_some(replaced);
+    failure
 }
 
 /// Publish `salt` as the first-run machine key: write it to an
@@ -1215,7 +1312,10 @@ fn hex_encode(bytes: &[u8]) -> String {
 /// settled. So this function's answer stays what its name says — the exposure of
 /// the key it is writing — and `None` from it never means the inode's past was
 /// clean.
-fn write_secret_file(path: &Path, bytes: &[u8]) -> std::io::Result<Option<SaltExposure>> {
+fn write_secret_file(
+    path: &Path,
+    bytes: &[u8],
+) -> std::result::Result<Option<SaltExposure>, SecretWriteError> {
     use std::io::Write as _;
     let mut opts = std::fs::OpenOptions::new();
     opts.write(true).create(true).truncate(true);
@@ -1224,15 +1324,49 @@ fn write_secret_file(path: &Path, bytes: &[u8]) -> std::io::Result<Option<SaltEx
         use std::os::unix::fs::OpenOptionsExt;
         opts.mode(0o600);
     }
-    let mut file = opts.open(path)?;
+    // Short of this line nothing was destroyed; past it the previous contents
+    // are gone whatever happens next — which is the distinction
+    // [`SecretWriteError::truncated`] exists to carry.
+    let mut file = opts.open(path).map_err(|error| SecretWriteError {
+        error,
+        truncated: false,
+    })?;
     // Tighten *before* the bytes land. The open mode above applies only when
     // this call creates the file; a pre-existing one is truncated but keeps
     // whatever mode it had, so writing first would leave a fresh secret sitting
     // in a group/world-readable file for the length of the write. Truncation has
     // already emptied it, so there is nothing to expose in this order.
     let exposed = restrict_to_owner_only(path, SaltProvenance::FreshlyWritten);
-    file.write_all(bytes)?;
+    file.write_all(bytes).map_err(|error| SecretWriteError {
+        error,
+        truncated: true,
+    })?;
     Ok(exposed)
+}
+
+/// What [`write_secret_file`] could not do, and whether it had already destroyed
+/// what was in the file by the time it failed.
+///
+/// A bare [`std::io::Error`] cannot answer the second question, and the answer
+/// decides whether a caller replacing bytes it never read owes a
+/// [`HOOK_SALT_REPLACED_UNREAD_RULE`] record (issue #171). The truncating open
+/// empties the file *before* the write, so:
+/// - a failure at the open destroyed nothing — the predecessor is intact and
+///   nothing was replaced;
+/// - a failure at the write destroyed it anyway. The replacement did not land,
+///   but the bytes that were there are gone just the same, and their exposure is
+///   exactly as unknown as it would have been had the write succeeded.
+///
+/// Recording only the first case would have put the silence #171 removes back on
+/// the narrower path, where it is worse: the remnant is a zero-length file, which
+/// the next loader reads successfully and classifies as short/corrupt — an arm
+/// that says nothing, by design, because bytes it *has* read are not unknown. So
+/// the record would be lost for good rather than deferred.
+#[derive(Debug)]
+struct SecretWriteError {
+    error: std::io::Error,
+    /// `true` once the truncating open succeeded.
+    truncated: bool,
 }
 
 /// Read `n` bytes from the OS CSPRNG. Uses `/dev/urandom` to avoid pulling in an
@@ -1401,7 +1535,9 @@ fn mode_of(path: &Path) -> Option<u32> {
 }
 
 /// Name the access `mode` grants beyond the file's owner, for the `reason` on a
-/// [`HOOK_SALT_EXPOSED_RULE`] or [`HOOK_SALT_WAS_EXPOSED_RULE`] event.
+/// [`HOOK_SALT_EXPOSED_RULE`], [`HOOK_SALT_WAS_EXPOSED_RULE`] or
+/// [`HOOK_SALT_REPLACED_UNREAD_RULE`] event — the first two about the file the
+/// key came out of, the third about one the loader destroyed unread.
 ///
 /// The predicate is `0o077` — any permission at all beyond the owner, because a
 /// key file should have none — but that is wider than reading, and the record
@@ -2154,10 +2290,14 @@ mod tests {
         );
 
         let key = machine_key_in(tmp.path());
-        assert_ne!(
+        // Read the file back rather than only asserting the key changed: a fresh
+        // 32-byte secret differs from the seeded one on every arm, so that alone
+        // would pass even if the loader had taken a path that replaced nothing.
+        // What this pins is that the key in use is what now sits at the salt path.
+        assert_eq!(
+            std::fs::read(&path).expect("the replacement is readable, unlike what it replaced"),
             key.as_slice(),
-            &[3u8; 32][..],
-            "the unread file was replaced, which is the act this event is about"
+            "the unread file was replaced by the key now in use, which is the act this event is about"
         );
 
         let log = tmp.path().join("audit.jsonl");
@@ -2256,6 +2396,121 @@ mod tests {
         assert!(
             degradations(&next.status).is_empty(),
             "the condition is gone, so the event stops"
+        );
+    }
+
+    /// The write-failure half of the failed-read arm (#171 review): the record is
+    /// owed from [`write_secret_file`]'s truncating open onward, because that is
+    /// the instant the file the loader could not read stopped existing.
+    ///
+    /// Getting this wrong is permanent, not deferred. The remnant is a
+    /// zero-length file, which the next loader *reads* successfully and routes to
+    /// the short/corrupt arm — an arm that says nothing by design, because bytes
+    /// it has read are not unknown. So a record dropped here is never made up
+    /// later, which is why it is owed even though the replacement never landed.
+    ///
+    /// Driven through `replacement_failure` because no portable fixture produces
+    /// a file this process can open for writing but not write to. The open-side
+    /// half is driven end-to-end by
+    /// `a_salt_file_that_cannot_be_replaced_reports_only_the_fallback`.
+    #[test]
+    fn a_salt_destroyed_before_the_write_failed_still_owes_its_record() {
+        let path = Path::new("/home/a/.honmoon/hook-salt");
+        let replaced = "salt file /home/a/.honmoon/hook-salt could not be read".to_string();
+
+        let past_the_open = replacement_failure(
+            path,
+            replaced.clone(),
+            SecretWriteError {
+                error: std::io::Error::other("no space left on device"),
+                truncated: true,
+            },
+        );
+        assert_eq!(
+            past_the_open.replaced_unread.as_deref(),
+            Some(replaced.as_str()),
+            "the predecessor is gone whether or not the replacement landed, so the record stands"
+        );
+
+        let short_of_it = replacement_failure(
+            path,
+            replaced,
+            SecretWriteError {
+                error: std::io::Error::other("permission denied"),
+                truncated: false,
+            },
+        );
+        assert!(
+            short_of_it.replaced_unread.is_none(),
+            "nothing was destroyed, so claiming a replacement would be the over-claim this rule exists to avoid: {:?}",
+            short_of_it.replaced_unread
+        );
+        assert!(
+            format!("{:#}", short_of_it.error).contains("writing"),
+            "and both keep the write failure the fallback key is reported with: {:#}",
+            short_of_it.error
+        );
+    }
+
+    /// The open-side half, end to end: a directory where the salt file should be.
+    /// `read` fails `IsADirectory` (not `NotFound`, so the loader takes the
+    /// failed-read arm) and the truncating open fails the same way, so nothing
+    /// was destroyed and only the fallback rule fires.
+    ///
+    /// Both errors are the same `EISDIR`, so the discriminator is which reason
+    /// the event carries — the write context, not the read one — and the absence
+    /// of a second record.
+    #[cfg(unix)]
+    #[test]
+    fn a_salt_file_that_cannot_be_replaced_reports_only_the_fallback() {
+        let tmp = TempDir::new("replaced-unread-unwritable");
+        let path = tmp.path().join("hook-salt");
+        std::fs::create_dir(&path).expect("a directory where the salt file should be");
+        assert!(
+            matches!(std::fs::read(&path), Err(e) if e.kind() != std::io::ErrorKind::NotFound),
+            "the read must fail with something other than NotFound, or this is not the failed-read arm"
+        );
+
+        let key = machine_key_in(tmp.path());
+        assert_eq!(
+            key.as_slice(),
+            FALLBACK_MACHINE_KEY,
+            "the replacement could not be written, so the key in use is the fallback"
+        );
+        let owed = degradations(&key.status);
+        assert_eq!(
+            owed.iter().map(|d| d.rule).collect::<Vec<_>>(),
+            vec![HOOK_SALT_FALLBACK_RULE],
+            "nothing was destroyed, so there is no replacement to report — only the fallback key"
+        );
+        assert!(
+            owed[0].reason.contains("writing") && !owed[0].reason.contains("discarded unread"),
+            "and its reason is the write failure, not a replacement that never happened: {}",
+            owed[0].reason
+        );
+    }
+
+    /// A fallback key can owe the replaced-unread record too — the loader
+    /// destroyed the file and then could not write its replacement — and the
+    /// event must then say `fallback`, because that is the key in use. Hard-coding
+    /// `persisted` on this rule would make the record false on exactly the path
+    /// where the news is worst.
+    #[test]
+    fn a_replaced_unread_record_names_the_key_actually_in_use() {
+        let status = MachineKeyStatus::fallback(
+            "writing /home/a/.honmoon/hook-salt: no space left on device".to_string(),
+            Some("salt file /home/a/.honmoon/hook-salt could not be read".to_string()),
+        );
+        let owed = degradations(&status);
+        assert_eq!(
+            owed.iter().map(|d| d.rule).collect::<Vec<_>>(),
+            vec![HOOK_SALT_FALLBACK_RULE, HOOK_SALT_REPLACED_UNREAD_RULE],
+            "both are owed: the key in use is public, and a key that may have been in use is gone"
+        );
+        assert!(
+            owed.iter()
+                .all(|d| matches!(d.key_source, honmoon_core::RedactionKeySource::Fallback)),
+            "`key_source` names the key in use on every event, including the one whose reason is about another key"
         );
     }
 
@@ -2366,6 +2621,41 @@ mod tests {
             honmoon_core::AuditLog::with_file(1, &blocked_log).is_err(),
             "the log path must be unopenable for this test to mean anything"
         );
+        let tmp_sink = TempDir::new("replaced-unread-both-sink");
+        // First against a sink that takes them: both must actually land. Every
+        // other test with a live log records one event or none, so a regression
+        // that kept only the first owed record would pass all of them.
+        let audit = honmoon_core::AuditLog::new(4);
+        record_machine_key_status(&audit, honmoon_core::RedactionTransport::Hook, &status)
+            .expect("an in-memory log has no sink to fail");
+        let recorded = audit.recent(2);
+        assert_eq!(
+            recorded
+                .iter()
+                .rev()
+                .map(|e| e.rule.clone().unwrap_or_default())
+                .collect::<Vec<_>>(),
+            vec![
+                HOOK_SALT_EXPOSED_RULE.to_string(),
+                HOOK_SALT_REPLACED_UNREAD_RULE.to_string()
+            ],
+            "both records reach the durable path, key in use first"
+        );
+
+        // And the hook's own channel, against a sink that works: two lines in the
+        // JSONL and nothing escalated to the response.
+        let log = tmp_sink.path().join("audit.jsonl");
+        assert!(
+            audit_machine_key_status(Some(&log), &status).is_none(),
+            "a sink that took both records has nothing to report on the response"
+        );
+        let written = std::fs::read_to_string(&log).expect("the sink took the records");
+        assert_eq!(
+            written.lines().count(),
+            2,
+            "one JSONL event per owed record, not one per derivation: {written}"
+        );
+
         let message = audit_machine_key_status(Some(&blocked_log), &status)
             .expect("a refused sink is reported on the response");
         let lines: Vec<&str> = message.lines().collect();
@@ -2388,9 +2678,12 @@ mod tests {
     /// reason it gives: a false alarm in the one channel built to be read costs
     /// more than a gap in it.
     ///
-    /// Driven directly, because a whole loader run cannot fail this `stat`: it
-    /// happens on a path whose `read` just failed with something other than
-    /// `NotFound`, so the file is there.
+    /// Driven directly, because a whole loader run reaches this only through a
+    /// race: the `stat` happens on a path whose `read` just failed with something
+    /// other than `NotFound`, so the file was there a syscall ago and something
+    /// else has to remove it in between. Reachable, not impossible — the claim
+    /// worth making here is that the branch is covered, not that nothing can
+    /// enter it.
     #[cfg(unix)]
     #[test]
     fn a_replaced_file_whose_mode_cannot_be_read_claims_no_exposure() {

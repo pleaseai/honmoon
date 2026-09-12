@@ -78,12 +78,14 @@ pub enum Decision {
 /// different axes, and the bytes really did come from `~/.honmoon/hook-salt`.
 ///
 /// A fourth rule is not about the key in use at all. `hook-salt-replaced-unread`
-/// says the loader overwrote a salt file it could not read, so what it discarded
-/// — and whether any invocation had been adopting it as a key — is unknown
-/// (issue #171). `key_source` there is `persisted` because that is the key that
-/// landed, which is why `rule` has to be read before `reason` on these events:
-/// the reason is about the file that was replaced, not about the key the rest of
-/// the record describes.
+/// says the loader discarded a salt file it could not read, so what it held —
+/// and whether any invocation had been adopting it as a key — is unknown (issue
+/// #171). `key_source` there still names the key *in use*, which is why `rule`
+/// has to be read before `reason` on these events: the reason is about the file
+/// that was discarded, not about the key the rest of the record describes. That
+/// is `persisted` where the replacement landed and `fallback` where the loader
+/// destroyed the file and then could not write one, in which case this rule and
+/// `hook-salt-fallback` both describe the same invocation.
 ///
 /// Placeholders are `HMAC(salt, secret)`, and the salt is derived from a machine
 /// key the transports read from disk. When that key cannot be read or created the
@@ -104,8 +106,8 @@ pub struct RedactionFacts {
     /// — the one it was left with under `hook-salt-exposed`, the one it was found
     /// with under `hook-salt-was-exposed`. Under `hook-salt-replaced-unread` it
     /// is about a *different* file from the key in use: the one the loader
-    /// replaced without reading, the error that stopped it reading, and the mode
-    /// that file carried when it went.
+    /// discarded without reading, the error that stopped it reading, and the mode
+    /// that file carried when the loader last looked at it.
     ///
     /// **Deliberately untrimmed** (issue #162). For the `honmoon hook` transport
     /// this record is the only durable channel — a fresh process per invocation,
@@ -163,7 +165,8 @@ pub enum RedactionKeySource {
     /// took. So this value does appear on a degraded event, and an event carrying
     /// it is about something other than the key's provenance: those two rules are
     /// about the file's permissions, and `hook-salt-replaced-unread` is not about
-    /// this key at all but about the one it overwrote unseen.
+    /// this key at all but about the one it discarded unseen — a rule this value
+    /// carries only where the replacement actually landed.
     Persisted,
     /// A private random secret that never reached disk, so it is unforgeable
     /// but lives and dies with one process: placeholders stop being stable

@@ -292,7 +292,7 @@ all, but about the one it replaced:
 | `hook-salt-fallback` | the key in use is **not** the persisted one; `key_source` says what that cost | fix what stopped the loader reading or writing `~/.honmoon/hook-salt` |
 | `hook-salt-exposed` | the key **is** the persisted one, but its file is readable by other local users and the loader could not restrict it to `0600` | tighten the file — the loader already tried and could not |
 | `hook-salt-was-exposed` | the key **is** the persisted one, and the loader *found* its file readable by other local users, then did not see it that way after restricting it | rotate, per the suspicion rule below — the mode is no longer the problem. Where the `reason` says the mode could not be read back, check the file is `0600` first: the correction is unconfirmed there |
-| `hook-salt-replaced-unread` | the key in use is a fresh secret that **replaced** a salt file the loader could not read, so what it discarded — and who could read that — is unknown | nothing to fix on the file: the loader already rotated. Find out why the file was unreadable, and read the `reason`'s mode: one naming other local users means treat every placeholder minted before this event as forgeable, one saying `owner-only` or that the mode could not be read means you cannot rule that out either way |
+| `hook-salt-replaced-unread` | the loader **discarded** a salt file it could not read, so what it held — and who could read that — is unknown | usually nothing to fix on the file: the loader already rotated. Find out why the file was unreadable, and read the `reason`'s mode: one letting other local users *read* it means treat every placeholder minted before this event as forgeable; `owner-only`, execute-only, or a mode that could not be read leaves it open either way. If it repeats, see "It does not always fire once" below — the key is being rotated every invocation |
 
 The sink can also report on **itself**. Opening it reads the file's mode, owner and link
 count, and anything beyond an owner-only file with one name that this process owns is
@@ -395,32 +395,51 @@ not know which, and `hook-salt-replaced-unread` says exactly that instead of gue
 either direction:
 
 ```
-salt file /home/a/.honmoon/hook-salt could not be read (Permission denied (os error 13)) and was replaced; it was readable by other local users (mode 0244) when the loader replaced it, and its contents were never seen, so whether it held a key other invocations adopted is unknown
+salt file /home/a/.honmoon/hook-salt could not be read (Permission denied (os error 13)) and its contents were discarded unread, so whether it held a key other invocations adopted is unknown; it was readable by other local users (mode 0244) when the loader last looked, just before discarding it
 ```
 
-The mode there is the *file's*, read at the last instant before the overwrite — not a
-claim that a key was exposed, because no key was ever seen. Read the two halves
-separately. A mode naming other local users, on a file that may have held a key, is the
-combination worth acting on: treat the placeholders minted before this event as
-forgeable, since rotation protects a session's future and not its past. An `owner-only`
-mode does not clear it, for the same reason the exposure rules give — a file that was
-`0644` last week and `0600` now looks identical here to one that was never loose.
+The mode there is the *file's*, and it is what the loader saw when it last looked, a few
+syscalls before the overwrite — not a claim that a key was exposed, because no key was
+ever seen. Read the two halves separately. A mode letting other local users **read** the
+file, on a file that may have held a key, is the combination worth acting on: treat the
+placeholders minted before this event as forgeable, since rotation protects a session's
+future and not its past. Nothing else in the `reason` clears it — an `owner-only` mode, a
+mode that could not be read back, and the execute-only case (which grants no read at all,
+so there was never anything to copy) all leave the question open, for the reason the
+exposure rules give: a file that was `0644` last week and `0600` now looks identical here
+to one that was never loose.
 
-`key_source` stays `persisted`, and is true of the key that *landed*: a fresh secret,
-written into a file already corrected to `0600` before the bytes arrive. This is the one
-rule whose `reason` is about a different key from the rest of the record, so read `rule`
-before `reason` on it.
+`key_source` names the key **in use**, not the discarded one. That is usually `persisted`
+— a fresh secret landed in the file — but it is `fallback` where the loader destroyed the
+unreadable file and then could not write the replacement, in which case this rule appears
+beside `hook-salt-fallback` and both describe the same invocation. This is the one rule
+whose `reason` is about a different key from the rest of the record, so read `rule` before
+`reason` on it.
 
-**There is nothing left to fix on the file.** The loader has already applied the remedy an
-operator would have reached for — it rotated, having no other option — which makes this the
-one rule that is an audit trail rather than a call to action. What is still worth chasing is
-why the file was unreadable, and this event is that record too: a read failure on a file
-honmoon owns ends either here or, when the replacement also fails, as `hook-salt-fallback`,
-so it is never silent. It fires once, because the replacement is readable and `0600` and the
-next invocation adopts it without a word.
+**There is usually nothing left to fix on the file.** The loader has already applied the
+remedy an operator would have reached for — it rotated, having no other option — which
+makes this mostly an audit trail rather than a call to action. What is still worth chasing
+is why the file was unreadable, and this event is that record too: no outcome of a failed
+read is silent. Where the replacement lands, this rule is the record; where it fails at the
+open, nothing was destroyed and only `hook-salt-fallback` fires; where it fails *after* the
+open, the file is gone anyway and both rules fire.
 
-**Rotation is yours to trigger, not honmoon's.** The loader does not mint a new salt when
-it finds a loose one it can still read, because it cannot tell a single-user laptop restoring its own backup
+**It does not always fire once.** Usually it does — the replacement lands at `0600`, and
+the next invocation reads it without a word. But the loader can only make the replacement
+readable to itself if the `chmod` takes, and that fails on a file it does not own (a
+root-owned salt in your `~/.honmoon` that your user can write but not read). There the next
+invocation fails the same read, replaces again, and raises this rule alongside
+`hook-salt-exposed` every single time. **A repeat of that pair is not an audit-volume
+problem — it means the machine key is being rotated on every invocation**, so placeholders
+stop being byte-stable across turns and transports (#20, #98) and a session's transcript
+stops matching its own earlier turns. Fix the ownership of the salt file; honmoon cannot
+clear that condition itself. (This is not new behaviour — such a host always rotated its key
+every invocation. What is new is that it now says so.)
+
+**Rotating a salt it can still read is yours to trigger, not honmoon's.** (The one arm
+where the loader rotates on its own is the unreadable file above, where it has no other
+option.) It does not mint a new salt when it finds a merely *loose* one, because it cannot
+tell a single-user laptop restoring its own backup
 from a shared host where someone really did read the file — and rotating costs something
 real in both cases: placeholders for the same secret change at that moment, so an
 in-flight session's transcript stops matching its earlier turns and the two transports
@@ -463,10 +482,13 @@ that one reading `0600` and recording nothing — a hook that got there first is
 witness, and the dashboard stays clean over a key that was exposed. (Loaders whose reads
 overlap, both `stat`-ing before either `chmod`, both see the loose mode and both record. A
 pill is possible; it is not something to wait for.) `hook-salt-replaced-unread` is the same
-shape and stricter: the replacement is a single `open` that either succeeds or leaves the
-loader on the fallback path, so there is no overlap window at all — whichever process
-replaces the unreadable file leaves the other adopting an ordinary `0600` salt with nothing
-to report. Query the log for these two.
+shape with a **wider** window, not a narrower one: its trigger is a read that fails, and
+nothing clears that until some process's replacement has been written and tightened — with
+a `stat`, a `/dev/urandom` read and a `create_dir_all` in between. Nothing locks the file,
+so two invocations whose reads both fail before either replacement lands will each mint a
+different salt, each record, and race for the final bytes. A later invocation sees an
+ordinary `0600` salt and says nothing; a concurrent one does not. Query the log for these
+two.
 
 What the dashboard cannot show for any of the four is the hook's *own* records — the
 per-invocation cardinality, and the hook-specific reason. A host running no gateway has the
