@@ -1,0 +1,35 @@
+crates/honmoon-proxy/src/mitm.rs
+  s_b92c74f2d03ba1::t_3d4e6977d6f971 1684-1695,1698-1800
+  s_b92c74f2d03ba1::t_cd7689d067ac4a 1696-1697
+  s_b92c74f2d03ba1::t_fd62ac3080d0a3 585-587
+  s_b92c74f2d03ba1::t_79d15cae7fd223 53,707-711
+.please/docs/decisions/0009-body-only-inspection-contract.md
+  s_b92c74f2d03ba1::t_74aa9382bf904b 130,225-231,285-292
+  s_b92c74f2d03ba1::t_dea195f06fbe05 126-129
+  s_b92c74f2d03ba1::t_8c8ba58e3555b0 5-8,85-93,175,204-208,243-253
+  s_b92c74f2d03ba1::t_915e8f42034d33 293
+README.md
+  s_b92c74f2d03ba1::t_7a0ed700c46975 238-246
+crates/honmoon-proxy/src/body.rs
+  s_b92c74f2d03ba1::t_fd62ac3080d0a3 26-32,194-195,246-247
+  s_b92c74f2d03ba1::t_e5705da63fe6d9 998-1008,1018,1023-1047
+  s_b92c74f2d03ba1::t_cd7689d067ac4a 1009-1017,1019-1022
+  s_b92c74f2d03ba1::t_cb5875b5bb57ea 45-49,256-372
+  s_b92c74f2d03ba1::t_0b512b1640d2f3 373
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "4117c3c4e44ae58200fc496cd86e6ff95935b672",
+  "prompts": {},
+  "sessions": {
+    "s_b92c74f2d03ba1": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "ed14d62f-7552-4452-8b5f-6be04091ed84",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
