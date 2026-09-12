@@ -1,0 +1,35 @@
+packages/api/src/index.ts
+  s_d720448ec7c988::t_b63a7d64519287 13-16,25,51-57
+  s_d720448ec7c988::t_3e812530522687 19-21,45
+  s_d720448ec7c988::t_cdcda543c21f29 58
+packages/api/src/routes.ts
+  s_d720448ec7c988::t_3e812530522687 1-50
+packages/api/src/auth.ts
+  s_d720448ec7c988::t_1148773548c09a 1-17,19-55,57-133
+  s_d720448ec7c988::t_fc7d3891045a72 18,56
+apps/dashboard/src/api.ts
+  s_d720448ec7c988::t_7a30ac287ad3ce 7-14,23-33,37,45
+packages/api/src/auth.test.ts
+  s_d720448ec7c988::t_7a30ac287ad3ce 1
+  s_d720448ec7c988::t_373537684d69f2 2-97
+packages/api/src/routes.test.ts
+  s_d720448ec7c988::t_301e55c9426d89 1-65
+apps/dashboard/vite.config.ts
+  s_d720448ec7c988::t_7a30ac287ad3ce 14-17,22
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "39fc6892de77ac1ac4f56312fe63d875ebdd2781",
+  "prompts": {},
+  "sessions": {
+    "s_d720448ec7c988": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "069c4824-e961-4929-8157-1ff587135fd5",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
