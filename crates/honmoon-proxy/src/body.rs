@@ -23,13 +23,14 @@
 //!   and never redacted anywhere in the pipeline. (Headers *are* read, for
 //!   framing, decoding and signature metadata — that is metadata handling, not
 //!   detection.) Whether a
-//!   carried trailer survives is a separate, conditional matter, and there are
-//!   two conditions: a wire redaction rewrite replaces the body with `Full`,
-//!   which has no trailer frame, so the client's trailers are dropped there
-//!   (see `mitm::HonmoonHandler::forwarded_request`); and a trailer whose
-//!   *name* a trailer section must not carry is dropped by
-//!   [`trailer_filtered_body`] on every **request**-forwarding path. Neither
-//!   decision reads a value. Response trailers are not filtered by name at all
+//!   carried trailer survives is a separate matter, and not one this module
+//!   settles: the only part of it decided here is that a trailer whose *name* a
+//!   trailer section must not carry is dropped by [`trailer_filtered_body`] on
+//!   every **request**-forwarding path. The rest — what a wire redaction
+//!   rewrite and the upstream leg's framing do to a trailer frame — is decided
+//!   in `mitm` and written down in ADR-0009. What holds across all of them is
+//!   the invariant this module is responsible for: no such decision reads a
+//!   trailer's value. Response trailers are not filtered by name at all
 //!   — [`detokenizing_body`] forwards the upstream's trailer frame to the
 //!   client unmodified — because the hazard #134 is about is a *client*
 //!   laundering a framing token into honmoon's upstream leg. See
