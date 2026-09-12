@@ -1,0 +1,21 @@
+.claude/agent-memory/review-review-comment-analyzer/pr193_compiled_conditions_claims.md
+  s_11b941d9b7523d::t_a23dabcd3b362a 8-13
+.claude/agent-memory/review-review-security-reviewer/policy-compiled-conditions-table.md
+  s_11b941d9b7523d::t_dc9df9522d9f3a 10-11
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "00ded610dd354567f33b007acbafcca49853d305",
+  "prompts": {},
+  "sessions": {
+    "s_11b941d9b7523d": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "33daa32e-815f-435a-97e1-983552021242",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
