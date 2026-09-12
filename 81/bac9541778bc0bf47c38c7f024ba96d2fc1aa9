@@ -1,0 +1,28 @@
+packages/policy/src/index.ts
+  s_d720448ec7c988::t_3014a81e83d77f 109-117,127-129,141-144
+crates/honmoon-core/src/audit.rs
+  s_d720448ec7c988::t_3014a81e83d77f 80-89,107-110,167-171
+packages/claude-plugin/README.md
+  s_d720448ec7c988::t_3014a81e83d77f 272-275,287-288,295,318,388-442,464,466,478-493
+crates/honmoon-cli/src/hook.rs
+  s_d720448ec7c988::t_3014a81e83d77f 225-274,357-370,374,408-416,420,426-433,437,442-447,451,504,507-510,512-513,516-520,523-527,549-555,558-559,562-569,573-578,580-583,586,592-638,663-673,679-683,696-725,732,735,737,781-784,792-838,865-868,893-896,910-914,927-974,979-1049,1053-1057,1074-1077,1084-1087,1089,1095,1099-1110,1116-1142,1229-1231,1244-1246,1307-1321,1330-1336,1343-1346,1350-1374,1411-1416,1541-1543,2266-2710,2880,3096,3121
+.claude/agent-memory/review-review-security-reviewer/hook-salt-security-model.md
+  s_d720448ec7c988::t_3014a81e83d77f 145-186,204-210
+  s_d720448ec7c988::t_f590ef23650d26 3
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "81bac9541778bc0bf47c38c7f024ba96d2fc1aa9",
+  "prompts": {},
+  "sessions": {
+    "s_d720448ec7c988": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "069c4824-e961-4929-8157-1ff587135fd5",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
