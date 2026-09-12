@@ -1,0 +1,24 @@
+packages/claude-plugin/README.md
+  s_768232b2089e4d::t_9460c2da5d5681 174,278-281,423-425
+packages/claude-plugin/hooks/honmoon.test.ts
+  s_768232b2089e4d::t_3b709429f77921 14,16,37,40-42,177-208,415-425
+  s_768232b2089e4d::t_4732ad049911f9 426-427
+packages/claude-plugin/hooks/honmoon.ts
+  s_768232b2089e4d::t_3b709429f77921 30-35,50,76-83,120-127,208,212-223,534,625
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "8db8b5078208d74db6c72ae8e3d73545572ad234",
+  "prompts": {},
+  "sessions": {
+    "s_768232b2089e4d": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "56eb0cb4-3eea-4ae1-ae99-df37d60e8d08",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
