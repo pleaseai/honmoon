@@ -187,19 +187,25 @@ describe('resolveToken', () => {
     },
   )
 
-  test('replaces a padding-only token file the same way the Rust loader does', () => {
+  // Gated like the two mode tests above: on Windows this file falls through to
+  // the guard that refuses to generate a token there, so it would throw rather
+  // than reach the assertion.
+  test.skipIf(process.platform === 'win32')(
+    'replaces a padding-only token file the same way the Rust loader does',
+    () => {
     // U+0085 is the case JavaScript's `\s` misses: it is Unicode White_Space,
     // so the Rust loader trims it away and mints a fresh token, while a bare
     // `.trim()` here left it intact and served it as a credential. The two
     // services would then hold different tokens from one file.
-    for (const padding of ['\u0085', '\uFEFF', '\uFEFF \u0085\n']) {
-      const path = join(dir, 'mgmt-token')
-      writeFileSync(path, padding)
-      const resolved = resolveToken(dir)
-      expect(resolved.source).toBe('generated')
-      expect(resolved.token).not.toBe('')
-    }
-  })
+      for (const padding of ['\u0085', '\uFEFF', '\uFEFF \u0085\n']) {
+        const path = join(dir, 'mgmt-token')
+        writeFileSync(path, padding)
+        const resolved = resolveToken(dir)
+        expect(resolved.source).toBe('generated')
+        expect(resolved.token).not.toBe('')
+      }
+    },
+  )
 
   test('aborts on an unreadable token file instead of minting a second one', () => {
     // A directory where the file should be: the read fails with something other

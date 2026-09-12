@@ -139,7 +139,9 @@ open "http://127.0.0.1:8444/login?token=$(cat ~/.honmoon/mgmt-token)"
 ```
 
 With no `--mgmt-token`, honmoon mints one on first use and persists it at
-`~/.honmoon/mgmt-token` (mode `0600`); set `--mgmt-token` / `HONMOON_MGMT_TOKEN` to pin your own
+`~/.honmoon/mgmt-token`, in a directory it creates `0700`, with the file itself `0600` — that mode
+is enforced on a file honmoon creates or replaces, while a pre-existing wider-mode file is reported
+on stderr rather than tightened. Set `--mgmt-token` / `HONMOON_MGMT_TOKEN` to pin your own
 ([mgmt_token.rs](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-cli/src/mgmt_token.rs)).
 `@honmoon/api` resolves that same token from the same places, so one credential covers both servers
 ([auth.ts](https://github.com/pleaseai/honmoon/blob/main/packages/api/src/auth.ts)). Scripted

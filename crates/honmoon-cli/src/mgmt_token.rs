@@ -191,6 +191,7 @@ fn load_or_create(dir: &Path) -> Result<Resolved> {
                 );
             }
             warn_if_readable_beyond_owner(&path);
+            warn_if_writable_beyond_owner(dir);
             Ok(Resolved {
                 token: winner.to_string(),
                 source: Source::Persisted(path),
