@@ -1,0 +1,33 @@
+.claude/agent-memory/review-review-type-design-analyzer/honmoon_proxy_forwarded_blocked_variant.md
+  s_351517570281ff::t_f3b00f11ecfb98 1-2,4-7,14,18
+  s_351517570281ff::t_cda4fa2b2a8b27 3,8-13,15-17,19-27
+.claude/agent-memory/review-review-security-reviewer/request-trailer-plumbing.md
+  s_351517570281ff::t_9b5d6123633318 89
+  s_351517570281ff::t_ab81e7c8681d33 60-67,78-83,87-88
+  s_351517570281ff::t_edd202099d05ca 68-77,84-86
+.claude/agent-memory/review-review-silent-failure-hunter/project_pr180_trailer_reframing_mitm.md
+  s_351517570281ff::t_aa60a94b93ef28 1-22,25-31,36-39
+  s_351517570281ff::t_edd202099d05ca 23-24,32-35
+.claude/agent-memory/review-review-comment-analyzer/pr180_h2_trailer_reframing_claims.md
+  s_351517570281ff::t_c6fda9532cf15b 1-2,4,6-7,10-11,19
+  s_351517570281ff::t_cda4fa2b2a8b27 3,5,8-9,12-18,20-27
+.claude/agent-memory/review-review-documentation-analyzer/pr180_trailer_reframe_signed_subset.md
+  s_351517570281ff::t_b97485ea593941 3,9-28
+  s_351517570281ff::t_6f147cfff9d9d9 1-2,4-8
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "785fca24977dfaa92520107d691f56d6f6b0bd67",
+  "prompts": {},
+  "sessions": {
+    "s_351517570281ff": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "0244242a-0ea2-4d1e-9961-5cfcc8b76f5b",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
