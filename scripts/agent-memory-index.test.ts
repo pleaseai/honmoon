@@ -876,6 +876,33 @@ description: second`)
     })
   })
 
+  // A quoted key is the same key: `"description":` and `description:` resolve to one
+  // mapping entry, and a repeat across the two spellings is discarded as
+  // silently as a bare one. So is an explicit key (`? name` over `: text`).
+  test('reports a repeat spelled with a quoted or explicit key', () => {
+    const quoted = `---\nname: a-note\ndescription: first\n"description": second\n---\n`
+    expect(parseFrontmatter(quoted)).toMatchObject({
+      scalars: { description: 'second' },
+      problems: [expect.stringContaining('more than once')],
+    })
+
+    const single = `---\nname: a-note\n'description': first\ndescription: second\n---\n`
+    expect(parseFrontmatter(single).problems).toEqual([expect.stringContaining('more than once')])
+
+    const explicit = `---\nname: a-note\n? description\n: second\ndescription: first\n---\n`
+    expect(parseFrontmatter(explicit).problems).toEqual([expect.stringContaining('more than once')])
+  })
+
+  // ...and a value that merely wraps onto a line reading like the key is not a
+  // repeat. The nomination is deliberately wide, so the parser is what rules.
+  test('does not call a wrapped value that reads like the key a repeat', () => {
+    const text = `---\nname: a-note\ndescription: see the\n  description\n  field\n---\n`
+    expect(parseFrontmatter(text)).toMatchObject({
+      scalars: { description: 'see the description field' },
+      problems: [],
+    })
+  })
+
   // The key name appearing inside a *value* is not an occurrence of the key.
   // The nomination is loose on purpose, so what settles it is the parser: the
   // rename lands in the value, the probe key is not at the root, nothing fires.

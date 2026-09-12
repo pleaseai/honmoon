@@ -386,9 +386,12 @@ function commentedOut(source: string, mapping: Mapping, problems: string[]): voi
  * was published as the note's own. A rename of a *nested* occurrence puts the
  * probe key inside the nested mapping, where this test does not see it.
  *
- * Occurrences are nominated by offset in the block rather than by line, so a
- * duplicate inside a flow mapping (`{name: a, name: b}`, which resolves to `b`
- * as silently as the block form does) is nominated like any other.
+ * Occurrences are nominated by offset in the block rather than by line, and
+ * across every spelling of a key that resolves to the same one: a duplicate
+ * inside a flow mapping (`{name: a, name: b}`), a quoted key (`"name":`) and an
+ * explicit key (`? name` over `: text`) all discard a repeat as silently as the
+ * bare block form, so all are nominated. Which of them is *really* a repeat is
+ * still the parser's answer, not this pattern's.
  */
 function repeated(source: string, mapping: Mapping, problems: string[]): void {
   const key = probeKey(source)
@@ -398,12 +401,16 @@ function repeated(source: string, mapping: Mapping, problems: string[]): void {
     }
     // Loose on purpose: this only *nominates* offsets for the parser to rule
     // on, so one it nominates wrongly costs a probe and one it misses costs a
-    // report, never a wrong one. The leading group is what separates a key from
-    // a word inside a value; `String.raw`, because a plain template literal
-    // decodes the `\s`/`\t` and puts the characters themselves in the pattern —
-    // which matches much the same thing but reads as an accident.
-    const keyStart = new RegExp(String.raw`(^|[\s{,])${name}[ \t]*:`, 'g')
-    const occurrences = [...source.matchAll(keyStart)].map(match => match.index + match[1].length)
+    // report, never a wrong one. Hence the spellings admitted here are wide:
+    // a key may be quoted (`"description":` is the same key as `description:` to every
+    // reader) or written as an explicit key (`? description` over `: text`),
+    // and both discard a repeat as silently as the bare form. `String.raw`,
+    // because a plain template literal decodes the `\s`/`\t` and puts the
+    // characters themselves in the pattern — which matches much the same
+    // thing but reads as an accident.
+    const keyStart = new RegExp(String.raw`(^|[\s{,])((?:\?[ \t]+)?)(['"]?)${name}\3[ \t]*(?=[:\r\n])`, 'g')
+    const occurrences = [...source.matchAll(keyStart)]
+      .map(match => match.index + match[1].length + match[2].length + match[3].length)
     if (occurrences.length < 2) {
       continue
     }
