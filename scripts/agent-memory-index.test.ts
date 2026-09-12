@@ -938,6 +938,21 @@ description: second`)
     })
   })
 
+  // A backslash escapes the *next character*, a newline included, so a quoted
+  // key may be continued across lines where YAML allows a multi-line key — an
+  // explicit key, or inside a flow mapping. The token matcher has to follow the
+  // escape past the line end or it ends the token mid-key and nominates nothing.
+  test('reports a repeat whose quoted key is continued across a line', () => {
+    const explicit = `---\nname: a-note\ndescription: first\n? "descri\\\n  ption"\n: second\n---\n`
+    expect(parseFrontmatter(explicit)).toMatchObject({
+      scalars: { description: 'second' },
+      problems: [expect.stringContaining('more than once')],
+    })
+
+    const flow = `---\n{name: a-note, description: first, "descri\\\n  ption": second}\n---\n`
+    expect(parseFrontmatter(flow).problems).toEqual([expect.stringContaining('more than once')])
+  })
+
   // ...and a quoted token that is not the key must not be nominated as one,
   // which is what asking the parser rather than matching the name buys.
   test('does not call another quoted key an occurrence of an indexed one', () => {

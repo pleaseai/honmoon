@@ -390,8 +390,15 @@ function commentedOut(source: string, mapping: Mapping, problems: string[]): voi
  * Written to be *wide*: what it selects is ruled on by the parser, so a quoted
  * value picked up by mistake costs one tiny parse and a quoted key missed costs
  * a report.
+ *
+ * `[\s\S]` after the backslash, not `.`, because a backslash escapes the *next
+ * character* and JavaScript's `.` stops at a line terminator. A double-quoted
+ * scalar may be continued across lines by escaping the newline, and where YAML
+ * allows a multi-line key — an explicit key, or inside a flow mapping —
+ * `? "descri\<newline>  ption"` is the key `description`. Matching only up to
+ * the line end would end the token in the middle and nominate nothing.
  */
-const QUOTED_KEY = /(['"])(?:\\.|(?!\1)[^\\])*\1(?=[ \t]*[:\r\n])/g
+const QUOTED_KEY = /(['"])(?:\\[\s\S]|(?!\1)[^\\])*\1(?=[ \t\r\n]*[:\r\n])/g
 
 /**
  * Where in the block a key is written, over every spelling of it.

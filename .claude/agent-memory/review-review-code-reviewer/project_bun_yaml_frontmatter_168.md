@@ -61,6 +61,14 @@ exact defect class this change exists to remove**, found in review of #203 and f
 The general shape: a differential probe's skip-on-refusal path is only safe while the doctoring
 cannot itself cause the refusal. Check what the mask *creates*, not only what it removes.
 
+Both stand-ins are private-use code points **searched for** rather than fixed, and the duplicate
+probe's key is suffixed until it is absent. A fixed sentinel needs a "does the note already
+contain it?" guard, and that guard is a fail-open the note's own content can trip. The search
+covers the source *and the resolved values*, which differ: `description: "quoted \uE000 # still
+text"` holds no private-use character as text and holds one after the escape decodes, so
+searching the source alone picks the character the note itself carries and the restore step
+rewrites it — reporting a correctly quoted value as cut.
+
 ## The one mistake all four review findings were
 
 Four separate findings landed on #203, from four reviewers, and every one is the same error:
@@ -79,10 +87,6 @@ the parser rather than to interpret it: a quoted key token is itself a YAML docu
 `readYaml('"descrip\u0074ion"')` returns `description` and no escape table is written here. That
 move is available more often than it looks, and it is what keeps this file from growing a scanner
 back one rule at a time.
-
-Both stand-ins are private-use code points **searched for in the note** rather than fixed, and
-the duplicate probe's key is suffixed until it is absent. A fixed sentinel needs a "does the note
-already contain it?" guard, and that guard is a fail-open the note's own content can trip.
 
 ## And what a probe has to *nominate*, which is every spelling the parser collapses
 
