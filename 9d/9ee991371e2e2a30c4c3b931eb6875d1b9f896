@@ -1,0 +1,33 @@
+.claude/agent-memory/review-review-documentation-analyzer/pr186_mgmt_token_auth.md
+  s_d720448ec7c988::t_9d5cb3ebb3a7bf 1-2,4-32
+  s_d720448ec7c988::t_a252be2138bcf3 3
+packages/policy/src/index.ts
+  s_d720448ec7c988::t_cc976e6291b27a 142-146
+.claude/agent-memory/review-review-code-reviewer/project_absolute_salt_dir_162.md
+  s_d720448ec7c988::t_1964f47882485b 8-11
+  s_d720448ec7c988::t_7a9b8aa9f60e43 12-13
+wiki/deep-dive/control-plane.md
+  s_d720448ec7c988::t_301e038a8bc238 72-77,163-165,167-168
+  s_d720448ec7c988::t_46003a6480e18e 166
+  s_d720448ec7c988::t_9563d7408bd33a 169
+.claude/agent-memory/review-review-documentation-analyzer/pr174_reason_absolute_path_td001_gap.md
+  s_d720448ec7c988::t_1964f47882485b 3,14-16
+.claude/agent-memory/review-review-security-reviewer/hook-salt-security-model.md
+  s_d720448ec7c988::t_cc976e6291b27a 73,114-115,117,125-130
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "9d9ee991371e2e2a30c4c3b931eb6875d1b9f896",
+  "prompts": {},
+  "sessions": {
+    "s_d720448ec7c988": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "069c4824-e961-4929-8157-1ff587135fd5",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
