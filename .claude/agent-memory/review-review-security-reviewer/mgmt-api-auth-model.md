@@ -1,6 +1,6 @@
 ---
 name: mgmt-api-auth-model
-description: 'How the honmoon management API authenticates after #173 and #188 — mandatory Arc<str> token, nested /api router + route_layer, and the browser credential that is now an origin-scoped session secret in the X-Honmoon-Session header (NOT a cookie; same_origin() and the Credential enum were deleted with it, so do not report them as missing), how the Rust and Bun loaders were made to agree on what counts as a token, and which constant-time/route-ordering questions are settled so they are not re-derived'
+description: 'How the honmoon management API authenticates after #173 and #188 — mandatory Arc<str> token, nested /api router + route_layer, and the browser credential that is now an origin-scoped session secret in the X-Honmoon-Session header (NOT a cookie; same_origin() and the Credential enum were deleted with it, so do not report them as missing), why the derivation key is versioned v2 and must not be reverted, how the Rust and Bun loaders were made to agree on what counts as a token, and which constant-time/route-ordering questions are settled so they are not re-derived'
 metadata:
   type: project
 ---
@@ -29,8 +29,8 @@ and the `static_handler` SPA fallback. Token resolution lives in `honmoon-cli/sr
   session header is not reconciled — deliberate.
 
 **There is no session cookie any more (#188) — this is the part most likely to be
-mis-reported.** The browser credential is a session secret (still
-`hex(HMAC-SHA256("honmoon-mgmt-session-v1", token))`) that `GET /login?token=…` hands over in the
+mis-reported.** The browser credential is a session secret
+(`hex(HMAC-SHA256("honmoon-mgmt-session-v2", token))`) that `GET /login?token=…` hands over in the
 fragment of its `303` to `/#session=<secret>`; `apps/dashboard/src/session.ts` reads it from
 `location.hash`, clears the hash with `history.replaceState`, keeps it in `sessionStorage`, and
 `api.ts` attaches it as `X-Honmoon-Session` on every call. `/login` sends **no** `Set-Cookie`, and
@@ -42,6 +42,15 @@ touched — a listener another local user stood up could harvest it and replay i
 reads *and* the approval writes. No header check could close that (each presupposes a browser at
 the other end, which is the assumption a replay breaks). `sessionStorage` is keyed by the full
 origin, port included, so there is nothing for a sibling port to be sent or to read.
+
+**The key's `v2` is the migration boundary — do not drop the version or revert it to `v1`.** The
+`0.1.0` cookie carried the `v1` derivation of the same token, byte-identical to what
+`X-Honmoon-Session` accepts, so a cookie harvested *before* an upgrade would have replayed in the
+new header *after* it and bridged the hole #188 closes. Expiring the old cookie does not fix that
+(the harvested copy is off-browser, beyond any `Set-Cookie`); retiring the value does, which is
+what the bump means. `a_legacy_cookie_derivation_is_not_a_session` in `tests/e2e.rs` derives the
+`v1` value from the live token and requires 401 on every read route and on an approval write.
+Any future change of this shape needs the next version and its own refusal test.
 
 **Deleted with the cookie — absent by design, do not report as missing:**
 - `same_origin()` and the whole `Sec-Fetch-Site`/`Origin`-vs-`Host` check, and the `Credential`
