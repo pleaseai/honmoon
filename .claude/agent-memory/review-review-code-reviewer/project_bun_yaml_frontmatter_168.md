@@ -127,9 +127,9 @@ Two things make that affordable, and both should be checked before anyone moves 
 - **Reachability is not uniform.** An inline `#` in prose forced 36 notes to be quoted; an
   anchored explicit key aliased as a second key is not something anyone writes by accident.
 
-A finding of the form "here is one more spelling of a duplicate key" is therefore answered by
-#205, not by another pattern. What would actually close it is a reader that refuses duplicate keys
-(js-yaml does; `Bun.YAML` does not), which is a dependency decision, not a rule.
+A finding of the form "here is one more spelling of a duplicate key" is therefore answered
+by #205, not by another pattern. What would actually close it is a reader that refuses
+duplicate keys (js-yaml does; `Bun.YAML` does not), which is a dependency decision, not a rule.
 
 ## Deliberately dropped — do not re-file as a regression
 
