@@ -1,0 +1,19 @@
+.claude/agent-memory/review-review-documentation-analyzer/pr183_audit_sink_readme_verified.md
+  s_c76fd182d547f6::t_74162e2abcead6 1-40
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "644baf69e77719ba87d90b334bbc12b1b58483e9",
+  "prompts": {},
+  "sessions": {
+    "s_c76fd182d547f6": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "4b37fffc-f5b8-4ce5-a33b-d8be2892e2a7",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
