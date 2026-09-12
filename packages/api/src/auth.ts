@@ -11,8 +11,10 @@
  * minted and persisted there at mode `0600`. Whichever process starts first
  * creates the file; the other adopts it.
  *
- * Bearer only — there is no browser client here, so there is no session cookie
- * and no CSRF surface. The dashboard talks to the Rust management API.
+ * Bearer only — there is no browser client here, so there is no login flow and
+ * no CSRF surface. The dashboard talks to the Rust management API, which is why
+ * #188's session-credential change (cookie → origin-scoped header) left this
+ * service alone: it never had a browser credential to harvest.
  */
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto'
 import { closeSync, fchmodSync, fstatSync, mkdirSync, openSync, readFileSync, writeSync } from 'node:fs'

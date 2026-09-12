@@ -70,8 +70,9 @@ shared `GatewayState`. `honmoon gateway` runs the proxy and this API on one toki
 | anything else | — | Embedded dashboard (SPA fallback) | [lib.rs:138-168](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-mgmt/src/lib.rs#L138-L168) |
 
 Every `/api` row above requires the management token (issue #173) — either
-`Authorization: Bearer <token>` or the `honmoon_session` cookie that `GET /login?token=…` sets
-([lib.rs:457-471](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-mgmt/src/lib.rs#L457-L471), [lib.rs:598-623](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-mgmt/src/lib.rs#L598-L623)).
+`Authorization: Bearer <token>` or the session secret in the `X-Honmoon-Session` header that
+`GET /login?token=…` hands the dashboard
+([lib.rs:474-513](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-mgmt/src/lib.rs#L474-L513), [lib.rs:556-605](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-mgmt/src/lib.rs#L556-L605)).
 The gate is a `route_layer` on the nested `/api` router, so a new `/api` route is covered by
 construction rather than by remembering to check
 ([lib.rs:246-265](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-mgmt/src/lib.rs#L246-L265)). `/healthz` and the SPA fallback
@@ -80,15 +81,35 @@ are the two deliberate exceptions and stay open. The token itself is resolved �
 ([mgmt_token.rs:1-30](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-cli/src/mgmt_token.rs#L1-L30)), and `@honmoon/api` reads
 the same file ([auth.ts:102-201](https://github.com/pleaseai/honmoon/blob/main/packages/api/src/auth.ts#L102-L201)).
 
-The session cookie is origin-bound by the browser, which is what defeats DNS rebinding: a page
-rebound to loopback holds no cookie for that origin and so sends no credential. Cookie scope,
-however, has **no port component** (RFC 6265 §8.5), so the cookie travels to every
-`127.0.0.1:<port>` the operator's browser touches — including a listener another local user owns,
-which can harvest it and replay it. <span class="status-caveat">Residual</span> — a harvested
-cookie carries full management access, reads and writes alike, until the token is rotated, tracked
-as
-[#188](https://github.com/pleaseai/honmoon/issues/188)
-([lib.rs:509-530](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-mgmt/src/lib.rs#L509-L530), [lib.rs:539-573](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-mgmt/src/lib.rs#L539-L573)).
+The browser's credential is **not a cookie**, and that is what keeps a sibling loopback listener
+out (issue [#188](https://github.com/pleaseai/honmoon/issues/188)). A cookie's scope has no port
+component (RFC 6265 §8.5), so a session cookie on `127.0.0.1` travelled to *every* listener on that
+host: another local user could stand one up, provoke the operator's browser into a request to it
+(`<img src="http://127.0.0.1:9999/x">`), harvest the cookie and replay it off-browser for the whole
+management surface, approval writes included. No header check can tell that replay from the
+dashboard, because the replaying client sets those headers itself.
+
+So `/login` sets no cookie. It redirects to `/#session=<secret>`, and a fragment is the one part of
+a URL a browser never sends to a server; the dashboard reads it out of `location.hash`, keeps it in
+`sessionStorage` — which is keyed by *origin*, port included — and attaches it as
+`X-Honmoon-Session` on each call. A sibling port is therefore neither sent the secret nor able to
+read it, and **DNS rebinding stays closed**: a rebound page holds its own origin's storage, which
+is empty, and nothing is attached ambiently for it to ride on. That also removes CSRF as a category
+rather than checking for it — a custom header cross-origin needs a CORS preflight this service never
+answers ([lib.rs:393-418](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-mgmt/src/lib.rs#L393-L418), [lib.rs:556-605](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-mgmt/src/lib.rs#L556-L605)).
+
+Upgrading from `0.1.0` ends any session a browser still holds. The secret is
+`hex(HMAC-SHA256("honmoon-mgmt-session-v2", token))`, and the cookie that release minted keyed the
+same derivation `v1` — a value byte-identical to what this header now accepts. Bumping the key
+retires every cookie minted before the upgrade by construction, so a value harvested from the old
+cookie cannot be replayed in the new header; the operator's cost is one visit to the login URL the
+gateway prints, the same click as a first sign-in
+([lib.rs:420-451](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-mgmt/src/lib.rs#L420-L451)).
+
+<span class="status-caveat">Residual</span> — the secret is script-readable where the old cookie was
+`HttpOnly`, so a script injection in this origin could exfiltrate a replayable credential rather
+than only act while the page is open; the bundle is first-party and embedded, and the shell is
+served `frame-ancestors 'none'`. Revocation is still rotating the token, as it is for the bearer.
 
 One careful detail: the SPA fallback **refuses to mask an unmatched `/api/...` path as `200 text/html`**
 — those 404 honestly, so a failed management action is never hidden behind the dashboard shell
@@ -116,10 +137,13 @@ flowchart LR
 <!-- Sources: crates/honmoon-mgmt/build.rs:1-36, apps/dashboard/vite.config.ts:1-21, crates/honmoon-mgmt/src/lib.rs:30-36 -->
 
 Every `/api` route requires the management token (#173), so the dashboard's own credential is the
-`honmoon_session` cookie that `GET /login?token=…` sets — the URL the gateway prints on startup.
-`api.ts` attaches nothing itself: `fetch` defaults to `credentials: 'same-origin'`, so the browser
-sends the cookie. The static shell and its assets stay open; they are the binary's own bundled code
-and carry no token.
+session secret `GET /login?token=…` hands it in the redirect fragment — the URL the gateway prints
+on startup. `session.ts` captures it before the first render, drops it from the address bar with
+`history.replaceState`, and keeps it in origin-scoped `sessionStorage`; `api.ts` attaches it as
+`X-Honmoon-Session` on every call, because nothing is sent ambiently (#188). `sessionStorage` is per
+tab, so a dashboard opened in a *new* tab is signed out until the login URL is opened there — one
+click, and the same property that keeps the secret unreachable from any other origin. The static
+shell and its assets stay open; they are the binary's own bundled code and carry no token.
 
 In `vite dev`, API calls (and `/login`) are proxied to a locally-running gateway's management API on
 `127.0.0.1:8444`, so the UI and the binary can iterate independently
@@ -177,8 +201,9 @@ durable, historical queries `@honmoon/api` reads the **JSONL file** the gateway 
 
 Both `/api/audit` routes require the management token as `Authorization: Bearer <token>` (issue
 [#173](https://github.com/pleaseai/honmoon/issues/173)) — the same token the Rust gateway
-requires, resolved from the same places. There is no cookie flow here: this service serves no
-browser shell to log in from, so a caller sends the bearer directly.
+requires, resolved from the same places. There is no login flow here: this service serves no
+browser shell to log in from, so a caller sends the bearer directly — which is why #188's
+session-credential change did not touch it.
 `GET /healthz` is open
 ([routes.ts:1-50](https://github.com/pleaseai/honmoon/blob/main/packages/api/src/routes.ts#L1-L50)).
 

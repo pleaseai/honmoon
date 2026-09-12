@@ -6,14 +6,22 @@
  * gateway (see `vite.config.ts`).
  *
  * Every `/api/*` route requires the management token (#173). The browser's
- * credential is the `honmoon_session` cookie that `GET /login?token=…` sets —
- * the URL `honmoon gateway` prints at startup — so nothing here attaches a
- * header: `fetch` defaults to `credentials: 'same-origin'` and the browser
- * sends the cookie on its own. A 401 therefore means "not logged in", and
- * saying so is the difference between a dashboard an operator can get back into
- * and one that just looks broken.
+ * credential is the session secret `GET /login?token=…` hands over — the URL
+ * `honmoon gateway` prints at startup — which `session.ts` keeps in
+ * origin-scoped `sessionStorage` and every call here attaches as a header.
+ *
+ * It is deliberately not a cookie (#188): a cookie would be sent to every other
+ * listener on `127.0.0.1` too, since cookie scope has no port, and a harvested
+ * one replays off-browser. Setting the header explicitly is also what keeps a
+ * cross-origin page from riding on this credential — a custom header forces a
+ * CORS preflight the management API never answers.
+ *
+ * A 401 therefore means "not logged in", and saying so is the difference
+ * between a dashboard an operator can get back into and one that just looks
+ * broken.
  */
 import type { AuditEvent, PendingApproval, Policy } from '@honmoon/policy'
+import { sessionHeaders } from './session'
 
 export interface PolicyResponse {
   yaml: string
@@ -38,7 +46,7 @@ function failure(path: string, res: Response): Error {
 }
 
 async function getJson<T>(path: string): Promise<T> {
-  const res = await fetch(path)
+  const res = await fetch(path, { headers: sessionHeaders() })
   if (!res.ok) {
     throw failure(path, res)
   }
@@ -46,7 +54,7 @@ async function getJson<T>(path: string): Promise<T> {
 }
 
 async function post(path: string): Promise<Response> {
-  const res = await fetch(path, { method: 'POST' })
+  const res = await fetch(path, { method: 'POST', headers: sessionHeaders() })
   if (!res.ok) {
     throw failure(path, res)
   }

@@ -157,7 +157,8 @@ unconditionally therefore blows up on every clean payload. Treat empty output as
 # proxy http://127.0.0.1:8443 · dashboard http://127.0.0.1:8444 · Ctrl-C to stop
 # The startup banner prints a one-click login URL carrying the generated token:
 #   honmoon: dashboard: http://127.0.0.1:8444/login?token=<token>
-# Open that, not the bare address — it sets the cookie the dashboard reads with.
+# Open that, not the bare address — it hands the dashboard the session secret
+# its reads travel on (per tab: a new tab needs the URL again).
 cd apps/dashboard && bun run dev     # dashboard HMR, proxies /api + /login to :8444
 ```
 

@@ -8,7 +8,7 @@
 //! - `POST /api/approvals/:id/approve` / `.../reject` — resolve a held request
 //! - `GET  /api/policy`        — the active policy (raw YAML + parsed)
 //! - `POST /api/hooks/claude-code` — Claude Code hook verdict transport
-//! - `GET  /login?token=…` — exchange the management token for a session cookie
+//! - `GET  /login?token=…` — exchange the management token for a session secret
 //! - `GET  /healthz`
 //! - everything else — the embedded React dashboard (SPA fallback)
 //!
@@ -149,7 +149,7 @@ pub struct AppState {
     /// one gateway process, one mapping.
     pub hook_mappings: Arc<MappingStore>,
     /// The credential every `/api/*` route requires, as
-    /// `Authorization: Bearer <token>` or the [`SESSION_COOKIE`] a browser
+    /// `Authorization: Bearer <token>` or the [`SESSION_HEADER`] a browser
     /// obtains from `GET /login?token=…`.
     ///
     /// Deliberately not an `Option` (#173). An optional token means the crate
@@ -162,7 +162,7 @@ pub struct AppState {
     /// Crate-private on purpose. The empty-token check lives in
     /// [`AppState::with_hook_config`], and a `pub` field would let any caller
     /// skip it with a struct literal — an empty token satisfies *both*
-    /// credential arms, since the session cookie is an HMAC under a hardcoded,
+    /// credential arms, since the session secret is an HMAC under a hardcoded,
     /// public key and `HMAC(key, "")` is computable by anyone. One non-`pub`
     /// field makes the literal unavailable outside this crate, so the
     /// constructor is the only way in.
@@ -205,7 +205,7 @@ impl AppState {
         // padding-only token and this assert is the last line of defence for
         // anyone constructing the state another way. A lone space would
         // otherwise authenticate: `GET /login?token=%20` matches it and mints a
-        // session cookie good for every `/api/*` route.
+        // session secret good for every `/api/*` route.
         //
         // The predicate is spelled out to match `mgmt_token.rs`'s
         // `is_token_padding` and `auth.ts`'s `trimToken` exactly: `str::trim`
@@ -390,35 +390,60 @@ async fn resolve_agent_path(path: Option<&str>, agent_cwd: Option<&str>) -> Path
     }
 }
 
-/// Name of the cookie a browser presents instead of a bearer header.
-pub const SESSION_COOKIE: &str = "honmoon_session";
+/// Name of the header a browser presents its session secret in, instead of a
+/// bearer.
+///
+/// A header the page must set itself, not a cookie, and that substitution is
+/// the whole of issue #188. A cookie's scope has no port component (RFC 6265
+/// §8.5), so `honmoon_session` on `127.0.0.1` was sent to *every* listener on
+/// that host: a second local user who cannot read the `0600` token file could
+/// stand one up, provoke the operator's browser into a request
+/// (`<img src="http://127.0.0.1:9999/x">`), harvest the cookie and replay it
+/// off-browser for the whole management surface — the approval writes that
+/// gate egress included. No header check could tell that replay apart, because
+/// every header it reads is one the replaying client sets itself.
+///
+/// The dashboard keeps the value in `sessionStorage`, which is keyed by
+/// *origin* — scheme, host **and** port — and attaches it here on each request.
+/// So a sibling port is neither sent the secret nor able to read it, and a page
+/// that has rebound DNS to this listener holds its own origin's storage, which
+/// is empty: the rebinding the cookie defeated by construction stays closed by
+/// construction.
+///
+/// Lowercase because that is the canonical on-the-wire form (HTTP/2 and HTTP/3
+/// carry field names lowercased, RFC 9113 §8.2.1) and the form `http` stores.
+/// Not for lookup correctness: `HeaderMap::get` normalises a `&str` key, so it
+/// finds this header whatever casing either side spells — which is why the
+/// dashboard may send `X-Honmoon-Session` and the e2e tests deliberately do.
+pub const SESSION_HEADER: &str = "x-honmoon-session";
 
-/// Which credential authenticated a request, because the two need different
-/// treatment on a state-changing route (see [`require_credential`]).
-enum Credential {
-    /// `Authorization: Bearer <token>` — sent deliberately by the caller, so a
-    /// cross-site page cannot cause one (setting the header cross-origin needs a
-    /// CORS preflight this service never approves).
-    Bearer,
-    /// The [`SESSION_COOKIE`] — attached by the browser rather than by the page,
-    /// so it is the credential a cross-site request can ride on.
-    Session,
-}
-
-/// The cookie value that stands in for `token`.
+/// The session secret that stands in for `token`.
 ///
 /// An HMAC of the token rather than the token itself, for two reasons. It is
-/// fixed-width hex, so an operator-chosen `--mgmt-token` containing `;`, a
-/// space or `=` — none of which are legal in a cookie value (RFC 6265) — still
-/// yields a well-formed cookie without an encoding layer. And it is one-way: a
-/// cookie read out of a browser profile grants the same API access, but does not
-/// hand back the token itself, which is also `packages/api`'s credential and the
-/// value of `--mgmt-token` on any other host sharing it.
+/// fixed-width hex, so an operator-chosen `--mgmt-token` containing a space, a
+/// newline or a non-ASCII character — none of which a header value or a URL
+/// fragment carries unencoded — still yields a well-formed credential with no
+/// encoding layer. And it is one-way: a secret read out of a browser grants the
+/// same API access, but does not hand back the token itself, which is also
+/// `packages/api`'s credential and the value of `--mgmt-token` on any other
+/// host sharing it.
 ///
 /// The key is a public constant. It domain-separates this derivation from the
 /// hook salt's; unforgeability comes from the token, which is the secret.
-fn session_cookie_value(token: &str) -> String {
-    const KEY: &[u8] = b"honmoon-mgmt-session-v1";
+///
+/// Its version is the migration boundary, and `v2` is deliberate. Up to `0.1.0`
+/// this same derivation keyed `v1` was minted as the `honmoon_session` cookie —
+/// the cookie #188 removes, because a sibling loopback listener can harvest it.
+/// A browser upgraded mid-session still holds that cookie, and its value was
+/// byte-identical to what [`SESSION_HEADER`] now accepts: a value harvested
+/// before the upgrade would have replayed in the new header afterwards and
+/// bridged the hole this change closes. Bumping the key retires every
+/// previously minted value by construction, which is the only thing that
+/// reaches the harvested copy — that copy is already off-browser, where no
+/// expiring `Set-Cookie` can follow it. `a_legacy_cookie_derivation_is_not_a_session`
+/// pins the refusal; bump the version again for any future change of this shape.
+fn session_secret(token: &str) -> String {
+    const KEY: &[u8] = b"honmoon-mgmt-session-v2";
     let mut mac =
         <HmacSha256 as Mac>::new_from_slice(KEY).expect("HMAC accepts a key of any length");
     mac.update(token.as_bytes());
@@ -435,26 +460,44 @@ fn hex_encode(bytes: &[u8]) -> String {
     out
 }
 
-/// The [`SESSION_COOKIE`] value from the request's `Cookie` header(s), if any.
+/// The session secret from the request's [`SESSION_HEADER`], if any.
 ///
-/// Hand-parsed rather than pulled in with a cookie crate: a new workspace
-/// dependency is ask-gated (`crates/AGENTS.md`), and what is needed here is one
-/// name lookup in a `;`-separated list. `get_all` because a client may split its
-/// cookies across several headers.
-fn session_cookie(headers: &HeaderMap) -> Option<&str> {
+/// Deliberately not `get_all`: a header sent twice is a caller mistake or a
+/// smuggling attempt, and `HeaderMap::get` returns the first value rather than
+/// trying to reconcile them.
+fn presented_session(headers: &HeaderMap) -> Option<&str> {
     headers
-        .get_all(header::COOKIE)
-        .iter()
-        .filter_map(|value| value.to_str().ok())
-        .flat_map(|value| value.split(';'))
-        .filter_map(|pair| pair.trim().split_once('='))
-        .find(|(name, _)| *name == SESSION_COOKIE)
-        .map(|(_, value)| value)
+        .get(SESSION_HEADER)
+        .and_then(|value| value.to_str().ok())
 }
 
-/// Authenticate a request against the management token, by bearer header or
-/// session cookie. `None` means no valid credential was presented.
-fn authorized(state: &AppState, headers: &HeaderMap) -> Option<Credential> {
+/// Whether a request carries the management token, as a bearer header or as the
+/// session secret in [`SESSION_HEADER`].
+///
+/// The two are treated identically, and since #188 that is the design rather
+/// than an omission: **neither credential is ambient.** A browser attaches
+/// `Authorization` or [`SESSION_HEADER`] only because the page's own script set
+/// it, and a cross-origin `fetch` that sets either is held behind a CORS
+/// preflight this service never answers. So no page — on a sibling loopback
+/// port or rebound from anywhere else — can cause a credentialled request it did
+/// not already hold the credential for. The cookie that *did* arrive on its own,
+/// and therefore needed an origin check to tell the dashboard's own write from
+/// one a sibling-port page provoked, is gone.
+///
+/// Adding any credential a browser attaches by itself — a cookie, TLS client
+/// auth, HTTP auth — reintroduces ambient authority and with it the need for
+/// that origin check. Do not add one without it.
+///
+/// The `Credential` enum that used to make this a compile error (its exhaustive
+/// `match` forced a decision about a new variant) is gone with the origin check
+/// it selected. What replaces it for the credential that actually existed is a
+/// test, not a comment: re-accepting a cookie here fails
+/// `no_session_cookie_is_a_credential_so_a_sibling_port_has_nothing_to_harvest`,
+/// which presents the genuine session secret as a cookie and requires a 401. A
+/// match arm only forced a decision; that test forces the right one. For a
+/// credential kind nobody has proposed yet, this paragraph is the whole guard —
+/// so land such a change with its own refusal test.
+fn authorized(state: &AppState, headers: &HeaderMap) -> bool {
     let expected = state.mgmt_token.as_bytes();
     let bearer = headers
         .get(header::AUTHORIZATION)
@@ -462,109 +505,42 @@ fn authorized(state: &AppState, headers: &HeaderMap) -> Option<Credential> {
         .and_then(|value| value.strip_prefix("Bearer "))
         .is_some_and(|provided| constant_time_eq(provided.as_bytes(), expected));
     if bearer {
-        return Some(Credential::Bearer);
+        return true;
     }
-    let expected_cookie = session_cookie_value(&state.mgmt_token);
-    session_cookie(headers)
-        .is_some_and(|provided| constant_time_eq(provided.as_bytes(), expected_cookie.as_bytes()))
-        .then_some(Credential::Session)
-}
-
-/// Whether a request the browser labelled for us came from this service's own
-/// origin.
-///
-/// Only consulted for a cookie-authenticated state-changing request. `SameSite=
-/// Strict` already keeps the cookie off a request issued by a *cross-site* page,
-/// but "site" is registrable-domain-scoped: a page served by any other port on
-/// `127.0.0.1` — which is exactly what a hostile local process can stand up — is
-/// same-site and different-origin, so its forged `POST /api/approvals/1/approve`
-/// would still carry the cookie. `Sec-Fetch-Site` and `Origin` are set by the
-/// browser and unsettable by the page, so they distinguish the two.
-///
-/// Neither header present means nothing labelled this request as a browser's,
-/// and for a *cookie* credential that is itself the warning sign: a cookie is a
-/// credential only a browser stores and attaches, and every browser labels a
-/// state-changing request with at least one of the two. So this arm refuses. A
-/// legitimate non-browser caller is unaffected: it holds the token and sends
-/// the bearer, which never reaches this function.
-///
-/// **What this does not do, stated plainly because the shape invites the wrong
-/// conclusion:** every header it reads is set by the browser and unforgeable
-/// *by a page*, not unforgeable *by a client*. A caller outside a browser sets
-/// whatever it likes, `Sec-Fetch-Site: same-origin` included. So this function
-/// defends against the browser-driven attack — a page on a sibling `127.0.0.1`
-/// port causing the operator's browser to issue a state-changing request that
-/// `SameSite=Strict` permits because different-port is same-site — and it does
-/// **not** defend against an attacker who has already harvested the cookie
-/// (cookie scope has no port, RFC 6265 §8.5) and is replaying it from `curl`.
-/// Such a replay reaches the writes, not only the reads.
-///
-/// No header check can close that, because the premise of every one of them is
-/// a browser on the other end. Closing it means the cookie must not be
-/// harvestable (TLS on this listener plus a `__Host-` prefix), or the credential
-/// must not be a cookie at all (delivered in the login redirect's fragment,
-/// held in origin-scoped `sessionStorage`, sent as a header the browser never
-/// attaches on its own). Tracked as issue #188 — do not read this function as
-/// making writes safe against a stolen cookie.
-fn same_origin(headers: &HeaderMap) -> bool {
-    if let Some(site) = headers
-        .get("sec-fetch-site")
-        .and_then(|value| value.to_str().ok())
-    {
-        // `none` is a user-initiated navigation (a typed URL or a bookmark),
-        // which no page authored.
-        return site == "same-origin" || site == "none";
-    }
-    let Some(origin) = headers.get(header::ORIGIN).and_then(|v| v.to_str().ok()) else {
-        return false;
-    };
-    let Some(authority) = origin.split_once("://").map(|(_, authority)| authority) else {
-        return false;
-    };
-    // Hostnames are case-insensitive (RFC 9110 §4.2), so a casing difference
-    // between the two headers is not a cross-origin signal.
-    headers
-        .get(header::HOST)
-        .and_then(|v| v.to_str().ok())
-        .is_some_and(|host| host.eq_ignore_ascii_case(authority))
+    let expected_session = session_secret(&state.mgmt_token);
+    presented_session(headers)
+        .is_some_and(|provided| constant_time_eq(provided.as_bytes(), expected_session.as_bytes()))
 }
 
 /// The single gate on `/api/*` (#173).
 ///
-/// Rejects a caller with no valid credential, then — for a cookie-authenticated
-/// request that is not a safe method — rejects one the browser reports as
-/// cross-origin (see [`same_origin`], including the limit of what that check
-/// can mean). A bearer caller skips the second check: no page can make a
-/// browser attach that header.
+/// One check: the caller presents the management token, as a bearer or as the
+/// session secret in [`SESSION_HEADER`] (see [`authorized`]).
+///
+/// Until #188 there was a second — a `Sec-Fetch-Site`/`Origin`-vs-`Host` test on
+/// cookie-authenticated writes — because the session credential was a cookie the
+/// browser attached by itself, so a page on a sibling `127.0.0.1` port could
+/// provoke a write the operator never made. Removing the cookie removed the
+/// ambient authority that check existed to police, along with the cookie harvest
+/// it could never police (it reads headers an off-browser replay simply sets).
+/// Both credentials now have to be set by whoever holds them, so there is no
+/// browser-provoked request left to distinguish from a deliberate one. That
+/// absence is pinned by
+/// `no_session_cookie_is_a_credential_so_a_sibling_port_has_nothing_to_harvest`
+/// and by [`authorized`]'s own contract, which says what re-introducing an
+/// ambient credential would cost.
 async fn require_credential(
     State(state): State<AppState>,
     request: axum::extract::Request,
     next: axum::middleware::Next,
 ) -> Response {
-    let Some(credential) = authorized(&state, request.headers()) else {
+    if !authorized(&state, request.headers()) {
         return (
             StatusCode::UNAUTHORIZED,
             [(header::WWW_AUTHENTICATE, "Bearer")],
             Json(serde_json::json!({
                 "error": "missing or invalid management token",
                 "hint": "send `Authorization: Bearer <token>`, or open /login?token=<token> in a browser",
-            })),
-        )
-            .into_response();
-    };
-    // Matched exhaustively on purpose: a new `Credential` variant must not
-    // silently inherit `Bearer`'s exemption from the origin check.
-    let origin_checked = match credential {
-        // No page can make a browser attach `Authorization`, so a bearer is
-        // never ambient authority and needs no origin evidence.
-        Credential::Bearer => true,
-        Credential::Session => request.method().is_safe() || same_origin(request.headers()),
-    };
-    if !origin_checked {
-        return (
-            StatusCode::FORBIDDEN,
-            Json(serde_json::json!({
-                "error": "cross-origin request rejected; use `Authorization: Bearer <token>`",
             })),
         )
             .into_response();
@@ -577,18 +553,29 @@ struct LoginQuery {
     token: Option<String>,
 }
 
-/// Exchange the management token for the [`SESSION_COOKIE`], then redirect to
-/// the dashboard.
+/// Exchange the management token for the session secret, in the fragment of a
+/// redirect to the dashboard.
 ///
 /// This is how the browser gets a credential, and it is deliberately *not* the
 /// token templated into the served `index.html` that issue #173 floated. That
 /// shape defends against none of the three readers the issue names: any local
 /// user, and any page that has rebound DNS to the listener, can simply
-/// `GET /` and read the token out of the markup. A cookie cannot be obtained
-/// that way — the operator has to present the token once, from the URL honmoon
-/// prints at startup — and it is bound by the browser to the `127.0.0.1` origin,
-/// so a page at `attacker.com` that has rebound to loopback sends no credential
-/// at all.
+/// `GET /` and read the token out of the markup. The secret here cannot be
+/// obtained that way — the operator has to present the token once, from the URL
+/// honmoon prints at startup — and the dashboard keeps it in `sessionStorage`,
+/// which is scoped to this exact origin, port included, so neither a sibling
+/// loopback listener nor a rebound page can read it.
+///
+/// **Why the fragment** (#188): a fragment is the one part of a URL a browser
+/// never sends to any server. So the secret reaches the page without passing
+/// through a proxy log, a `Referer`, or this service's own request line — and
+/// without a `Set-Cookie`, which would have handed it to every other listener
+/// on `127.0.0.1` (RFC 6265 §8.5). It is fixed-width hex, so it needs no
+/// escaping to sit there. The dashboard drops it from the address bar with
+/// `history.replaceState` as soon as it has read it (see
+/// `apps/dashboard/src/session.ts`), which also keeps it out of a bookmark the
+/// operator makes afterwards; until then it is in that one tab's address bar,
+/// a same-user exposure the token in the query string above already is.
 ///
 /// The token rides in the query string, which lands in the operator's own
 /// browser history. That is the cost of one-click login and it is same-user
@@ -604,18 +591,13 @@ async fn login(State(s): State<AppState>, Query(q): Query<LoginQuery>) -> Respon
         )
             .into_response();
     }
-    // `HttpOnly` keeps the value out of `document.cookie`; `SameSite=Strict`
-    // keeps it off cross-site requests; no `Secure`, which would stop the
-    // cookie being sent over the plain-HTTP loopback listener this serves.
-    let cookie = format!(
-        "{SESSION_COOKIE}={}; Path=/; HttpOnly; SameSite=Strict",
-        session_cookie_value(&s.mgmt_token)
-    );
     (
         StatusCode::SEE_OTHER,
         [
-            (header::SET_COOKIE, cookie),
-            (header::LOCATION, "/".to_string()),
+            (
+                header::LOCATION,
+                format!("/#session={}", session_secret(&s.mgmt_token)),
+            ),
             (header::CACHE_CONTROL, "no-store".to_string()),
         ],
     )
@@ -699,11 +681,18 @@ async fn get_policy(State(s): State<AppState>) -> Json<PolicyResponse> {
 
 /// Deny framing of the dashboard shell.
 ///
-/// The shell is served without a credential, but since #173 the browser holds
-/// one for this origin. A page on another loopback port is *same-site*, so
-/// `SameSite=Strict` does not stop it framing the dashboard and having the
-/// framed document — same-origin to itself, and so past the origin check —
-/// issue a `POST /api/approvals/{id}/approve` behind a decoy click.
+/// The shell is served without a credential, but since #173 the browser can
+/// hold one for this origin. A page on another loopback port is *same-site*, so
+/// nothing else stops it framing the dashboard and clickjacking the framed
+/// document into a `POST /api/approvals/{id}/approve` behind a decoy click.
+///
+/// Since #188 the credential is the dashboard's own script's to attach, which
+/// makes this header the guard against UI redress rather than one layer over an
+/// ambient cookie: a framed dashboard that has the secret will send it, and
+/// this is what keeps that frame from existing. (A frame in a *fresh* tab gets
+/// its own empty `sessionStorage` and so would fail to authenticate anyway —
+/// which is a second obstacle in one browser-storage model, not a reason to
+/// drop the first.)
 ///
 /// Only `frame-ancestors` is set: a script/style policy would have to track the
 /// bundler's output, and a CSP that breaks the dashboard is worse than none.

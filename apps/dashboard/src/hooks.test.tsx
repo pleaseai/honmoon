@@ -4,7 +4,11 @@ import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
 
 // React DOM needs a document before `createRoot` runs, and static imports are
 // hoisted above this call, so the React-side modules are loaded afterwards.
-GlobalRegistrator.register()
+// Registering twice throws, and `bun test` runs every file in one process, so
+// each DOM-using test file registers only if an earlier one has not.
+if (!('window' in globalThis)) {
+  GlobalRegistrator.register()
+}
 ;(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
 
 const { act } = await import('react')

@@ -12,6 +12,14 @@ PR #186 made the management token mandatory on every `/api` route (crates/honmoo
 (`mgmt_token.or(hook_token)` — new flag wins), added a `/login?token=…` → `Set-Cookie: honmoon_session`
 → `303 /` flow, and left `/healthz` and the static dashboard shell open by design.
 
+**Superseded in part by #188:** that cookie is gone. `/login` now `303`s to `/#session=<secret>`
+and the dashboard sends the secret as `X-Honmoon-Session` from origin-scoped `sessionStorage`
+(`apps/dashboard/src/session.ts`). Everywhere the docs described a session cookie —
+wiki/deep-dive/control-plane.md (both the `/api` gate paragraph and the dashboard-pipeline
+section), wiki/deep-dive/egress-gateway.md's `--mgmt-token` row, wiki/getting-started/quick-start.md,
+.claude/skills/run-honmoon/SKILL.md, apps/dashboard/AGENTS.md and vite.config.ts — was updated with
+it. So a doc that still says "session cookie" is stale, not correct; the login *URL* is unchanged.
+
 Verified accurate: README.md's mint-path/login-URL blurb, wiki/getting-started/quick-start.md's
 `open .../login?token=$(cat ~/.honmoon/mgmt-token)` recipe, wiki/deep-dive/egress-gateway.md's
 `--mgmt-token` flag-table row (audit/approval/policy/hook endpoint enumeration matches the five
