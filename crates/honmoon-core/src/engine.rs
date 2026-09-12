@@ -203,28 +203,34 @@ pub fn matches_domain(pattern: &str, domain: &str) -> bool {
 /// there the cached program hung off the rule and outlived the string it came
 /// from.
 ///
-/// An entry is present for every condition the loader saw, including the ones
-/// that did not compile: `Some(None)` records "this text was tried and failed",
-/// which is what keeps a malformed rule from being recompiled (and re-warned
-/// about) on every request.
+/// An entry is present for every condition [`CompiledConditions::compile`] was
+/// given, including the ones that did not compile: `Some(None)` records "this
+/// text was tried and failed". Since #191 that arm is transient on the load
+/// path — [`Policy::from_yaml`](crate::Policy::from_yaml) reads it through
+/// [`CompiledConditions::inert_rules`] and refuses the policy — so a `Policy`
+/// that loaded holds a `Program` for every condition its rules carry.
 #[derive(Clone, Default)]
 pub(crate) struct CompiledConditions(HashMap<String, Option<Arc<Program>>>);
 
 impl CompiledConditions {
-    /// Compile every distinct condition in `rules`, warning about every rule
-    /// that will not compile. Identical conditions share one entry, so the
-    /// compiler is asked once per distinct expression rather than once per
-    /// rule.
+    /// Compile every distinct condition in `rules`. Identical conditions share
+    /// one entry, so the compiler is asked once per distinct expression rather
+    /// than once per rule.
     ///
-    /// The dedup covers the **compile**, not the **warning**. Two rules
-    /// carrying one unusable condition are two inert rules, and an operator
-    /// fixing a policy needs both names — warning about only the first would
-    /// leave the second silently doing nothing, with nothing in any log ever
-    /// naming it (the table answers for it from then on, so it never reaches
-    /// the compiler again either). This is what
+    /// Silent: it reports nothing about a condition that will not compile, it
+    /// records the failure. Naming those rules is
+    /// [`Policy::from_yaml`](crate::Policy::from_yaml)'s job, through
+    /// [`CompiledConditions::inert_rules`] — since #191 it refuses the policy
+    /// rather than warning, and a warning emitted on the way to a hard error
+    /// that already names the same rules would only be noise.
+    ///
+    /// The dedup covers the **compile**, not the **accounting**. Two rules
+    /// carrying one unusable condition are two inert rules and an operator
+    /// fixing a policy needs both names, which is why `inert_rules` walks
+    /// `rules` rather than the table's keys. That matches
     /// [`Policy::warn_undefined_endpoints`](crate::Policy) and
-    /// `warn_shadowed_rules` already do: the loader's "a rule of yours is
-    /// inert" warnings are per rule, never per distinct cause.
+    /// `warn_shadowed_rules`: the loader accounts for "a rule of yours is
+    /// inert" per rule, never per distinct cause.
     pub(crate) fn compile(rules: &[Rule]) -> Self {
         let mut compiled: HashMap<String, Option<Arc<Program>>> = HashMap::new();
         for rule in rules {
@@ -232,27 +238,25 @@ impl CompiledConditions {
                 .entry(rule.condition.clone())
                 .or_insert_with(|| compile_program(&rule.condition));
         }
-        let table = Self(compiled);
-        for rule in table.inert_rules(rules) {
-            warn_inert_rule(rule);
-        }
-        table
+        Self(compiled)
     }
 
-    /// The rules whose conditions can never match, in rule order — exactly the
-    /// set [`CompiledConditions::compile`] warns about, and its only caller
-    /// besides the test that pins it.
+    /// The rules whose conditions can never match, paired with their positions
+    /// in `rules` and in rule order.
     ///
-    /// It exists to be assertable. Whether a `tracing` warning was emitted is
-    /// not observable from a unit test in this crate — capturing it needs a
-    /// `tracing-subscriber` dev-dependency, and a new workspace dependency is
-    /// on `crates/AGENTS.md`'s **Ask first** list. So the test asserts the set
-    /// the warnings are derived from rather than the log lines themselves,
-    /// which pins the per-rule shape without pinning the emission.
-    pub(crate) fn inert_rules<'a>(&self, rules: &'a [Rule]) -> Vec<&'a Rule> {
+    /// This is what [`Policy::from_yaml`](crate::Policy::from_yaml) turns into
+    /// [`Error::UncompilableRuleConditions`](crate::Error), so on a policy that
+    /// loads it is empty by construction. It is separate from `compile` because
+    /// the answer is per rule while the compile is per distinct condition, and
+    /// because the caller needs the whole list to report it in one go.
+    ///
+    /// The index comes from here rather than from the caller so the pairing
+    /// cannot drift: it is the position in the same slice the filter ran over.
+    pub(crate) fn inert_rules<'a>(&self, rules: &'a [Rule]) -> Vec<(usize, &'a Rule)> {
         rules
             .iter()
-            .filter(|rule| self.get(&rule.condition).is_some_and(Option::is_none))
+            .enumerate()
+            .filter(|(_, rule)| self.get(&rule.condition).is_some_and(Option::is_none))
             .collect()
     }
 
@@ -290,8 +294,13 @@ impl fmt::Debug for CompiledConditions {
 /// its table — every other rule still hits — and misses on that one key alone,
 /// because the key is the old text. Either way the miss gets exactly the
 /// behaviour `decide` gave before conditions were compiled at load, warning
-/// included. What changes on a hit is only *when* the compile happened — a
-/// recorded failure declines here as it did there.
+/// included.
+///
+/// A **hit** on a recorded failure declines the same way, and that is the arm
+/// this keeps for policies whose table was not built by the loader: since #191
+/// a loaded policy carries no such entry, because `from_yaml` refuses rather
+/// than returning one. The clone answers whatever is in the table instead of
+/// asserting what cannot be there, which is the fail-closed reading.
 fn program_for(policy: &Policy, rule: &Rule) -> Option<Arc<Program>> {
     match policy.compiled_conditions().get(&rule.condition) {
         Some(compiled) => compiled.clone(),
@@ -318,12 +327,13 @@ fn program_for(policy: &Policy, rule: &Rule) -> Option<Arc<Program>> {
 /// purpose: the loader is reading the author's file and says so loudly, while
 /// here the rule declines like any other condition that cannot compile.
 ///
-/// The **failed-compile** arm has no such split. Called from two places now —
-/// [`CompiledConditions::compile`] at load, and [`program_for`] for a rule the
-/// load-time table does not cover — it is reached for a loaded policy as well,
-/// because a condition that will not compile is a warning at load rather than
-/// a load failure. For that policy the warning fires once, at load, where it
-/// used to fire on every evaluation of the offending rule.
+/// The **failed-compile** arm is likewise not what an operator meets. Since
+/// #191 a policy carrying a condition that will not compile does not load at
+/// all, so this arm answers the same two shapes the blank one does: a `Policy`
+/// built in code, and a loaded policy whose [`Rule::condition`](crate::Rule)
+/// was reassigned to something unusable after the load. Both miss the table
+/// and land here, where the rule declines and the warning names it — there is
+/// no file to point the author at in either case.
 fn compile_condition(rule: &Rule) -> Option<Arc<Program>> {
     let program = compile_program(&rule.condition);
     if program.is_none() {
@@ -334,10 +344,11 @@ fn compile_condition(rule: &Rule) -> Option<Arc<Program>> {
 
 /// Compile a condition without saying anything about it.
 ///
-/// The silent half of [`compile_condition`], so
-/// [`CompiledConditions::compile`] can ask the compiler once per distinct
-/// condition while warning once per *rule* — the two counts differ whenever two
-/// rules share one unusable condition.
+/// The silent half of [`compile_condition`], and what
+/// [`CompiledConditions::compile`] calls: the loader has to record a failure
+/// without reporting it, because since #191 the report is
+/// [`Policy::from_yaml`](crate::Policy::from_yaml)'s refusal, naming every
+/// offending rule at once rather than one warning per condition compiled here.
 fn compile_program(condition: &str) -> Option<Arc<Program>> {
     if crate::is_blank_condition(condition) {
         return None;
@@ -354,9 +365,11 @@ fn compile_program(condition: &str) -> Option<Arc<Program>> {
 /// the loader's own two "a rule of yours is inert" warnings, which are likewise
 /// per rule.
 ///
-/// Split out of [`compile_condition`] so [`CompiledConditions::compile`] can
-/// warn about a second rule sharing an unusable condition without asking the
-/// compiler about that text again.
+/// Kept apart from [`compile_condition`] so that what the two arms say stays
+/// one concern and deciding whether to say it stays another. It is the
+/// evaluation-time answer only: the loader refuses such a policy instead
+/// (see [`Policy::validate_compiled_conditions`](crate::Policy)), so nothing
+/// reaches here that an operator could have been told about at startup.
 fn warn_inert_rule(rule: &Rule) {
     if crate::is_blank_condition(&rule.condition) {
         tracing::warn!(
@@ -422,6 +435,7 @@ fn eval_program(program: &Program, facts: &Facts, pii: Option<&PiiFacts>) -> boo
 
 #[cfg(test)]
 mod tests {
+    use super::CompiledConditions;
     use crate::{Facts, HttpFacts, Policy, Rule, Verdict};
 
     fn domain_facts(domain: &str) -> Facts {
@@ -626,13 +640,18 @@ mod tests {
     /// Structural rather than behavioural on purpose. Compiling at load is
     /// meant to be invisible in what `decide` answers — the tests around this
     /// one are the guard on that — so the only thing left to pin is that the
-    /// table the lookup reads is populated, including for the condition that
-    /// failed to compile: a recorded failure is what keeps a malformed rule
-    /// from being handed to the compiler again on the next request.
+    /// table the lookup reads is populated.
+    ///
+    /// The failed-compile entry is asserted against
+    /// [`CompiledConditions::compile`] directly rather than through a loaded
+    /// policy: since #191 no policy carrying one loads, so `from_yaml` cannot
+    /// hand back a table to look at. `compile` is the same call `from_yaml`
+    /// makes, one step before it reads the failures and refuses — which is the
+    /// only window in which a `Some(None)` entry exists at all.
     #[test]
     fn a_loaded_policy_compiles_each_distinct_condition_once_at_load() {
         let policy = Policy::from_yaml(
-            "egress:\n  default: deny\nrules:\n  - name: post\n    endpoint: '*'\n    condition: \"http.method == 'POST'\"\n    verdict: deny\n  - name: post-too\n    endpoint: '*'\n    condition: \"http.method == 'POST'\"\n    verdict: pause\n  - name: malformed\n    endpoint: '*'\n    condition: \"&&\"\n    verdict: allow\n",
+            "egress:\n  default: deny\nrules:\n  - name: post\n    endpoint: '*'\n    condition: \"http.method == 'POST'\"\n    verdict: deny\n  - name: post-too\n    endpoint: '*'\n    condition: \"http.method == 'POST'\"\n    verdict: pause\n  - name: get\n    endpoint: '*'\n    condition: \"http.method == 'GET'\"\n    verdict: allow\n",
         )
         .unwrap();
 
@@ -644,7 +663,22 @@ mod tests {
             compiled.get("http.method == 'POST'"),
             Some(Some(_))
         ));
-        assert!(matches!(compiled.get("&&"), Some(None)));
+        assert!(matches!(
+            compiled.get("http.method == 'GET'"),
+            Some(Some(_))
+        ));
+
+        // A condition that does not compile is *recorded* as failed rather
+        // than left out, which is what keeps a rule from being handed to the
+        // compiler again on every request — the shape `program_for` answers
+        // for a table built outside the loader.
+        let table = CompiledConditions::compile(&[Rule {
+            name: "malformed".into(),
+            endpoint: "*".into(),
+            condition: "&&".into(),
+            verdict: Verdict::Allow,
+        }]);
+        assert!(matches!(table.get("&&"), Some(None)));
 
         // A `Policy` built in code never passed through the loader, so it
         // carries no table and compiles where it always did.
@@ -709,41 +743,59 @@ mod tests {
 
     /// Two rules carrying the same unusable condition are two inert rules, and
     /// the loader accounts for both — while still asking the compiler only
-    /// once, which is the dedup this change is for. Deduping the *warning*
-    /// along with the compile would leave the second rule doing nothing with
-    /// nothing in any log naming it: the table answers for it from then on, so
-    /// it never reaches the compiler, or the warning, again.
+    /// once, which is the dedup #167 is for. Deduping the *accounting* along
+    /// with the compile would leave the second rule unnamed and its author
+    /// fixing the policy twice.
     ///
-    /// What this asserts is `inert_rules` — the set `compile` warns from — not
-    /// the emitted log lines, which a unit test in this crate cannot see
-    /// without a `tracing-subscriber` dev-dependency (**Ask first**, per
-    /// `crates/AGENTS.md`). So a regression that stopped calling
-    /// `warn_inert_rule` altogether would slip past this; one that went back to
-    /// accounting per distinct condition instead of per rule would not.
+    /// This asserts `inert_rules` against the table `compile` builds. What the
+    /// loader does with that set is #191's, and
+    /// `lib::tests::names_every_rule_whose_condition_does_not_compile` asserts
+    /// it end to end through the error `from_yaml` returns; the pair here is
+    /// the unit underneath it, so a regression to per-condition accounting is
+    /// caught on the side that computes it as well as the side that reports
+    /// it.
     #[test]
     fn both_rules_sharing_an_unusable_condition_are_accounted_inert() {
-        let policy = Policy::from_yaml(
-            "egress:\n  default: deny\nrules:\n  - name: first\n    endpoint: '*'\n    condition: \"&&\"\n    verdict: allow\n  - name: second\n    endpoint: '*'\n    condition: \"&&\"\n    verdict: allow\n",
-        )
-        .unwrap();
+        let rules = [
+            Rule {
+                name: "first".into(),
+                endpoint: "*".into(),
+                condition: "&&".into(),
+                verdict: Verdict::Allow,
+            },
+            Rule {
+                name: "second".into(),
+                endpoint: "*".into(),
+                condition: "&&".into(),
+                verdict: Verdict::Allow,
+            },
+        ];
+        let compiled = CompiledConditions::compile(&rules);
 
-        let compiled = policy.compiled_conditions();
-
-        // Both rules are named, in rule order — not just the first one to
-        // reach the compiler.
-        let inert: Vec<&str> = compiled
-            .inert_rules(&policy.rules)
+        // Both rules are named, in rule order and with their own positions —
+        // not just the first one to reach the compiler.
+        let inert: Vec<(usize, &str)> = compiled
+            .inert_rules(&rules)
             .iter()
-            .map(|rule| rule.name.as_str())
+            .map(|(index, rule)| (*index, rule.name.as_str()))
             .collect();
-        assert_eq!(inert, ["first", "second"]);
+        assert_eq!(inert, [(0, "first"), (1, "second")]);
 
         // One shared entry for the one distinct condition: the compiler was
         // asked once, which is what the dedup buys.
         assert_eq!(compiled.len(), 1);
 
-        // And both rules are genuinely inert, so neither turns the deny
-        // default into the allow it asks for.
+        // And such a rule is genuinely inert, so a `Policy` carrying one —
+        // which the loader now refuses, but the public API still accepts —
+        // cannot turn the deny default into the allow it asks for.
+        let policy = Policy {
+            egress: crate::Egress {
+                default: Verdict::Deny,
+                ..Default::default()
+            },
+            rules: rules.to_vec(),
+            ..Default::default()
+        };
         assert_eq!(super::decide(&policy, &Facts::default()), Verdict::Deny);
     }
 
@@ -774,25 +826,37 @@ mod tests {
         assert_eq!(super::decide(&policy, &http_facts("GET")), Verdict::Deny);
     }
 
-    /// #167 moves *when* a condition compiles, not what happens to one that
-    /// never will. A policy carrying a malformed condition still loads: the
-    /// rule goes inert, fails closed, and the rules around it are untouched.
+    /// #191: a policy carrying a malformed condition does not load at all, so
+    /// the sound rule beneath it never gets to decide either — a refused
+    /// policy is no policy, not a policy minus one rule.
     ///
-    /// Refusing to load it instead is a real improvement and a real behaviour
-    /// change — it moves the moment an operator learns about a bad rule from
-    /// the first matching request to startup — so it is tracked on its own
-    /// rather than folded into a performance change.
+    /// That is the cost the change accepts, and the one an operator has to
+    /// know about: the gateway that started yesterday with an inert rule stops
+    /// starting today. It buys the rule being *found*, rather than looking
+    /// active in the file while answering nothing. Fix the condition and both
+    /// rules decide, which is the second half of this test.
     #[test]
-    fn a_condition_that_does_not_compile_still_loads_and_only_its_own_rule_goes_inert() {
-        let policy = Policy::from_yaml(
+    fn a_condition_that_does_not_compile_fails_the_load_for_the_whole_policy() {
+        let error = Policy::from_yaml(
             "egress:\n  default: deny\nrules:\n  - name: broken\n    endpoint: '*'\n    condition: \"&&\"\n    verdict: allow\n  - name: sound\n    endpoint: '*'\n    condition: \"http.method == 'GET'\"\n    verdict: allow\n",
         )
-        .expect("a condition that fails to compile is not a load failure");
+        .expect_err("a condition that fails to compile is a load failure");
+        assert!(
+            matches!(&error, crate::Error::UncompilableRuleConditions { rules }
+                if rules.len() == 1 && rules[0].name == "broken"),
+            "unexpected error: {error}"
+        );
 
-        // The inert rule cannot turn the deny default into an allow...
-        assert_eq!(super::decide(&policy, &Facts::default()), Verdict::Deny);
-        // ...and the rule below it still decides.
+        // The same policy with the broken condition repaired: both rules load
+        // and decide, and the deny default still answers a request neither
+        // matches.
+        let policy = Policy::from_yaml(
+            "egress:\n  default: deny\nrules:\n  - name: broken\n    endpoint: '*'\n    condition: \"http.method == 'POST'\"\n    verdict: allow\n  - name: sound\n    endpoint: '*'\n    condition: \"http.method == 'GET'\"\n    verdict: allow\n",
+        )
+        .expect("every condition compiles");
+        assert_eq!(super::decide(&policy, &http_facts("POST")), Verdict::Allow);
         assert_eq!(super::decide(&policy, &http_facts("GET")), Verdict::Allow);
+        assert_eq!(super::decide(&policy, &Facts::default()), Verdict::Deny);
     }
 
     /// The proxy shares one `Policy` across connection tasks (`Arc<Policy>` in
