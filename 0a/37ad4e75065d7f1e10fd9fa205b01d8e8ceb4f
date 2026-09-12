@@ -1,0 +1,23 @@
+.claude/agent-memory/review-review-documentation-analyzer/pr194_session_secret_port_scope.md
+  s_b7c0aca07e94f1::t_014067c684e4ae 3,13-17
+.claude/agent-memory/review-review-silent-failure-hunter/project_pr194_session_ts_storage_swallow.md
+  s_b7c0aca07e94f1::t_014067c684e4ae 17-21
+.claude/agent-memory/review-review-security-reviewer/mgmt-api-auth-model.md
+  s_b7c0aca07e94f1::t_917a590abe21dc 8-9
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "0a37ad4e75065d7f1e10fd9fa205b01d8e8ceb4f",
+  "prompts": {},
+  "sessions": {
+    "s_b7c0aca07e94f1": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "4951d865-cc4f-4262-a023-49a2ace4a99d",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
