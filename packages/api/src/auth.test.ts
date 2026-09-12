@@ -207,6 +207,16 @@ describe('resolveToken', () => {
     },
   )
 
+  test('refuses a token file that is not valid UTF-8 instead of serving U+FFFD', () => {
+    // Bun substitutes U+FFFD for malformed bytes rather than throwing, so a
+    // corrupt file would otherwise become the ordinary-looking token "\uFFFD"
+    // and be served as a credential. Rust's read_to_string refuses the same
+    // file, so accepting it here would abort the gateway while @honmoon/api
+    // started under a guessable token.
+    writeFileSync(join(dir, 'mgmt-token'), new Uint8Array([0xFF, 0xFE, 0x41]))
+    expect(() => resolveToken(dir)).toThrow(/not valid UTF-8/)
+  })
+
   test('aborts on an unreadable token file instead of minting a second one', () => {
     // A directory where the file should be: the read fails with something other
     // than ENOENT, which must not be recovered from by generating a token that

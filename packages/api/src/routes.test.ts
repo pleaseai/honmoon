@@ -72,4 +72,15 @@ describe('createFetchHandler', () => {
     expect(() => createFetchHandler({ token: '', loadEvents: async () => EVENTS })).toThrow()
     expect(() => createFetchHandler({ token: '   ', loadEvents: async () => EVENTS })).toThrow()
   })
+
+  test('refuses a padding-only token the rest of the system treats as empty', () => {
+    // `String.prototype.trim` leaves U+0085 intact while Rust's `str::trim` and
+    // `resolveToken`'s `trimToken` both strip it, so a bare `.trim()` here would
+    // build a handler accepting `Authorization: Bearer \u0085` — a credential
+    // every other component considers absent.
+    for (const padding of ['\u0085', '\uFEFF', '\uFEFF \u0085']) {
+      expect(() => createFetchHandler({ token: padding, loadEvents: async () => EVENTS }))
+        .toThrow(/empty or padding-only/)
+    }
+  })
 })

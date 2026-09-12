@@ -366,6 +366,30 @@ struct GatewayArgs {
 }
 
 /// Default directory for persisted CA material (`$HOME/.honmoon`, else `.honmoon`).
+/// The authority to print in the dashboard URL for a listener bound to `addr`.
+///
+/// `local_addr()` reports the *bind* address, which for a wildcard bind
+/// (`--mgmt-addr 0.0.0.0:8444`, or `[::]:8444`) is not an address anyone can
+/// open: `http://0.0.0.0:8444/` resolves to the client itself, so the one-click
+/// login this banner advertises would be broken for exactly the deployment that
+/// chose to listen broadly.
+///
+/// A wildcard says "every interface", and the one interface certain to reach
+/// this process is the loopback one, so that is what gets printed. Nothing
+/// guesses a routable public address: honmoon is not told one, and inventing a
+/// hostname the operator never configured would trade a URL that visibly fails
+/// for one that fails somewhere less obvious.
+fn dashboard_authority(addr: std::net::SocketAddr) -> String {
+    if addr.ip().is_unspecified() {
+        match addr {
+            std::net::SocketAddr::V4(_) => format!("127.0.0.1:{}", addr.port()),
+            std::net::SocketAddr::V6(_) => format!("[::1]:{}", addr.port()),
+        }
+    } else {
+        addr.to_string()
+    }
+}
+
 /// Percent-encode a token for use as a query-string value.
 ///
 /// A generated token is hex, which needs no encoding — but a *persisted* token
@@ -531,7 +555,10 @@ fn gateway(args: GatewayArgs) -> Result<()> {
     // where the same line would persist a long-lived credential somewhere far
     // more readable than the `0600` file. The path is printed either way, so
     // the redirected case still says where to read it.
-    let mgmt_url = format!("http://{}", mgmt_listener.local_addr()?);
+    let mgmt_url = format!(
+        "http://{}",
+        dashboard_authority(mgmt_listener.local_addr()?)
+    );
     let token_path = mgmt.source.path();
     if mgmt.source.printable() && std::io::stderr().is_terminal() {
         eprintln!(
@@ -824,6 +851,32 @@ fn load_policy(path: &PathBuf) -> Result<Policy> {
 #[cfg(test)]
 mod tests {
     use super::percent_encode_query_value;
+
+    #[test]
+    fn a_wildcard_bind_is_not_advertised_as_a_dashboard_url() {
+        use super::dashboard_authority;
+
+        // A wildcard bind is not openable: http://0.0.0.0:8444/ resolves to the
+        // client, so printing it breaks the one-click login for exactly the
+        // deployment that chose to listen broadly.
+        assert_eq!(
+            dashboard_authority("0.0.0.0:8444".parse().unwrap()),
+            "127.0.0.1:8444"
+        );
+        assert_eq!(
+            dashboard_authority("[::]:8444".parse().unwrap()),
+            "[::1]:8444"
+        );
+        // A concrete bind is printed exactly as it is.
+        assert_eq!(
+            dashboard_authority("127.0.0.1:8444".parse().unwrap()),
+            "127.0.0.1:8444"
+        );
+        assert_eq!(
+            dashboard_authority("192.168.1.5:8444".parse().unwrap()),
+            "192.168.1.5:8444"
+        );
+    }
 
     #[test]
     fn a_login_url_token_survives_reserved_characters() {

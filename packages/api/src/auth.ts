@@ -94,7 +94,7 @@ function errorCode(error: unknown): string | undefined {
  * This is the union of both sets, matching `is_token_padding` exactly:
  * JavaScript's `\\s` already covers U+FEFF, so only U+0085 has to be added.
  */
-function trimToken(token: string): string {
+export function trimToken(token: string): string {
   // U+FEFF is already in JavaScript's `\s`; U+0085 is the one it lacks.
   return token.replace(/^[\s\u0085]+|[\s\u0085]+$/gu, '')
 }
@@ -228,7 +228,24 @@ function readTokenAndMode(path: string): { contents: string, mode: number | null
         console.warn(`honmoon api: warning: could not read the mode of ${path}: ${String(error)}`)
       }
     }
-    return { contents: trimToken(readFileSync(fd, 'utf8')), mode }
+    // Decoded with `fatal: true` rather than read as 'utf8': Bun (like Node)
+    // silently substitutes U+FFFD for malformed bytes, so a corrupt file
+    // containing a lone 0xFF would become the perfectly ordinary token
+    // "\uFFFD" and be served as a credential. Rust's `read_to_string` refuses
+    // the same file, so accepting it here would mean the gateway aborts while
+    // `@honmoon/api` starts under a guessable token — the divergence is worse
+    // than either behaviour alone. Fail closed, matching Rust.
+    const bytes = readFileSync(fd)
+    let decoded: string
+    try {
+      decoded = new TextDecoder('utf-8', { fatal: true }).decode(bytes)
+    }
+    catch {
+      throw new Error(
+        `management token ${path} is not valid UTF-8 (delete it to mint a new one)`,
+      )
+    }
+    return { contents: trimToken(decoded), mode }
   }
   finally {
     closeSync(fd)

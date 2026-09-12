@@ -10,7 +10,7 @@
  */
 import type { AuditEvent } from '@honmoon/policy'
 import { auditStats, queryAudit, queryFromParams } from './audit'
-import { isAuthorized, unauthorized } from './auth'
+import { isAuthorized, trimToken, unauthorized } from './auth'
 
 export interface HandlerConfig {
   /** The management token every route but `/healthz` requires. */
@@ -24,8 +24,13 @@ export function createFetchHandler({ token, loadEvents }: HandlerConfig) {
   // string and this is the boundary where the gate is built. An empty token
   // authenticates `Authorization: Bearer ` and so reopens the unauthenticated
   // mode #173 closes — refuse to build a handler that would.
-  if (token.trim() === '') {
-    throw new Error('refusing to serve with an empty management token')
+  // `trimToken`, not `String.prototype.trim`: this is the same predicate
+  // `resolveToken` and the Rust loaders apply, and the two disagree on U+0085
+  // and U+FEFF. A caller passing `token: '\u0085'` would otherwise build a
+  // handler that accepts `Authorization: Bearer \u0085` — a credential the rest
+  // of the system considers empty.
+  if (trimToken(token) === '') {
+    throw new Error('refusing to serve with an empty or padding-only management token')
   }
   return async function handle(req: Request): Promise<Response> {
     const url = new URL(req.url)
