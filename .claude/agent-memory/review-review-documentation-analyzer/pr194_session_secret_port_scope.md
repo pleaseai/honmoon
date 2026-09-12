@@ -1,6 +1,6 @@
 ---
 name: pr194-session-secret-port-scope
-description: 'PR #194 (issue #188) replaced the honmoon_session cookie with a session secret delivered in /login''s redirect fragment, held in origin-scoped sessionStorage, sent as X-Honmoon-Session — README, wiki/deep-dive/control-plane.md (incl. its lib.rs line-number citations), egress-gateway.md, quick-start.md, SKILL.md, AGENTS.md, vite.config.ts, auth.ts, and all three touched .claude/agent-memory notes (pr186_mgmt_token_auth.md, mgmt-api-auth-model.md, pr186_warn_if_readable_beyond_owner.md) verified accurate against lib.rs/session.ts/api.ts in the round this note was written'
+description: 'PR #194 (issue #188) replaced the honmoon_session cookie with a session secret delivered in /login''s redirect fragment, held in origin-scoped sessionStorage, sent as X-Honmoon-Session — README, wiki/deep-dive/control-plane.md (incl. its lib.rs line-number citations), egress-gateway.md, quick-start.md, SKILL.md, AGENTS.md, vite.config.ts, auth.ts, and all three touched .claude/agent-memory notes (pr186_mgmt_token_auth.md, mgmt-api-auth-model.md, pr186_warn_if_readable_beyond_owner.md) verified accurate against lib.rs/session.ts/api.ts in the round this note was written; the FRAME_ANCESTORS_NONE constant it named was renamed DASHBOARD_CSP in #195'
 metadata:
   type: project
 ---
@@ -12,9 +12,11 @@ reads the fragment via `captureSession()` (called from `main.tsx` before first r
 `sessionStorage` (origin-scoped: scheme+host+port), and `api.ts`'s `sessionHeaders()` attaches it as
 `X-Honmoon-Session` on every fetch. `X-Frame-Options: DENY` / `frame-ancestors 'none'` are unchanged —
 still served on the static shell, from both arms of `static_handler` (the asset arm and the
-`index.html` SPA fallback), off the `FRAME_ANCESTORS_NONE` constant. Find them by that symbol
-rather than by line: they sit near the end of `lib.rs` (699, 721, 733 as of this note), so any
-edit earlier in the file moves them.
+`index.html` SPA fallback). **The constant they came off is no longer
+`FRAME_ANCESTORS_NONE`**: issue #195 widened the policy past framing and renamed it
+`DASHBOARD_CSP`, so grep for that (or for `CONTENT_SECURITY_POLICY`) rather than the old symbol.
+Find them that way rather than by line: they sit near the end of `lib.rs`, so any edit earlier in
+the file moves them.
 
 Verified: no stale "cookie" doc anywhere (grepped whole repo, excluding target/node_modules) — the
 remaining `Cookie`/`Set-Cookie` mentions are the unrelated wire-header-redaction category in
