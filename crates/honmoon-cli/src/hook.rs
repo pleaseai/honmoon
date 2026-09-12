@@ -820,7 +820,10 @@ fn audit_machine_key_status(audit_log: Option<&Path>, status: &MachineKeyStatus)
 /// path as given. That string is byte-for-byte what this loader recorded before
 /// issue #162, so nothing regresses; it is not *marked* as unresolved either,
 /// which is the gap issue #176 carries. Marking it needs the resolution state
-/// threaded through all five `reason` producers, so it is not folded in here.
+/// threaded through all six `reason` producers — the two exposure wordings in
+/// [`found_exposure`], [`restrict_to_owner_only`]'s still-open one,
+/// [`publish_secret_atomically`]'s two lost-race arms, and
+/// [`replaced_unread_reason`] — so it is not folded in here.
 fn absolute_salt_dir(dir: &Path) -> PathBuf {
     std::path::absolute(dir).unwrap_or_else(|e| {
         eprintln!(
@@ -845,8 +848,10 @@ fn absolute_salt_dir(dir: &Path) -> PathBuf {
 /// the winner's bytes in a single read — so every process converges on one
 /// machine key and placeholders for the same secret stay byte-stable across turns
 /// (issue #20), with no empty-file window and no read-retry loop. A short/corrupt
-/// file or an unexpected read error is logged before regenerating; a
-/// genuinely-absent file (first run) is silent.
+/// file or an unexpected read error is logged before regenerating, and the
+/// unexpected read error is *recorded* as well, because the bytes it discards
+/// were never seen (see [`HOOK_SALT_REPLACED_UNREAD_RULE`]); a genuinely-absent
+/// file (first run) is silent.
 struct LoadedSalt {
     bytes: Vec<u8>,
     /// `Some(reason)` when these bytes never reached disk, so the next
@@ -1196,12 +1201,17 @@ fn hex_encode(bytes: &[u8]) -> String {
 /// under the loader's 16-byte floor, so no loader ever adopted them as a key and
 /// there is no key history to lose. Reached from the arm whose `read` failed
 /// outright, their length and content are unknown: that inode *could* have held
-/// a valid salt other invocations adopted, and if its mode was loose, that key's
-/// exposure goes unrecorded here. The replaced key is out of scope for #143,
-/// which is about the key in use — #171 carries it, because recording it through
-/// this channel would pair a history claim with a `key_source` describing a
-/// different key, which is a modelling decision of the kind #141 settled
-/// deliberately rather than in passing.
+/// a valid salt other invocations adopted, and if its mode was loose, that key
+/// may be out.
+///
+/// That second case is **not** recorded through this return value, and is not
+/// silent either: the loader reads the mode before it calls this function and
+/// reports it under [`HOOK_SALT_REPLACED_UNREAD_RULE`], a rule of its own
+/// (issue #171). Routing it through here would pair a history claim with a
+/// `key_source` describing a different key, which is the conflation #141
+/// settled. So this function's answer stays what its name says — the exposure of
+/// the key it is writing — and `None` from it never means the inode's past was
+/// clean.
 fn write_secret_file(path: &Path, bytes: &[u8]) -> std::io::Result<Option<SaltExposure>> {
     use std::io::Write as _;
     let mut opts = std::fs::OpenOptions::new();
@@ -1258,6 +1268,12 @@ enum SaltProvenance {
     /// whose prior contents are being discarded. The file's prior mode is the
     /// history of those discarded bytes, never of this key, so only the mode
     /// left behind counts — see [`write_secret_file`].
+    ///
+    /// Declining to read it here is not the same as declining to record it. On
+    /// the arm where those discarded bytes were never seen, the loader reads
+    /// that mode itself, before the overwrite, and reports it under
+    /// [`HOOK_SALT_REPLACED_UNREAD_RULE`] — as the file's mode, about a key
+    /// nobody can now identify, never as this key's history (issue #171).
     FreshlyWritten,
 }
 
