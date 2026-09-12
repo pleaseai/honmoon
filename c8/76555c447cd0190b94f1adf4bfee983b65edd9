@@ -1,0 +1,23 @@
+scripts/check-dashboard-csp.ts
+  s_138c401df18b31::t_543e3b27806d38 104,106-108,112-120,123,299-300,302-303,313,320-322
+scripts/check-dashboard-csp.test.ts
+  s_138c401df18b31::t_60a125d9e6d5f6 189-198
+.claude/agent-memory/review-review-security-reviewer/dashboard-shell-csp.md
+  s_138c401df18b31::t_096e72b9646501 90-96
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "c876555c447cd0190b94f1adf4bfee983b65edd9",
+  "prompts": {},
+  "sessions": {
+    "s_138c401df18b31": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "0f9ceb28-08f2-4146-9594-a3b4e1ffd62b",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
