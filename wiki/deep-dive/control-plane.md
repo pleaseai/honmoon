@@ -70,10 +70,22 @@ shared `GatewayState`. `honmoon gateway` runs the proxy and this API on one toki
 | anything else | — | Embedded dashboard (SPA fallback) | [lib.rs:138-168](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-mgmt/src/lib.rs#L138-L168) |
 
 Every `/api` row above requires the management token (issue #173) — either
-`Authorization: Bearer <token>` or the `honmoon_session` cookie that `GET /login?token=…` sets.
+`Authorization: Bearer <token>` or the `honmoon_session` cookie that `GET /login?token=…` sets
+([lib.rs:457-471](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-mgmt/src/lib.rs#L457-L471), [lib.rs:598-623](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-mgmt/src/lib.rs#L598-L623)).
 The gate is a `route_layer` on the nested `/api` router, so a new `/api` route is covered by
-construction rather than by remembering to check. `/healthz` and the SPA fallback are the two
-deliberate exceptions and stay open.
+construction rather than by remembering to check
+([lib.rs:246-265](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-mgmt/src/lib.rs#L246-L265)). `/healthz` and the SPA fallback
+are the two deliberate exceptions and stay open. The token itself is resolved — and generated
+`0600` on first use — by the CLI loader
+([mgmt_token.rs:1-30](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-cli/src/mgmt_token.rs#L1-L30)), and `@honmoon/api` reads
+the same file ([auth.ts:102-201](https://github.com/pleaseai/honmoon/blob/main/packages/api/src/auth.ts#L102-L201)).
+
+The session cookie is origin-bound by the browser, which is what defeats DNS rebinding; it does
+**not** survive being harvested from a sibling loopback port, since cookie scope has no port
+component (RFC 6265 §8.5). <span class="status-caveat">Residual</span> — a harvested cookie
+carries full management access until the token is rotated, tracked as
+[#188](https://github.com/pleaseai/honmoon/issues/188)
+([lib.rs:509-530](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-mgmt/src/lib.rs#L509-L530), [lib.rs:539-573](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-mgmt/src/lib.rs#L539-L573)).
 
 One careful detail: the SPA fallback **refuses to mask an unmatched `/api/...` path as `200 text/html`**
 — those 404 honestly, so a failed management action is never hidden behind the dashboard shell

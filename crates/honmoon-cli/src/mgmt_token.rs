@@ -69,9 +69,31 @@ impl Source {
 
 /// Resolve the token the management API will require: the operator's if they
 /// supplied one, otherwise the persisted one in `dir`, otherwise a fresh one.
+/// Characters stripped from a token, and which therefore cannot constitute one.
+///
+/// Spelled out rather than delegated to `str::trim`, because `str::trim` and
+/// JavaScript's `String.prototype.trim` do not agree and this token crosses
+/// between them. Rust trims Unicode `White_Space`, which includes U+0085 (NEL)
+/// and excludes U+FEFF; JavaScript trims its own `WhiteSpace` production, which
+/// is the reverse on both counts. So `"\u{FEFF}"` was a valid token to the
+/// gateway and an empty one to `@honmoon/api`, and `"\u{85}"` the other way
+/// round — two services disagreeing about whether a credential exists.
+///
+/// The union of both sets, applied identically here and in `auth.ts`'s
+/// `trimToken`, so the two always reach the same verdict.
+fn is_token_padding(c: char) -> bool {
+    c.is_whitespace() || c == '\u{FEFF}'
+}
+
+/// Strip [`is_token_padding`] from both ends. The counterpart of `auth.ts`'s
+/// `trimToken`.
+pub fn trim_token(token: &str) -> &str {
+    token.trim_matches(is_token_padding)
+}
+
 pub fn resolve(explicit: Option<String>, dir: &Path) -> Result<Resolved> {
     if let Some(token) = explicit {
-        if token.trim().is_empty() {
+        if trim_token(&token).is_empty() {
             bail!(
                 "--mgmt-token must not be empty — an empty credential authenticates every caller"
             );
@@ -115,7 +137,7 @@ fn load_or_create(dir: &Path) -> Result<Resolved> {
     };
 
     if let Some(contents) = &existing {
-        let token = contents.trim();
+        let token = trim_token(contents);
         if !token.is_empty() {
             warn_if_readable_beyond_owner(&path);
             // The persisted path is the common one — every restart after the
@@ -161,7 +183,7 @@ fn load_or_create(dir: &Path) -> Result<Resolved> {
         Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
             let contents = std::fs::read_to_string(&path)
                 .with_context(|| format!("reading {} after a lost create race", path.display()))?;
-            let winner = contents.trim();
+            let winner = trim_token(&contents);
             if winner.is_empty() {
                 bail!(
                     "management token {} is empty after a lost create race",
@@ -452,6 +474,27 @@ mod tests {
     /// credential and stay readable by every other local user on the host,
     /// which is the whole population the token exists to exclude.
     #[cfg(unix)]
+    #[test]
+    fn a_padding_only_token_file_is_replaced_the_same_way_on_both_runtimes() {
+        // U+FEFF is the case `str::trim` gets wrong: it is not Unicode
+        // `White_Space`, so the bare `.trim()` this used to call left it intact
+        // and served it as a credential — while `@honmoon/api`, whose
+        // JavaScript `\s` does cover U+FEFF, saw an empty file and minted a
+        // different token. Two services, one file, two answers.
+        for padding in ["\u{FEFF}", "\u{85}", "\u{FEFF} \u{85}\n"] {
+            let tmp = TempDir::new("padding-token");
+            let path = tmp.path().join(FILE_NAME);
+            std::fs::write(&path, padding).unwrap();
+
+            let resolved = resolve(None, tmp.path()).unwrap();
+            assert!(
+                matches!(resolved.source, Source::Generated(_)),
+                "a token of only padding ({padding:?}) must be replaced, not served"
+            );
+            assert!(!resolved.token.is_empty());
+        }
+    }
+
     #[test]
     fn a_created_token_directory_is_owner_only() {
         use std::os::unix::fs::PermissionsExt as _;

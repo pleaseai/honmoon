@@ -79,6 +79,26 @@ function errorCode(error: unknown): string | undefined {
  * same file, and a server that silently disagrees with all of them while
  * reporting success is worse than one that refuses to start.
  */
+/**
+ * Strip token padding from both ends — the counterpart of the Rust CLI's
+ * `trim_token`.
+ *
+ * Spelled out rather than using `String.prototype.trim`, because that and Rust's
+ * `str::trim` do not agree and this token crosses between them. Rust trims
+ * Unicode `White_Space`, which includes U+0085 (NEL) and excludes U+FEFF;
+ * JavaScript's `WhiteSpace` production is the reverse on both counts. So
+ * `'\uFEFF'` was an empty token here and a valid one to the gateway, and
+ * `'\u0085'` the other way round — the two services disagreeing about whether a
+ * credential exists at all.
+ *
+ * This is the union of both sets, matching `is_token_padding` exactly:
+ * JavaScript's `\\s` already covers U+FEFF, so only U+0085 has to be added.
+ */
+function trimToken(token: string): string {
+  // U+FEFF is already in JavaScript's `\s`; U+0085 is the one it lacks.
+  return token.replace(/^[\s\u0085]+|[\s\u0085]+$/gu, '')
+}
+
 export function resolveToken(dir: string = defaultDir()): ResolvedToken {
   const fromEnv = process.env.HONMOON_MGMT_TOKEN ?? process.env.HONMOON_HOOK_TOKEN
   if (typeof fromEnv === 'string') {
@@ -86,7 +106,7 @@ export function resolveToken(dir: string = defaultDir()): ResolvedToken {
     // absent one. Falling back to the file here would hand this service a
     // different credential from the gateway, which refuses to start on the
     // same input — so refuse too rather than diverge silently.
-    if (fromEnv.trim() === '') {
+    if (trimToken(fromEnv) === '') {
       throw new Error(
         'HONMOON_MGMT_TOKEN (or HONMOON_HOOK_TOKEN) is set but empty — unset it to use the token file',
       )
@@ -113,6 +133,21 @@ export function resolveToken(dir: string = defaultDir()): ResolvedToken {
     }
   }
 
+  // Refuse to mint on Windows, matching the Rust loader — whose `random_bytes`
+  // hard-errors off Unix precisely because there is no safe fallback for a
+  // credential. The reason is sharper here than "no /dev/urandom": a POSIX mode
+  // establishes no ACL on Windows, and every mode check below deliberately
+  // returns without validating anything on win32. Generating would therefore
+  // write a long-lived bearer token under whatever ACL `.honmoon` happens to
+  // inherit, and then accept it on each later start with nothing checking who
+  // else can read it. Reading a token the operator placed themselves is still
+  // allowed above; only unattended generation is refused.
+  if (process.platform === 'win32') {
+    throw new Error(
+      'refusing to generate a management token on Windows — a POSIX mode establishes no ACL there, '
+      + 'so the token would be stored under an unverified one. Set HONMOON_MGMT_TOKEN instead.',
+    )
+  }
   mkdirSync(dir, { recursive: true, mode: 0o700 })
   // `mode` governs only a directory this call creates; one that already existed
   // keeps whatever it has. That matters more than the file's own mode: write
@@ -193,7 +228,7 @@ function readTokenAndMode(path: string): { contents: string, mode: number | null
         console.warn(`honmoon api: warning: could not read the mode of ${path}: ${String(error)}`)
       }
     }
-    return { contents: readFileSync(fd, 'utf8').trim(), mode }
+    return { contents: trimToken(readFileSync(fd, 'utf8')), mode }
   }
   finally {
     closeSync(fd)

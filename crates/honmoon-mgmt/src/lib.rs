@@ -202,13 +202,22 @@ impl AppState {
             );
         }
         // Trimmed, because the CLI and TypeScript resolvers both reject a
-        // whitespace-only token and this assert is the last line of defence for
+        // padding-only token and this assert is the last line of defence for
         // anyone constructing the state another way. A lone space would
         // otherwise authenticate: `GET /login?token=%20` matches it and mints a
         // session cookie good for every `/api/*` route.
+        //
+        // The predicate is spelled out to match `mgmt_token.rs`'s
+        // `is_token_padding` and `auth.ts`'s `trimToken` exactly: `str::trim`
+        // alone would accept a lone U+FEFF that `@honmoon/api` rejects, and
+        // reject a lone U+0085 that it accepts. Duplicated rather than shared
+        // because lifting it into `honmoon-core` would add a public surface,
+        // which `crates/AGENTS.md` gates behind an ask.
         assert!(
-            !mgmt_token.trim().is_empty(),
-            "management token must not be empty or whitespace-only — such a credential authenticates everyone"
+            !mgmt_token
+                .trim_matches(|c: char| c.is_whitespace() || c == '\u{FEFF}')
+                .is_empty(),
+            "management token must not be empty or padding-only — such a credential authenticates everyone"
         );
         let hook_mappings = gateway
             .redaction
