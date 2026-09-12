@@ -150,6 +150,9 @@ export function resolveToken(dir: string = defaultDir()): ResolvedToken {
     if (winner === '') {
       throw new Error(`management token ${path} is empty after a lost create race`)
     }
+    // Same state as an ordinary persisted read — a token read off disk — so it
+    // gets the same check. The Rust loader had this identical asymmetry.
+    warnIfReadableBeyondOwner(path)
     return { token: winner, source: 'persisted', path }
   }
 }

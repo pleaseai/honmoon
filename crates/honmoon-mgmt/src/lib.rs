@@ -470,12 +470,28 @@ fn authorized(state: &AppState, headers: &HeaderMap) -> Option<Credential> {
 /// Neither header present means nothing labelled this request as a browser's,
 /// and for a *cookie* credential that is itself the warning sign: a cookie is a
 /// credential only a browser stores and attaches, and every browser labels a
-/// state-changing request with at least one of the two. The unlabelled caller
-/// holding one is therefore replaying a cookie it obtained some other way —
-/// harvested off a sibling loopback port, which cookie scope does not separate
-/// (RFC 6265 §8.5 has no port component). So this arm refuses. A legitimate
-/// non-browser caller is unaffected: it holds the token and sends the bearer,
-/// which never reaches this function.
+/// state-changing request with at least one of the two. So this arm refuses. A
+/// legitimate non-browser caller is unaffected: it holds the token and sends
+/// the bearer, which never reaches this function.
+///
+/// **What this does not do, stated plainly because the shape invites the wrong
+/// conclusion:** every header it reads is set by the browser and unforgeable
+/// *by a page*, not unforgeable *by a client*. A caller outside a browser sets
+/// whatever it likes, `Sec-Fetch-Site: same-origin` included. So this function
+/// defends against the browser-driven attack — a page on a sibling `127.0.0.1`
+/// port causing the operator's browser to issue a state-changing request that
+/// `SameSite=Strict` permits because different-port is same-site — and it does
+/// **not** defend against an attacker who has already harvested the cookie
+/// (cookie scope has no port, RFC 6265 §8.5) and is replaying it from `curl`.
+/// Such a replay reaches the writes, not only the reads.
+///
+/// No header check can close that, because the premise of every one of them is
+/// a browser on the other end. Closing it means the cookie must not be
+/// harvestable (TLS on this listener plus a `__Host-` prefix), or the credential
+/// must not be a cookie at all (delivered in the login redirect's fragment,
+/// held in origin-scoped `sessionStorage`, sent as a header the browser never
+/// attaches on its own). Tracked as issue #188 — do not read this function as
+/// making writes safe against a stolen cookie.
 fn same_origin(headers: &HeaderMap) -> bool {
     if let Some(site) = headers
         .get("sec-fetch-site")
@@ -503,8 +519,9 @@ fn same_origin(headers: &HeaderMap) -> bool {
 ///
 /// Rejects a caller with no valid credential, then — for a cookie-authenticated
 /// request that is not a safe method — rejects one the browser reports as
-/// cross-origin (see [`same_origin`]). A bearer caller skips the second check:
-/// no page can make a browser attach that header.
+/// cross-origin (see [`same_origin`], including the limit of what that check
+/// can mean). A bearer caller skips the second check: no page can make a
+/// browser attach that header.
 async fn require_credential(
     State(state): State<AppState>,
     request: axum::extract::Request,

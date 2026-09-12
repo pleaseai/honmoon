@@ -32,18 +32,29 @@ so the cookie travels to *every* `127.0.0.1:<port>` the operator's browser touch
 listener another local user owns. That listener can harvest it.
 
 What PR #186 did about it, so **do not re-report these as open**:
-- `same_origin()` **refuses** a cookie-authenticated non-safe method carrying neither
-  `Sec-Fetch-Site` nor `Origin` — the shape of an off-browser replay. There is no permissive arm
-  for writes any more. Pinned by `a_cookie_replayed_without_browser_labelling_cannot_write` and
+- `same_origin()` refuses a cookie-authenticated non-safe method carrying neither
+  `Sec-Fetch-Site` nor `Origin` — the shape of a *naive* off-browser replay. Pinned by
+  `a_cookie_replayed_without_browser_labelling_cannot_write` and
   `the_origin_fallback_decides_a_cookie_write_when_fetch_metadata_is_absent`.
 - `static_handler` serves `X-Frame-Options: DENY` and `Content-Security-Policy:
   frame-ancestors 'none'`, so the framed-shell variant is closed.
 - Origin/Host compare case-insensitively (RFC 9110 §4.2).
 
-What genuinely remains: a harvested cookie still **reads** (audit, policy, approvals) until the
-token is rotated. Tracked as **#188** — report against that issue, not as new. The real fix needs
-TLS on the management listener so the cookie can carry `Secure` + a `__Host-` prefix; dropping the
-cookie instead would reopen the DNS rebinding it defeats by construction.
+**What `same_origin()` does NOT do — the correction to an earlier version of this note, which
+claimed "there is no permissive arm for writes any more". That was wrong.** Every header it reads
+is unforgeable by a *page*, not by a *client*: a replay from `curl` that simply sets
+`Sec-Fetch-Site: same-origin` passes the check and reaches the writes
+(`POST /api/approvals/{id}/approve`). Raised by codex on PR #186 and confirmed. What the function
+genuinely closes is the browser-driven path — a page on a sibling `127.0.0.1` port causing the
+operator's own browser to issue the request, which `SameSite=Strict` permits because different-port
+is same-site.
+
+What genuinely remains, therefore: a harvested cookie has **full management access — reads and
+writes**, not reads only, until the token is rotated. Tracked as **#188** — report against that
+issue, not as new. No header check can close it, because each one presupposes a browser at the
+other end; the fix is to make the cookie unharvestable (TLS on the management listener so it can
+carry `Secure` + a `__Host-` prefix) or to stop using a cookie for writes. Dropping the cookie
+outright would reopen the DNS rebinding it defeats by construction.
 
 **Also settled in #186, do not re-report:** the token never reaches argv (the run-honmoon driver
 passes `HONMOON_MGMT_TOKEN`, and the flag docs say why the variable is preferred); the startup

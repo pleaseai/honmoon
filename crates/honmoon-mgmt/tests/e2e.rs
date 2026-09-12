@@ -1007,8 +1007,14 @@ fn a_cookie_authenticated_write_from_another_origin_is_refused() {
 /// this credential from any request a page can provoke, and then replays it
 /// from outside a browser. `curl` sends neither `Sec-Fetch-Site` nor `Origin`,
 /// so an "absent means not a browser, allow it" rule would hand that replay the
-/// approval writes. A caller entitled to write off-browser holds the token and
-/// sends the bearer, which is why refusing here costs nothing.
+/// approval writes for free. A caller entitled to write off-browser holds the
+/// token and sends the bearer, which is why refusing here costs nothing.
+///
+/// This pins one arm, not the whole threat: a replay that *sets*
+/// `Sec-Fetch-Site: same-origin` still passes, because that header only means
+/// anything when a browser is the one setting it. See `same_origin`'s doc
+/// comment and issue #188 — the real remedy is to stop the cookie being
+/// harvestable, not to check more headers.
 #[test]
 fn a_cookie_replayed_without_browser_labelling_cannot_write() {
     let (gw, _held) = gateway_with_a_held_request();
