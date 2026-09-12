@@ -5,8 +5,8 @@ metadata:
   type: project
 ---
 
-Settled facts about `crates/honmoon-mgmt/src/lib.rs` auth (PR #186 / issue #173, then issue
-#188). Re-verify against the file before citing, but do not re-derive these from scratch.
+Settled facts about `crates/honmoon-mgmt/src/lib.rs` auth (PR #186 / issue #173, then
+issue #188). Re-verify against the file before citing, but do not re-derive these from scratch.
 
 **Shape.** `AppState.mgmt_token: Arc<str>` is mandatory (asserted non-empty *and* non-padding —
 see the cross-runtime section below). `router()` builds an

@@ -14,9 +14,11 @@ settled design, not an oversight:
   `NOT_SIGNED_IN` with the login URL. The failure is user-visible and recoverable; it is only
   indistinguishable from an ordinary sign-out, which is the cost paid for not holding a credential
   whose lifetime nothing can see.
-- `console.warn` is not available to report it: the repo's ESLint config turns `no-console` off for
-  `packages/**`, `scripts/*` and `apps/dashboard/demo/*` only — app code under
-  `apps/dashboard/src/` is still bound by it.
+- `console.warn` is not available to report it: the repo's ESLint config turns `no-console` off
+  only for non-app entrypoints that live outside any `src/` — Bun/Node scripts and packages, which
+  log to stdout by design. `apps/dashboard/src/` is not among them, so app code is still bound by
+  the rule. Read the override's `files` list in `eslint.config.mjs` for the current set rather than
+  trusting an enumeration here.
 
 **Two findings this note used to carry, both now closed in PR #194 — do not re-report:**
 
