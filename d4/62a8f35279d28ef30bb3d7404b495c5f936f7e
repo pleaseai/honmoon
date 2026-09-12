@@ -1,0 +1,25 @@
+apps/dashboard/AGENTS.md
+  s_d720448ec7c988::t_3bb2840c62b9b3 47
+crates/honmoon-core/src/audit.rs
+  s_d720448ec7c988::t_3bb2840c62b9b3 123,127-129
+crates/honmoon-cli/src/hook.rs
+  s_d720448ec7c988::t_3bb2840c62b9b3 1745-1746
+  s_d720448ec7c988::t_578a45db0ed05a 1747
+  s_d720448ec7c988::t_c1e15e24cb5ddf 1748-1749
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "d462a8f35279d28ef30bb3d7404b495c5f936f7e",
+  "prompts": {},
+  "sessions": {
+    "s_d720448ec7c988": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "069c4824-e961-4929-8157-1ff587135fd5",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
