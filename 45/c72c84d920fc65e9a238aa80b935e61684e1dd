@@ -1,0 +1,25 @@
+crates/honmoon-cli/src/main.rs
+  s_d720448ec7c988::t_53022fb185c04e 485-493,495-496,498-504,508-509
+  s_d720448ec7c988::t_29e08b3b3408d8 7
+  s_d720448ec7c988::t_dccf98c920e450 510
+crates/honmoon-cli/src/mgmt_token.rs
+  s_d720448ec7c988::t_91e3f138c52a76 271-277,398
+  s_d720448ec7c988::t_4a3e1f3089d5ff 372-397
+  s_d720448ec7c988::t_53022fb185c04e 164,187-198,255-261
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "45c72c84d920fc65e9a238aa80b935e61684e1dd",
+  "prompts": {},
+  "sessions": {
+    "s_d720448ec7c988": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "069c4824-e961-4929-8157-1ff587135fd5",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
