@@ -1,12 +1,12 @@
 ---
 name: mgmt-api-auth-model
-description: 'How the honmoon management API authenticates after #173 — mandatory Arc<str> token, nested /api router + route_layer, the HMAC session cookie whose off-browser replay reaches reads AND writes (#188), how the Rust and Bun loaders were made to agree on what counts as a token, and which constant-time/route-ordering questions are settled so they are not re-derived'
+description: 'How the honmoon management API authenticates after #173 and #188 — mandatory Arc<str> token, nested /api router + route_layer, and the browser credential that is now an origin-scoped session secret in the X-Honmoon-Session header (NOT a cookie; same_origin() and the Credential enum were deleted with it, so do not report them as missing), how the Rust and Bun loaders were made to agree on what counts as a token, and which constant-time/route-ordering questions are settled so they are not re-derived'
 metadata:
   type: project
 ---
 
-Settled facts about `crates/honmoon-mgmt/src/lib.rs` auth (PR #186, issue #173). Re-verify
-against the file before citing, but do not re-derive these from scratch.
+Settled facts about `crates/honmoon-mgmt/src/lib.rs` auth (PR #186 / issue #173, then issue
+#188). Re-verify against the file before citing, but do not re-derive these from scratch.
 
 **Shape.** `AppState.mgmt_token: Arc<str>` is mandatory (asserted non-empty *and* non-padding —
 see the cross-runtime section below). `router()` builds an
@@ -24,38 +24,58 @@ and the `static_handler` SPA fallback. Token resolution lives in `honmoon-cli/sr
   `digest 0.10.7` `mac.rs:283` implements `PartialEq` via `subtle::ConstantTimeEq`. The
   constant-time claim in the doc comment is accurate. `packages/api` uses `timingSafeEqual` over
   two SHA-256 digests — also accurate.
-- `same_origin()` fails closed on `Origin: null` and on an absent `Host` (h2).
-- Failed `GET /login` sends no `Set-Cookie`; success sends `Cache-Control: no-store`.
+- Failed `GET /login` answers 401 with no redirect; success sends `Cache-Control: no-store`.
+- `presented_session` uses `HeaderMap::get` (first value), not `get_all`, so a duplicated
+  session header is not reconciled — deliberate.
 
-**The cookie's loopback-port scope — narrowed, not closed.** `honmoon_session` is `Path=/`,
-`SameSite=Strict`, and a cookie's scope has no port (RFC 6265 §8.5) while "site" ignores port too,
-so the cookie travels to *every* `127.0.0.1:<port>` the operator's browser touches, including a
-listener another local user owns. That listener can harvest it.
+**There is no session cookie any more (#188) — this is the part most likely to be
+mis-reported.** The browser credential is a session secret (still
+`hex(HMAC-SHA256("honmoon-mgmt-session-v1", token))`) that `GET /login?token=…` hands over in the
+fragment of its `303` to `/#session=<secret>`; `apps/dashboard/src/session.ts` reads it from
+`location.hash`, clears the hash with `history.replaceState`, keeps it in `sessionStorage`, and
+`api.ts` attaches it as `X-Honmoon-Session` on every call. `/login` sends **no** `Set-Cookie`, and
+`authorized()` accepts **no** cookie.
 
-What PR #186 did about it, so **do not re-report these as open**:
-- `same_origin()` refuses a cookie-authenticated non-safe method carrying neither
-  `Sec-Fetch-Site` nor `Origin` — the shape of a *naive* off-browser replay. Pinned by
-  `a_cookie_replayed_without_browser_labelling_cannot_write` and
-  `the_origin_fallback_decides_a_cookie_write_when_fetch_metadata_is_absent`.
+Why, so it is not re-litigated: a cookie's scope has no port (RFC 6265 §8.5) and "site" ignores
+port too, so `honmoon_session` travelled to every `127.0.0.1:<port>` the operator's browser
+touched — a listener another local user stood up could harvest it and replay it off-browser for
+reads *and* the approval writes. No header check could close that (each presupposes a browser at
+the other end, which is the assumption a replay breaks). `sessionStorage` is keyed by the full
+origin, port included, so there is nothing for a sibling port to be sent or to read.
+
+**Deleted with the cookie — absent by design, do not report as missing:**
+- `same_origin()` and the whole `Sec-Fetch-Site`/`Origin`-vs-`Host` check, and the `Credential`
+  enum that selected it. Neither credential is ambient now — a browser attaches `Authorization`
+  or `X-Honmoon-Session` only because the page's script set it, and a cross-origin `fetch` that
+  sets either is held behind a CORS preflight this service never answers — so there is no
+  browser-provoked request left to tell from a deliberate one. `authorized()` returns `bool` and
+  its doc comment states the condition under which the check would have to come back: any
+  credential a browser attaches by itself.
+- The `SESSION_COOKIE` public constant (replaced by `pub const SESSION_HEADER`, lowercase because
+  `HeaderMap` lookups normalise that way).
+- Tests `a_cookie_authenticated_write_from_another_origin_is_refused`,
+  `a_cookie_replayed_without_browser_labelling_cannot_write`,
+  `the_origin_fallback_decides_a_cookie_write_when_fetch_metadata_is_absent` and
+  `a_forged_session_cookie_reads_no_data`. Their subject is gone; the stronger property is pinned
+  by `no_session_cookie_is_a_credential_so_a_sibling_port_has_nothing_to_harvest` (the genuine
+  secret in a `Cookie` header is 401 on every read and on the approval write, which stays pending),
+  `the_dashboard_load_path_reads_every_route_with_its_session_header` (`/login` sets no cookie),
+  `a_session_header_write_needs_no_browser_labelling` and `a_forged_session_header_reads_no_data`.
+
+**Still true, do not re-report:**
 - `static_handler` serves `X-Frame-Options: DENY` and `Content-Security-Policy:
-  frame-ancestors 'none'`, so the framed-shell variant is closed.
-- Origin/Host compare case-insensitively (RFC 9110 §4.2).
+  frame-ancestors 'none'`. Keep it: the dashboard's own script now holds the credential, so this is
+  the guard against UI redress rather than a layer over an ambient cookie.
+- DNS rebinding stays closed: a rebound page has its own origin's (empty) `sessionStorage` and
+  nothing is attached ambiently.
 
-**What `same_origin()` does NOT do — the correction to an earlier version of this note, which
-claimed "there is no permissive arm for writes any more". That was wrong.** Every header it reads
-is unforgeable by a *page*, not by a *client*: a replay from `curl` that simply sets
-`Sec-Fetch-Site: same-origin` passes the check and reaches the writes
-(`POST /api/approvals/{id}/approve`). Raised by codex on PR #186 and confirmed. What the function
-genuinely closes is the browser-driven path — a page on a sibling `127.0.0.1` port causing the
-operator's own browser to issue the request, which `SameSite=Strict` permits because different-port
-is same-site.
-
-What genuinely remains, therefore: a harvested cookie has **full management access — reads and
-writes**, not reads only, until the token is rotated. Tracked as **#188** — report against that
-issue, not as new. No header check can close it, because each one presupposes a browser at the
-other end; the fix is to make the cookie unharvestable (TLS on the management listener so it can
-carry `Secure` + a `__Host-` prefix) or to stop using a cookie for writes. Dropping the cookie
-outright would reopen the DNS rebinding it defeats by construction.
+**Residuals after #188** (documented in `session.ts`, `control-plane.md` and the PR, so report
+only a *change* in them): the secret is script-readable where the cookie was `HttpOnly`, so a
+script injection in this origin could exfiltrate a replayable credential rather than only act
+while the page is open; `sessionStorage` is per tab, so a new tab is signed out until the login URL
+is opened there; revocation is still rotating the token; and the token still rides in `/login`'s
+query string (same-user exposure, `no-store`, nothing logged). `packages/api` was deliberately
+untouched — bearer only, no browser client, nothing to harvest.
 
 **Cross-runtime agreement on "what is a token" — settled in #186, do not re-report.** The token
 file is read by a Rust loader and a Bun one, and their defaults disagreed in four ways, each

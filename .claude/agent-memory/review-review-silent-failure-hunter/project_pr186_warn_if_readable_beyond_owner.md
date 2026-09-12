@@ -1,6 +1,6 @@
 ---
 name: pr186-warn-if-readable-beyond-owner
-description: 'PR #186 (issue #173) token-file and token-directory mode checks — every hole found in mgmt_token.rs/auth.ts was FIXED there on BOTH sides (create_private_dir 0700, single-descriptor read, directory warn on every path); #188 is now only the session cookie. STILL OPEN in this domain: hook.rs salt dir has the same create_dir_all shape, no O_NOFOLLOW on either, and the #189 empty-token recovery race — report those against hook.rs/#189, not as new against mgmt_token.rs'
+description: 'PR #186 (issue #173) token-file and token-directory mode checks — every hole found in mgmt_token.rs/auth.ts was FIXED there on BOTH sides (create_private_dir 0700, single-descriptor read, directory warn on every path); #188 (the session cookie) is itself now closed — the browser credential is an origin-scoped X-Honmoon-Session header, not a cookie. STILL OPEN in this domain: hook.rs salt dir has the same create_dir_all shape, no O_NOFOLLOW on either, and the #189 empty-token recovery race — report those against hook.rs/#189, not as new against mgmt_token.rs'
 metadata:
   type: project
 ---
@@ -26,8 +26,10 @@ file before citing any of this.**
    a `readFileSync(path)` followed by a stat of `path` can land on two inodes if
    the file is replaced in between, which fails in the worst direction — the
    token adopted comes from the permissive file while the mode reported comes
-   from the replacement, announcing a readable credential as safe. #188 is no
-   longer about any of this; it is only the session cookie.
+   from the replacement, announcing a readable credential as safe. #188 was never
+   about any of this — it was the session cookie, and that is closed too: the
+   browser credential is now a session secret in the `X-Honmoon-Session` header,
+   kept in origin-scoped `sessionStorage`, with no cookie to harvest.
 
 4. **FIXED in #186.** The *directory* was the gap the file-mode checks could not
    see. `create_dir_all` asks for `0777` and lets the umask subtract, so
