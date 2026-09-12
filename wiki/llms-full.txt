@@ -1967,7 +1967,8 @@ they were. Exfiltration is made harder, not closed: no CSP directive restricts o
 *navigation*, so a script that ran could still put the secret in a URL and leave. Every HTML
 document this service returns carries the policy, `/login`'s refusal page included — a same-origin
 document served without one would be an escape from it rather than a gap beside it
-([lib.rs:683-806](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-mgmt/src/lib.rs#L683-L806)).
+([lib.rs:683-809](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-mgmt/src/lib.rs#L683-L809) defines it; [lib.rs:588-593](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-mgmt/src/lib.rs#L588-L593) and [lib.rs:827-837](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-mgmt/src/lib.rs#L827-L837) are the three
+responses that attach it — the refusal page, the embedded asset, and the SPA fallback).
 No such injection is known — the bundle is first-party and embedded, and the views render API data
 as text — so the policy bounds the blast radius of one that does not exist rather than closing one
 that does. Revocation is still rotating the token, as it is for the bearer.
