@@ -1,0 +1,33 @@
+wiki/deep-dive/control-plane.md
+  s_d720448ec7c988::t_b0216846f7a7ce 73,76,78-79,82-87
+  s_d720448ec7c988::t_2542709b6b0b2a 81
+  s_d720448ec7c988::t_25ca67d7976f13 74,77,80,88
+crates/honmoon-cli/src/mgmt_token.rs
+  s_d720448ec7c988::t_b00b0089e9385b 72-93,96,186
+  s_d720448ec7c988::t_32cd803f9c6a5b 140
+  s_d720448ec7c988::t_9b4dbc32c06051 477-497
+packages/api/src/auth.ts
+  s_d720448ec7c988::t_b0216846f7a7ce 231
+  s_d720448ec7c988::t_1422391192a6ea 94-99
+  s_d720448ec7c988::t_11d038fc79ac8e 82-93,100-101,109,136-150
+packages/api/src/auth.test.ts
+  s_d720448ec7c988::t_9b4dbc32c06051 190-203
+crates/honmoon-mgmt/src/lib.rs
+  s_d720448ec7c988::t_b00b0089e9385b 205,209-215,217-220
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "27cbb2925d609614a73e60ca5775bfb2de755f82",
+  "prompts": {},
+  "sessions": {
+    "s_d720448ec7c988": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "069c4824-e961-4929-8157-1ff587135fd5",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
