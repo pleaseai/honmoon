@@ -1,6 +1,6 @@
 ---
 name: pr194-session-ts-storage-swallow
-description: "apps/dashboard/src/session.ts swallows sessionStorage exceptions on purpose and logs nothing — the app-code no-console lint rule forbids the log, and the honest report is the 401 'not signed in' path; the in-memory `captured` fallback and the unguarded replaceState that made this worth reporting are both gone as of PR #194, so do not re-report either"
+description: "apps/dashboard/src/session.ts swallows sessionStorage exceptions on purpose and logs nothing — a deliberate choice, NOT a lint constraint (console.warn is permitted there; measured with eslint --print-config), because the honest report is the 401 'not signed in' path; the in-memory `captured` fallback and the unguarded replaceState that made this worth reporting are both gone as of PR #194, so do not re-report either"
 metadata:
   type: project
 ---
@@ -14,11 +14,11 @@ settled design, not an oversight:
   `NOT_SIGNED_IN` with the login URL. The failure is user-visible and recoverable; it is only
   indistinguishable from an ordinary sign-out, which is the cost paid for not holding a credential
   whose lifetime nothing can see.
-- `console.warn` is not available to report it: the repo's ESLint config turns `no-console` off
-  only for non-app entrypoints that live outside any `src/` — Bun/Node scripts and packages, which
-  log to stdout by design. `apps/dashboard/src/` is not among them, so app code is still bound by
-  the rule. Read the override's `files` list in `eslint.config.mjs` for the current set rather than
-  trusting an enumeration here.
+- The silence is a choice, **not** a lint constraint — do not repeat the claim that it is one.
+  Measured with `eslint --print-config apps/dashboard/src/session.ts`: the resolved rule is
+  `no-console: [2, { allow: ['warn', 'error'] }]`, so `console.warn` and `console.error` are
+  permitted in this file. Earlier revisions of this note said the opposite twice, each time by
+  reasoning from the override's `files` list instead of asking ESLint; ask ESLint.
 
 **Two findings this note used to carry, both now closed in PR #194 — do not re-report:**
 
@@ -34,5 +34,7 @@ settled design, not an oversight:
 
 **How to apply:** if `session.ts` grows another swallowed error, weigh it against this precedent —
 the bar met here was *the user sees a recoverable, accurate report of the outcome*, not *something
-was logged*. And check the guard is actually reachable before reporting it missing: `write()`'s
+was logged*. That bar, not any lint rule, is the whole justification; a log is available if someone
+wants one, and #196 tracks adding one for the specific confusion this leaves (a blocked-site-data
+user sees "not signed in" and cannot tell it from a wrong token). And check the guard is actually reachable before reporting it missing: `write()`'s
 failure path and `read()`'s each have a test that fails when its own `try/catch` is removed.
