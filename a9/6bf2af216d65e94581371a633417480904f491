@@ -1,0 +1,19 @@
+.claude/agent-memory/review-review-code-reviewer/gapsweep_pr183_clean.md
+  s_c76fd182d547f6::t_5c92b383480ade 1-36
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "a96bf2af216d65e94581371a633417480904f491",
+  "prompts": {},
+  "sessions": {
+    "s_c76fd182d547f6": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "4b37fffc-f5b8-4ce5-a33b-d8be2892e2a7",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
