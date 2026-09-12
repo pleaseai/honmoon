@@ -1,0 +1,19 @@
+.claude/agent-memory/review-review-code-reviewer/project_bun_yaml_frontmatter_168.md
+  s_871e5be42b1f22::t_36cf8325db28ec 130-132
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "2bfbe9a107f51adbacc82d3816c2ce389bc784b3",
+  "prompts": {},
+  "sessions": {
+    "s_871e5be42b1f22": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "7cb2cb55-d06a-41f7-a6e5-af46a15fc6e0",
+        "model": "unknown"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
