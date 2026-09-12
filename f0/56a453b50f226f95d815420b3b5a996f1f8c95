@@ -1,0 +1,23 @@
+.claude/agent-memory/review-review-security-reviewer/dashboard-shell-csp.md
+  s_138c401df18b31::t_709d2952af1323 1-57
+.claude/agent-memory/review-review-security-reviewer/mgmt-api-auth-model.md
+  s_138c401df18b31::t_2c86afa2d1c989 3,75-78,84-87
+crates/honmoon-mgmt/src/lib.rs
+  s_138c401df18b31::t_588e1b5e8720f0 744-746
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "f056a453b50f226f95d815420b3b5a996f1f8c95",
+  "prompts": {},
+  "sessions": {
+    "s_138c401df18b31": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "0f9ceb28-08f2-4146-9594-a3b4e1ffd62b",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
