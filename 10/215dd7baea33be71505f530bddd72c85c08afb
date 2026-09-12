@@ -1,0 +1,21 @@
+crates/honmoon-core/tests/audit_sink_relative_path.rs
+  s_cdaa9b4042ee3f::t_1683db744e4031 17-18
+crates/honmoon-core/src/audit.rs
+  s_cdaa9b4042ee3f::t_1683db744e4031 688-689,691,739,743,749,795,798,803
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "10215dd7baea33be71505f530bddd72c85c08afb",
+  "prompts": {},
+  "sessions": {
+    "s_cdaa9b4042ee3f": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "b8171202-7996-4219-b687-063de24c3b30",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
