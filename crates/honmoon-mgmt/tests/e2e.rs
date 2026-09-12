@@ -1234,9 +1234,10 @@ fn a_forged_session_header_reads_no_data() {
 
 /// A response-header value from a response head, matched case-insensitively.
 ///
-/// `location`/`set_cookie` above each hard-code one spelling because they only
-/// ever look for one header; this one is given a name, so it has to tolerate
-/// whatever casing the stack emits.
+/// `location`/`set_cookie` above each enumerate the two spellings they expect,
+/// which works because each looks for one fixed header. This one takes the name
+/// as an argument, so enumerating is not open to it: it folds the case instead,
+/// and tolerates whatever spacing and casing the stack emits.
 fn header_value(raw: &str, name: &str) -> Option<String> {
     raw.lines()
         .take_while(|line| !line.is_empty())
@@ -1274,6 +1275,13 @@ const EXPECTED_CSP: &str = "default-src 'none'; script-src 'self'; style-src 'se
 /// on one but not the other would leave whichever route the operator actually
 /// opened unbounded.
 ///
+/// `/login`'s refusal page is covered for a different reason: a CSP binds the
+/// document it is served with, so a same-origin HTML document served *without*
+/// one is an escape from this policy rather than a gap beside it — a script in
+/// the dashboard could open it (no directive restricts navigation) and get a
+/// policy-free document on this origin to run in. It is unauthenticated and
+/// returns `401`, hence the status is read per path rather than assumed `200`.
+///
 /// `frame-ancestors 'none'` and `X-Frame-Options: DENY` are asserted here too:
 /// they are load-bearing since #186 against a same-site sibling port framing
 /// the dashboard, and adding directives around them must not drop them.
@@ -1281,9 +1289,18 @@ const EXPECTED_CSP: &str = "default-src 'none'; script-src 'self'; style-src 'se
 fn the_dashboard_shell_carries_a_script_bounding_csp() {
     let (gw, _held) = gateway_with_a_held_request();
 
-    for path in ["/", "/index.html", "/approvals"] {
+    for (path, status) in [
+        ("/", "HTTP/1.1 200"),
+        ("/index.html", "HTTP/1.1 200"),
+        ("/approvals", "HTTP/1.1 200"),
+        ("/login?token=wrong", "HTTP/1.1 401"),
+    ] {
         let raw = http_request_raw(gw.mgmt_port, "GET", path, &[], "");
-        assert!(raw.starts_with("HTTP/1.1 200"), "{path}: {raw:?}");
+        assert!(raw.starts_with(status), "{path}: {raw:?}");
+        assert!(
+            raw.contains("<h1") || raw.contains("<html") || raw.contains("<!doctype"),
+            "{path} is not an HTML document, so this test is asserting the wrong              thing about it: {raw:?}"
+        );
 
         let csp = header_value(&raw, "content-security-policy")
             .unwrap_or_else(|| panic!("{path} is served with no CSP: {raw:?}"));

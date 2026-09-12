@@ -23,12 +23,19 @@
  * (`react-simple-code-editor` renders a `<style>` element), so there is no
  * property here to keep.
  *
+ * **Scope: the shell's own markup, not the code it loads.** This reads
+ * `index.html` and nothing else, so it is a guard on the shell's `<script>`
+ * tags rather than on everything `script-src 'self'` implies. It would not see
+ * a dependency that introduces `eval(`/`new Function(` into the emitted bundle,
+ * which the policy also refuses (there is no `'unsafe-eval'`) — absent from
+ * today's bundle, and tracked separately rather than claimed here.
+ *
  * Usage:
  *   bun scripts/check-dashboard-csp.ts                 # both built shells
  *   bun scripts/check-dashboard-csp.ts <path…>         # explicit files
  */
 import { readFileSync } from 'node:fs'
-import { join } from 'node:path'
+import { isAbsolute, join } from 'node:path'
 import process from 'node:process'
 import { fileURLToPath } from 'node:url'
 
@@ -44,14 +51,31 @@ export const DEFAULT_SHELLS = [
 /** What produces each default shell, named in the error when one is missing. */
 export const BUILD_COMMANDS = `bun run --filter '@honmoon/dashboard' build:demo`
 
-/** `<script …>…</script>`, or a self-closed one. Built HTML, not arbitrary HTML. */
+/** A complete `<script …>…</script>` pair. Built HTML, not arbitrary HTML. */
 const SCRIPT_TAG = /<script\b([^>]*)>([\s\S]*?)<\/script>/gi
+
+/**
+ * Any `<script` opening tag, counted separately from {@link SCRIPT_TAG}.
+ *
+ * The pair regex is lazy and skips an opening tag it finds no `</script>` for,
+ * so a trailing unclosed `<script>` — the shape a build step that appends code
+ * produces — would otherwise leave no match and no finding, while an earlier
+ * well-formed tag kept the count non-zero and satisfied the anti-vacuity guard
+ * below. A shell this file cannot fully parse must fail, not pass.
+ */
+const SCRIPT_OPEN = /<script\b/gi
 
 /** A `src=` or `href=` value, quoted either way. */
 const URL_ATTR = /\b(?:src|href)\s*=\s*(?:"([^"]*)"|'([^']*)')/gi
 
-/** An inline event handler: `onclick="…"`. Refused by `script-src` without `'unsafe-inline'`. */
-const EVENT_ATTR = /\son[a-z]+\s*=\s*["']/i
+/**
+ * An inline event handler: `onclick="…"`, or unquoted as `onclick=go()`.
+ *
+ * The value is not required to be quoted — HTML does not require it, and
+ * `script-src` refuses the handler either way, so requiring a quote here would
+ * pass a shell the browser would break on.
+ */
+const EVENT_ATTR = /\son[a-z]+\s*=/i
 
 /**
  * A URL that leaves this origin: any scheme (`https:`, `data:`, `blob:`) or a
@@ -76,14 +100,28 @@ export function checkShell(html: string, shell: string): Problem[] {
   const note = (detail: string) => problems.push({ shell, detail })
 
   const scripts = [...html.matchAll(SCRIPT_TAG)]
+  const opened = [...html.matchAll(SCRIPT_OPEN)].length
 
   // Anti-vacuity. `crates/honmoon-mgmt/build.rs` drops a script-less placeholder
   // `index.html` so a bare `cargo build` works without a dashboard; checking that
   // file would pass every rule below while proving nothing about a real build.
-  if (scripts.length === 0) {
+  // Counted on opening tags, so a shell whose only script is unreadable below
+  // still reports what it actually is rather than "not built".
+  if (opened === 0) {
     note(
       'no <script> at all — this is not a built dashboard shell '
       + `(the placeholder from crates/honmoon-mgmt/build.rs?). Run \`${BUILD_COMMANDS}\`.`,
+    )
+  }
+
+  // Every opening tag must belong to a pair this file could read. One that does
+  // not is either unclosed or written `<script/>` (which HTML does not honour as
+  // self-closing), and either way its content went uninspected — so it fails
+  // here rather than passing as the absence of a finding.
+  if (opened > scripts.length) {
+    note(
+      `${opened - scripts.length} <script> tag(s) with no readable \`</script>\`, whose content `
+      + 'this check therefore never inspected — refusing to pass on a shell it cannot fully read',
     )
   }
 
@@ -123,7 +161,10 @@ export function checkShells(paths: string[]): Problem[] {
   return paths.flatMap((path) => {
     let html: string
     try {
-      html = readFileSync(join(REPO_ROOT, path), 'utf8')
+      // `join` would graft an absolute argument onto the root — `join('/repo',
+      // '/tmp/x')` is `/repo/tmp/x` — and report the result as "not found",
+      // which reads as a missing build rather than as a misread path.
+      html = readFileSync(isAbsolute(path) ? path : join(REPO_ROOT, path), 'utf8')
     }
     catch {
       // Not found is a failure, not a skip: a check that silently passes when
@@ -150,7 +191,12 @@ export function main(argv: string[]): number {
     return 1
   }
 
-  console.log(`dashboard CSP: ${paths.length} shell(s) load only same-origin script from files`)
+  // The paths, not just the count: invoked with arguments this checks whatever
+  // it was given, and a bare count would read the same for a narrowed set.
+  console.log(
+    `dashboard CSP: ${paths.length} shell(s) load only same-origin script from files `
+    + `(${paths.join(', ')})`,
+  )
   return 0
 }
 

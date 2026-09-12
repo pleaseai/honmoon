@@ -81,9 +81,11 @@ Any future change of this shape needs the next version and its own refusal test.
 
 **Residuals after #188** (documented in `session.ts`, `control-plane.md` and the PR, so report
 only a *change* in them): the secret is script-readable where the cookie was `HttpOnly`, so a
-script injection in this origin could act as the operator while the page is open — #195 bounded
-what that would cost (`script-src 'self'` refuses the injected script, `connect-src 'self'` gives a
-credential that was read nowhere to go), so do not report the exfiltration half as open; see
+script injection in this origin could act as the operator while the page is open — issue #195
+bounded what that would cost (`script-src 'self'` refuses the injected script; `connect-src 'self'`
+with `img-src`/`form-action` closes the carriers that do not move the page). Exfiltration is
+**harder, not closed** — CSP does not restrict outbound navigation — so a finding about the
+navigation channel is correct, while one claiming `fetch`-style exfil is still open is not. See
 `dashboard-shell-csp`. `sessionStorage` is per tab, so a new tab is signed out until the login URL
 is opened there; revocation is still rotating the token; and the token still rides in `/login`'s
 query string (same-user exposure, `no-store`, nothing logged). `packages/api` was deliberately

