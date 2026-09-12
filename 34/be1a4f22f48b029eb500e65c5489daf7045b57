@@ -1,0 +1,23 @@
+.claude/agent-memory/review-review-silent-failure-hunter/project_pr186_warn_if_readable_beyond_owner.md
+  s_d720448ec7c988::t_f911554b9864aa 3
+README.md
+  s_d720448ec7c988::t_21fb3d62b1e399 175
+wiki/getting-started/quick-start.md
+  s_d720448ec7c988::t_9fdddf42c9f18f 144-147
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "34be1a4f22f48b029eb500e65c5489daf7045b57",
+  "prompts": {},
+  "sessions": {
+    "s_d720448ec7c988": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "069c4824-e961-4929-8157-1ff587135fd5",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
