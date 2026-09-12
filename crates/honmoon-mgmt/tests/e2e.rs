@@ -15,10 +15,16 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use honmoon_core::{AuditLog, Decision, PathResolution, Policy};
-use honmoon_mgmt::{AppState, HookSalt};
+use honmoon_mgmt::{AppState, HookSalt, SESSION_COOKIE};
 use honmoon_proxy::approval::ApprovalRegistry;
 use honmoon_proxy::ca::CaMaterial;
 use honmoon_proxy::gateway::{GatewayState, InterceptPolicy, PiiMode, RedactionState};
+
+/// The management token every gateway in this file is started with.
+///
+/// There is no token-less mode to test against: `AppState` requires one (#173),
+/// so a harness that sent no credential would only ever exercise 401s.
+const MGMT_TOKEN: &str = "e2e-mgmt-token";
 
 /// In-process HTTP upstream that answers `200 OK / "ok"`.
 fn start_upstream() -> u16 {
@@ -47,15 +53,11 @@ fn start_gateway(policy_yaml: &str) -> Gateway {
     start_gateway_with_hook(
         policy_yaml,
         HookSalt::fixed(b"e2e-hook-salt".to_vec()),
-        None,
+        MGMT_TOKEN.to_string(),
     )
 }
 
-fn start_gateway_with_hook(
-    policy_yaml: &str,
-    hook_salt: HookSalt,
-    hook_token: Option<String>,
-) -> Gateway {
+fn start_gateway_with_hook(policy_yaml: &str, hook_salt: HookSalt, mgmt_token: String) -> Gateway {
     let policy = Policy::from_yaml(policy_yaml).unwrap();
     let audit = Arc::new(AuditLog::new(1024));
     let state = GatewayState {
@@ -78,7 +80,7 @@ fn start_gateway_with_hook(
         state.clone(),
         policy_yaml.to_string(),
         hook_salt,
-        hook_token,
+        mgmt_token,
     );
     thread::spawn(move || {
         let rt = tokio::runtime::Runtime::new().unwrap();
@@ -126,6 +128,26 @@ fn http_request(port: u16, method: &str, path: &str) -> String {
     http_body(&raw).to_string()
 }
 
+/// Like [`http_request_with_body`], but sends exactly the headers given — no
+/// credential is added. This is what the #173 tests use to stand in for a caller
+/// who has no token.
+fn http_request_raw(
+    port: u16,
+    method: &str,
+    path: &str,
+    headers: &[(&str, &str)],
+    body: &str,
+) -> String {
+    send(port, method, path, headers, body)
+}
+
+/// Every `/api/*` route requires the management token (#173), so this helper
+/// supplies it and the ordinary behavioural tests read as they did before the
+/// gate. A caller passing its own `Authorization` header keeps that one.
+///
+/// The credential tests do not use this helper at all: injecting a bearer is
+/// exactly what they must not do, so they call [`http_request_raw`], which
+/// sends only the headers it is given.
 fn http_request_with_body(
     port: u16,
     method: &str,
@@ -133,6 +155,18 @@ fn http_request_with_body(
     headers: &[(&str, &str)],
     body: &str,
 ) -> String {
+    let authorization = format!("Bearer {MGMT_TOKEN}");
+    let mut all = headers.to_vec();
+    if !headers
+        .iter()
+        .any(|(name, _)| name.eq_ignore_ascii_case("authorization"))
+    {
+        all.push(("Authorization", authorization.as_str()));
+    }
+    send(port, method, path, &all, body)
+}
+
+fn send(port: u16, method: &str, path: &str, headers: &[(&str, &str)], body: &str) -> String {
     let mut s = TcpStream::connect(("127.0.0.1", port)).unwrap();
     s.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
     let extra_headers = headers
@@ -294,7 +328,7 @@ fn claude_code_hook_endpoint_redacts_and_requires_configured_bearer() {
     let gw = start_gateway_with_hook(
         "egress:\n  default: deny\n",
         HookSalt::fixed(salt.clone()),
-        Some("test-hook-token".to_string()),
+        MGMT_TOKEN.to_string(),
     );
     let payload = serde_json::json!({
         "hook_event_name": "PostToolUse",
@@ -303,20 +337,26 @@ fn claude_code_hook_endpoint_redacts_and_requires_configured_bearer() {
     });
     let body = serde_json::to_string(&payload).unwrap();
 
-    let unauthorized =
-        http_request_with_body(gw.mgmt_port, "POST", "/api/hooks/claude-code", &[], &body);
+    let unauthorized = http_request_raw(gw.mgmt_port, "POST", "/api/hooks/claude-code", &[], &body);
     assert!(
         unauthorized.starts_with("HTTP/1.1 401"),
         "missing bearer must be rejected: {unauthorized:?}"
     );
 
-    let authorized = http_request_with_body(
+    let wrong = http_request_raw(
         gw.mgmt_port,
         "POST",
         "/api/hooks/claude-code",
-        &[("Authorization", "Bearer test-hook-token")],
+        &[("Authorization", "Bearer not-the-token")],
         &body,
     );
+    assert!(
+        wrong.starts_with("HTTP/1.1 401"),
+        "a wrong bearer must be rejected: {wrong:?}"
+    );
+
+    let authorized =
+        http_request_with_body(gw.mgmt_port, "POST", "/api/hooks/claude-code", &[], &body);
     assert!(authorized.starts_with("HTTP/1.1 200"));
     let actual: serde_json::Value = serde_json::from_str(http_body(&authorized)).unwrap();
     let expected =
@@ -332,7 +372,7 @@ fn claude_code_hook_resolves_agent_relative_paths_and_denies_unresolved() {
     let gw = start_gateway_with_hook(
         "egress:\n  default: deny\n",
         HookSalt::fixed(b"cwd-salt".to_vec()),
-        None,
+        MGMT_TOKEN.to_string(),
     );
 
     // Agent-side working directory holding an innocuously-named symlink to key
@@ -415,7 +455,7 @@ fn claude_code_hook_endpoint_accumulates_live_mappings() {
         state,
         policy_yaml,
         HookSalt::fixed(b"mapping-store-salt".to_vec()),
-        None,
+        MGMT_TOKEN.to_string(),
     );
     let mappings = app.hook_mappings.clone();
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
@@ -477,7 +517,12 @@ fn hook_then_wire_round_trip(
     let mut state = GatewayState::new(Policy::from_yaml(policy_yaml).unwrap());
     state.redaction = Some(RedactionState::new(wire_salt));
     let proxy_mappings = Arc::clone(&state.redaction.as_ref().unwrap().mappings);
-    let app = AppState::with_hook_config(state.clone(), policy_yaml, hook_salt, None);
+    let app = AppState::with_hook_config(
+        state.clone(),
+        policy_yaml,
+        hook_salt,
+        MGMT_TOKEN.to_string(),
+    );
     assert!(
         Arc::ptr_eq(&app.hook_mappings, &proxy_mappings),
         "the hook endpoint writes into the proxy's own store"
@@ -660,5 +705,436 @@ fn audit_endpoint_records_allow_and_deny() {
             panic!("denied event not in /api/audit: {body:?}");
         }
         thread::sleep(Duration::from_millis(25));
+    }
+}
+
+// ---------------------------------------------------------------------------
+// #173 — the management read surface is behind the management token.
+// ---------------------------------------------------------------------------
+
+/// A policy whose paused host is a distinctive marker, so one gateway seeds all
+/// three read routes with a string that must not escape without a credential:
+/// `/api/policy` serves the policy source, a held CONNECT to the marker host
+/// puts it on `/api/approvals`, and the `pause` verdict records it in
+/// `/api/audit`.
+const MARKER_HOST: &str = "127.0.0.1";
+const MARKER_RULE: &str = "held-marker-rule";
+
+const MARKER_POLICY: &str = "\
+egress:
+  default: deny
+  allow:
+    - 127.0.0.1
+rules:
+  - name: held-marker-rule
+    endpoint: '*'
+    condition: \"http.host == '127.0.0.1'\"
+    verdict: pause
+";
+
+/// Start a gateway on [`MARKER_POLICY`] and hold one CONNECT on its approval
+/// queue, so every read route has something worth stealing. Returns the gateway
+/// and the held client (kept alive: dropping it resolves the approval).
+fn gateway_with_a_held_request() -> (Gateway, TcpStream) {
+    let upstream = start_upstream();
+    let gw = start_gateway(MARKER_POLICY);
+    let target = format!("{MARKER_HOST}:{upstream}");
+    let mut client = TcpStream::connect(("127.0.0.1", gw.proxy_port)).unwrap();
+    client
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .unwrap();
+    client
+        .write_all(format!("CONNECT {target} HTTP/1.1\r\nHost: {target}\r\n\r\n").as_bytes())
+        .unwrap();
+    await_pending_id(gw.mgmt_port);
+    (gw, client)
+}
+
+const READ_ROUTES: [&str; 3] = ["/api/audit?limit=50", "/api/approvals", "/api/policy"];
+
+/// The defect in #173: the three reads answered anyone who could reach the
+/// listener. The assertion is about the *data*, not the status line — a gate
+/// that returned 401 while still writing the body would pass a status-only
+/// check.
+#[test]
+fn read_routes_serve_no_data_without_a_credential() {
+    let (gw, _held) = gateway_with_a_held_request();
+
+    for route in READ_ROUTES {
+        let raw = http_request_raw(gw.mgmt_port, "GET", route, &[], "");
+        assert!(
+            raw.starts_with("HTTP/1.1 401"),
+            "{route} answered without a credential: {raw:?}"
+        );
+        assert!(
+            !raw.contains(MARKER_RULE),
+            "{route} leaked policy/approval data to an unauthenticated caller: {raw:?}"
+        );
+    }
+
+    // A wrong token is no better than none.
+    for route in READ_ROUTES {
+        let raw = http_request_raw(
+            gw.mgmt_port,
+            "GET",
+            route,
+            &[("Authorization", "Bearer not-the-token")],
+            "",
+        );
+        assert!(
+            raw.starts_with("HTTP/1.1 401"),
+            "{route} accepted a wrong token: {raw:?}"
+        );
+        assert!(
+            !raw.contains(MARKER_RULE),
+            "{route} leaked on a wrong token"
+        );
+    }
+}
+
+/// The other half of the gate: with the token the three reads still work. A
+/// change that simply broke them would pass the test above on its own.
+#[test]
+fn read_routes_answer_with_the_management_token() {
+    let (gw, _held) = gateway_with_a_held_request();
+
+    for route in READ_ROUTES {
+        let raw = http_request_with_body(gw.mgmt_port, "GET", route, &[], "");
+        assert!(
+            raw.starts_with("HTTP/1.1 200"),
+            "{route} rejected the management token: {raw:?}"
+        );
+    }
+    assert!(
+        http_request(gw.mgmt_port, "GET", "/api/policy").contains(MARKER_RULE),
+        "the policy read must still serve the policy"
+    );
+    assert!(
+        http_request(gw.mgmt_port, "GET", "/api/approvals").contains("\"id\""),
+        "the approval queue must still serve the held request"
+    );
+}
+
+/// Resolving a held request is a write, and it was open too: an unauthenticated
+/// caller could approve its own paused egress. Assert the approval is still
+/// pending afterwards, not merely that the call was refused.
+#[test]
+fn approval_writes_require_a_credential() {
+    let (gw, _held) = gateway_with_a_held_request();
+    let id = await_pending_id(gw.mgmt_port);
+
+    for action in ["approve", "reject"] {
+        let raw = http_request_raw(
+            gw.mgmt_port,
+            "POST",
+            &format!("/api/approvals/{id}/{action}"),
+            &[],
+            "",
+        );
+        assert!(
+            raw.starts_with("HTTP/1.1 401"),
+            "{action} without a credential: {raw:?}"
+        );
+    }
+
+    assert_eq!(
+        await_pending_id(gw.mgmt_port),
+        id,
+        "the held request must still be pending after the refused writes"
+    );
+}
+
+/// `/healthz` and the dashboard shell stay open — the first carries no data, the
+/// second is the binary's own bundled code. Stated as a test so a future
+/// blanket gate does not log the dashboard out before it can log in.
+#[test]
+fn healthz_and_the_dashboard_shell_stay_open() {
+    let (gw, _held) = gateway_with_a_held_request();
+
+    let health = http_request_raw(gw.mgmt_port, "GET", "/healthz", &[], "");
+    assert!(health.starts_with("HTTP/1.1 200"), "healthz: {health:?}");
+
+    let shell = http_request_raw(gw.mgmt_port, "GET", "/", &[], "");
+    assert!(
+        shell.starts_with("HTTP/1.1 200"),
+        "dashboard shell: {shell:?}"
+    );
+    assert!(
+        shell.contains("<html") || shell.contains("<!doctype"),
+        "dashboard shell is not HTML: {shell:?}"
+    );
+    assert!(
+        !shell.contains(MGMT_TOKEN),
+        "the shell must not carry the token — anyone who can reach the listener can read it"
+    );
+}
+
+/// The `Set-Cookie` value from a response head, if any.
+fn set_cookie(raw: &str) -> Option<String> {
+    raw.lines()
+        .find_map(|line| line.strip_prefix("set-cookie: "))
+        .or_else(|| {
+            raw.lines()
+                .find_map(|line| line.strip_prefix("Set-Cookie: "))
+        })
+        .map(|value| value.trim().to_string())
+}
+
+/// The dashboard's own load path, end to end: fetch the shell with no
+/// credential, exchange the token for a session cookie at `/login`, then make
+/// the three calls `apps/dashboard/src/api.ts` makes — with only the cookie the
+/// browser would send. A gate that locked the dashboard out would fail here.
+#[test]
+fn the_dashboard_load_path_reads_every_route_with_its_session_cookie() {
+    let (gw, _held) = gateway_with_a_held_request();
+
+    // 1. The browser loads the shell. No credential yet, and none is leaked.
+    let shell = http_request_raw(gw.mgmt_port, "GET", "/", &[], "");
+    assert!(shell.starts_with("HTTP/1.1 200"), "shell: {shell:?}");
+
+    // 2. The operator opens the login URL honmoon printed at startup.
+    let login = http_request_raw(
+        gw.mgmt_port,
+        "GET",
+        &format!("/login?token={MGMT_TOKEN}"),
+        &[],
+        "",
+    );
+    assert!(login.starts_with("HTTP/1.1 303"), "login: {login:?}");
+    let cookie = set_cookie(&login).expect("login must set a session cookie");
+    assert!(
+        cookie.contains("HttpOnly"),
+        "cookie not HttpOnly: {cookie:?}"
+    );
+    assert!(
+        cookie.contains("SameSite=Strict"),
+        "cookie not SameSite=Strict: {cookie:?}"
+    );
+    assert!(
+        !cookie.contains(MGMT_TOKEN),
+        "the cookie must not carry the token itself: {cookie:?}"
+    );
+    let jar = cookie
+        .split(';')
+        .next()
+        .expect("cookie name=value")
+        .to_string();
+
+    // 3. The three reads `api.ts` makes, with only what the browser sends.
+    for route in READ_ROUTES {
+        let raw = http_request_raw(gw.mgmt_port, "GET", route, &[("Cookie", &jar)], "");
+        assert!(
+            raw.starts_with("HTTP/1.1 200"),
+            "{route} refused the dashboard's session cookie: {raw:?}"
+        );
+    }
+    assert!(
+        http_request_raw(gw.mgmt_port, "GET", "/api/policy", &[("Cookie", &jar)], "")
+            .contains(MARKER_RULE),
+        "the dashboard must see real policy data through its cookie"
+    );
+
+    // 4. A wrong token mints nothing.
+    let refused = http_request_raw(gw.mgmt_port, "GET", "/login?token=wrong", &[], "");
+    assert!(refused.starts_with("HTTP/1.1 401"), "login: {refused:?}");
+    assert!(
+        set_cookie(&refused).is_none(),
+        "a refused login must not set a cookie"
+    );
+}
+
+/// `SameSite=Strict` keeps the cookie off a *cross-site* request, but any other
+/// port on `127.0.0.1` is same-site — exactly what a hostile local process can
+/// stand up. A cookie-authenticated write the browser labels cross-origin is
+/// refused; the same write from the dashboard's own origin is not.
+#[test]
+fn a_cookie_authenticated_write_from_another_origin_is_refused() {
+    let (gw, _held) = gateway_with_a_held_request();
+    let id = await_pending_id(gw.mgmt_port);
+    let login = http_request_raw(
+        gw.mgmt_port,
+        "GET",
+        &format!("/login?token={MGMT_TOKEN}"),
+        &[],
+        "",
+    );
+    let jar = set_cookie(&login)
+        .expect("session cookie")
+        .split(';')
+        .next()
+        .expect("cookie name=value")
+        .to_string();
+    let approve = format!("/api/approvals/{id}/approve");
+
+    let forged = http_request_raw(
+        gw.mgmt_port,
+        "POST",
+        &approve,
+        &[
+            ("Cookie", &jar),
+            ("Origin", "http://127.0.0.1:9999"),
+            ("Sec-Fetch-Site", "same-site"),
+        ],
+        "",
+    );
+    assert!(
+        forged.starts_with("HTTP/1.1 403"),
+        "a cross-origin cookie write must be refused: {forged:?}"
+    );
+    assert_eq!(
+        await_pending_id(gw.mgmt_port),
+        id,
+        "the forged write must not have resolved the approval"
+    );
+
+    let genuine = http_request_raw(
+        gw.mgmt_port,
+        "POST",
+        &approve,
+        &[("Cookie", &jar), ("Sec-Fetch-Site", "same-origin")],
+        "",
+    );
+    assert!(
+        genuine.starts_with("HTTP/1.1 200"),
+        "the dashboard's own write must still work: {genuine:?}"
+    );
+}
+
+/// A cookie replayed with no browser labelling at all is refused.
+///
+/// This is the shape that makes the loopback cookie scope matter: cookies carry
+/// no port (RFC 6265 §8.5), so a listener on another `127.0.0.1` port receives
+/// this credential from any request a page can provoke, and then replays it
+/// from outside a browser. `curl` sends neither `Sec-Fetch-Site` nor `Origin`,
+/// so an "absent means not a browser, allow it" rule would hand that replay the
+/// approval writes for free. A caller entitled to write off-browser holds the
+/// token and sends the bearer, which is why refusing here costs nothing.
+///
+/// This pins one arm, not the whole threat: a replay that *sets*
+/// `Sec-Fetch-Site: same-origin` still passes, because that header only means
+/// anything when a browser is the one setting it. See `same_origin`'s doc
+/// comment and issue #188 — the real remedy is to stop the cookie being
+/// harvestable, not to check more headers.
+#[test]
+fn a_cookie_replayed_without_browser_labelling_cannot_write() {
+    let (gw, _held) = gateway_with_a_held_request();
+    let id = await_pending_id(gw.mgmt_port);
+    let login = http_request_raw(
+        gw.mgmt_port,
+        "GET",
+        &format!("/login?token={MGMT_TOKEN}"),
+        &[],
+        "",
+    );
+    let jar = set_cookie(&login)
+        .expect("session cookie")
+        .split(';')
+        .next()
+        .expect("cookie name=value")
+        .to_string();
+    let approve = format!("/api/approvals/{id}/approve");
+
+    let replayed = http_request_raw(gw.mgmt_port, "POST", &approve, &[("Cookie", &jar)], "");
+    assert!(
+        replayed.starts_with("HTTP/1.1 403"),
+        "an unlabelled cookie write must be refused: {replayed:?}"
+    );
+    assert_eq!(
+        await_pending_id(gw.mgmt_port),
+        id,
+        "the replayed write must not have resolved the approval"
+    );
+
+    // The same request with the bearer is the legitimate off-browser caller and
+    // must still work — the refusal above is about the cookie, not the method.
+    let with_bearer = http_request_raw(
+        gw.mgmt_port,
+        "POST",
+        &approve,
+        &[("Authorization", &format!("Bearer {MGMT_TOKEN}"))],
+        "",
+    );
+    assert!(
+        with_bearer.starts_with("HTTP/1.1 200"),
+        "a bearer write needs no browser labelling: {with_bearer:?}"
+    );
+}
+
+/// The `Origin`/`Host` fallback, for a browser that sends no `Sec-Fetch-Site`.
+///
+/// Every CSRF assertion above pins the `Sec-Fetch-Site` arm, which would leave
+/// this one — the path an older browser takes — free to invert without a test
+/// noticing.
+#[test]
+fn the_origin_fallback_decides_a_cookie_write_when_fetch_metadata_is_absent() {
+    let (gw, _held) = gateway_with_a_held_request();
+    let id = await_pending_id(gw.mgmt_port);
+    let login = http_request_raw(
+        gw.mgmt_port,
+        "GET",
+        &format!("/login?token={MGMT_TOKEN}"),
+        &[],
+        "",
+    );
+    let jar = set_cookie(&login)
+        .expect("session cookie")
+        .split(';')
+        .next()
+        .expect("cookie name=value")
+        .to_string();
+    let approve = format!("/api/approvals/{id}/approve");
+
+    let mismatched = http_request_raw(
+        gw.mgmt_port,
+        "POST",
+        &approve,
+        &[("Cookie", &jar), ("Origin", "http://127.0.0.1:9999")],
+        "",
+    );
+    assert!(
+        mismatched.starts_with("HTTP/1.1 403"),
+        "an Origin that is not this host must be refused: {mismatched:?}"
+    );
+    assert_eq!(await_pending_id(gw.mgmt_port), id, "must not have resolved");
+
+    // Hostnames are case-insensitive (RFC 9110 §4.2), so an `Origin` that
+    // differs from `Host` only in casing is the same origin. `send` writes
+    // `Host: localhost`, so this is that host, shouted.
+    let matching = http_request_raw(
+        gw.mgmt_port,
+        "POST",
+        &approve,
+        &[("Cookie", &jar), ("Origin", "http://LOCALHOST")],
+        "",
+    );
+    assert!(
+        matching.starts_with("HTTP/1.1 200"),
+        "a same-origin write must be accepted whatever the host casing: {matching:?}"
+    );
+}
+
+/// A cookie that is not the minted one buys nothing, and neither does the token
+/// itself presented where the cookie belongs.
+#[test]
+fn a_forged_session_cookie_reads_no_data() {
+    let (gw, _held) = gateway_with_a_held_request();
+    for value in [
+        format!("{SESSION_COOKIE}=garbage"),
+        // The cookie is an HMAC *of* the token, so the token itself is not it.
+        format!("{SESSION_COOKIE}={MGMT_TOKEN}"),
+        // A real-looking name that is not ours, alongside nothing else.
+        format!("other_session={MGMT_TOKEN}"),
+    ] {
+        for route in ["/api/audit", "/api/approvals", "/api/policy"] {
+            let raw = http_request_raw(gw.mgmt_port, "GET", route, &[("Cookie", &value)], "");
+            assert!(
+                raw.starts_with("HTTP/1.1 401"),
+                "{route} accepted a forged cookie {value:?}: {raw:?}"
+            );
+            assert!(
+                !raw.contains(MARKER_RULE),
+                "{route} leaked data to a forged cookie {value:?}: {raw:?}"
+            );
+        }
     }
 }

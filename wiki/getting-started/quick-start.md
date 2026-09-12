@@ -130,9 +130,25 @@ cargo run -p honmoon-cli -- gateway --config policies/agent.yaml \
 https_proxy=http://127.0.0.1:8443 curl -sS https://github.com
 https_proxy=http://127.0.0.1:8443 curl -sS https://example.com   # blocked (403)
 
-# Open the dashboard (audit log, policy view, approval queue)
-open http://127.0.0.1:8444
+# Open the dashboard (audit log, policy view, approval queue).
+# Every /api route needs the management token, so open the login URL honmoon
+# printed on startup rather than the bare address — it sets the session cookie
+# the dashboard's reads use, then redirects to /:
+#   honmoon: dashboard: http://127.0.0.1:8444/login?token=<token>
+open "http://127.0.0.1:8444/login?token=$(cat ~/.honmoon/mgmt-token)"
 ```
+
+With no `--mgmt-token`, honmoon mints one on first use and persists it at
+`~/.honmoon/mgmt-token`, in a directory it creates `0700`, with the file itself `0600` — that mode
+is enforced on a file honmoon creates or replaces, while a pre-existing wider-mode file is reported
+on stderr rather than tightened. **Automatic generation is Unix-only** — there is no
+`/dev/urandom` off Unix and a POSIX mode establishes no Windows ACL, so both loaders refuse to mint
+there and a Windows operator must set `--mgmt-token` / `HONMOON_MGMT_TOKEN` themselves. Set
+`--mgmt-token` / `HONMOON_MGMT_TOKEN` to pin your own anywhere
+([mgmt_token.rs](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-cli/src/mgmt_token.rs)).
+`@honmoon/api` resolves that same token from the same places, so one credential covers both servers
+([auth.ts](https://github.com/pleaseai/honmoon/blob/main/packages/api/src/auth.ts)). Scripted
+callers send `Authorization: Bearer <token>` instead of logging in.
 
 The dashboard is embedded in the binary, so it is served directly by the gateway — no separate
 process. For the durable, queryable audit history over the JSONL file, run `@honmoon/api` (see

@@ -8,8 +8,18 @@
 //! - `POST /api/approvals/:id/approve` / `.../reject` — resolve a held request
 //! - `GET  /api/policy`        — the active policy (raw YAML + parsed)
 //! - `POST /api/hooks/claude-code` — Claude Code hook verdict transport
+//! - `GET  /login?token=…` — exchange the management token for a session cookie
 //! - `GET  /healthz`
 //! - everything else — the embedded React dashboard (SPA fallback)
+//!
+//! **Every `/api/*` route requires the management token** (#173): the read
+//! surface serves every domain the agent contacted, every request path, every
+//! SQL table, every PII category, the pending approval queue and the active
+//! policy, so it is gated exactly as the hook write endpoint always was. The
+//! token is not optional — [`AppState`] holds a `String`, not an `Option`, so
+//! there is no unauthenticated mode to configure into. `/healthz` and the
+//! dashboard's own static assets stay open: the first carries no data, and the
+//! second is the published binary's own bundled code.
 //!
 //! The dashboard is compiled into the binary with [`rust_embed`] from
 //! `apps/dashboard/dist`; build it (`bun run --filter @honmoon/dashboard build`)
@@ -138,23 +148,44 @@ pub struct AppState {
     /// When wire redaction is enabled this is the exact store held by the proxy:
     /// one gateway process, one mapping.
     pub hook_mappings: Arc<MappingStore>,
-    /// Optional bearer credential protecting the hook endpoint.
-    pub hook_token: Option<Arc<str>>,
+    /// The credential every `/api/*` route requires, as
+    /// `Authorization: Bearer <token>` or the [`SESSION_COOKIE`] a browser
+    /// obtains from `GET /login?token=…`.
+    ///
+    /// Deliberately not an `Option` (#173). An optional token means the crate
+    /// still ships an unauthenticated mode, one call site away from being the
+    /// defect this gate exists to close — and every test constructing state
+    /// without a token would exercise it. Callers that have no token of their
+    /// own must generate one (`honmoon-cli`'s `mgmt_token::resolve` persists one
+    /// at `~/.honmoon/mgmt-token`), not pass `None`.
+    ///
+    /// Crate-private on purpose. The empty-token check lives in
+    /// [`AppState::with_hook_config`], and a `pub` field would let any caller
+    /// skip it with a struct literal — an empty token satisfies *both*
+    /// credential arms, since the session cookie is an HMAC under a hardcoded,
+    /// public key and `HMAC(key, "")` is computable by anyone. One non-`pub`
+    /// field makes the literal unavailable outside this crate, so the
+    /// constructor is the only way in.
+    pub(crate) mgmt_token: Arc<str>,
 }
 
 impl AppState {
-    /// Build state with an explicit hook salt source and optional bearer token.
+    /// Build state with an explicit hook salt source and the management token.
     ///
     /// There is deliberately no salt-less constructor: the hook salt keys the
     /// HMAC that derives redaction placeholders, so baking in a fixed default
     /// would make placeholders for known secrets precomputable. Callers must
     /// supply securely sourced key material (see `honmoon-cli`'s
     /// `hook::machine_key`).
+    ///
+    /// **Panics** on an empty `mgmt_token`: an empty credential authenticates
+    /// every caller, which is the unauthenticated mode this type exists to make
+    /// unrepresentable.
     pub fn with_hook_config(
         gateway: GatewayState,
         policy_yaml: impl Into<String>,
         hook_salt: HookSalt,
-        hook_token: Option<String>,
+        mgmt_token: String,
     ) -> Self {
         // Hook and wire redaction share one mapping store, so where both key on
         // one pinned salt they must key on the *same* one; enforce it here so a
@@ -170,6 +201,24 @@ impl AppState {
                 "hook salt must match the wire redaction salt so both transports mint identical placeholders"
             );
         }
+        // Trimmed, because the CLI and TypeScript resolvers both reject a
+        // padding-only token and this assert is the last line of defence for
+        // anyone constructing the state another way. A lone space would
+        // otherwise authenticate: `GET /login?token=%20` matches it and mints a
+        // session cookie good for every `/api/*` route.
+        //
+        // The predicate is spelled out to match `mgmt_token.rs`'s
+        // `is_token_padding` and `auth.ts`'s `trimToken` exactly: `str::trim`
+        // alone would accept a lone U+FEFF that `@honmoon/api` rejects, and
+        // reject a lone U+0085 that it accepts. Duplicated rather than shared
+        // because lifting it into `honmoon-core` would add a public surface,
+        // which `crates/AGENTS.md` gates behind an ask.
+        assert!(
+            !mgmt_token
+                .trim_matches(|c: char| c.is_whitespace() || c == '\u{FEFF}')
+                .is_empty(),
+            "management token must not be empty or padding-only — such a credential authenticates everyone"
+        );
         let hook_mappings = gateway
             .redaction
             .as_ref()
@@ -180,21 +229,37 @@ impl AppState {
             policy_yaml: Arc::new(policy_yaml.into()),
             hook_salt,
             hook_mappings,
-            hook_token: hook_token.map(Arc::from),
+            mgmt_token: Arc::from(mgmt_token),
         }
     }
 }
 
 /// Build the management API router.
+///
+/// Every `/api/*` route sits behind one [`require_credential`] layer rather than
+/// a per-handler check (#173). A handler that forgets to call the guard is the
+/// defect this closes, so the guard is not something a handler can forget: a
+/// route added to `api` below is gated by construction. `route_layer` applies
+/// only to routes this router *matches*, so an unknown `/api/...` path still
+/// falls through to [`static_handler`]'s honest 404 instead of answering 401 and
+/// implying the route exists.
 pub fn router(state: AppState) -> Router {
+    let api = Router::new()
+        .route("/audit", get(list_audit))
+        .route("/approvals", get(list_approvals))
+        .route("/approvals/{id}/approve", post(approve))
+        .route("/approvals/{id}/reject", post(reject))
+        .route("/hooks/claude-code", post(claude_code_hook))
+        .route("/policy", get(get_policy))
+        .route_layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            require_credential,
+        ));
+
     Router::new()
         .route("/healthz", get(healthz))
-        .route("/api/audit", get(list_audit))
-        .route("/api/approvals", get(list_approvals))
-        .route("/api/approvals/{id}/approve", post(approve))
-        .route("/api/approvals/{id}/reject", post(reject))
-        .route("/api/hooks/claude-code", post(claude_code_hook))
-        .route("/api/policy", get(get_policy))
+        .route("/login", get(login))
+        .nest("/api", api)
         .fallback(static_handler)
         .with_state(state)
 }
@@ -213,8 +278,12 @@ async fn healthz() -> Json<serde_json::Value> {
 }
 
 /// Evaluate the unwrapped Claude Code hook payload and return its standard
-/// verdict JSON. If `hook_token` is configured, callers must send exactly
-/// `Authorization: Bearer <token>`.
+/// verdict JSON.
+///
+/// Authentication is not checked here: this route is mounted under the `/api`
+/// router, whose [`require_credential`] layer has already rejected a caller
+/// without the management token. Checking again would be the only copy of the
+/// rule that a new route could be added without.
 ///
 /// Claude Code HTTP hooks fail open on connection errors, timeouts, and non-2xx
 /// responses: processing continues without applying a verdict. That is why the
@@ -227,20 +296,12 @@ async fn healthz() -> Json<serde_json::Value> {
 /// guess; it never reveals a secret or the machine key, and the local command
 /// transport has always offered the same confirmation to anyone able to run
 /// `honmoon hook --salt-context`. Keep the listener on loopback (the
-/// `--mgmt-addr` default) and set `--hook-token` before exposing it further.
+/// `--mgmt-addr` default) before exposing it further; the management token
+/// (`--mgmt-token`) is required on this route either way.
 async fn claude_code_hook(
     State(state): State<AppState>,
-    headers: HeaderMap,
     Json(payload): Json<serde_json::Value>,
 ) -> Response {
-    if !authorized(&state, &headers) {
-        return (
-            StatusCode::UNAUTHORIZED,
-            Json(serde_json::json!({ "error": "missing or invalid bearer token" })),
-        )
-            .into_response();
-    }
-
     let path_to_resolve = payload
         .get("tool_input")
         .and_then(|input| {
@@ -329,15 +390,236 @@ async fn resolve_agent_path(path: Option<&str>, agent_cwd: Option<&str>) -> Path
     }
 }
 
-fn authorized(state: &AppState, headers: &HeaderMap) -> bool {
-    let Some(expected) = state.hook_token.as_deref() else {
-        return true;
-    };
+/// Name of the cookie a browser presents instead of a bearer header.
+pub const SESSION_COOKIE: &str = "honmoon_session";
+
+/// Which credential authenticated a request, because the two need different
+/// treatment on a state-changing route (see [`require_credential`]).
+enum Credential {
+    /// `Authorization: Bearer <token>` — sent deliberately by the caller, so a
+    /// cross-site page cannot cause one (setting the header cross-origin needs a
+    /// CORS preflight this service never approves).
+    Bearer,
+    /// The [`SESSION_COOKIE`] — attached by the browser rather than by the page,
+    /// so it is the credential a cross-site request can ride on.
+    Session,
+}
+
+/// The cookie value that stands in for `token`.
+///
+/// An HMAC of the token rather than the token itself, for two reasons. It is
+/// fixed-width hex, so an operator-chosen `--mgmt-token` containing `;`, a
+/// space or `=` — none of which are legal in a cookie value (RFC 6265) — still
+/// yields a well-formed cookie without an encoding layer. And it is one-way: a
+/// cookie read out of a browser profile grants the same API access, but does not
+/// hand back the token itself, which is also `packages/api`'s credential and the
+/// value of `--mgmt-token` on any other host sharing it.
+///
+/// The key is a public constant. It domain-separates this derivation from the
+/// hook salt's; unforgeability comes from the token, which is the secret.
+fn session_cookie_value(token: &str) -> String {
+    const KEY: &[u8] = b"honmoon-mgmt-session-v1";
+    let mut mac =
+        <HmacSha256 as Mac>::new_from_slice(KEY).expect("HMAC accepts a key of any length");
+    mac.update(token.as_bytes());
+    hex_encode(&mac.finalize().into_bytes())
+}
+
+fn hex_encode(bytes: &[u8]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        out.push(HEX[usize::from(byte >> 4)] as char);
+        out.push(HEX[usize::from(byte & 0x0f)] as char);
+    }
+    out
+}
+
+/// The [`SESSION_COOKIE`] value from the request's `Cookie` header(s), if any.
+///
+/// Hand-parsed rather than pulled in with a cookie crate: a new workspace
+/// dependency is ask-gated (`crates/AGENTS.md`), and what is needed here is one
+/// name lookup in a `;`-separated list. `get_all` because a client may split its
+/// cookies across several headers.
+fn session_cookie(headers: &HeaderMap) -> Option<&str> {
     headers
+        .get_all(header::COOKIE)
+        .iter()
+        .filter_map(|value| value.to_str().ok())
+        .flat_map(|value| value.split(';'))
+        .filter_map(|pair| pair.trim().split_once('='))
+        .find(|(name, _)| *name == SESSION_COOKIE)
+        .map(|(_, value)| value)
+}
+
+/// Authenticate a request against the management token, by bearer header or
+/// session cookie. `None` means no valid credential was presented.
+fn authorized(state: &AppState, headers: &HeaderMap) -> Option<Credential> {
+    let expected = state.mgmt_token.as_bytes();
+    let bearer = headers
         .get(header::AUTHORIZATION)
         .and_then(|value| value.to_str().ok())
         .and_then(|value| value.strip_prefix("Bearer "))
-        .is_some_and(|provided| constant_time_eq(provided.as_bytes(), expected.as_bytes()))
+        .is_some_and(|provided| constant_time_eq(provided.as_bytes(), expected));
+    if bearer {
+        return Some(Credential::Bearer);
+    }
+    let expected_cookie = session_cookie_value(&state.mgmt_token);
+    session_cookie(headers)
+        .is_some_and(|provided| constant_time_eq(provided.as_bytes(), expected_cookie.as_bytes()))
+        .then_some(Credential::Session)
+}
+
+/// Whether a request the browser labelled for us came from this service's own
+/// origin.
+///
+/// Only consulted for a cookie-authenticated state-changing request. `SameSite=
+/// Strict` already keeps the cookie off a request issued by a *cross-site* page,
+/// but "site" is registrable-domain-scoped: a page served by any other port on
+/// `127.0.0.1` — which is exactly what a hostile local process can stand up — is
+/// same-site and different-origin, so its forged `POST /api/approvals/1/approve`
+/// would still carry the cookie. `Sec-Fetch-Site` and `Origin` are set by the
+/// browser and unsettable by the page, so they distinguish the two.
+///
+/// Neither header present means nothing labelled this request as a browser's,
+/// and for a *cookie* credential that is itself the warning sign: a cookie is a
+/// credential only a browser stores and attaches, and every browser labels a
+/// state-changing request with at least one of the two. So this arm refuses. A
+/// legitimate non-browser caller is unaffected: it holds the token and sends
+/// the bearer, which never reaches this function.
+///
+/// **What this does not do, stated plainly because the shape invites the wrong
+/// conclusion:** every header it reads is set by the browser and unforgeable
+/// *by a page*, not unforgeable *by a client*. A caller outside a browser sets
+/// whatever it likes, `Sec-Fetch-Site: same-origin` included. So this function
+/// defends against the browser-driven attack — a page on a sibling `127.0.0.1`
+/// port causing the operator's browser to issue a state-changing request that
+/// `SameSite=Strict` permits because different-port is same-site — and it does
+/// **not** defend against an attacker who has already harvested the cookie
+/// (cookie scope has no port, RFC 6265 §8.5) and is replaying it from `curl`.
+/// Such a replay reaches the writes, not only the reads.
+///
+/// No header check can close that, because the premise of every one of them is
+/// a browser on the other end. Closing it means the cookie must not be
+/// harvestable (TLS on this listener plus a `__Host-` prefix), or the credential
+/// must not be a cookie at all (delivered in the login redirect's fragment,
+/// held in origin-scoped `sessionStorage`, sent as a header the browser never
+/// attaches on its own). Tracked as issue #188 — do not read this function as
+/// making writes safe against a stolen cookie.
+fn same_origin(headers: &HeaderMap) -> bool {
+    if let Some(site) = headers
+        .get("sec-fetch-site")
+        .and_then(|value| value.to_str().ok())
+    {
+        // `none` is a user-initiated navigation (a typed URL or a bookmark),
+        // which no page authored.
+        return site == "same-origin" || site == "none";
+    }
+    let Some(origin) = headers.get(header::ORIGIN).and_then(|v| v.to_str().ok()) else {
+        return false;
+    };
+    let Some(authority) = origin.split_once("://").map(|(_, authority)| authority) else {
+        return false;
+    };
+    // Hostnames are case-insensitive (RFC 9110 §4.2), so a casing difference
+    // between the two headers is not a cross-origin signal.
+    headers
+        .get(header::HOST)
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|host| host.eq_ignore_ascii_case(authority))
+}
+
+/// The single gate on `/api/*` (#173).
+///
+/// Rejects a caller with no valid credential, then — for a cookie-authenticated
+/// request that is not a safe method — rejects one the browser reports as
+/// cross-origin (see [`same_origin`], including the limit of what that check
+/// can mean). A bearer caller skips the second check: no page can make a
+/// browser attach that header.
+async fn require_credential(
+    State(state): State<AppState>,
+    request: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> Response {
+    let Some(credential) = authorized(&state, request.headers()) else {
+        return (
+            StatusCode::UNAUTHORIZED,
+            [(header::WWW_AUTHENTICATE, "Bearer")],
+            Json(serde_json::json!({
+                "error": "missing or invalid management token",
+                "hint": "send `Authorization: Bearer <token>`, or open /login?token=<token> in a browser",
+            })),
+        )
+            .into_response();
+    };
+    // Matched exhaustively on purpose: a new `Credential` variant must not
+    // silently inherit `Bearer`'s exemption from the origin check.
+    let origin_checked = match credential {
+        // No page can make a browser attach `Authorization`, so a bearer is
+        // never ambient authority and needs no origin evidence.
+        Credential::Bearer => true,
+        Credential::Session => request.method().is_safe() || same_origin(request.headers()),
+    };
+    if !origin_checked {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(serde_json::json!({
+                "error": "cross-origin request rejected; use `Authorization: Bearer <token>`",
+            })),
+        )
+            .into_response();
+    }
+    next.run(request).await
+}
+
+#[derive(Debug, Deserialize)]
+struct LoginQuery {
+    token: Option<String>,
+}
+
+/// Exchange the management token for the [`SESSION_COOKIE`], then redirect to
+/// the dashboard.
+///
+/// This is how the browser gets a credential, and it is deliberately *not* the
+/// token templated into the served `index.html` that issue #173 floated. That
+/// shape defends against none of the three readers the issue names: any local
+/// user, and any page that has rebound DNS to the listener, can simply
+/// `GET /` and read the token out of the markup. A cookie cannot be obtained
+/// that way — the operator has to present the token once, from the URL honmoon
+/// prints at startup — and it is bound by the browser to the `127.0.0.1` origin,
+/// so a page at `attacker.com` that has rebound to loopback sends no credential
+/// at all.
+///
+/// The token rides in the query string, which lands in the operator's own
+/// browser history. That is the cost of one-click login and it is same-user
+/// only: the response is a redirect, so no page ever has this URL as its own
+/// address to leak through `Referer`; the dashboard loads no cross-origin
+/// subresource; and this service logs neither request lines nor query strings.
+async fn login(State(s): State<AppState>, Query(q): Query<LoginQuery>) -> Response {
+    let presented = q.token.as_deref().unwrap_or_default();
+    if !constant_time_eq(presented.as_bytes(), s.mgmt_token.as_bytes()) {
+        return (
+            StatusCode::UNAUTHORIZED,
+            Html("<h1>Invalid management token</h1><p>Open the dashboard URL honmoon printed at startup, or read the token from <code>~/.honmoon/mgmt-token</code>.</p>"),
+        )
+            .into_response();
+    }
+    // `HttpOnly` keeps the value out of `document.cookie`; `SameSite=Strict`
+    // keeps it off cross-site requests; no `Secure`, which would stop the
+    // cookie being sent over the plain-HTTP loopback listener this serves.
+    let cookie = format!(
+        "{SESSION_COOKIE}={}; Path=/; HttpOnly; SameSite=Strict",
+        session_cookie_value(&s.mgmt_token)
+    );
+    (
+        StatusCode::SEE_OTHER,
+        [
+            (header::SET_COOKIE, cookie),
+            (header::LOCATION, "/".to_string()),
+            (header::CACHE_CONTROL, "no-store".to_string()),
+        ],
+    )
+        .into_response()
 }
 
 /// Constant-time equality for authenticating the caller-supplied bearer token
@@ -415,6 +697,18 @@ async fn get_policy(State(s): State<AppState>) -> Json<PolicyResponse> {
     })
 }
 
+/// Deny framing of the dashboard shell.
+///
+/// The shell is served without a credential, but since #173 the browser holds
+/// one for this origin. A page on another loopback port is *same-site*, so
+/// `SameSite=Strict` does not stop it framing the dashboard and having the
+/// framed document — same-origin to itself, and so past the origin check —
+/// issue a `POST /api/approvals/{id}/approve` behind a decoy click.
+///
+/// Only `frame-ancestors` is set: a script/style policy would have to track the
+/// bundler's output, and a CSP that breaks the dashboard is worse than none.
+const FRAME_ANCESTORS_NONE: &str = "frame-ancestors 'none'";
+
 /// Serve an embedded dashboard asset, falling back to `index.html` so client-side
 /// routing works (SPA). Returns 404 only when the dashboard was not built in.
 async fn static_handler(uri: Uri) -> Response {
@@ -432,7 +726,11 @@ async fn static_handler(uri: Uri) -> Response {
     if let Some(asset) = Assets::get(path) {
         let mime = mime_guess::from_path(path).first_or_octet_stream();
         return (
-            [(header::CONTENT_TYPE, mime.as_ref())],
+            [
+                (header::CONTENT_TYPE, mime.as_ref()),
+                (header::X_FRAME_OPTIONS, "DENY"),
+                (header::CONTENT_SECURITY_POLICY, FRAME_ANCESTORS_NONE),
+            ],
             asset.data.into_owned(),
         )
             .into_response();
@@ -440,7 +738,14 @@ async fn static_handler(uri: Uri) -> Response {
 
     // SPA fallback: serve index.html for unknown non-asset paths.
     match Assets::get("index.html") {
-        Some(asset) => Html(asset.data.into_owned()).into_response(),
+        Some(asset) => (
+            [
+                (header::X_FRAME_OPTIONS, "DENY"),
+                (header::CONTENT_SECURITY_POLICY, FRAME_ANCESTORS_NONE),
+            ],
+            Html(asset.data.into_owned()),
+        )
+            .into_response(),
         None => (
             StatusCode::NOT_FOUND,
             "dashboard not built — run `bun run --filter @honmoon/dashboard build`",

@@ -153,9 +153,11 @@ export interface RedactionFacts {
    *
    * Renderers must not summarise or drop it: on an exposure event `key_source`
    * stays `persisted` and reads healthy on its own, leaving this the only field
-   * carrying the bad news. The disclosure that prompted the question is the
-   * missing auth layer on the management reads, tracked as issue #173 — not this
-   * field, and trimming it is not a substitute.
+   * carrying the bad news. The disclosure that prompted the question was the
+   * missing auth layer on the management reads, which issue #173 closed: every
+   * management read now requires the management token, so this content no
+   * longer reaches an unauthenticated caller. It was never this field, and
+   * trimming it was never a substitute.
    */
   reason: string
 }

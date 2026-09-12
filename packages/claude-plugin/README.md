@@ -192,7 +192,7 @@ settings — project settings are not read):
 | `transport` | `process` when `hookUrl` is unset | `process` runs `honmoon hook`; `http` POSTs the same JSON to `hookUrl` |
 | `honmoonBin` | `honmoon` | The binary the `process` transport runs (command name or absolute path). Note this is a plugin option, not the command hooks' `HONMOON_BIN` env var — set both if honmoon is off `PATH` |
 | `hookUrl` | — | Management-API endpoint, e.g. `http://127.0.0.1:7777/api/hooks/claude-code`. Setting it selects the `http` transport unless `transport` says otherwise |
-| `hookToken` | — | Optional bearer token for `hookUrl` |
+| `hookToken` | — | Bearer token for `hookUrl`. **Required** as of honmoon 0.1.0: the gateway authenticates every `/api` route, minting a token at `~/.honmoon/mgmt-token` when `--mgmt-token` is unset. Without it the endpoint answers `401`, which the `http` transport treats as a failure and resolves through `failMode` |
 | `failMode` | `closed` | `closed` denies tool output / drops the prompt when the engine is unreachable; `open` passes through |
 
 Each hook phase runs under its own 8 s budget, inside the host's 10 s

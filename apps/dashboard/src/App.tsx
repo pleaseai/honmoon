@@ -1,5 +1,5 @@
 import { useSyncExternalStore } from 'react'
-import { getApprovals, getAudit } from './api'
+import { getApprovals, getAudit, NOT_SIGNED_IN } from './api'
 import { Approvals } from './components/Approvals'
 import { AuditLog } from './components/AuditLog'
 import { Overview } from './components/Overview'
@@ -47,6 +47,9 @@ function App() {
   const settled = (approvals !== null || approvalsError !== null)
     && (audit !== null || auditError !== null)
   const reachable = approvalsError === null && auditError === null
+  // A 401 is not an unreachable gateway, and saying so would send an operator
+  // to debug a gateway that is running fine instead of signing in (#173).
+  const signedOut = approvalsError === NOT_SIGNED_IN || auditError === NOT_SIGNED_IN
 
   return (
     <div className="min-h-screen bg-bg text-fg">
@@ -93,7 +96,7 @@ function App() {
               ))}
             </nav>
 
-            <GatewayState reachable={reachable} settled={settled} />
+            <GatewayState reachable={reachable} settled={settled} signedOut={signedOut} />
 
             <span
               role="img"
@@ -124,8 +127,12 @@ function App() {
  * polls. It says whether the API answers — nothing about what the gateway
  * enforces.
  */
-function GatewayState({ reachable, settled }: { reachable: boolean, settled: boolean }) {
-  const label = !settled ? 'Connecting' : reachable ? 'Gateway live' : 'Gateway unreachable'
+function GatewayState(
+  { reachable, settled, signedOut }: { reachable: boolean, settled: boolean, signedOut: boolean },
+) {
+  const label = !settled
+    ? 'Connecting'
+    : reachable ? 'Gateway live' : signedOut ? 'Signed out' : 'Gateway unreachable'
   const dot = !settled
     ? 'bg-muted'
     : reachable

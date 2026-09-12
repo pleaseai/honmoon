@@ -167,6 +167,12 @@ honmoon gateway --config policies/agent.yaml --tls-intercept --pii-mode block
 #   proxy:     http://127.0.0.1:8443   (point https_proxy here)
 #   socks5:    127.0.0.1:1080          (point ALL_PROXY here; --socks-addr)
 #   dashboard: http://127.0.0.1:8444   (audit log, approval queue, policy)
+#
+# The management API requires a bearer token on every /api route. With no
+# --mgmt-token, honmoon mints one at ~/.honmoon/mgmt-token (0600) and prints a
+# one-click dashboard login URL on startup:
+#   honmoon: dashboard: http://127.0.0.1:8444/login?token=<generated>
+# Minting is Unix-only; on Windows set --mgmt-token or HONMOON_MGMT_TOKEN.
 
 # Join a gateway from a client (routes all host traffic)
 honmoon join --gateway honmoon.internal:8443

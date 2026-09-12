@@ -133,11 +133,13 @@ pub struct RedactionFacts {
     ///
     /// The question that prompted this (issue #162) was whether an
     /// unauthenticated `GET /api/audit` should be handing out the operator's
-    /// home-directory layout. The exposure there is the missing auth layer
+    /// home-directory layout. The exposure there was the missing auth layer
     /// rather than this field: the same response already serves every domain
     /// contacted, request path seen, SQL table named and PII category detected,
     /// and trimming this one field would cost the hook its diagnostics while
-    /// leaving those in the same body. That is tracked as issue #173.
+    /// leaving those in the same body. Issue #173 closed that layer — every
+    /// management read now requires the management token — so this content no
+    /// longer reaches an unauthenticated caller at all.
     ///
     /// **What is settled is this content — a local salt path and an OS error —
     /// not the field.** Do not re-raise those two as a finding, and do not trim

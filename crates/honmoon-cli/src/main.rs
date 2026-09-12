@@ -2,7 +2,9 @@
 
 mod hook;
 mod isolate;
+mod mgmt_token;
 
+use std::io::IsTerminal as _;
 use std::net::{Ipv4Addr, Ipv6Addr, TcpListener};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -75,9 +77,45 @@ enum Command {
         /// instead — the refusal names the component it stopped on.
         #[arg(long, value_name = "FILE")]
         audit_log: Option<PathBuf>,
-        /// Bearer token required by `POST /api/hooks/claude-code`.
-        /// May also be supplied through `HONMOON_HOOK_TOKEN`.
-        #[arg(long, value_name = "TOKEN", env = "HONMOON_HOOK_TOKEN")]
+        /// Bearer token required by every management API route (`/api/*`): the
+        /// audit, approval and policy reads as well as the Claude Code hook
+        /// endpoint (#173).
+        ///
+        /// Unset (the default), honmoon mints one on first use and persists it
+        /// at `~/.honmoon/mgmt-token` (mode `0600`), then prints the dashboard
+        /// login URL at startup. Auth is on by default; the generated credential
+        /// is what keeps that from meaning broken by default.
+        ///
+        /// Prefer `HONMOON_MGMT_TOKEN` to this flag: a command line can be read
+        /// by other local users through `ps` — how far that reaches is platform
+        /// and configuration dependent — where a token file honmoon created is
+        /// `0600`. A pre-existing file with a wider mode is reported at startup
+        /// rather than tightened, so that contrast holds for the file honmoon
+        /// mints and not for one it merely found. `@honmoon/api` cannot see
+        /// this flag either — it
+        /// reads the environment variable or the file — so a token supplied
+        /// here must be given to that service by one of those two routes, or
+        /// the two will not agree.
+        /// May also be supplied through `HONMOON_MGMT_TOKEN`.
+        #[arg(
+            long,
+            value_name = "TOKEN",
+            env = "HONMOON_MGMT_TOKEN",
+            hide_env_values = true
+        )]
+        mgmt_token: Option<String>,
+        /// Deprecated alias for `--mgmt-token`, kept working for operators who
+        /// set it while it guarded only `POST /api/hooks/claude-code`. The same
+        /// token now authenticates the whole management plane — strictly more
+        /// protection, in the direction setting it asked for.
+        /// May also be supplied through `HONMOON_HOOK_TOKEN`; `--mgmt-token`
+        /// wins when both are set.
+        #[arg(
+            long,
+            value_name = "TOKEN",
+            env = "HONMOON_HOOK_TOKEN",
+            hide_env_values = true
+        )]
         hook_token: Option<String>,
         /// Pin the salt context for hook redaction instead of keying it on each
         /// hook payload's `session_id`.
@@ -234,6 +272,7 @@ fn main() -> Result<()> {
             socks_addr,
             mgmt_addr,
             audit_log,
+            mgmt_token,
             hook_token,
             hook_salt_context,
             tls_intercept,
@@ -248,6 +287,7 @@ fn main() -> Result<()> {
             socks_addr,
             mgmt_addr,
             audit_log,
+            mgmt_token,
             hook_token,
             hook_salt_context,
             tls_intercept,
@@ -314,6 +354,7 @@ struct GatewayArgs {
     socks_addr: String,
     mgmt_addr: String,
     audit_log: Option<PathBuf>,
+    mgmt_token: Option<String>,
     hook_token: Option<String>,
     hook_salt_context: Option<String>,
     tls_intercept: bool,
@@ -325,6 +366,59 @@ struct GatewayArgs {
 }
 
 /// Default directory for persisted CA material (`$HOME/.honmoon`, else `.honmoon`).
+/// The authority to print in the dashboard URL for a listener bound to `addr`.
+///
+/// `local_addr()` reports the *bind* address, which for a wildcard bind
+/// (`--mgmt-addr 0.0.0.0:8444`, or `[::]:8444`) is not an address anyone can
+/// open: `http://0.0.0.0:8444/` resolves to the client itself, so the one-click
+/// login this banner advertises would be broken for exactly the deployment that
+/// chose to listen broadly.
+///
+/// A wildcard says "every interface", and the one interface certain to reach
+/// this process is the loopback one, so that is what gets printed. Nothing
+/// guesses a routable public address: honmoon is not told one, and inventing a
+/// hostname the operator never configured would trade a URL that visibly fails
+/// for one that fails somewhere less obvious.
+fn dashboard_authority(addr: std::net::SocketAddr) -> String {
+    if addr.ip().is_unspecified() {
+        match addr {
+            std::net::SocketAddr::V4(_) => format!("127.0.0.1:{}", addr.port()),
+            std::net::SocketAddr::V6(_) => format!("[::1]:{}", addr.port()),
+        }
+    } else {
+        addr.to_string()
+    }
+}
+
+/// Percent-encode a token for use as a query-string value.
+///
+/// A generated token is hex, which needs no encoding — but a *persisted* token
+/// is whatever the operator put in the file, and `Source::Persisted` is
+/// printable. An `&` or `#` in it would otherwise end the parameter: the
+/// browser would send `/login` a truncated prefix, and the one-click login this
+/// URL advertises would 401 with nothing on screen to explain why.
+///
+/// Encodes everything outside RFC 3986's unreserved set rather than enumerating
+/// what is special, so a character no one thought of is escaped by default
+/// rather than missed by omission.
+fn percent_encode_query_value(value: &str) -> String {
+    use std::fmt::Write as _;
+
+    let mut out = String::with_capacity(value.len());
+    for byte in value.bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' => {
+                out.push(byte as char);
+            }
+            _ => {
+                // Writing to a String cannot fail.
+                let _ = write!(out, "%{byte:02X}");
+            }
+        }
+    }
+    out
+}
+
 fn default_ca_dir() -> PathBuf {
     match std::env::var_os("HOME") {
         Some(home) => PathBuf::from(home).join(".honmoon"),
@@ -342,6 +436,7 @@ fn gateway(args: GatewayArgs) -> Result<()> {
         socks_addr,
         mgmt_addr,
         audit_log,
+        mgmt_token,
         hook_token,
         hook_salt_context,
         tls_intercept,
@@ -351,6 +446,18 @@ fn gateway(args: GatewayArgs) -> Result<()> {
         ca_cert,
         ca_key,
     } = args;
+
+    if hook_token.is_some() {
+        // Printed, not logged: `RUST_LOG` is unset in an ordinary run, so a
+        // `tracing::warn!` would be silent exactly where a deprecation has to be
+        // read (same reason as the isolation warning in `run`).
+        eprintln!(concat!(
+            "honmoon: warning: --hook-token / HONMOON_HOOK_TOKEN is deprecated — use ",
+            "--mgmt-token / HONMOON_MGMT_TOKEN. The token now authenticates every ",
+            "management API route, not just the Claude Code hook endpoint (#173)."
+        ));
+    }
+    let mgmt = mgmt_token::resolve(mgmt_token.or(hook_token), &mgmt_token::default_dir())?;
 
     if !tls_intercept && matches!(pii_mode, PiiModeArg::Block) {
         anyhow::bail!("--pii-mode block requires --tls-intercept");
@@ -434,7 +541,43 @@ fn gateway(args: GatewayArgs) -> Result<()> {
         .with_context(|| format!("binding management API {mgmt_addr}"))?;
 
     let hook_salt = hook_salt_for(hook_salt_context.as_deref(), wire_salt, machine_key);
-    let app_state = AppState::with_hook_config(state.clone(), policy_yaml, hook_salt, hook_token);
+    let app_state =
+        AppState::with_hook_config(state.clone(), policy_yaml, hook_salt, mgmt.token.clone());
+
+    // Printed for the same reason the deprecation above is: an operator who
+    // cannot find the credential cannot open the dashboard, and `RUST_LOG` is
+    // unset in an ordinary run.
+    //
+    // The token itself is echoed only when honmoon owns it (never an
+    // `--mgmt-token` the operator chose — see `mgmt_token::Source::printable`)
+    // *and* stderr is a terminal. A terminal is a person who is about to click
+    // the link; a pipe is a journal, a Docker log driver or a log aggregator,
+    // where the same line would persist a long-lived credential somewhere far
+    // more readable than the `0600` file. The path is printed either way, so
+    // the redirected case still says where to read it.
+    let mgmt_url = format!(
+        "http://{}",
+        dashboard_authority(mgmt_listener.local_addr()?)
+    );
+    let token_path = mgmt.source.path();
+    if mgmt.source.printable() && std::io::stderr().is_terminal() {
+        eprintln!(
+            "honmoon: dashboard: {mgmt_url}/login?token={}",
+            percent_encode_query_value(&mgmt.token)
+        );
+    } else if mgmt.source.printable() {
+        eprintln!(
+            "honmoon: dashboard: {mgmt_url}/login?token=<the token in {}>",
+            token_path
+                .map(|p| p.display().to_string())
+                .unwrap_or_else(|| "your token file".to_string())
+        );
+    } else {
+        eprintln!("honmoon: dashboard: {mgmt_url}/login?token=<your --mgmt-token>");
+    }
+    if let Some(path) = token_path {
+        eprintln!("honmoon: management token: {}", path.display());
+    }
 
     let runtime = tokio::runtime::Runtime::new().context("build tokio runtime")?;
 
@@ -707,6 +850,47 @@ fn load_policy(path: &PathBuf) -> Result<Policy> {
 
 #[cfg(test)]
 mod tests {
+    use super::percent_encode_query_value;
+
+    #[test]
+    fn a_wildcard_bind_is_not_advertised_as_a_dashboard_url() {
+        use super::dashboard_authority;
+
+        // A wildcard bind is not openable: http://0.0.0.0:8444/ resolves to the
+        // client, so printing it breaks the one-click login for exactly the
+        // deployment that chose to listen broadly.
+        assert_eq!(
+            dashboard_authority("0.0.0.0:8444".parse().unwrap()),
+            "127.0.0.1:8444"
+        );
+        assert_eq!(
+            dashboard_authority("[::]:8444".parse().unwrap()),
+            "[::1]:8444"
+        );
+        // A concrete bind is printed exactly as it is.
+        assert_eq!(
+            dashboard_authority("127.0.0.1:8444".parse().unwrap()),
+            "127.0.0.1:8444"
+        );
+        assert_eq!(
+            dashboard_authority("192.168.1.5:8444".parse().unwrap()),
+            "192.168.1.5:8444"
+        );
+    }
+
+    #[test]
+    fn a_login_url_token_survives_reserved_characters() {
+        // A generated token is hex and unchanged by encoding...
+        assert_eq!(percent_encode_query_value("a0f9"), "a0f9");
+        // ...but an operator-written one is arbitrary, and `&`/`#` would
+        // otherwise end the query parameter and truncate what `/login` sees.
+        assert_eq!(
+            percent_encode_query_value("a&b#c d"),
+            "a%26b%23c%20d",
+            "reserved characters must not end the token parameter"
+        );
+    }
+
     use super::*;
 
     /// #98: an unpinned gateway must hand the endpoint a *session*-derived salt,

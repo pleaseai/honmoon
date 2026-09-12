@@ -69,6 +69,27 @@ shared `GatewayState`. `honmoon gateway` runs the proxy and this API on one toki
 | `/healthz` | GET | `{status:"ok"}` | [lib.rs:77-79](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-mgmt/src/lib.rs#L77-L79) |
 | anything else | — | Embedded dashboard (SPA fallback) | [lib.rs:138-168](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-mgmt/src/lib.rs#L138-L168) |
 
+Every `/api` row above requires the management token (issue #173) — either
+`Authorization: Bearer <token>` or the `honmoon_session` cookie that `GET /login?token=…` sets
+([lib.rs:457-471](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-mgmt/src/lib.rs#L457-L471), [lib.rs:598-623](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-mgmt/src/lib.rs#L598-L623)).
+The gate is a `route_layer` on the nested `/api` router, so a new `/api` route is covered by
+construction rather than by remembering to check
+([lib.rs:246-265](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-mgmt/src/lib.rs#L246-L265)). `/healthz` and the SPA fallback
+are the two deliberate exceptions and stay open. The token itself is resolved — and generated
+`0600` on first use — by the CLI loader
+([mgmt_token.rs:1-30](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-cli/src/mgmt_token.rs#L1-L30)), and `@honmoon/api` reads
+the same file ([auth.ts:102-201](https://github.com/pleaseai/honmoon/blob/main/packages/api/src/auth.ts#L102-L201)).
+
+The session cookie is origin-bound by the browser, which is what defeats DNS rebinding: a page
+rebound to loopback holds no cookie for that origin and so sends no credential. Cookie scope,
+however, has **no port component** (RFC 6265 §8.5), so the cookie travels to every
+`127.0.0.1:<port>` the operator's browser touches — including a listener another local user owns,
+which can harvest it and replay it. <span class="status-caveat">Residual</span> — a harvested
+cookie carries full management access, reads and writes alike, until the token is rotated, tracked
+as
+[#188](https://github.com/pleaseai/honmoon/issues/188)
+([lib.rs:509-530](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-mgmt/src/lib.rs#L509-L530), [lib.rs:539-573](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-mgmt/src/lib.rs#L539-L573)).
+
 One careful detail: the SPA fallback **refuses to mask an unmatched `/api/...` path as `200 text/html`**
 — those 404 honestly, so a failed management action is never hidden behind the dashboard shell
 ([lib.rs:142-146](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-mgmt/src/lib.rs#L142-L146)).
@@ -94,7 +115,13 @@ flowchart LR
 ```
 <!-- Sources: crates/honmoon-mgmt/build.rs:1-36, apps/dashboard/vite.config.ts:1-21, crates/honmoon-mgmt/src/lib.rs:30-36 -->
 
-In `vite dev`, API calls are proxied to a locally-running gateway's management API on
+Every `/api` route requires the management token (#173), so the dashboard's own credential is the
+`honmoon_session` cookie that `GET /login?token=…` sets — the URL the gateway prints on startup.
+`api.ts` attaches nothing itself: `fetch` defaults to `credentials: 'same-origin'`, so the browser
+sends the cookie. The static shell and its assets stay open; they are the binary's own bundled code
+and carry no token.
+
+In `vite dev`, API calls (and `/login`) are proxied to a locally-running gateway's management API on
 `127.0.0.1:8444`, so the UI and the binary can iterate independently
 ([vite.config.ts:13-20](https://github.com/pleaseai/honmoon/blob/main/apps/dashboard/vite.config.ts#L13-L20)).
 
@@ -147,6 +174,13 @@ durable, historical queries `@honmoon/api` reads the **JSONL file** the gateway 
 | `GET /api/audit` | `limit`, `decision`, `since`, `domain` | [audit.ts:43-72](https://github.com/pleaseai/honmoon/blob/main/packages/api/src/audit.ts#L43-L72), [index.ts:45-48](https://github.com/pleaseai/honmoon/blob/main/packages/api/src/index.ts#L45-L48) |
 | `GET /api/audit/stats` | counts by decision | [audit.ts:74-83](https://github.com/pleaseai/honmoon/blob/main/packages/api/src/audit.ts#L74-L83) |
 | `GET /healthz` | — | [index.ts:41-43](https://github.com/pleaseai/honmoon/blob/main/packages/api/src/index.ts#L41-L43) |
+
+Both `/api/audit` routes require the management token as `Authorization: Bearer <token>` (issue
+[#173](https://github.com/pleaseai/honmoon/issues/173)) — the same token the Rust gateway
+requires, resolved from the same places. There is no cookie flow here: this service serves no
+browser shell to log in from, so a caller sends the bearer directly.
+`GET /healthz` is open
+([routes.ts:1-50](https://github.com/pleaseai/honmoon/blob/main/packages/api/src/routes.ts#L1-L50)).
 
 Two correctness details worth noting: results are sorted **by timestamp, not id** (ids restart
 from 1 after a gateway restart, so a reused JSONL file would otherwise misorder)

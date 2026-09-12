@@ -2155,10 +2155,11 @@ mod tests {
     /// still has to reach `/api/audit` as one identifiable file.
     ///
     /// Issue #162 asked whether `reason` should be trimmed to the error kind
-    /// because the endpoint serving it is unauthenticated, and settled that it
-    /// should not: this is the hook transport's only durable channel (#131), so
-    /// which file and what the OS said is most of what it is for. The relative
-    /// path is the same question from the other side. `.honmoon/hook-salt` is
+    /// because the endpoint serving it was then unauthenticated (issue #173 has
+    /// since put every management read behind the management token), and settled
+    /// that it should not: this is the hook transport's only durable channel
+    /// (#131), so which file and what the OS said is most of what it is for. The
+    /// relative path is the same question from the other side. `.honmoon/hook-salt` is
     /// only meaningful against a working directory no field records, so it names
     /// no file at all and an operator reading the event cannot act on it —
     /// keeping `reason` whole is worth nothing if the path in it does not
