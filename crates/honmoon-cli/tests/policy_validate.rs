@@ -100,6 +100,33 @@ fn stderr(output: &Output) -> String {
     String::from_utf8_lossy(&output.stderr).into_owned()
 }
 
+/// A policy the gateway loads. The endpoint name and host are distinctive so
+/// the output can be searched for them.
+const GOOD_POLICY: &str = r#"
+version: 1
+egress:
+  default: deny
+  allow:
+    - github.com
+endpoints:
+  crown-jewels: {host: jewels.internal, port: 5432, protocol: postgres}
+rules:
+  - name: sql-no-drop
+    endpoint: crown-jewels
+    condition: "sql.verb == 'DROP'"
+    verdict: deny
+"#;
+
+/// An address `TcpListener::bind` cannot resolve, used to stop a `gateway` run
+/// that got past the policy.
+///
+/// `gateway` on a policy it accepts serves until interrupted, so "it exits 0"
+/// is not a thing a test can wait for. Binding is the first step after the
+/// load, though, so a bind that cannot succeed turns "the policy was accepted"
+/// into an immediate, hermetic exit — no port taken, no process left running,
+/// and the error names which of the two stages it reached.
+const UNRESOLVABLE_ADDR: &str = "definitely-not-a-host.invalid:8443";
+
 /// Three rules the CEL compiler rejects, so "every one of them" has something
 /// to mean.
 const THREE_BAD_RULES: &str = r#"
@@ -124,25 +151,7 @@ rules:
 #[test]
 fn a_policy_the_gateway_would_accept_exits_zero_without_echoing_it() {
     let home = TempHome::new("good");
-    // The endpoint name and host are the part an operator may not want in a CI
-    // log, so they are distinctive enough to search the output for.
-    let policy = home.write_policy(
-        "good.yaml",
-        r#"
-version: 1
-egress:
-  default: deny
-  allow:
-    - github.com
-endpoints:
-  crown-jewels: {host: jewels.internal, port: 5432, protocol: postgres}
-rules:
-  - name: sql-no-drop
-    endpoint: crown-jewels
-    condition: "sql.verb == 'DROP'"
-    verdict: deny
-"#,
-    );
+    let policy = home.write_policy("good.yaml", GOOD_POLICY);
 
     let output = run(&home, &["policy", "validate", policy.to_str().unwrap()]);
 
@@ -345,6 +354,50 @@ fn a_file_that_is_not_a_policy_is_named_rather_than_quoted() {
             "the gateway refuses this file too, so the guard only changes the wording"
         );
     }
+}
+
+/// The refusal side of parity is the easy half. This is the other one, and it is
+/// the worse failure: a `validate` that passed a policy the gateway will not
+/// boot on sends an operator to production believing they checked.
+///
+/// Unix-only for the reason the other parity test is — `gateway` mints a
+/// management token before it loads anything, and cannot on a non-Unix host.
+#[cfg(unix)]
+#[test]
+fn validate_and_the_gateway_accept_the_same_policy() {
+    let validate_home = TempHome::new("parity-validate");
+    let gateway_home = TempHome::new("parity-gateway");
+    let validate_policy = validate_home.write_policy("good.yaml", GOOD_POLICY);
+    let gateway_policy = gateway_home.write_policy("good.yaml", GOOD_POLICY);
+
+    let validated = run(
+        &validate_home,
+        &["policy", "validate", validate_policy.to_str().unwrap()],
+    );
+    assert!(
+        validated.status.success(),
+        "validate accepts it; stderr: {}",
+        stderr(&validated)
+    );
+
+    let started = run(
+        &gateway_home,
+        &[
+            "gateway",
+            "--config",
+            gateway_policy.to_str().unwrap(),
+            "--addr",
+            UNRESOLVABLE_ADDR,
+        ],
+    );
+    let stderr = stderr(&started);
+    assert!(
+        stderr.contains("binding proxy"),
+        "the gateway must have got past the loader and failed at the bind — \
+         anything about a rule or an endpoint here means it refused a policy \
+         `validate` had just accepted, which is the drift that matters most; \
+         got: {stderr}"
+    );
 }
 
 /// A warning is not a refusal: the gateway starts on this policy, so `validate`

@@ -406,38 +406,48 @@ It is a load-and-exit check, so what it accepts is what a gateway accepts:
 
 How much of that diagnosis you get depends on the fault, because that is how the loader reports.
 Every rule whose `condition` does not compile is named in one go
-([#197](https://github.com/pleaseai/honmoon/pull/197)), so three of them take one run to find. The
-loader's other checks — an unusable `endpoints` entry, a blank `condition` — stop at the first
-offender, so those take one run each.
+([lib.rs:321-337](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/lib.rs#L321-L337)), so three of them take one run to
+find. The loader's other checks — an unusable `endpoints` entry
+([lib.rs:240-257](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/lib.rs#L240-L257)), a blank `condition`
+([lib.rs:280-290](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/lib.rs#L280-L290)) — return on the first offender, so
+those take one run each.
 
 Two properties are worth stating outright, because they are what make it usable.
 
-**It is the gateway's own loader, not a second opinion.** The command calls `Policy::from_yaml` —
-the same function `honmoon gateway --config` calls, compiled conditions and all. A check that could
-accept a policy the gateway then refused would be worse than no check, so there is no separate
-implementation here to drift from that one. The integration test
-`validate_and_the_gateway_report_the_same_refusal` runs both paths over one bad file and requires
-the same verdict and the same message
+**It is the gateway's own loader, not a second opinion.** The command reads the file and calls
+`Policy::from_yaml` ([main.rs:1003-1028](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-cli/src/main.rs#L1003-L1028)) — the same
+two steps `honmoon gateway --config` performs ([main.rs:562-564](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-cli/src/main.rs#L562-L564)),
+compiled conditions and all ([lib.rs:215-224](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/lib.rs#L215-L224)). A check
+that could accept a policy the gateway then refused would be worse than no check, so there is no
+separate implementation here to drift from that one. Two integration tests run both paths over one
+file and require the same verdict — `validate_and_the_gateway_report_the_same_refusal` on a policy
+both refuse, and `validate_and_the_gateway_accept_the_same_policy` on one both accept
 ([tests/policy_validate.rs](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-cli/tests/policy_validate.rs)).
 
 There is exactly one thing the check says in its own words, and it refuses nothing extra: a file
 whose top level is not a mapping — plain text, a list, a single value — is named as *not a policy
-document* rather than handed to the parser. The loader refuses those too; what changes is that the
+document* rather than handed to the parser
+([main.rs:972-982](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-cli/src/main.rs#L972-L982)). The loader refuses those too; what changes is that the
 parser would have quoted the file to say so, and for a document that is one plain scalar the quote
 is the whole file. Pointed at a token file, an SSH key or a `.env` by a mistyped path, that lands
 in the CI log. An empty file is not in this class: it is a valid policy with every field at its
 default.
 
 **It has no side effects.** No listener is bound, no audit log is opened, no CA is read or
-generated, and — the one that is easy to miss — the management token is never resolved. Starting a
-gateway resolves it *before* it loads the policy, so `honmoon gateway --config <bad file>` creates
-`~/.honmoon/mgmt-token` on its way to telling you the policy is broken. Checking a policy should
+generated, and — the one that is easy to miss — the management token is never resolved. All four
+live inside the `gateway` function, which this path never enters. Starting a gateway resolves that
+token at [main.rs:556](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-cli/src/main.rs#L556), *before* it reads the policy at
+[main.rs:562](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-cli/src/main.rs#L562), so `honmoon gateway --config <bad file>`
+creates `~/.honmoon/mgmt-token` on its way to telling you the policy is broken. Checking a policy should
 not mint a credential, least of all on the run where the policy is what failed, so this path never
 reaches that code (`validating_a_bad_policy_creates_nothing_under_home` pins it, against a control
 that shows the gateway doing exactly that).
 
-It reports the loader's **warnings** too — an unreachable rule, a rule naming an endpoint
-`endpoints` does not declare — which `tracing` filters out of an ordinary gateway run. They do not
+It reports the loader's **warnings** too — an unreachable rule
+([lib.rs:388-397](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/lib.rs#L388-L397)), a rule naming an endpoint
+`endpoints` does not declare ([lib.rs:364-374](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/lib.rs#L364-L374)) —
+which `tracing` filters out of an ordinary gateway run, because this command asks for a `warn`
+default and its own stderr writer ([main.rs:391-414](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-cli/src/main.rs#L391-L414)). They do not
 change the exit code: the gateway starts on a policy carrying one, so this accepts it too.
 
 They arrive through `tracing`, and the `warn` level this command asks for is only a *default*. A
