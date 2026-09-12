@@ -15,7 +15,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use honmoon_core::{AuditLog, Decision, PathResolution, Policy};
-use honmoon_mgmt::{AppState, HookSalt, SESSION_COOKIE};
+use honmoon_mgmt::{AppState, HookSalt};
 use honmoon_proxy::approval::ApprovalRegistry;
 use honmoon_proxy::ca::CaMaterial;
 use honmoon_proxy::gateway::{GatewayState, InterceptPolicy, PiiMode, RedactionState};
@@ -870,6 +870,11 @@ fn healthz_and_the_dashboard_shell_stay_open() {
 }
 
 /// The `Set-Cookie` value from a response head, if any.
+///
+/// Kept after the session cookie was removed (#188) precisely so the tests can
+/// assert its *absence*: the property that closes the sibling-port harvest is
+/// that this listener sets no cookie at all, and only a helper that can still
+/// find one can prove there is none.
 fn set_cookie(raw: &str) -> Option<String> {
     raw.lines()
         .find_map(|line| line.strip_prefix("set-cookie: "))
@@ -880,19 +885,55 @@ fn set_cookie(raw: &str) -> Option<String> {
         .map(|value| value.trim().to_string())
 }
 
+/// The `Location` value from a response head, if any.
+fn location(raw: &str) -> Option<String> {
+    raw.lines()
+        .find_map(|line| line.strip_prefix("location: "))
+        .or_else(|| raw.lines().find_map(|line| line.strip_prefix("Location: ")))
+        .map(|value| value.trim().to_string())
+}
+
+/// The header name the dashboard sends its session secret in (#188).
+///
+/// Spelled out rather than imported so this file pins the *wire* name a browser
+/// build would have to keep, not whatever the constant happens to say.
+const SESSION_HEADER: &str = "X-Honmoon-Session";
+
+/// The session secret out of a successful `/login`'s redirect target.
+///
+/// The secret rides in the URL fragment, which a browser never sends to any
+/// server — the dashboard's own script reads it out of `location.hash` and
+/// keeps it in origin-scoped `sessionStorage`.
+fn session_secret(login: &str) -> String {
+    let target = location(login).expect("login must redirect");
+    let (path, fragment) = target
+        .split_once('#')
+        .unwrap_or_else(|| panic!("login redirect carries no fragment: {target:?}"));
+    assert_eq!(path, "/", "login must land on the dashboard root");
+    fragment
+        .strip_prefix("session=")
+        .unwrap_or_else(|| panic!("unexpected fragment shape: {fragment:?}"))
+        .to_string()
+}
+
 /// The dashboard's own load path, end to end: fetch the shell with no
-/// credential, exchange the token for a session cookie at `/login`, then make
-/// the three calls `apps/dashboard/src/api.ts` makes — with only the cookie the
-/// browser would send. A gate that locked the dashboard out would fail here.
+/// credential, exchange the token at `/login` for the session secret the
+/// redirect's fragment carries, then make the three calls
+/// `apps/dashboard/src/api.ts` makes — with only the header its script attaches.
+/// A gate that locked the dashboard out would fail here.
 #[test]
-fn the_dashboard_load_path_reads_every_route_with_its_session_cookie() {
+fn the_dashboard_load_path_reads_every_route_with_its_session_header() {
     let (gw, _held) = gateway_with_a_held_request();
 
     // 1. The browser loads the shell. No credential yet, and none is leaked.
     let shell = http_request_raw(gw.mgmt_port, "GET", "/", &[], "");
     assert!(shell.starts_with("HTTP/1.1 200"), "shell: {shell:?}");
 
-    // 2. The operator opens the login URL honmoon printed at startup.
+    // 2. The operator opens the login URL honmoon printed at startup. It hands
+    //    back a session secret in the redirect fragment and — the property this
+    //    issue is about — sets no cookie: a cookie's scope carries no port
+    //    (RFC 6265 §8.5), so anything set here would be sent to every other
+    //    listener on `127.0.0.1` as well.
     let login = http_request_raw(
         gw.mgmt_port,
         "GET",
@@ -901,54 +942,61 @@ fn the_dashboard_load_path_reads_every_route_with_its_session_cookie() {
         "",
     );
     assert!(login.starts_with("HTTP/1.1 303"), "login: {login:?}");
-    let cookie = set_cookie(&login).expect("login must set a session cookie");
     assert!(
-        cookie.contains("HttpOnly"),
-        "cookie not HttpOnly: {cookie:?}"
+        set_cookie(&login).is_none(),
+        "login must set no cookie — a sibling loopback port receives every one: {login:?}"
     );
+    let secret = session_secret(&login);
     assert!(
-        cookie.contains("SameSite=Strict"),
-        "cookie not SameSite=Strict: {cookie:?}"
+        !secret.is_empty() && secret != MGMT_TOKEN,
+        "the session secret must not be the token itself: {secret:?}"
     );
-    assert!(
-        !cookie.contains(MGMT_TOKEN),
-        "the cookie must not carry the token itself: {cookie:?}"
-    );
-    let jar = cookie
-        .split(';')
-        .next()
-        .expect("cookie name=value")
-        .to_string();
 
-    // 3. The three reads `api.ts` makes, with only what the browser sends.
+    // 3. The three reads `api.ts` makes, with only what its script attaches.
     for route in READ_ROUTES {
-        let raw = http_request_raw(gw.mgmt_port, "GET", route, &[("Cookie", &jar)], "");
+        let raw = http_request_raw(gw.mgmt_port, "GET", route, &[(SESSION_HEADER, &secret)], "");
         assert!(
             raw.starts_with("HTTP/1.1 200"),
-            "{route} refused the dashboard's session cookie: {raw:?}"
+            "{route} refused the dashboard's session header: {raw:?}"
         );
     }
     assert!(
-        http_request_raw(gw.mgmt_port, "GET", "/api/policy", &[("Cookie", &jar)], "")
-            .contains(MARKER_RULE),
-        "the dashboard must see real policy data through its cookie"
+        http_request_raw(
+            gw.mgmt_port,
+            "GET",
+            "/api/policy",
+            &[(SESSION_HEADER, &secret)],
+            ""
+        )
+        .contains(MARKER_RULE),
+        "the dashboard must see real policy data through its session header"
     );
 
-    // 4. A wrong token mints nothing.
+    // 4. A wrong token mints nothing — no secret, and no cookie either.
     let refused = http_request_raw(gw.mgmt_port, "GET", "/login?token=wrong", &[], "");
     assert!(refused.starts_with("HTTP/1.1 401"), "login: {refused:?}");
     assert!(
         set_cookie(&refused).is_none(),
         "a refused login must not set a cookie"
     );
+    assert!(
+        location(&refused).is_none(),
+        "a refused login must not hand out a redirect target: {refused:?}"
+    );
 }
 
-/// `SameSite=Strict` keeps the cookie off a *cross-site* request, but any other
-/// port on `127.0.0.1` is same-site — exactly what a hostile local process can
-/// stand up. A cookie-authenticated write the browser labels cross-origin is
-/// refused; the same write from the dashboard's own origin is not.
+/// The dashboard's write travels on the same header, with no browser labelling
+/// of any kind.
+///
+/// A cookie is attached by the browser, so a cookie-authenticated write had to
+/// be checked against `Sec-Fetch-Site`/`Origin` to tell the dashboard's own
+/// request from one a sibling-port page provoked. A header the page must set
+/// itself is not ambient authority: no page can cause a browser to attach it
+/// (a custom header forces a CORS preflight this service never answers), so
+/// there is nothing for an origin check to distinguish and the write needs no
+/// browser evidence — the same reasoning the bearer has always had.
 #[test]
-fn a_cookie_authenticated_write_from_another_origin_is_refused() {
+fn a_session_header_write_needs_no_browser_labelling() {
     let (gw, _held) = gateway_with_a_held_request();
     let id = await_pending_id(gw.mgmt_port);
     let login = http_request_raw(
@@ -958,65 +1006,35 @@ fn a_cookie_authenticated_write_from_another_origin_is_refused() {
         &[],
         "",
     );
-    let jar = set_cookie(&login)
-        .expect("session cookie")
-        .split(';')
-        .next()
-        .expect("cookie name=value")
-        .to_string();
-    let approve = format!("/api/approvals/{id}/approve");
+    let secret = session_secret(&login);
 
-    let forged = http_request_raw(
+    let approved = http_request_raw(
         gw.mgmt_port,
         "POST",
-        &approve,
-        &[
-            ("Cookie", &jar),
-            ("Origin", "http://127.0.0.1:9999"),
-            ("Sec-Fetch-Site", "same-site"),
-        ],
+        &format!("/api/approvals/{id}/approve"),
+        &[(SESSION_HEADER, &secret)],
         "",
     );
     assert!(
-        forged.starts_with("HTTP/1.1 403"),
-        "a cross-origin cookie write must be refused: {forged:?}"
-    );
-    assert_eq!(
-        await_pending_id(gw.mgmt_port),
-        id,
-        "the forged write must not have resolved the approval"
-    );
-
-    let genuine = http_request_raw(
-        gw.mgmt_port,
-        "POST",
-        &approve,
-        &[("Cookie", &jar), ("Sec-Fetch-Site", "same-origin")],
-        "",
-    );
-    assert!(
-        genuine.starts_with("HTTP/1.1 200"),
-        "the dashboard's own write must still work: {genuine:?}"
+        approved.starts_with("HTTP/1.1 200"),
+        "the dashboard's own write must work: {approved:?}"
     );
 }
 
-/// A cookie replayed with no browser labelling at all is refused.
+/// No cookie is a credential, so a sibling loopback port has nothing to harvest.
 ///
-/// This is the shape that makes the loopback cookie scope matter: cookies carry
-/// no port (RFC 6265 §8.5), so a listener on another `127.0.0.1` port receives
-/// this credential from any request a page can provoke, and then replays it
-/// from outside a browser. `curl` sends neither `Sec-Fetch-Site` nor `Origin`,
-/// so an "absent means not a browser, allow it" rule would hand that replay the
-/// approval writes for free. A caller entitled to write off-browser holds the
-/// token and sends the bearer, which is why refusing here costs nothing.
-///
-/// This pins one arm, not the whole threat: a replay that *sets*
-/// `Sec-Fetch-Site: same-origin` still passes, because that header only means
-/// anything when a browser is the one setting it. See `same_origin`'s doc
-/// comment and issue #188 — the real remedy is to stop the cookie being
-/// harvestable, not to check more headers.
+/// This is the defect from issue #188, asserted as an absence rather than as a
+/// status code. Cookie scope has no port (RFC 6265 §8.5), so a listener another
+/// local user stands up on `127.0.0.1:9999` receives `honmoon_session` from any
+/// request a page can provoke (`<img src="http://127.0.0.1:9999/x">`) and then
+/// replays it off-browser, where `Sec-Fetch-Site` and `Origin` are ordinary
+/// headers it sets itself. No header check can tell that replay from the
+/// dashboard, which is why the fix is that there is no cookie: `/login` sets
+/// none (asserted above) and this route accepts none — including the genuine
+/// session secret presented where the old cookie went, which is exactly what a
+/// harvester would hold.
 #[test]
-fn a_cookie_replayed_without_browser_labelling_cannot_write() {
+fn no_session_cookie_is_a_credential_so_a_sibling_port_has_nothing_to_harvest() {
     let (gw, _held) = gateway_with_a_held_request();
     let id = await_pending_id(gw.mgmt_port);
     let login = http_request_raw(
@@ -1026,27 +1044,51 @@ fn a_cookie_replayed_without_browser_labelling_cannot_write() {
         &[],
         "",
     );
-    let jar = set_cookie(&login)
-        .expect("session cookie")
-        .split(';')
-        .next()
-        .expect("cookie name=value")
-        .to_string();
+    let secret = session_secret(&login);
     let approve = format!("/api/approvals/{id}/approve");
 
-    let replayed = http_request_raw(gw.mgmt_port, "POST", &approve, &[("Cookie", &jar)], "");
-    assert!(
-        replayed.starts_with("HTTP/1.1 403"),
-        "an unlabelled cookie write must be refused: {replayed:?}"
-    );
-    assert_eq!(
-        await_pending_id(gw.mgmt_port),
-        id,
-        "the replayed write must not have resolved the approval"
-    );
+    for value in [
+        // The real secret, in the cookie a harvester would have collected.
+        format!("honmoon_session={secret}"),
+        "honmoon_session=garbage".to_string(),
+        // The secret is an HMAC *of* the token, so the token itself is not it.
+        format!("honmoon_session={MGMT_TOKEN}"),
+        // A real-looking name that is not ours, alongside nothing else.
+        format!("other_session={secret}"),
+    ] {
+        for route in READ_ROUTES {
+            let raw = http_request_raw(gw.mgmt_port, "GET", route, &[("Cookie", &value)], "");
+            assert!(
+                raw.starts_with("HTTP/1.1 401"),
+                "{route} accepted a cookie {value:?}: {raw:?}"
+            );
+            assert!(
+                !raw.contains(MARKER_RULE),
+                "{route} leaked data to a cookie {value:?}: {raw:?}"
+            );
+        }
+        // Labelled as the browser would label the dashboard's own request, so a
+        // surviving origin check could not be what refuses this.
+        let write = http_request_raw(
+            gw.mgmt_port,
+            "POST",
+            &approve,
+            &[("Cookie", &value), ("Sec-Fetch-Site", "same-origin")],
+            "",
+        );
+        assert!(
+            write.starts_with("HTTP/1.1 401"),
+            "the approval write accepted a cookie {value:?}: {write:?}"
+        );
+        assert_eq!(
+            await_pending_id(gw.mgmt_port),
+            id,
+            "a cookie write must not have resolved the approval ({value:?})"
+        );
+    }
 
-    // The same request with the bearer is the legitimate off-browser caller and
-    // must still work — the refusal above is about the cookie, not the method.
+    // The legitimate off-browser caller holds the token and sends the bearer,
+    // which the refusals above must not have cost anything.
     let with_bearer = http_request_raw(
         gw.mgmt_port,
         "POST",
@@ -1056,84 +1098,29 @@ fn a_cookie_replayed_without_browser_labelling_cannot_write() {
     );
     assert!(
         with_bearer.starts_with("HTTP/1.1 200"),
-        "a bearer write needs no browser labelling: {with_bearer:?}"
+        "a bearer write must still work: {with_bearer:?}"
     );
 }
 
-/// The `Origin`/`Host` fallback, for a browser that sends no `Sec-Fetch-Site`.
-///
-/// Every CSRF assertion above pins the `Sec-Fetch-Site` arm, which would leave
-/// this one — the path an older browser takes — free to invert without a test
-/// noticing.
+/// A session secret that is not the minted one buys nothing, and neither does
+/// the token itself presented where the secret belongs.
 #[test]
-fn the_origin_fallback_decides_a_cookie_write_when_fetch_metadata_is_absent() {
-    let (gw, _held) = gateway_with_a_held_request();
-    let id = await_pending_id(gw.mgmt_port);
-    let login = http_request_raw(
-        gw.mgmt_port,
-        "GET",
-        &format!("/login?token={MGMT_TOKEN}"),
-        &[],
-        "",
-    );
-    let jar = set_cookie(&login)
-        .expect("session cookie")
-        .split(';')
-        .next()
-        .expect("cookie name=value")
-        .to_string();
-    let approve = format!("/api/approvals/{id}/approve");
-
-    let mismatched = http_request_raw(
-        gw.mgmt_port,
-        "POST",
-        &approve,
-        &[("Cookie", &jar), ("Origin", "http://127.0.0.1:9999")],
-        "",
-    );
-    assert!(
-        mismatched.starts_with("HTTP/1.1 403"),
-        "an Origin that is not this host must be refused: {mismatched:?}"
-    );
-    assert_eq!(await_pending_id(gw.mgmt_port), id, "must not have resolved");
-
-    // Hostnames are case-insensitive (RFC 9110 §4.2), so an `Origin` that
-    // differs from `Host` only in casing is the same origin. `send` writes
-    // `Host: localhost`, so this is that host, shouted.
-    let matching = http_request_raw(
-        gw.mgmt_port,
-        "POST",
-        &approve,
-        &[("Cookie", &jar), ("Origin", "http://LOCALHOST")],
-        "",
-    );
-    assert!(
-        matching.starts_with("HTTP/1.1 200"),
-        "a same-origin write must be accepted whatever the host casing: {matching:?}"
-    );
-}
-
-/// A cookie that is not the minted one buys nothing, and neither does the token
-/// itself presented where the cookie belongs.
-#[test]
-fn a_forged_session_cookie_reads_no_data() {
+fn a_forged_session_header_reads_no_data() {
     let (gw, _held) = gateway_with_a_held_request();
     for value in [
-        format!("{SESSION_COOKIE}=garbage"),
-        // The cookie is an HMAC *of* the token, so the token itself is not it.
-        format!("{SESSION_COOKIE}={MGMT_TOKEN}"),
-        // A real-looking name that is not ours, alongside nothing else.
-        format!("other_session={MGMT_TOKEN}"),
+        "garbage",
+        // The secret is an HMAC *of* the token, so the token itself is not it.
+        MGMT_TOKEN, "",
     ] {
-        for route in ["/api/audit", "/api/approvals", "/api/policy"] {
-            let raw = http_request_raw(gw.mgmt_port, "GET", route, &[("Cookie", &value)], "");
+        for route in READ_ROUTES {
+            let raw = http_request_raw(gw.mgmt_port, "GET", route, &[(SESSION_HEADER, value)], "");
             assert!(
                 raw.starts_with("HTTP/1.1 401"),
-                "{route} accepted a forged cookie {value:?}: {raw:?}"
+                "{route} accepted a forged session header {value:?}: {raw:?}"
             );
             assert!(
                 !raw.contains(MARKER_RULE),
-                "{route} leaked data to a forged cookie {value:?}: {raw:?}"
+                "{route} leaked data to a forged session header {value:?}: {raw:?}"
             );
         }
     }
