@@ -1,0 +1,19 @@
+.claude/agent-memory/review-review-security-reviewer/audit-sink-residual-gaps.md
+  s_c76fd182d547f6::t_9678a1ea80edd1 3,9-10,12-32,34-39,41-45
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "3fdffdb73daec1e8777bb81363be240ea6f7d13d",
+  "prompts": {},
+  "sessions": {
+    "s_c76fd182d547f6": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "4b37fffc-f5b8-4ce5-a33b-d8be2892e2a7",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
