@@ -197,5 +197,9 @@ a **new channel** for the settled payload, and in headless runs (`--output-forma
 `systemMessage` surfaces as an `SDKInformationalMessage`, so a `$HOME`/cwd path and an OS error
 can land in CI logs that may be more widely readable than the local JSONL.
 `degradations()` is the shared classifier behind both channels (it was `degradation()`,
-returning at most one, until #171 made a derivation able to owe two); it is exactly equivalent to the
-removed `is_degraded()` gate (`None` only for `(Persisted, None)`).
+returning at most one, until #171 made a derivation able to owe two). It is **no longer**
+equivalent to the removed `is_degraded()` gate: that gate was silent for the pair
+`(Persisted, None)`, and `degradations()` returns empty only for the *triple*
+`(Persisted, None, replaced_unread: None)` — a derivation that landed its replacement over an
+unread file is `(Persisted, None, Some(..))`, healthy on both old axes and still owed a record.
+`key_in_use_degradation()` is the half that kept the old equivalence.

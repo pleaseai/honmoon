@@ -243,11 +243,11 @@ const HOOK_SALT_WAS_EXPOSED_RULE: &str = "hook-salt-was-exposed";
 /// and leaves the third open.
 ///
 /// **It is also the record for the unreadable file itself.** A non-`NotFound`
-/// `Err` on a file honmoon owns is worth knowing however it ends — a mode
-/// changed underneath it, a directory swapped in, an I/O error — and no outcome
-/// of this arm is silent. Where the replacement lands, this rule is the record.
-/// Where it does not, what happened to the *file* decides: a failure at
-/// [`write_secret_file`]'s truncating open destroyed nothing, so only
+/// `Err` on a file honmoon owns is worth knowing — a mode changed underneath it,
+/// a directory swapped in, an I/O error. No outcome of this arm is silent, but
+/// not every outcome is *this rule*. Where the replacement lands, this rule is
+/// the record. Where it does not, what happened to the *file* decides: a failure
+/// at [`write_secret_file`]'s truncating open destroyed nothing, so only
 /// [`HOOK_SALT_FALLBACK_RULE`] fires and there is no replacement to report; a
 /// failure after it destroyed the file anyway, so **both** fire — the fallback
 /// rule for the key now in use, this one for the bytes that are gone. A failure
@@ -664,10 +664,13 @@ fn key_source_label(source: honmoon_core::RedactionKeySource) -> &'static str {
 /// replaced a salt file the loader could not read. On the fallback rule
 /// `key_source` then says which guarantee was lost — unforgeability under
 /// [`MachineKeySource::Fallback`], byte-stability under
-/// [`MachineKeySource::Unpersisted`]. On the other three it stays `persisted`,
-/// because that is what the key in use is; on the replaced-unread rule that is
-/// also why `rule` has to be read before `reason`, which is about a different
-/// key.
+/// [`MachineKeySource::Unpersisted`]. On both exposure rules it stays
+/// `persisted`, because that is what the key in use is. On the replaced-unread
+/// rule it is whichever of the two the key in use happens to be — `persisted`
+/// where the replacement landed, `fallback` where the loader destroyed the file
+/// and then could not write one — which is the concrete reason `rule` has to be
+/// read before `reason` there: the `reason` is about the key that is gone, and
+/// `key_source` is about the one that is not.
 ///
 /// The audit log is the one channel in this system a human reviews after the
 /// fact — a JSONL file the query API and the dashboard read — which is what the

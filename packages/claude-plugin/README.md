@@ -404,10 +404,10 @@ ever seen. Read the two halves separately. A mode letting other local users **re
 file, on a file that may have held a key, is the combination worth acting on: treat the
 placeholders minted before this event as forgeable, since rotation protects a session's
 future and not its past. Nothing else in the `reason` clears it — an `owner-only` mode, a
-mode that could not be read back, and the execute-only case (which grants no read at all,
-so there was never anything to copy) all leave the question open, for the reason the
-exposure rules give: a file that was `0644` last week and `0600` now looks identical here
-to one that was never loose.
+mode that could not be read back, and the execute-only case (whose mode grants no read at
+that one instant, which says nothing about earlier ones) all leave the question open, for
+the reason the exposure rules give: a file that was `0644` last week and `0600` now looks
+identical here to one that was never loose.
 
 `key_source` names the key **in use**, not the discarded one. That is usually `persisted`
 — a fresh secret landed in the file — but it is `fallback` where the loader destroyed the
