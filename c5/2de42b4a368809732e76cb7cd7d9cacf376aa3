@@ -1,0 +1,22 @@
+crates/honmoon-core/tests/audit_sink_exposure.rs
+  s_c76fd182d547f6::t_23539065c772c8 120-121
+  s_c76fd182d547f6::t_222df9d9321615 105-119,122-131
+crates/honmoon-core/src/audit.rs
+  s_c76fd182d547f6::t_0455ae7928605e 184,187,189,227-229,234-238,398-403
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "c52de42b4a368809732e76cb7cd7d9cacf376aa3",
+  "prompts": {},
+  "sessions": {
+    "s_c76fd182d547f6": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "4b37fffc-f5b8-4ce5-a33b-d8be2892e2a7",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
