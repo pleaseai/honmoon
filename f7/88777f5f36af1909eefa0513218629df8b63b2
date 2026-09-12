@@ -1,0 +1,40 @@
+crates/honmoon-cli/tests/policy_validate.rs
+  s_74bdd8db3220da::t_7dfbf832af5cd3 167,236-237,240-245,247-248,254-255,306-349
+  s_74bdd8db3220da::t_da05c4e9a9fe05 33-40,46-48,154-166,260
+  s_74bdd8db3220da::t_d0f95d299cad9e 228-235,238-239,246,249-253,261-266
+wiki/llms-full.txt
+  s_74bdd8db3220da::t_00232afe238b92 3096,3099-3104,3115-3122,3133-3138,3145-3150
+.claude/agent-memory/review-review-comment-analyzer/pr201_policy_validate_claims.md
+  s_74bdd8db3220da::t_bde23aee978374 1-2,4-7,13,21
+  s_74bdd8db3220da::t_f7b1536043b16e 3,8-12,14-20,22-35
+.claude/agent-memory/review-review-security-reviewer/policy-load-error-echoes-file.md
+  s_74bdd8db3220da::t_f7b1536043b16e 3,9-10,13-38
+  s_74bdd8db3220da::t_a091b7e9d0a8d7 1-2,4-8,11-12
+wiki/getting-started/policy-authoring.md
+  s_74bdd8db3220da::t_65351f76de4ee2 404,407-412,423-430,441-446,453-458
+README.md
+  s_74bdd8db3220da::t_65351f76de4ee2 182-185
+crates/honmoon-cli/Cargo.toml
+  s_74bdd8db3220da::t_de5adbbd3e983a 26-29
+crates/honmoon-cli/src/main.rs
+  s_74bdd8db3220da::t_7c44069607a99d 947-983,987-997,1004-1015
+  s_74bdd8db3220da::t_de5adbbd3e983a 272-284,294-298,377-384,394-402,409-412
+Cargo.lock
+  s_74bdd8db3220da::t_a2fe43c014b7a8 1026
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "f788777f5f36af1909eefa0513218629df8b63b2",
+  "prompts": {},
+  "sessions": {
+    "s_74bdd8db3220da": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a2a7decf-3c3f-4518-856f-e78017aab857",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
