@@ -4,6 +4,7 @@ mod hook;
 mod isolate;
 mod mgmt_token;
 
+use std::io::IsTerminal as _;
 use std::net::{Ipv4Addr, Ipv6Addr, TcpListener};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -481,16 +482,31 @@ fn gateway(args: GatewayArgs) -> Result<()> {
 
     // Printed for the same reason the deprecation above is: an operator who
     // cannot find the credential cannot open the dashboard, and `RUST_LOG` is
-    // unset in an ordinary run. Only a token honmoon minted itself is echoed —
-    // see `mgmt_token::Source::printable`.
+    // unset in an ordinary run.
+    //
+    // The token itself is echoed only when honmoon owns it (never an
+    // `--mgmt-token` the operator chose — see `mgmt_token::Source::printable`)
+    // *and* stderr is a terminal. A terminal is a person who is about to click
+    // the link; a pipe is a journal, a Docker log driver or a log aggregator,
+    // where the same line would persist a long-lived credential somewhere far
+    // more readable than the `0600` file. The path is printed either way, so
+    // the redirected case still says where to read it.
     let mgmt_url = format!("http://{}", mgmt_listener.local_addr()?);
-    if mgmt.source.printable() {
+    let token_path = mgmt.source.path();
+    if mgmt.source.printable() && std::io::stderr().is_terminal() {
         eprintln!("honmoon: dashboard: {mgmt_url}/login?token={}", mgmt.token);
-        if let Some(path) = mgmt.source.path() {
-            eprintln!("honmoon: management token: {}", path.display());
-        }
+    } else if mgmt.source.printable() {
+        eprintln!(
+            "honmoon: dashboard: {mgmt_url}/login?token=<the token in {}>",
+            token_path
+                .map(|p| p.display().to_string())
+                .unwrap_or_else(|| "your token file".to_string())
+        );
     } else {
         eprintln!("honmoon: dashboard: {mgmt_url}/login?token=<your --mgmt-token>");
+    }
+    if let Some(path) = token_path {
+        eprintln!("honmoon: management token: {}", path.display());
     }
 
     let runtime = tokio::runtime::Runtime::new().context("build tokio runtime")?;

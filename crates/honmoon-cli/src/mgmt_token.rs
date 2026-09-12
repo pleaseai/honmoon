@@ -161,6 +161,7 @@ fn load_or_create(dir: &Path) -> Result<Resolved> {
                     path.display()
                 );
             }
+            warn_if_readable_beyond_owner(&path);
             Ok(Resolved {
                 token: winner.to_string(),
                 source: Source::Persisted(path),
@@ -183,8 +184,18 @@ fn warn_if_readable_beyond_owner(path: &Path) {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt as _;
-        let Ok(metadata) = std::fs::metadata(path) else {
-            return;
+        let metadata = match std::fs::metadata(path) {
+            Ok(metadata) => metadata,
+            // This function exists to never be quiet about the mode. Saying it
+            // could not be read is the honest form of that, and silence here
+            // reads identically to "checked, and it was fine".
+            Err(e) => {
+                eprintln!(
+                    "honmoon: warning: could not read the mode of the management token {}: {e}",
+                    path.display()
+                );
+                return;
+            }
         };
         let mode = metadata.permissions().mode() & 0o777;
         if mode & 0o077 != 0 {
@@ -241,6 +252,13 @@ fn create_secret_file_exclusive(path: &Path, bytes: &[u8]) -> std::io::Result<()
 }
 
 /// Truncating `0600` write, for replacing a file already known to be unusable.
+///
+/// `OpenOptionsExt::mode` applies only to a file the open *creates*, so
+/// truncating one that already exists would otherwise keep whatever mode it
+/// had — a `0644` empty placeholder would receive a live credential and stay
+/// world-readable. The explicit `set_permissions` is what makes the `0600` in
+/// this function's name true on the replace path, and it runs *before* the
+/// bytes so there is no window where the new token sits at the old mode.
 fn write_secret_file(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     use std::io::Write as _;
     let mut opts = std::fs::OpenOptions::new();
@@ -250,7 +268,13 @@ fn write_secret_file(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
         use std::os::unix::fs::OpenOptionsExt as _;
         opts.mode(0o600);
     }
-    opts.open(path)?.write_all(bytes)
+    let mut file = opts.open(path)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
+    }
+    file.write_all(bytes)
 }
 
 #[cfg(test)]
@@ -344,5 +368,32 @@ mod tests {
         let resolved = resolve(None, tmp.path()).unwrap();
         assert_eq!(resolved.token.len(), TOKEN_BYTES * 2);
         assert!(matches!(resolved.source, Source::Generated(_)));
+    }
+
+    /// Replacing an empty file must not inherit that file's mode.
+    ///
+    /// `OpenOptionsExt::mode` applies only to a file the open creates, so a
+    /// `0644` placeholder — a `touch` under a default umask, or a
+    /// configuration-management stub — would otherwise be handed a live
+    /// credential and stay readable by every other local user on the host,
+    /// which is the whole population the token exists to exclude.
+    #[cfg(unix)]
+    #[test]
+    fn replacing_an_empty_token_file_tightens_its_mode() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let tmp = TempDir::new("empty-file-mode");
+        let path = tmp.path().join(FILE_NAME);
+        std::fs::write(&path, "\n").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+
+        let resolved = resolve(None, tmp.path()).unwrap();
+        assert!(matches!(resolved.source, Source::Generated(_)));
+
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(
+            mode, 0o600,
+            "a replaced token file must be owner-only, was {mode:04o}"
+        );
     }
 }
