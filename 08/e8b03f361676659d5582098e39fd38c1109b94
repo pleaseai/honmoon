@@ -1,0 +1,23 @@
+scripts/agent-memory-index.ts
+  s_871e5be42b1f22::t_a995331299843d 393-399,401
+scripts/agent-memory-index.test.ts
+  s_871e5be42b1f22::t_8f92b335901eb4 941-955
+.claude/agent-memory/review-review-code-reviewer/project_bun_yaml_frontmatter_168.md
+  s_871e5be42b1f22::t_f76248267267b4 64-71
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "08e8b03f361676659d5582098e39fd38c1109b94",
+  "prompts": {},
+  "sessions": {
+    "s_871e5be42b1f22": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "7cb2cb55-d06a-41f7-a6e5-af46a15fc6e0",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
