@@ -10,12 +10,19 @@
  *   GET /healthz
  *   GET /api/audit?limit=&decision=&since=&domain=
  *   GET /api/audit/stats
+ *
+ * Every route but `/healthz` requires the management token as
+ * `Authorization: Bearer <token>` (#173) — the same token the Rust gateway
+ * requires, resolved from the same places. See `./auth`.
  */
 import type { AuditEvent } from '@honmoon/policy'
-import { auditStats, queryAudit, queryFromParams, readAuditFile } from './audit'
+import { readAuditFile } from './audit'
+import { resolveToken } from './auth'
+import { createFetchHandler } from './routes'
 
 const port = Number(process.env.HONMOON_API_PORT ?? 8445)
 const auditPath = process.env.HONMOON_AUDIT_LOG ?? 'honmoon-audit.jsonl'
+const credential = resolveToken()
 
 // Polling clients hit these endpoints frequently; re-reading and re-parsing the
 // whole JSONL log per request is O(file-size) and grows hot as the log does.
@@ -35,27 +42,17 @@ async function loadEvents(): Promise<AuditEvent[]> {
 
 const server = Bun.serve({
   port,
-  async fetch(req) {
-    const url = new URL(req.url)
-
-    if (url.pathname === '/healthz') {
-      return Response.json({ status: 'ok' })
-    }
-
-    if (url.pathname === '/api/audit') {
-      const events = await loadEvents()
-      return Response.json(queryAudit(events, queryFromParams(url.searchParams)))
-    }
-
-    if (url.pathname === '/api/audit/stats') {
-      const events = await loadEvents()
-      return Response.json(auditStats(events))
-    }
-
-    return new Response('Not found', { status: 404 })
-  },
+  fetch: createFetchHandler({ token: credential.token, loadEvents }),
 })
 
 console.log(
   `honmoon api listening on http://localhost:${server.port} (audit log: ${auditPath})`,
+)
+// The token itself is never printed: unlike the gateway, this service has no
+// browser login flow that would leave an operator unable to find it, and its
+// callers can read the environment variable or the file directly.
+console.log(
+  credential.path === undefined
+    ? 'honmoon api: management token from the environment'
+    : `honmoon api: management token ${credential.source} at ${credential.path}`,
 )
