@@ -608,7 +608,10 @@ pub fn record_machine_key_status(
 /// fallback and not a replacement for the log. It is carried as the
 /// [`systemMessage`][run] common field rather than `additionalContext`: shown
 /// to the user, never added to the model's context, so a degradation report
-/// does not itself feed the transcript honmoon exists to keep clean.
+/// does not itself feed the transcript honmoon exists to keep clean. The
+/// plugin's function-hooks module (`packages/claude-plugin/hooks/honmoon.ts`)
+/// parses this same response and lifts the field off the verdict onto
+/// `$.ui.log`, so on that transport too it is shown and decides nothing.
 ///
 /// [run]: run
 fn audit_machine_key_status(audit_log: Option<&Path>, status: &MachineKeyStatus) -> Option<String> {
@@ -2204,9 +2207,12 @@ mod tests {
         // itself become one — but it must not swallow it either: the line for
         // the hook response comes back, naming the degradation the way the
         // audit event would have (issue #165).
-        let message =
-            audit_machine_key_status(Some(&blocked_log), &machine_key_in(&unusable).status)
-                .expect("a refused sink is reported on the response");
+        let status = machine_key_in(&unusable).status;
+        let MachineKeySource::Fallback { reason } = &status.source else {
+            panic!("an unusable salt dir produces the fallback key");
+        };
+        let message = audit_machine_key_status(Some(&blocked_log), &status)
+            .expect("a refused sink is reported on the response");
         assert!(
             message.contains("rule=hook-salt-fallback"),
             "the response names the rule: {message}"
@@ -2216,9 +2222,49 @@ mod tests {
             "the response names the key source: {message}"
         );
         assert!(
+            message.contains(&format!("reason={reason} ")),
+            "the response carries the loader's own reason, whole: {message}"
+        );
+        assert!(
             message.contains(&format!("sink={}", blocked_log.display())),
             "the response names the sink that refused: {message}"
         );
+    }
+
+    #[test]
+    fn an_exposed_key_refused_by_the_sink_is_reported_with_its_own_rule() {
+        // The response is built from the same `degradation()` the durable record
+        // uses, so the exposure branches — a persisted key whose file was
+        // readable beyond its owner — must come through it with their own
+        // `rule` and `key_source=persisted`, not be flattened into the fallback
+        // shape the other response tests exercise.
+        let tmp = TempDir::new("sink-refused-exposed");
+        let blocked_log = tmp.path().join("not-a-dir").join("audit.jsonl");
+        std::fs::write(tmp.path().join("not-a-dir"), b"x").expect("seed blocker file");
+        for (exposure, rule) in [
+            (
+                SaltExposure::Open {
+                    reason: "salt file was readable by group".into(),
+                },
+                HOOK_SALT_EXPOSED_RULE,
+            ),
+            (
+                SaltExposure::Closed {
+                    reason: "salt file was found readable by others".into(),
+                },
+                HOOK_SALT_WAS_EXPOSED_RULE,
+            ),
+        ] {
+            let reason = match &exposure {
+                SaltExposure::Open { reason } | SaltExposure::Closed { reason } => reason.clone(),
+            };
+            let status = MachineKeyStatus::persisted(Some(exposure));
+            let message = audit_machine_key_status(Some(&blocked_log), &status)
+                .expect("a refused sink is reported on the response");
+            assert!(message.contains(&format!("rule={rule} ")), "{message}");
+            assert!(message.contains("key_source=persisted "), "{message}");
+            assert!(message.contains(&format!("reason={reason} ")), "{message}");
+        }
     }
 
     #[cfg(unix)]
