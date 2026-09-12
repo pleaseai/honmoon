@@ -1,0 +1,25 @@
+apps/dashboard/src/format.test.ts
+  s_c76fd182d547f6::t_499d4bf2111858 46-60
+packages/claude-plugin/README.md
+  s_c76fd182d547f6::t_499d4bf2111858 286-301
+apps/dashboard/src/format.ts
+  s_c76fd182d547f6::t_499d4bf2111858 11-13
+packages/policy/src/index.ts
+  s_c76fd182d547f6::t_499d4bf2111858 149-173,182-183
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "e277a042e99601c2e96a8dfa220f60f96fe73aa1",
+  "prompts": {},
+  "sessions": {
+    "s_c76fd182d547f6": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "4b37fffc-f5b8-4ce5-a33b-d8be2892e2a7",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
