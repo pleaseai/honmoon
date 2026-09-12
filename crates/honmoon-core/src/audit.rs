@@ -400,7 +400,9 @@ impl AuditLog {
     /// observation whose append fails there is lost as such — what survives is
     /// the salt record that follows on the same descriptor, which goes through
     /// [`record_durable`](Self::record_durable) and reports the refusing sink
-    /// on stderr by path and error, without saying what was observed about it.
+    /// on the hook response by path and error (issue #182), without saying what
+    /// was observed about it. An observation lost while that salt record
+    /// succeeds is issue #184.
     pub fn with_file(capacity: usize, path: impl Into<PathBuf>) -> std::io::Result<Self> {
         let path = path.into();
         let (file, meta) = open_sink(&path)?;
