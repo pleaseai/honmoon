@@ -403,6 +403,18 @@ impl AuditLog {
     /// [`open_sink`] documents exactly which hostile targets the open refuses
     /// and which it still accepts.
     ///
+    /// **Why this crate performs the open** (issue #166, following #163).
+    /// `crates/AGENTS.md` holds `honmoon-core` to no async runtime, no socket and
+    /// no network client; this sink is the one file it opens, and the boundary
+    /// section there says so rather than claiming the crate does no I/O. The
+    /// hardening [`open_sink`] performs enforces an invariant of *this type*, not
+    /// of whoever calls it: `append_jsonl` writes synchronously on the decision
+    /// path, so what the descriptor turns out to be decides whether a record
+    /// blocks the process that opened it or lands somewhere a local actor reads.
+    /// Taking an already-open `File` instead would leave this constructor as an
+    /// unhardened path every caller has to know not to use — the shape issue
+    /// #138 was, and the reason it is not offered.
+    ///
     /// What it accepts, it now *reports*: a sink reachable by more than this
     /// process's own user produces a [`Decision::Degraded`] event per observation,
     /// carrying [`AuditSinkFacts`], before this returns. The mode, the owner and

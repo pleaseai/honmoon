@@ -38,6 +38,10 @@ libc.workspace = true
 
 [dev-dependencies]
 divan = { version = "5.0.1", package = "codspeed-divan-compat" }
+# Reading `cargo metadata` in `tests/crate_boundary.rs`. Not a new dependency:
+# the crate already builds against `serde_json`, and this entry only makes it
+# linkable from an integration test.
+serde_json.workspace = true
 
 [[bench]]
 name = "policy_engine"
