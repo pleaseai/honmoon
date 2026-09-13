@@ -3093,6 +3093,15 @@ mod tests {
             acc.releasable_now(),
             "the handshake was answered, so nothing is owed and the refusal waits for nothing"
         );
+
+        // And the clamp still does the job it is there for: a backend that sends
+        // more `ReadyForQuery` frames than it was asked for cannot buy a refusal
+        // its way past a statement nobody has answered.
+        acc.relay.delivered(b'Z');
+        assert_eq!(
+            acc.relay.answered, 1,
+            "a `ReadyForQuery` for a sync point that was never forwarded was counted"
+        );
     }
 
     #[tokio::test]
