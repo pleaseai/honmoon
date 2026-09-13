@@ -31,7 +31,7 @@ are snapshotted from the single-writer message loop when the refusal is decided.
 Shared state is three monotonic `AtomicU64`s (`Forwarded`) — see
 [[honmoon-proxy-sync-point-tracking]].
 
-**Why:** without the barrier a refusal for a pipelined statement lands in front of
+**Why:** without the barrier, a refusal for a pipelined statement lands in front of
 the previous statement's response and the client attributes the 42501 to the wrong
 query — in the worst reading, a *denied* statement looks like it succeeded.
 Undercounting the delivered side is the security-relevant direction; overcounting
@@ -109,3 +109,38 @@ Live gaps:
 Related: [[project-redaction-failopen-design]] — same fail-open-vs-fail-closed
 weighting question, opposite answer (the proxy path is the enforcement backstop
 and stays fail-closed).
+
+Verified once against the #121 shape, so do not re-derive:
+
+- **The barrier is airtight because the message loop is frozen while an answer is
+  queued.** `ClientLink::inject` awaits the `oneshot` ack and the channel holds
+  one slot, so between the `link.refusal(..)` snapshot and the relay's write
+  nothing can be forwarded: `Forwarded` cannot move, `flushes_covered` cannot be
+  overwritten, and `forwarded.sync_points == refusal.sync_points` for the whole
+  wait. That is what makes `Relay::delivered`'s clamp sufficient (extra `Z`
+  frames beyond the forwarded total are discarded) and what makes #153's stale
+  coverage unexploitable. Any change that lets the loop forward while an
+  injection is in flight — a channel deeper than one, or an un-awaited inject —
+  breaks both at once.
+- `order_deadline` is `Some` at exactly one construction site (the abandoned-hold
+  courtesy notice in `decide`, which then returns `ClientGone`); `refuse` and
+  `refuse_uninspectable` pass `None`. `Injection::NoEncryption` — the only
+  unordered write in `write_queued` — is constructed only in `startup`, before any
+  frame reaches the database.
+- **`n` (NoData) is missing from the never-settle tag list** (`D d N A S t T G H W
+  c`), while the list's own rationale names NoData as the alternative terminal of
+  a `Describe`. A quiet after `NoData` in `Parse`/`Bind`/`Describe`/`Execute`/
+  `Flush` settles that flush while the `Execute` is still computing. Unchanged
+  from pre-#121, but a real asymmetry with `T` rather than a deliberate exclusion.
+  Tracked as #211; the list is the third leak of the enumerate-from-the-wrong-side
+  shape, so prefer inverting it to adding a twelfth byte.
+- **`Relay::delivered`'s clamp bounds the total, not the position.** It stops a
+  backend accumulating more sync-point credit than the session forwarded; it does
+  not stop one that answers a single sync point twice from satisfying a refusal's
+  tag one response early. That needs a protocol-violating upstream, which is not
+  the adversary here — but do not read the clamp as per-statement robustness when
+  hardening this file.
+- **The stall window is re-armed by a *complete* message.** A single message whose
+  bytes trickle in for longer than the window is given up on mid-arrival, so
+  "waiting on N with no backend traffic" is really "with nothing whole delivered".
+  Unchanged from pre-#121, tracked as #209.

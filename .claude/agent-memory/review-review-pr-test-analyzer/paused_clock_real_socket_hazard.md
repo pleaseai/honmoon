@@ -24,7 +24,8 @@ tested.
 **How to apply.** Do not flag such a test as under-specified and do not "fix" it by
 widening the assertion to a range — that deletes the guarantee. Drive the timing
 test through an in-memory peer so nothing in the wait path needs socket readiness:
-this file's `ScriptedUpstream` is the pattern (an `AsyncRead` + `TryRead` over a
+`ScriptedUpstream` in `crates/honmoon-proxy/src/runtime/postgres.rs`'s test module
+is the pattern (an `AsyncRead` + `TryRead` over a
 `VecDeque<(Duration, Vec<u8>)>` script, an empty chunk meaning EOF), and the test
 then calls the relay loop directly and asserts an exact deadline. Keep real sockets
 for the ordering and framing tests, which assert *what* was written and in what

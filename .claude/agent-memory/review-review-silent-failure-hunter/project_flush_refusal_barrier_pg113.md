@@ -34,8 +34,9 @@ sites are touched again.
 and its two `tracing::warn!` sites are all gone. Do not search for them.
 
 The EOF/error-from-`try_read` path is still the one to check, and it is still
-safe, but for a different reason. The probe is now `relay.try_read_now(&mut head)`
-in `relay_backend_messages`, and `Ok(0)` / `Err(_)` return `Stop::Upstream`
+safe, but for a different reason. The probe is now `upstream.try_read_now(&mut head)`
+in `relay_backend_messages` (the receiver is that function's `upstream` parameter,
+not the `Relay`), and `Ok(0)` / `Err(_)` return `Stop::Upstream`
 without settling the flush — exactly as before. What changed is what makes that
 harmless: `upstream_to_client` handles `Stop::Upstream` by setting
 `relay.forced = true` and writing whatever answer it is holding before it returns
