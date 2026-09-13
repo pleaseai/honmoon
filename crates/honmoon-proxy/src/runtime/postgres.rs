@@ -515,9 +515,17 @@ impl Relay {
         }
     }
 
-    /// Give up on ordering the queued refusal: not one byte of any backend
-    /// message for a whole window means the missing answers are not late, they
-    /// are not coming.
+    /// Give up on ordering the queued refusal: no *complete* backend message for
+    /// a whole window means the missing answers are not late, they are not
+    /// coming.
+    ///
+    /// Complete is the precise word, and it is weaker than it looks: the window
+    /// is re-armed by [`Relay::delivered`], so a single message whose bytes
+    /// trickle in over longer than the window does not re-arm it and is given up
+    /// on mid-arrival. That needs a link slower than roughly 2 KiB/s for a
+    /// message up to [`MAX_BUFFERED_BACKEND_MESSAGE`], errs toward releasing a
+    /// refusal early rather than late, and is unchanged from the pre-#121 timer,
+    /// which restarted on the same signal. Tracked as #209.
     ///
     /// Recorded as a floor rather than as a credit to what was delivered. The
     /// floor is compared against each refusal's own tag, so it releases exactly
@@ -614,8 +622,16 @@ impl Relay {
             // Never count past what was forwarded. In ordinary operation this
             // cannot bind — every `ReadyForQuery` answers a sync point counted
             // before the frame that earns it goes out — so it stands as a guard
-            // against a backend that sends more of them than it was asked for,
-            // not as part of the arithmetic.
+            // against a backend accumulating more sync-point credit than the
+            // session ever forwarded, not as part of the arithmetic.
+            //
+            // It bounds the total and says nothing about position: a backend that
+            // answers one sync point twice still advances this count, and can
+            // satisfy a refusal's tag one response early. Ordering against an
+            // upstream that violates the protocol is not what this barrier is
+            // for — the client is the adversary here, and a client that also
+            // controls the database learns nothing it did not already know,
+            // since the denied statement is never forwarded either way.
             if self.answered < self.forwarded.sync_points.load(Ordering::Relaxed) {
                 self.answered += 1;
             }
@@ -811,12 +827,43 @@ pub async fn run_postgres(
     // only way the message loop learned the relay was gone is that the relay
     // dropped the channel on its way out.
     if let Some(message) = ended.unwritten {
-        if let Ok(Some(mut relayed)) = (&mut downstream).await {
-            let _ = relayed.client.write_all(&error_response(&message)).await;
-            let _ = relayed
-                .client
-                .write_all(&[b'Z', 0, 0, 0, 5, relayed.tx_status])
-                .await;
+        match (&mut downstream).await {
+            Ok(Some(mut relayed)) => {
+                if relayed
+                    .client
+                    .write_all(&error_response(&message))
+                    .await
+                    .is_err()
+                    || relayed
+                        .client
+                        .write_all(&[b'Z', 0, 0, 0, 5, relayed.tx_status])
+                        .await
+                        .is_err()
+                {
+                    tracing::warn!(
+                        message,
+                        "the client's socket failed while its refusal was written on the \
+                         write half the relay handed back"
+                    );
+                }
+            }
+            // Correct, and the one case worth saying out loud: a relay that
+            // stopped mid-message left the client holding a partial frame, so
+            // appending an `ErrorResponse` would be read as that frame's
+            // remainder. The refusal is suppressed on purpose — but the client
+            // then sees a reset with no explanation, and the audit entry made at
+            // decision time is the only other trace of it.
+            Ok(None) => tracing::warn!(
+                message,
+                "the refusal was suppressed: the relay left the client's stream unframed, \
+                 so the client sees a truncated connection rather than its 42501"
+            ),
+            Err(joined) => tracing::warn!(
+                message,
+                error = %joined,
+                "the refusal was lost: the relay task ended abnormally and handed back no \
+                 write half"
+            ),
         }
     }
 
@@ -903,7 +950,10 @@ where
         //   statement answers with the first and then the second or `NoData`,
         //   and a `Bind`/`Describe`/`Execute` batch emits `RowDescription`
         //   before the first row — a backend that has planned the query and not
-        //   yet produced a row pauses exactly there;
+        //   yet produced a row pauses exactly there. `NoData` (`n`) is the same
+        //   position for a statement that returns no rows and is **not** in the
+        //   list below: that asymmetry is a real gap, not a decision, and is
+        //   tracked as #211 rather than closed here;
         // - `CopyInResponse` / `CopyOutResponse` / `CopyBothResponse` /
         //   `CopyDone`: each opens or punctuates a copy whose `CommandComplete`
         //   has not been sent.
@@ -1574,7 +1624,7 @@ where
                     // pipeline, so spending the whole budget on the wait would
                     // leave nothing for the answer itself.
                     let ordered_by = tokio::time::Instant::now() + ABANDONED_NOTICE_ORDER_BUDGET;
-                    let _ = tokio::time::timeout(
+                    let notice = tokio::time::timeout(
                         ABANDONED_NOTICE_TIMEOUT,
                         link.inject(Injection::Refusal(link.refusal(
                             "honmoon: connection ended while the statement was held for approval",
@@ -1582,6 +1632,22 @@ where
                         ))),
                     )
                     .await;
+                    // The notice is best effort — the client is presumed gone —
+                    // but "gone" and "half-closed and still reading" are the two
+                    // cases this path cannot tell apart, and only one of them is
+                    // harmless. Saying which outcome it was is what separates
+                    // them afterwards.
+                    match notice {
+                        Ok(Ok(())) => {}
+                        Ok(Err(Unwritten)) => tracing::debug!(
+                            "the abandoned-hold notice was not written: the relay had already \
+                             stopped, or the client's stream was left unframed"
+                        ),
+                        Err(_) => tracing::debug!(
+                            "the abandoned-hold notice did not reach the client within \
+                             ABANDONED_NOTICE_TIMEOUT"
+                        ),
+                    }
                     return Ok(Disposition::ClientGone);
                 }
                 HoldOutcome::Rejected | HoldOutcome::QueueFull => false,
@@ -3147,6 +3213,109 @@ mod tests {
         .await
         .expect("the refusal is written as soon as the relay ends, not after the stall bound");
         assert!(ended.unwrap().drain);
+    }
+
+    #[tokio::test]
+    async fn a_closed_injection_channel_does_not_stop_the_relay_delivering_what_is_still_owed() {
+        // `run_postgres` drops the link before it waits out `DRAIN_TIMEOUT`, so
+        // the channel closes while the database may still owe the client its last
+        // responses. A closed `mpsc` is `Ready(None)` on *every* poll, and that
+        // arm is first in `fill`'s biased select — so a relay that kept listening
+        // would win its own race forever and never read the upstream again,
+        // spinning where it should be draining. Latching the closure is what makes
+        // it a fact recorded once rather than work that is always pending.
+        let (mut peer, honmoon_end) = socket_pair().await;
+        let (_client_read, client_write) = honmoon_end.into_split();
+        let forwarded = Arc::new(Forwarded::new());
+        let (injections, mut taken) = mpsc::channel(1);
+        let link = ClientLink {
+            forwarded: Arc::clone(&forwarded),
+            injections,
+        };
+        let mut relay = Relay::new(client_write, Arc::clone(&forwarded));
+
+        // One statement forwarded and still unanswered, and then the client's
+        // side of the session ends — which is the only thing that closes this.
+        link.forwarded_sync_point();
+        drop(link);
+
+        let mut owed = command_complete();
+        owed.extend_from_slice(&[b'Z', 0, 0, 0, 5, b'I']);
+        let upstream = ScriptedUpstream::new([
+            (std::time::Duration::ZERO, owed),
+            (std::time::Duration::ZERO, Vec::new()),
+        ]);
+
+        let stop = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            relay_backend_messages(upstream, &mut relay, &mut taken),
+        )
+        .await
+        .expect("a relay whose channel closed keeps reading its upstream");
+        assert!(
+            matches!(stop, Stop::Upstream),
+            "the upstream reaching end of input is what ends the relay, not the closed channel"
+        );
+
+        assert_eq!(read_message_tag(&mut peer).await, b'C');
+        assert_eq!(read_message_tag(&mut peer).await, b'Z');
+        assert_eq!(
+            relay.answered, 1,
+            "the answer the session was still owed was delivered after the channel closed"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_refusal_already_decided_is_written_before_a_frame_already_on_the_socket() {
+        // `fill`'s select is `biased;` toward the injection channel: a refusal
+        // decided before the database's next frame was requested belongs in front
+        // of that frame, and an unbiased select chooses between the two at random.
+        //
+        // Both arms are made genuinely ready in the same poll — the refusal is
+        // already sitting in the channel, and the frame is already buffered in the
+        // upstream rather than behind a sleep — so the bias is the only thing
+        // deciding. It decides the same way every time; the rounds are here
+        // because one would let an unbiased select through on a coin flip, and
+        // thirty-two make that 2^-32.
+        for round in 0..32 {
+            let (mut peer, honmoon_end) = socket_pair().await;
+            let (_client_read, client_write) = honmoon_end.into_split();
+            let forwarded = Arc::new(Forwarded::new());
+            let (injections, mut taken) = mpsc::channel(1);
+            let link = ClientLink {
+                forwarded: Arc::clone(&forwarded),
+                injections,
+            };
+            let mut relay = Relay::new(client_write, Arc::clone(&forwarded));
+
+            // Nothing is outstanding, so this refusal is releasable the moment the
+            // relay takes it off the channel. What is pinned here is which of two
+            // ready arms runs first, not the ordering arithmetic — that has its
+            // own tests.
+            let _ack = queue_refusal(&link, "honmoon: denied by policy");
+            let mut upstream = ScriptedUpstream::new([(std::time::Duration::ZERO, Vec::new())]);
+            upstream.ready = std::io::Cursor::new(command_complete());
+
+            let stop = tokio::time::timeout(
+                std::time::Duration::from_secs(5),
+                relay_backend_messages(upstream, &mut relay, &mut taken),
+            )
+            .await
+            .expect("the relay reads its upstream to end of input");
+            assert!(matches!(stop, Stop::Upstream));
+
+            assert_eq!(
+                read_message_tag(&mut peer).await,
+                b'E',
+                "round {round}: the refusal was decided first, so it is written first"
+            );
+            assert_eq!(read_message_tag(&mut peer).await, b'Z');
+            assert_eq!(
+                read_message_tag(&mut peer).await,
+                b'C',
+                "round {round}: the frame the database had already sent follows the refusal"
+            );
+        }
     }
 
     #[tokio::test]
