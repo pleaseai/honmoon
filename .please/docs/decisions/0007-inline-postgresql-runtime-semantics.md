@@ -110,10 +110,13 @@ that fails to parse: it is refused rather than forwarded blind.
   neither proxy variable — `psql` among them — reaches nothing under `run` at all, which is
   ADR-0005's fail-closed default rather than a gap in this one.
 - **The upstream→client relay owns the client write half, and every answer honmoon writes itself
-  goes through it.** Honmoon's `ErrorResponse`/`ReadyForQuery` lands in a stream that relay is
-  writing at the same time, so the runtime does not write it from the task that read the statement:
-  the message loop hands the answer to the relay over a one-slot channel and the relay writes it
-  between two complete backend messages. That is where the framing guarantee comes from — one
+  goes out through that half.** Honmoon's `ErrorResponse`/`ReadyForQuery` lands in a stream the
+  relay is writing at the same time, so the runtime does not write it from the task that read the
+  statement: the message loop hands the answer to the relay over a one-slot channel and the relay
+  writes it between two complete backend messages. The one exception is an answer decided after the
+  relay has already stopped, which the message loop writes itself — with the same write half, handed
+  back, never a second one; the sub-bullet on a relay that stops at a message boundary states that
+  case in full. That is where the framing guarantee comes from — one
   writer, whole messages — and it is ownership rather than a lock, so there is no order in which two
   tasks can take one wrongly. The single byte `N` that refuses encryption goes the same way, so the
   claim holds from the first byte of the session rather than from the first statement.
@@ -135,15 +138,17 @@ that fails to parse: it is refused rather than forwarded blind.
     the `ReadyForQuery` a refusal is actually waiting for. A database working steadily through a
     slow statement is therefore never cut off however long that statement runs; counting only sync
     points would have made a query streaming rows for longer than the window indistinguishable from
-    one that had stopped, and injected the refusal into the middle of its result set. Only a pipeline that stops moving expires — which is
-    what the two ways the count can go wrong look like from here: a database that stopped
-    answering, and a sync point the backend swallowed (PostgreSQL ignores `Sync` while a `COPY` is
+    one that had stopped, and injected the refusal into the middle of its result set. What re-arms
+    the window is a **complete** message, so what expires is a pipeline that delivers nothing whole
+    for a whole window — which is what the two ways the count can go wrong look like from here: a
+    database that stopped answering, and a sync point the backend swallowed (PostgreSQL ignores `Sync` while a `COPY` is
     in progress, so the `Sync` honmoon counted is never answered). An unbounded wait would cost the
     client its answer altogether, which is worse than the misattribution this removes, so the
     runtime warns and writes the answer anyway.
 
-    The timer is the relay's own, around its own read of the upstream, because the relay is the task
-    that knows whether any backend traffic arrived: "waiting on sync point N with nothing from the
+    The timer is the relay's own, around its own read of the upstream, re-armed by every **complete**
+    message it delivers, because the relay is the task that knows whether any backend traffic
+    arrived: "waiting on sync point N with nothing from the
     database for T" is one local decision rather than an inference from a counter another task
     publishes. What it gives up on is recorded **beside** what the client received rather than added
     to it. The relay keeps two numbers per side — how many answers it has really delivered, and how
@@ -176,11 +181,15 @@ that fails to parse: it is refused rather than forwarded blind.
     which means tracking copy-in mode from the relay (the only task that sees the `CopyInResponse`)
     back into the message loop — a mechanism this ADR does not have.
 
-    For a related reason a sync point is counted **before** the frame that earns it is forwarded,
+    For a related reason, a sync point is counted **before** the frame that earns it is forwarded,
     never after: a fast database can have its `ReadyForQuery` relayed to the client before the
     forwarding task runs its next line, and the relay's clamp — which is there so a backend cannot
-    answer more sync points than it was asked for — would then throw away a perfectly good answer as
-    an over-count, leaving the counts a permanent one apart. Counting early cannot be wrong: a sync
+    accumulate more sync-point credit than the session forwarded — would then throw away a perfectly
+    good answer as an over-count, leaving the counts a permanent one apart. The clamp bounds that
+    total and not the position of any one answer: a backend that answers one sync point twice still
+    advances the count. Ordering against an upstream that violates the protocol is not what this
+    barrier is for, because the client is the adversary it is built for and the denied statement is
+    never forwarded either way. Counting early cannot be wrong: a sync
     point recorded for a write that then fails costs nothing, because the session ends with that
     write.
   - **A batch driven by `Flush` is ordered against a quiet upstream, not against a marker.**
@@ -253,7 +262,10 @@ that fails to parse: it is refused rather than forwarded blind.
     batch early. In the other direction, a batch whose output genuinely ends on an excluded message
     — a bare `Describe` of a row-returning statement, ending on `RowDescription` — is never settled
     by a quiet and costs the next refusal one stall window, or none at all when a `Sync` follows and
-    answers for it. A `Flush` that elicits nothing at all — sent with no pending output, or ignored
+    answers for it. The mirror of that is a gap rather than a cost: `NoData`, which is
+    `RowDescription`'s position for a statement returning no rows, is **not** in the exclusion list,
+    so a quiet after it settles a flush whose `Execute` may still be computing. That asymmetry is
+    tracked as #211. A `Flush` that elicits nothing at all — sent with no pending output, or ignored
     because a `COPY` is in progress — is never settled by the relay and costs the next refusal one
     `REFUSAL_ORDER_STALL_TIMEOUT` before the relay gives up on it, which a client can make itself pay
     repeatedly by sending a lone `Flush` before each denied statement. Closing the first needs the
@@ -286,7 +298,7 @@ that fails to parse: it is refused rather than forwarded blind.
     is what stalls the ordering wait, so the notice carries a deadline of its own — a 1-second slice
     of that budget — which the relay honours by writing it whether or not the client has received
     what it was owed: a stalled pipeline costs the notice its ordering, never the notice itself.
-    Unlike the stall bound that deadline records no give-up; one answer surrendering its place is not
+    Unlike the stall bound, that deadline records no give-up; one answer surrendering its place is not
     the pipeline being declared dead.
 - **A held statement is watched for its client's disconnect.** A `pause` verdict holds the
   statement mid-stream, which parks the client-read side of the session inside the `select!` the
