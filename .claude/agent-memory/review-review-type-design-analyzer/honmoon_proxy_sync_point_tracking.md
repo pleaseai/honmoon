@@ -1,67 +1,77 @@
 ---
 name: honmoon-proxy-sync-point-tracking
-description: ClientLink's forwarded/delivered sync-point counters in crates/honmoon-proxy/src/runtime/postgres.rs — how the refusal-ordering barrier is built, why Relaxed is still correct now that both tasks read `forwarded`, and its encapsulation gap
+description: 'The three shared counters in crates/honmoon-proxy/src/runtime/postgres.rs (Forwarded) after issue #121 — why Relaxed is correct, why the give-up floors are deliberately NOT in shared state, and the encapsulation gap that survived the rewrite'
 metadata:
   type: project
 ---
 
-`ClientLink` (crates/honmoon-proxy/src/runtime/postgres.rs) carries a
-`forwarded: Arc<AtomicU64>` / `delivered: Arc<watch::Sender<Delivered>>` pair that
-implements the barrier ordering an injected refusal behind the database's
-answers to statements already pipelined ahead of it (issue #101, PR #112).
+`crates/honmoon-proxy/src/runtime/postgres.rs` orders a locally injected refusal
+behind the responses the database still owes. Since issue #121 the shared state
+between the two tasks is exactly one struct:
 
-**Why the asymmetry is correct, not an inconsistency**: `delivered` is written
-by the spawned `upstream_to_client` task and read (waited on) by the
-`client_to_upstream` task — that cross-task edge is supplied by
-`tokio::sync::watch`'s internal synchronization, not by atomic ordering. A plain
-`AtomicU64` there would need `Acquire`/`Release`, not `Relaxed`; `watch` was
-chosen precisely to get correct synchronization *and* wakeup-without-polling in
-one type.
+```rust
+struct Forwarded {
+    sync_points: AtomicU64,
+    flushes: AtomicU64,
+    flushes_covered: AtomicU64,
+}
+```
 
-**`forwarded` is `Relaxed` for a different reason, and the old one no longer
-holds.** It used to be written *and* read only from `client_to_upstream`, so
-same-task program order was the whole argument. That stopped being true when
-`delivered_message` began reading it (inside its `send_modify`) to clamp the
-sync-point count — the relay's task reads it now. `Relaxed` is still correct, but the
-reasons are not co-equal and it matters which one you are relying on.
+**Written only by the message loop, read only by the relay, and only ever
+raised.** Everything else the barrier needs — how many answers the relay has
+really delivered, how far a stalled wait has given up, the relay's freshness
+count and last tag — is relay-task-local, not shared, and is not reachable from
+the message loop at all. The refusal itself carries its tag (`Refusal { message,
+sync_points, flushes, order_deadline }`) down a one-slot `mpsc`, so the value
+the refusal is measured against is snapshotted at the decision rather than
+re-read later.
 
-**The load-bearing reason: `forwarded` only ever rises.** `Relaxed` gives
-atomicity and per-location modification order, not a happens-before edge, so the
-relay may read a stale value. Because the counter is monotonic, a stale read is
-always *low*, and a low read makes the clamp `*count < forwarded` **decline** an
-increment where it might otherwise allow one. Declining costs a stall; allowing
-costs the ordering guarantee. That is the same safe-direction argument as the
-rest of the design, and it stands on its own.
+**Why `Relaxed` is correct, and what the argument actually rests on.** `Relaxed`
+gives atomicity and per-location modification order, not a happens-before edge,
+so the relay may read a stale value. Because every field only rises, a stale read
+is always *low*, and low reads only ever make the relay wait longer: the clamp
+(`if self.answered < forwarded.sync_points`) declines an increment, and the
+coverage (`self.drained.max(flushes_covered)`) applies less credit. Declining
+costs a stall; allowing costs the ordering guarantee. **If a future edit makes any
+of these three non-monotonic, this argument is gone** — not because of data
+visibility (nothing is published *through* them; no pointer or payload's
+visibility depends on them), but because a stale read could then err high.
+Anyone reaching for `Acquire`/`Release` "to be safe" should know that is what
+they would be replacing.
 
-**A supporting reason: nothing is published *through* it.** It carries no
-pointer or payload whose visibility another thread depends on, so no
-acquire/release edge is needed to transfer data. Note what this does and does
-not establish — it says an edge is unnecessary, not that the relay sees the
-latest value. On its own it is not enough.
+Do not lean on the practical reinforcement that two syscalls, the wire and the
+database's turnaround sit between the increment and the read. It is true today
+and it is an argument from the environment, not from the memory model: the
+`ScriptedUpstream` test harness in this file already short-circuits the loopback.
 
-**A practical reinforcement that is not part of the argument:** between the
-increment and the relay's read sit two syscalls, the wire, and the database's
-own turnaround, which supply synchronisation far stronger than the atomic would.
-True today, but an argument from the environment rather than from the memory
-model — a refactor that moves the increment, or a test harness that
-short-circuits the loopback, removes it without touching this line. Do not lean
-on it.
+**The give-up floors are deliberately not here.** `Relay::abandoned` /
+`abandoned_flushes` live in the relay task because giving up is the relay's own
+decision, taken from its own read deadline. The predicate is
+`answered.max(abandoned) >= tag && drained.max(abandoned_flushes) >= tag`, which
+is why the pre-#121 `debt` / `flush_debt` bookkeeping is gone rather than
+reimplemented: a late answer raises the truthful count, the floor is unmoved by
+it, and neither number has reached a later statement's tag. Putting a floor back
+into shared state would recreate the "credit then remember the credit" shape the
+rewrite removed.
 
-So: if a future edit makes `forwarded` non-monotonic, the real argument is gone
-and `Relaxed` must be revisited — not because of data visibility, but because a
-stale read would then be able to err high. Anyone reaching for `Acquire`/`Release`
-"to be safe" should know that is what they would be replacing.
+**Why `flushes_covered` has to be shared, though it looks like it could be
+derived.** It is the flush count as it stood when a sync point was forwarded, and
+the relay applies it when that sync point's `ReadyForQuery` is *delivered* —
+which can happen before any refusal exists, so it cannot ride on the refusal.
+Deriving it in the relay from the tag alone is unsound: with `Flush`1,
+`Sync`(covering 1), `Flush`2, a relay that took `max(drained, coverage)` from the
+tag would conflate two different flushes. It is still only one snapshot, so a
+second sync point overwrites the first's coverage — the reason issue #153 is
+neither fixed nor worsened by #121.
 
-**Known gap (reported, moderate confidence, not critical)**: the invariant is
-now *stated* — a `# Invariant` section on `Delivered` names it as
-`sync_points <= forwarded` and lists the three things that keep it — but it is
-still only *enforced* by convention across the call sites in one file, not
-structurally. Because the fields are module-private (not struct-private via
-a submodule), any code within `postgres.rs` — including the test at the
-line reading `link.forwarded.load(...)` directly — can bypass the
-`forwarded_sync_point`/`delivered_message`/`await_forwarded_responses`
-method surface. A real fix (nested submodule for true privacy, or an
-explicit read accessor for tests) was judged plausible but not clearly
-required — the file is cohesive/single-purpose and each call site is
-carefully comment-justified, so YAGNI cuts against forcing extraction. Useful
-context if this file grows more call sites for sync-point tracking later.
+**Known gap, unchanged by the rewrite (reported, moderate confidence, not
+critical)**: the fields are module-private, not struct-private via a submodule,
+so any code in `postgres.rs` — the tests included — can bypass the
+`forwarded_sync_point` / `forwarded_flush` / `refusal` method surface and touch
+them directly. A real fix (nested submodule, or an explicit read accessor for
+tests) was judged plausible but not clearly required: the file is cohesive and
+each call site is comment-justified. Useful context if more call sites for
+counter tracking appear here later.
+
+Related: [[postgres-refusal-ordering-barrier]] for what the barrier does and does
+not cover, and the live gaps.

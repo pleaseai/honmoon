@@ -1,6 +1,6 @@
 ---
 name: postgres-flush-barrier-pr147
-description: 'PR #147 (issue #113) flush-driven-batch barrier comments in crates/honmoon-proxy/src/runtime/postgres.rs — the flush counters verified accurate end-to-end; the one gap found (the `# Invariant` block not cross-referencing flush_answers <= flushes) was fixed in-PR'
+description: 'PR #147 (issue #113) flush-driven-batch barrier comments in crates/honmoon-proxy/src/runtime/postgres.rs — the flush counters verified accurate end-to-end, and which of those claims issue #121 then deleted; the D/d protocol-exclusion claim is the part that survives'
 metadata:
   type: project
 ---
@@ -39,3 +39,31 @@ and came back essentially clean.
 (mirroring `forwarded`/`flushes`), check whether the `# Invariant` block has
 been extended to point at the per-field docs for it, the way PR #147 extended it
 for `flush_answers`.
+
+## Amended by issue #121 — two of these claims no longer have code
+
+The barrier still counts flushes, but the types named above are gone. Do not look
+for `Delivered`, `flush_answers`, `flush_drained` as a `Delivered` method, the
+`# Invariant` doc block, or `await_forwarded_responses`.
+
+- **Dead: the writer-lock race justification.** `link.writer` (the tokio `Mutex`)
+  no longer exists — the relay owns the `OwnedWriteHalf` outright, so the "why not
+  settle on the first delivered message" argument now has to be made from the
+  relay's own `try_read_now` probe, not from lock re-acquisition. A comment still
+  making the lock argument is stale prose, not a live claim.
+- **Dead: the `flush_answers <= flushes` invariant as a stated pair.** Bounding is
+  now `drained.max(abandoned_flushes) >= refusal.flushes` inside the relay, and
+  `drained` is relay-task-local rather than shared, so there is no shared value to
+  state an invariant *on*. The monotonicity argument moved to the three
+  `Forwarded` counters — see [[honmoon-proxy-sync-point-tracking]].
+- **Alive and re-verified at #121: the `D`/`d` exclusion.** The list widened to
+  `D d N A S t T G H W c` and the protocol reasoning is unchanged (an `Execute`
+  ends on `CommandComplete`/`EmptyQueryResponse`/`PortalSuspended`/`ErrorResponse`,
+  a copy-out on `CopyDone`). The comment still enumerates what *cannot* end a
+  batch rather than what does — see [[enumerate-from-the-wrong-side]] for why that
+  shape keeps leaking.
+
+**How to apply (revised):** the "was a third counter pair added, and was the
+`# Invariant` block extended" check is obsolete. The live equivalent is: if a
+counter is added, is it monotonic, is it read only by the relay, and is the
+stale-read-errs-low argument still stated where the field is declared.
