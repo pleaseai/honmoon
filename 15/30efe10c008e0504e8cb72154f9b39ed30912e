@@ -1,0 +1,23 @@
+AGENTS.md
+  s_507948a1e42420::t_9738eba89b18b1 110-113
+crates/honmoon-core/src/hook_salt.rs
+  s_507948a1e42420::t_9738eba89b18b1 16-20
+.claude/agent-memory/review-review-code-reviewer/project_core_io_boundary_166.md
+  s_507948a1e42420::t_9738eba89b18b1 38-40
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "1530efe10c008e0504e8cb72154f9b39ed30912e",
+  "prompts": {},
+  "sessions": {
+    "s_507948a1e42420": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "e1a7ee4b-11d8-4045-bcea-623cb381bb05",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
