@@ -64,19 +64,21 @@ file this crate wants to own is a new decision — the sink's precedent does not
 
 And one prohibition that is not a capability at all, because the risk here is an *alternative
 route* rather than a new power: **a second way to populate the sink.** A constructor or setter
-that assigns `AuditLog`'s `sink` from a descriptor `open_sink` did not produce adds no
+that assigns `AuditLog`'s `sink` from a descriptor that `open_sink` did not produce adds no
 dependency, opens no second file, spawns nothing and reads no environment — it satisfies every
 clause above while bypassing `O_NOFOLLOW`, the walk, the trusted-directory rule, `O_NONBLOCK`,
 the regular-file `fstat` and all three `audit-sink-*` events at once, in a diff that reads as a
 pure layering refactor. `with_file` is the only such path today and must stay the only one. A
 list of forbidden capabilities does not catch this, which is why it is written out separately.
 
-Half of that list is checked and half is not, so do not read it as enforced.
+Part of that list is checked and part is not, so do not read it as enforced.
 `honmoon-core/tests/crate_boundary.rs` fails if the crate's build-dependency set moves, which
-catches the entries that need a new crate to reach — the runtime, the socket, the HTTP client.
-It cannot catch the rest: an environment read, a spawned process and a second file all reach
-through `std` and the `libc` already present, so nothing in the manifest moves and the test
-stays green. Those three are held by review, and the test's own module doc says the same.
+catches only what genuinely needs a new crate: an async runtime, and an HTTP client such as
+`hyper` or `reqwest`. Everything else on the list is reachable from what the crate already
+links — an environment read, a spawned process and a second open file through `std`, and **a
+socket too**, via `std::net` or the `socket`/`connect`/`bind` that `libc` already exposes. The
+manifest does not move for any of them and the test stays green. They are held by review, and
+the test's own module doc says the same.
 
 **Why the sink open is here** (issue #166, following #163). The hardening around it —
 `O_NOFOLLOW`, the component-by-component `openat` walk that refuses an untrusted symlinked

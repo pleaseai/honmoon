@@ -12,10 +12,13 @@ client, an environment read, a config-file lookup, a spawned process, and any *s
 
 **What is actually enforced.** `crates/honmoon-core/tests/crate_boundary.rs` reads
 `cargo metadata --no-deps` and asserts the non-dev dependency name set (including
-`[target.'cfg(unix)'.dependencies] libc`). That is the dependency-borne half of the rule —
-`tokio`, a socket crate, an HTTP client. The std-mediated half (`std::env::var`,
-`std::process::Command`, a second `std::fs` open) adds no dependency and fails no test. The
-section states that division itself, so it is a documented limit rather than a gap to report.
+`[target.'cfg(unix)'.dependencies] libc`). That catches only what needs a new
+crate: an async runtime, and an HTTP client such as `hyper` or `reqwest`. Everything else on the
+list adds no dependency and fails no test — an environment read, a spawned process and a second
+`std::fs` open through `std`, and **a socket too**, via `std::net` or the `socket`/`connect`/
+`bind` the already-present `libc` exposes. (An earlier draft of this PR grouped the socket with
+the checked entries; cubic caught it.) The section states the division itself, so it is a
+documented limit rather than a gap to report.
 
 **The clause a capability list would have missed.** The rule also forbids **a second way to
 populate the sink**: a constructor or setter assigning `AuditLog`'s `sink` from a descriptor
