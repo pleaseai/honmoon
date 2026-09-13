@@ -1,0 +1,23 @@
+crates/AGENTS.md
+  s_507948a1e42420::t_e72d1129a5016a 67,74,76-81
+crates/honmoon-core/tests/crate_boundary.rs
+  s_507948a1e42420::t_e72d1129a5016a 3-10
+.claude/agent-memory/review-review-security-reviewer/core-io-boundary-rule.md
+  s_507948a1e42420::t_c41dee262922f4 15-21
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "a5823718ec8ef806dfa8260991051fd389300d75",
+  "prompts": {},
+  "sessions": {
+    "s_507948a1e42420": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "e1a7ee4b-11d8-4045-bcea-623cb381bb05",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
