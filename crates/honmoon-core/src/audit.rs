@@ -376,6 +376,16 @@ pub struct AuditLog {
     ring: Mutex<Ring>,
     capacity: usize,
     /// Optional append-only JSONL sink (one event per line).
+    ///
+    /// Every descriptor that reaches this field in production comes from
+    /// [`open_sink`], and that must stay true: a constructor which takes an
+    /// already-open `File` would bypass `O_NOFOLLOW`, the component walk, the
+    /// trusted-directory rule, `O_NONBLOCK`, the regular-file `fstat` and all three
+    /// `audit-sink-*` observations at once, while adding no dependency and opening
+    /// no second file — so no capability-shaped rule refuses it (issue #166).
+    /// [`AuditLog::with_file`] is the only such path; a test below assigns the field
+    /// directly to build a sink that refuses writes, which is why this is a rule
+    /// about production code rather than something privacy alone enforces.
     sink: Option<Mutex<std::fs::File>>,
     sink_path: Option<PathBuf>,
 }

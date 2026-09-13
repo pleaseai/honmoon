@@ -1,6 +1,11 @@
-//! The dependency boundary `crates/AGENTS.md` draws around this crate, checked by
-//! the test suite rather than left to a reviewer's memory of a sentence (issue
-//! #166).
+//! The dependency boundary `crates/AGENTS.md` draws around this crate (issue #166).
+//!
+//! This covers the half of that section's forbidden list which needs a new crate to
+//! reach — an async runtime, a socket, an HTTP client. It does **not** cover the
+//! other half: an environment read, a spawned process and a second open file all
+//! reach through `std` and the `libc` already present, so the manifest does not move
+//! and this test stays green. Do not cite it as enforcement of those; this file
+//! itself spawns a process and reads an environment variable, which is the point.
 //!
 //! The boundary is a property of the *manifest*, so it is read from `cargo
 //! metadata` — cargo's own resolution of the dependency tables, which is the only

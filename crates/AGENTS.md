@@ -53,15 +53,30 @@ the existing tests are your templates.
 ### What `honmoon-core` may touch
 
 The crate is **transport-agnostic, not I/O-free**, and that distinction is the rule. It opens
-exactly one file — the audit JSONL sink in `audit.rs`, at an operator-supplied path — and
-`honmoon-core/tests/crate_boundary.rs` fails if its dependency set moves, so the list below is
-checked rather than remembered. Everything else in the crate takes what it works on as an
-argument: `Policy::from_yaml` parses a string, and whoever read the file is the caller.
+exactly one file — the audit JSONL sink in `audit.rs`, at an operator-supplied path. Everything
+else in the crate takes what it works on as an argument: `Policy::from_yaml` parses a string,
+and whoever read the file is the caller.
 
 **Still forbidden**, which is what makes the exception an exception: `tokio` or any async
 runtime; a socket or a network client of any kind (`hyper`, `reqwest`, `axum`); reading the
 environment or locating a config file; spawning a process; and opening any *second* file. A new
 file this crate wants to own is a new decision — the sink's precedent does not grant it.
+
+And one prohibition that is not a capability at all, because the risk here is an *alternative
+route* rather than a new power: **a second way to populate the sink.** A constructor or setter
+that assigns `AuditLog`'s `sink` from a descriptor `open_sink` did not produce adds no
+dependency, opens no second file, spawns nothing and reads no environment — it satisfies every
+clause above while bypassing `O_NOFOLLOW`, the walk, the trusted-directory rule, `O_NONBLOCK`,
+the regular-file `fstat` and all three `audit-sink-*` events at once, in a diff that reads as a
+pure layering refactor. `with_file` is the only such path today and must stay the only one. A
+list of forbidden capabilities does not catch this, which is why it is written out separately.
+
+Half of that list is checked and half is not, so do not read it as enforced.
+`honmoon-core/tests/crate_boundary.rs` fails if the crate's build-dependency set moves, which
+catches the entries that need a new crate to reach — the runtime, the socket, the HTTP client.
+It cannot catch the rest: an environment read, a spawned process and a second file all reach
+through `std` and the `libc` already present, so nothing in the manifest moves and the test
+stays green. Those three are held by review, and the test's own module doc says the same.
 
 **Why the sink open is here** (issue #166, following #163). The hardening around it —
 `O_NOFOLLOW`, the component-by-component `openat` walk that refuses an untrusted symlinked
@@ -74,12 +89,25 @@ descriptor is should be the type that establishes it; handing `AuditLog` an alre
 turns that guarantee into a convention each caller has to remember, which is the shape
 issue #138 was.
 
+Stated no more strongly than it is true: the invariant is **descriptor-scoped**. What the
+`fstat` settles — regular file, mode, owner, link count — is a property of the object
+`AuditLog` ends up holding. The walk's trust decisions are not purely that: for a relative path
+the walk's root is the process's own working directory, and the trusted-directory rule reads
+the process's effective uid, so one path can be accepted under one caller and refused under
+another. That part *is* caller context, and it is the strongest form of the case for moving the
+open to `honmoon-cli` — the CLI knows its working directory and privilege posture, and a
+library does not. It does not carry the decision, because moving the open makes all of the
+hardening optional rather than only its context-dependent edge; but it is the part of the
+objection that survives, and a future proposal should be answered on it rather than on the
+`libc` question.
+
 Moving the open to `honmoon-cli` was the alternative, and it buys less than it appears to:
 `AuditLog` would still own the descriptor and still write and flush through it, so the crate
 does file I/O either way and this section would read much as it does now. What would change is
-only which crate calls `open`. `libc` is here for that open and nothing else — `openat`,
-`fstatat`, `readlinkat`, `geteuid`, and two `O_*` constants — and every descriptor they return
-is handed straight to `std::fs::File`, which owns and closes it.
+only which crate calls `open`. `libc` is here for that open and nothing else: the
+directory-relative syscalls `openat`, `fstatat` and `readlinkat`, `geteuid` for the trust rule,
+and the flag, errno, file-type and struct definitions those four take. Every descriptor they
+return is handed straight to `std::fs::File`, which owns and closes it.
 
 Test code is not held to this: the audit suite builds FIFO fixtures with `libc::mkfifo` and
 spawns threads, and nothing it links reaches a shipped binary.

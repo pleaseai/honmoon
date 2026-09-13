@@ -95,9 +95,15 @@ must never silently allow a request. Violating this turns the firewall into a no
 (`crates/*`) must remain Apache-2.0 (or equivalent OSS). Monetization happens in the
 control/cloud plane only. Gating the data plane breaks the trust that drives adoption.
 
-**`honmoon-core` is transport-agnostic**: Do NOT add `tokio`, sockets, or any I/O
-dependency to `honmoon-core`. It is pure policy logic so it can be embedded anywhere and
-unit-tested without a runtime. Transport/proxy code stays in `honmoon-proxy` / `honmoon-cli`.
+**`honmoon-core` is transport-agnostic**: Do NOT give `honmoon-core` an async runtime, a
+socket, or a network client. It can then be embedded anywhere and unit-tested without a
+runtime. Transport/proxy code stays in `honmoon-proxy` / `honmoon-cli`.
+
+Transport-agnostic is not I/O-free, and issue #166 settled the difference rather than
+pretending it away: `audit.rs` opens and appends to one file, the operator's JSONL audit
+sink, and the hardening around that open stays in the crate because it enforces an invariant
+of `AuditLog` itself. That is the only file the crate touches, an environment read or a second
+file is still forbidden, and `crates/AGENTS.md` states the boundary in full.
 
 **Dual policy model stays in sync**: The Rust model (`honmoon-core`) and the TS model
 (`@honmoon/policy`) describe the same policy. Changes to one must update the other (tracked as
