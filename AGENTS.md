@@ -107,9 +107,10 @@ Run `mise run check` before committing.
   write tests first; mark planned vs implemented honestly in docs.
 - ⚠️ **Ask first**: changing the policy *shape* (must update Rust + TS + JSON Schema together —
   TD-001); changing the `decide()` precedence; altering the open-core boundary.
-- 🚫 **Never**: add `tokio`/sockets/I/O to `honmoon-core`; weaken or delete tests to make code
-  pass; add payload decryption / deep packet inspection beyond declared facts; gate the data
-  plane behind a paywall.
+- 🚫 **Never**: give `honmoon-core` an async runtime, a socket, or a network client (it is
+  transport-agnostic, not I/O-free — `crates/AGENTS.md` states the one file it opens and what
+  stays forbidden); weaken or delete tests to make code pass; add payload decryption / deep
+  packet inspection beyond declared facts; gate the data plane behind a paywall.
 
 See also: `wiki/AGENTS.md` (docs), `crates/AGENTS.md`, `packages/AGENTS.md`,
 `apps/dashboard/AGENTS.md`.

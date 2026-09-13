@@ -35,7 +35,9 @@ review. The section says which is which, so the split is a documented limit, not
 invariant of `AuditLog` itself. `append_jsonl` writes synchronously, so whether the descriptor
 is a regular file decides whether a record blocks the process, and whether it was reached
 through an untrusted symlink decides who reads the hosts, SQL tables and PII categories the log
-carries. `with_sink(capacity, file, path)` cannot express that in its signature — it makes the
+carries. An injected-writer constructor cannot express that in its signature — issue #166
+proposes `AuditLog::with_sink(capacity, file, path)`, which **does not exist in the codebase**;
+the real constructor is `AuditLog::with_file(capacity, path)`. Such a variant would make the
 hardened path something each caller must remember, which is the shape issue #138 was.
 
 **How to apply:** treat a finding that `honmoon-core` "violates its no-I/O rule" as answered —
