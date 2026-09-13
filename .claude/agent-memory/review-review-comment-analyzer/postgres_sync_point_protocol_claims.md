@@ -6,7 +6,7 @@ metadata:
 ---
 
 honmoon-proxy's postgres.rs runtime (PR #112, issue #101) added a `ClientLink`
-sync-point counting barrier (`forwarded`/`delivered` + `REFUSAL_ORDER_STALL_TIMEOUT`)
+sync-point counting barrier (a forwarded/delivered counter pair + `REFUSAL_ORDER_STALL_TIMEOUT`)
 so a locally injected refusal cannot overtake responses to statements the
 client pipelined ahead of it. Core mechanics verified accurate against the
 code (`forwarded_sync_point()` call sites match the StartupMessage/Q/Sync/
@@ -34,3 +34,20 @@ sync-point comments are touched again.
 barrier, re-verify these two spots didn't get corrected/re-introduced, and
 apply the same "answered vs. counted-as-sync-point" precision lens to any
 new comments there.
+
+## Still true after issue #121, which rewrote everything around it
+
+The counter *names* in this note are pre-#121 (`ClientLink.forwarded` /
+`delivered` are now `Forwarded { sync_points, flushes, flushes_covered }` plus
+relay-local counts), but every protocol claim above is unchanged and was
+re-verified during that rewrite:
+
+- The sync-point set is still exactly StartupMessage / `Q` / `Sync` /
+  `FunctionCall`, and refused statements still leave both sides untouched.
+- The copy-in claim is the load-bearing one and is still correct: PostgreSQL
+  ignores `Flush` **and** `Sync` received during copy-in mode, so that sync point
+  never produces a `ReadyForQuery`. Issue #121 had to keep a bound in the relay
+  for exactly this reason — suppressing the count instead leaves the forwarded
+  side permanently one ahead and hangs the client on a refusal it never receives.
+- The "answered vs counted-as-a-sync-point" precision lens still applies, and the
+  same conflation is worth re-checking in the newer relay comments.

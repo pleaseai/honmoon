@@ -1,103 +1,110 @@
 ---
 name: postgres-refusal-ordering-barrier
-description: 'The honmoon postgres runtime''s refusal ordering invariant (sync_points <= forwarded), what the barrier does and does not cover, its live gaps (the per-stall bound, the swallowed COPY-Sync of #128, and the two flush edge cases ADR-0007 records), and the settled rules not to undo.'
+description: 'The honmoon postgres runtime''s refusal ordering barrier after issue #121 (the relay owns the client write half) — what it covers, its live gaps (per-stall bound, the swallowed COPY-Sync of #128, the per-refusal window of #148, the single coverage snapshot of #153), and the settled rules not to undo.'
 metadata:
   type: project
 ---
 
 `crates/honmoon-proxy/src/runtime/postgres.rs` orders a locally injected refusal
 (`ErrorResponse` 42501 + `ReadyForQuery`) behind the responses the database still
-owes: `ClientLink.forwarded` (AtomicU64, bumped per forwarded sync point —
-startup handshake, `Q`, `Sync`, `FunctionCall`) vs `ClientLink.delivered`
-(`watch::Sender<Delivered>`, bumped by the relay per backend message written to
-the client, with the `ReadyForQuery` count and the write-off debt carried inside
-it). `refuse()` waits for `sync_points >= forwarded` before taking the writer
-lock, bounded by `REFUSAL_ORDER_STALL_TIMEOUT` (30 s) **per stall, not per
-wait** — any delivered message restarts the window.
+owes. Since issue #121 there is **one writer of the client socket**: the
+`upstream_to_client` relay owns the `OwnedWriteHalf`, and every answer honmoon
+produces itself — a policy refusal, an uninspectable-frame refusal, the
+abandoned-hold courtesy notice, and the single `N` that refuses encryption — is
+handed to it over a one-slot `mpsc` as `Injected { what, written: oneshot }`. The
+message loop awaits the ack; `Err(Unwritten)` is the only way it learns the answer
+did not go out. There is no `Arc<Mutex<OwnedWriteHalf>>`, no `watch` channel, no
+`Delivered` struct, no `debt`/`flush_debt`, no `can_inject`/`RelayEnd` — do not
+search for them.
 
-The load-bearing invariant is `sync_points <= forwarded`, held by construction:
-`forwarded` only rises (a write-off credits `sync_points`, it never subtracts),
-`sync_points` rises only under the clamp or a write-off's `max`, and every
-mutation of the watched value goes through one `send_modify`. It is stated on
-the `Delivered` type. Inverting it releases a refusal before the answer it was
-ordered behind, which is #101 restored.
+The barrier is now one predicate inside the relay:
 
-**Why:** without it a refusal for a pipelined statement lands in front of the
-previous statement's response, and the client attributes the 42501 to the wrong
+```rust
+self.answered.max(self.abandoned) >= refusal.sync_points
+    && self.drained.max(self.abandoned_flushes) >= refusal.flushes
+```
+
+`answered`/`drained` are what the client really received; `abandoned`/
+`abandoned_flushes` are floors raised only when the relay gives up after
+`REFUSAL_ORDER_STALL_TIMEOUT` (30 s) with no backend traffic. The refusal's tags
+are snapshotted from the single-writer message loop when the refusal is decided.
+Shared state is three monotonic `AtomicU64`s (`Forwarded`) — see
+[[honmoon-proxy-sync-point-tracking]].
+
+**Why:** without the barrier a refusal for a pipelined statement lands in front of
+the previous statement's response and the client attributes the 42501 to the wrong
 query — in the worst reading, a *denied* statement looks like it succeeded.
-Undercounting is the security-relevant direction; overcounting only delays.
+Undercounting the delivered side is the security-relevant direction; overcounting
+only delays. Every ambiguity in this file is resolved toward waiting.
 
 **How to apply:** when this file changes, re-read these rather than re-deriving
-them. The `Flush` entry below is closed; the per-stall bound and the COPY-Sync of
-#128 are live gaps, as are the two flush edge cases ADR-0007 records. The rest are
-settled decisions that look like bugs and must not be "fixed" back:
-- `Flush` (`H`) produces no `ReadyForQuery`. **Closed by #113/PR #147**: a second
-  pair, `ClientLink::flushes` (raised when an `H` is forwarded) and
-  `Delivered::flush_answers` (raised by the relay when the head's own `try_read`
-  returns `WouldBlock` at a message boundary, guarded by `fresh > 0`, reset on
-  `Z`, never armed after `D`/`d`), with the same `flush_answers <= flushes`
-  invariant and the same stall write-off. Note the field: `delivered` is the
-  whole watched value, and its `messages` count runs far ahead of `forwarded`;
-  only `sync_points` (and now `flush_answers`) is the bounded one.
+them. The live gaps are the per-stall bound, #128, #148 and #153. The rest are
+settled decisions that look like bugs and must not be "fixed" back.
 
-  **One quiet settles exactly one flush** — a settled decision that looks like an
-  off-by-one and must not be "fixed" back. Crediting every outstanding flush was
-  the first shape of the PR and three reviewers caught it: a client that flushes
-  mid-batch (`Parse`/`Bind`/`Flush`/`Execute`/`Flush`, what `PQsendFlushRequest`
-  is for) gets the first flush answered and then a quiet while the `Execute`
-  computes, and crediting both there releases the refusal ahead of the rows —
-  #101 through the #113 fix. Crediting one is wrong only when two batches
-  coalesce into one burst, and that costs a stall window, not ordering. Pinned by
+- **One quiet settles exactly one flush.** `Flush` (`H`) produces no
+  `ReadyForQuery`; a flush is drained when the relay's own `try_read_now` of the
+  next head returns `WouldBlock` at a message boundary, guarded by `fresh > 0`,
+  reset on `Z`, and never armed after a tag that cannot end a batch
+  (`D d N A S t T G H W c`). Crediting *every* outstanding flush was the first
+  shape of PR #147 and three reviewers caught it: a client that flushes mid-batch
+  (`Parse`/`Bind`/`Flush`/`Execute`/`Flush`, what `PQsendFlushRequest` is for)
+  gets the first flush answered and then a quiet while the `Execute` computes, and
+  crediting both there releases the refusal ahead of the rows. Pinned by
   `one_quiet_upstream_settles_one_flush_and_not_the_ones_behind_it`.
+- **A sync point settles the flushes it covers, and the two sides never cross.**
+  `flushes_covered` is snapshotted when the `Sync` is forwarded and applied when
+  its `ReadyForQuery` is delivered. Crossing the two sides would let a late `Z`
+  answer for a flush or a quiet answer for a statement. Pinned by
+  `a_write_off_settles_both_counters_without_crossing_their_accounting` and
+  `a_sync_point_that_covers_a_written_off_flush_settles_it`.
+- **Give-up is a floor beside the delivered count, never a credit added to it.**
+  This is what removed the pre-#121 `debt` bookkeeping. Do not "simplify" it by
+  crediting the delivered count on give-up: that is exactly how an answer that
+  arrives after all gets credited to a later statement's slot.
+- **A sync point is counted *before* the frame that earns it is forwarded.** A
+  fast database can be answered before the forwarding task runs its next line, and
+  counting afterwards lets the relay's clamp discard a genuine answer as an
+  over-count. Pinned by `an_answer_that_beats_the_forward_being_recorded_is_not_discarded`.
+- **The relay checks the queue once more after a quiet settles a flush, before it
+  blocks on the next read.** The read below it may never be satisfied. Dropping
+  that call leaves the answer behind a wait nothing will end.
+- **Suppression on a corrupted stream is ownership, not a flag.** A relay whose
+  write failed mid-message drops the write half with itself
+  (`upstream_to_client -> Option<HandBack>` returns `None`), so a queued answer
+  dies with the channel and a later one finds it closed. On a clean message
+  boundary the relay writes what it is holding and hands the writer back, and
+  `run_postgres` writes any answer the loop decided afterwards with that half.
+  The `select!` there stays **biased** toward the message loop so it can discover
+  the channel closed rather than being dropped at random. Pinned by
+  `a_relay_that_dies_mid_message_suppresses_the_refusal_rather_than_corrupting_it`
+  and `the_relay_hands_its_writer_back_only_while_the_client_stream_is_framed`.
+- **Rejected designs, recorded so they are not rediscovered.** (a) Suppressing the
+  sync-point count for a `Sync` sent during copy-in: the message loop cannot know
+  copy-in mode, and without a bound in the relay the forwarded count stays one
+  ahead forever, the refusal is never released and the client hangs on a `42501`
+  it never receives — worse than the out-of-order refusal #101 fixed. (b) Deriving
+  flush coverage in the relay from the tag alone: unsound, see
+  [[honmoon-proxy-sync-point-tracking]]. (c) A "lingering relay" that outlives the
+  loop instead of handing the writer back: the upstream-ended signal lets
+  `run_postgres` abort the relay while the loop is pending on its ack.
 
-  **A written-off flush carries its own debt** (`Delivered::flush_debt`), separate
-  from the sync `debt`. Codex caught the miss: after a write-off the client can
-  send another flushed batch, and the *first* batch's late output then produces a
-  quiet that is recomputed against the raised `flushes` and credited to the new
-  batch — releasing a refusal while it is still computing, #101 by the same route
-  the sync debt already guards. Recomputing the owed count from `flushes` is what
-  makes the debt necessary, not what removes the need for it; the earlier doc
-  comment argued the opposite and was wrong. Keep the two debts separate: crossing
-  them lets a late `Z` discharge a flush's write-off or a quiet discharge a
-  statement's. Pinned by
-  `a_written_off_flush_is_not_settled_again_by_the_next_batch` and the tuple in
-  `a_write_off_settles_both_counters_without_crossing_their_accounting`.
+Live gaps:
 
-  Remaining, both recorded in ADR-0007 rather than open defects: a TCP-split
-  burst can leave the socket empty part-way through one batch's output and settle
-  it early (closing it needs a grace-period timing constant), and a `Flush` that
-  elicits nothing is never settled, so a client can pay itself a fresh stall
-  window per denied statement (#148).
-- The 30 s bound is **per stall**, so any attacker-arranged continuous upstream
-  stream (endless result set / `COPY TO`) resets it and holds a refusal
-  indefinitely. Pre-existing for `sync_points`; the flush counter does not add a
-  new unbounded path, but a lone `Flush` that elicits nothing costs one fresh
-  window per denied statement rather than one per session (#148).
-- A `Sync` swallowed during `COPY` is counted but can never be answered, and
-  that now costs **every** later refusal on the connection a stall window, not
-  just the first: the write-off records it as debt, and because no late answer
-  for it ever arrives, the debt is paid down by the *next* statement's genuine
-  `ReadyForQuery` instead, leaving the accounting one behind for good. Tracked
-  as #128. Do not try to fix this by counting — the two cases are
-  indistinguishable on the wire, and resolving the ambiguity the other way is
-  exactly how a late answer gets credited to a later statement's slot. The error
-  direction is safe (waits too long, never too little).
-- **Settled in #112:** the barrier no longer consumes the whole 5 s
-  `ABANDONED_NOTICE_TIMEOUT` budget on the #102 abandoned-hold path — ordering
-  takes a 1 s slice and the write keeps the rest.
-- **Settled in #112:** a relay task that ends while the barrier waits no longer
-  cancels the refusal. The relay's exit releases the wait (`relay_finished`) and
-  the `select!` in `run_postgres` is `biased` toward the message loop, so the
-  `42501` is written before the session ends. Do not "fix" this back.
-- **Settled in #112:** a relay that dies *mid-frame* suppresses the injection
-  entirely (`relay_desynchronised` / `can_inject`), since the client would read
-  the `ErrorResponse` as the missing payload. The flag is cleared by the relay
-  **while it still holds the writer lock**, and checked under that lock — either
-  half alone leaves a window.
-- **Settled in #112:** a sync point is counted *before* the frame that earns it
-  is forwarded. A fast database can be answered before the forwarding task runs
-  its next line, and counting afterwards lets the clamp discard a genuine answer
-  as an over-count.
+- The 30 s bound is **per stall**, so any continuous upstream stream (endless
+  result set, `COPY TO`) resets it and can hold a refusal indefinitely.
+- A `Sync` swallowed during `COPY` is counted and can never be answered. The
+  delivered count stays put while later statements raise the tag, so **every**
+  later refusal on that connection pays a window, not just the first. Tracked as
+  #128. Do not try to fix this by counting — the two cases are indistinguishable
+  on the wire, and resolving the ambiguity the other way is how a late answer gets
+  credited to a later statement's slot.
+- A `Flush` that elicits nothing is never settled by a quiet, so a client can pay
+  itself a fresh stall window per denied statement (#148). A TCP-split burst can
+  also leave the socket empty part-way through one batch's output and settle it
+  early; closing that needs a grace-period timing constant. Both recorded in
+  ADR-0007 rather than open defects.
+- `flushes_covered` is a single snapshot, so a second sync point overwrites the
+  first's coverage (#153). Unchanged by #121.
 
 Related: [[project-redaction-failopen-design]] — same fail-open-vs-fail-closed
 weighting question, opposite answer (the proxy path is the enforcement backstop
