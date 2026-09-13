@@ -1,0 +1,19 @@
+.claude/agent-memory/review-review-code-reviewer/project_core_io_boundary_166.md
+  s_507948a1e42420::t_39e501940bdd1d 1-42
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "a076fe4bfafb8b45865015d608a2ad978b21c5e7",
+  "prompts": {},
+  "sessions": {
+    "s_507948a1e42420": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "e1a7ee4b-11d8-4045-bcea-623cb381bb05",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
