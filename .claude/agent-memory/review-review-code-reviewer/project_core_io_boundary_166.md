@@ -12,9 +12,12 @@ false since the JSONL sink existed and was the thing #166 fixed.
 
 **The rule as it now stands.** `honmoon-core` opens exactly one file — the audit JSONL sink in
 `audit.rs`. Still forbidden: an async runtime, a socket, a network or HTTP client, reading the
-environment or locating a config file, spawning a process, and opening any *second* file. The
-sink's precedent grants none of those, and `crates/honmoon-core/tests/crate_boundary.rs` fails
-if the build-dependency set moves at all.
+environment or locating a config file, spawning a process, opening any *second* file, and — the
+clause a capability list does not reach — **a second way to populate the sink**, meaning any
+constructor or setter that assigns `AuditLog`'s `sink` from a descriptor `open_sink` did not
+produce. `crates/honmoon-core/tests/crate_boundary.rs` fails if the build-dependency set moves,
+which covers the entries that need a new crate; the rest reach through `std` and are held by
+review. The section says which is which, so the split is a documented limit, not a gap.
 
 **Two premises reviewers keep getting wrong on this question.**
 
