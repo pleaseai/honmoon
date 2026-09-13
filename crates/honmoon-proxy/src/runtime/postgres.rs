@@ -197,9 +197,12 @@ struct Forwarded {
     ///
     /// Still one snapshot rather than one per forwarded sync point, so with two
     /// `Sync` frames in flight the earlier `ReadyForQuery` can read the later
-    /// one's value. That is #153, and it is unchanged here: the premature credit
-    /// cannot release a refusal while the sync side still holds the barrier, and
-    /// making it exact needs per-sync-point state whose size a client controls.
+    /// one's value. That is #153, and it is unchanged here. What keeps the
+    /// premature credit harmless is not the conjunction in [`Relay::releasable`]
+    /// on its own: it is that [`ClientLink::inject`] awaits its ack over a
+    /// one-slot channel, so the message loop cannot forward a second `Sync` —
+    /// and so cannot overwrite this snapshot — while a refusal is queued.
+    /// Making it exact needs per-sync-point state whose size a client controls.
     flushes_covered: AtomicU64,
 }
 
@@ -333,9 +336,14 @@ impl ClientLink {
     /// behind it.
     ///
     /// Read here rather than in the relay because the message loop is the only
-    /// writer of these counts: they cannot move under it, and the flush coverage
-    /// it reads is exactly the snapshot the most recent forwarded sync point
-    /// left — no later one exists yet.
+    /// writer of these counts: they cannot move under it.
+    ///
+    /// The flush side is the **live** `flushes` total, not the `flushes_covered`
+    /// snapshot — a `Flush` sent after the most recent `Sync` is still something
+    /// this refusal waits for. That is what pairs it with the relay: the `owed`
+    /// [`Relay::flush_drained`] settles against is read from the same live
+    /// counter, so a tag taken from the snapshot instead would be measured
+    /// against a different number than the one being raised.
     fn refusal(&self, message: &str, order_deadline: Option<tokio::time::Instant>) -> Refusal {
         Refusal {
             message: message.to_owned(),
@@ -1024,9 +1032,12 @@ where
                     .await
                     .is_err()
             {
-                // The header may already be on the client's socket with only
-                // part of its payload behind it — `write_all` can fail after a
-                // partial write, and the copy fails mid-payload by definition.
+                // The header is already on the client's socket with an
+                // incomplete payload behind it: `write_all` can fail after a
+                // partial write, and `copy_exact` reads each chunk before writing
+                // it, so an upstream that dies first leaves the header with *no*
+                // payload at all. Either way the client is mid-frame, and nothing
+                // more may be written to it.
                 return Stop::Client;
             }
             // Oversized by construction, so never a `ReadyForQuery` (six bytes):
