@@ -2,6 +2,13 @@
 //!
 //! This crate is intentionally transport-agnostic. The proxy crate feeds it
 //! protocol [`Facts`] and receives a [`Verdict`].
+//!
+//! Transport-agnostic is not I/O-free, and the difference is deliberate:
+//! [`audit`] opens and appends to one file, the operator's JSONL audit sink, and
+//! that is the only file this crate touches. Everything else takes what it works
+//! on as an argument — [`Policy::from_yaml`] parses a string, and whoever read it
+//! off disk is the caller. `crates/AGENTS.md` states the boundary and what stays
+//! forbidden; [`audit::AuditLog::with_file`] says why the sink open is here.
 
 use std::collections::{BTreeMap, HashMap};
 use std::fmt;

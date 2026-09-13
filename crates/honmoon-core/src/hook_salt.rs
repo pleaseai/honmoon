@@ -13,8 +13,11 @@
 //! - the **salt context**: an operator-pinned context if there is one, else the
 //!   hook payload's own `session_id` (see [`hook_salt_context`]).
 //!
-//! Neither input is this crate's to fetch: reading the machine key is
-//! filesystem I/O the transports own, which keeps `honmoon-core` I/O-free.
+//! Neither input is this crate's to fetch: reading the machine key is filesystem
+//! I/O the transports own. That is a property of *this* module, not of the crate —
+//! `honmoon-core` is transport-agnostic rather than I/O-free, and `audit.rs` opens
+//! the operator's JSONL sink (issue #166). The machine key is not a second such
+//! file, and `crates/AGENTS.md` says why one would need its own decision.
 //!
 //! That last point bounds the guarantee, and the bound is about key material, not
 //! about where it sits: the transports agree exactly while they derive from the

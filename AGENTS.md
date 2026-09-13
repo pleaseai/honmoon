@@ -35,7 +35,7 @@ cargo run -p honmoon-cli -- gateway --config policies/agent.yaml --addr 127.0.0.
 
 | Path | What |
 |------|------|
-| `crates/honmoon-core/` | Policy model, `decide_explained()` / `decide_pii_audit_only()` engine, `audit` log, protocol parsers. **Transport-agnostic — no I/O.** |
+| `crates/honmoon-core/` | Policy model, `decide_explained()` / `decide_pii_audit_only()` engine, `audit` log, protocol parsers. **Transport-agnostic; the one file it opens is the audit sink** — `crates/AGENTS.md` states the boundary. |
 | `crates/honmoon-proxy/` | tokio CONNECT egress proxy + `approval` registry (pause hold). |
 | `crates/honmoon-mgmt/` | In-process axum management API + embedded dashboard (`rust-embed`). |
 | `crates/honmoon-cli/` | `honmoon` binary (`run` / `gateway` / `join`). |
@@ -107,9 +107,10 @@ Run `mise run check` before committing.
   write tests first; mark planned vs implemented honestly in docs.
 - ⚠️ **Ask first**: changing the policy *shape* (must update Rust + TS + JSON Schema together —
   TD-001); changing the `decide()` precedence; altering the open-core boundary.
-- 🚫 **Never**: add `tokio`/sockets/I/O to `honmoon-core`; weaken or delete tests to make code
-  pass; add payload decryption / deep packet inspection beyond declared facts; gate the data
-  plane behind a paywall.
+- 🚫 **Never**: give `honmoon-core` an async runtime, a socket, or a network client (it is
+  transport-agnostic, not I/O-free — `crates/AGENTS.md` states the one file it opens and what
+  stays forbidden); weaken or delete tests to make code pass; add payload decryption / deep
+  packet inspection beyond declared facts; gate the data plane behind a paywall.
 
 See also: `wiki/AGENTS.md` (docs), `crates/AGENTS.md`, `packages/AGENTS.md`,
 `apps/dashboard/AGENTS.md`.
