@@ -1,0 +1,31 @@
+wiki/llms-full.txt
+  s_26fa4496ae5d90::t_231a4ed35970c5 1088,1749,1775,1782,1784,1816,1818,1822-1825,1919,2242,2475-2477,2488,2527,2579,3130-3132,3143,3178-3179,3189
+wiki/deep-dive/egress-gateway.md
+  s_26fa4496ae5d90::t_9cd8f0a57b1115 158,184,191,193,225,227,231-234
+wiki/deep-dive/control-plane.md
+  s_26fa4496ae5d90::t_9cd8f0a57b1115 60
+wiki/deep-dive/architecture.md
+  s_26fa4496ae5d90::t_9cd8f0a57b1115 191
+wiki/getting-started/policy-authoring.md
+  s_26fa4496ae5d90::t_9cd8f0a57b1115 418-420,431,466-467,477
+wiki/getting-started/quick-start.md
+  s_26fa4496ae5d90::t_9cd8f0a57b1115 18-20,31,70,122
+wiki/getting-started/overview.md
+  s_26fa4496ae5d90::t_9cd8f0a57b1115 123
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "3f77f71467c4cbb6602d2e76115e350018144f4b",
+  "prompts": {},
+  "sessions": {
+    "s_26fa4496ae5d90": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "4904e4df-31e2-4534-ad76-15edcb599525",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
