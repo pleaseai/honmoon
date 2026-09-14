@@ -1,0 +1,21 @@
+crates/honmoon-proxy/src/runtime/postgres.rs
+  s_f71d0152bd2206::t_85d5340dedf49e 3743-3838,4048
+  s_f71d0152bd2206::t_4e2ce8aa8e2742 2078-2080,3950-3954,3959-3960,3989,3997-4047
+  s_f71d0152bd2206::t_ef28819fcb5aaa 4049
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "45b0cb621f5a84ced15a05d4aa419e148945ad0a",
+  "prompts": {},
+  "sessions": {
+    "s_f71d0152bd2206": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "6cce2430-75f3-4d50-8421-5ed25f713a4d",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
