@@ -23,29 +23,35 @@ hand.
 
 ## Cutting a release
 
-1. **Merge your work to `main` with Conventional Commits.** A breaking change (`feat!:` or a
-   `BREAKING CHANGE:` footer) bumps the minor while the major is still `0`; `feat:` bumps the
-   minor; *everything else* — `fix:`, `perf:`, and also `docs:`, `chore:`, `refactor:`,
-   `test:`, `ci:` — bumps the patch. The hidden types are hidden from the CHANGELOG only, not
-   from the version: release-please has no notion of a commit that does not count.
+1. **Merge your work to `main` with Conventional Commits.** Only four types open a release at
+   all: `feat:` bumps the minor, and `fix:`, `perf:` and `revert:` bump the patch. A breaking
+   change (`feat!:` or a `BREAKING CHANGE:` footer) bumps the minor too while the major is
+   still `0`, whatever type carries it. `docs:`, `chore:`, `style:`, `refactor:`, `test:`,
+   `build:` and `ci:` are release-please's *hidden* types: they render nothing in the
+   CHANGELOG, and it drops a release whose entry would be empty, so a stretch of only those
+   commits produces no release PR. They ride along in the next release a visible commit opens,
+   adding no bump of their own.
 
 2. **Review the release PR.** Every push to `main` refreshes an open PR titled
    `chore(release): vX.Y.Z`, carrying the new version across every manifest and the CHANGELOG
    entry it will publish. It only ever *proposes* — nothing is tagged or published while it
    sits there, and the version it names keeps climbing to the largest bump among the commits
-   since the last release. So a docs-only week is not a release until you decide it is. Edit
-   the CHANGELOG in the PR if the generated entry needs trimming — what it says at merge time
-   is what the Release notes say.
+   since the last release. Edit the CHANGELOG in the PR if the generated entry needs trimming
+   — what it says at merge time is what the Release notes say.
 
 3. **Merge the release PR.** That is the whole release. release-please tags `vX.Y.Z`,
    publishes the Release with the CHANGELOG entry as its notes, and then calls `release.yml`,
    which builds the three targets and uploads the tarballs plus `SHA256SUMS` onto it.
 
 4. **Watch the run.** `gh run watch` or the Actions tab. Until the build finishes the Release
-   is live but carries no binaries — a window of roughly the build's length.
+   is live but carries no binaries — a window of roughly the build's length. A failed build
+   leaves that window open, so close it by re-running `release.yml` with the tag once the
+   cause is fixed; see [Dry-running the pipeline](#dry-running-the-pipeline).
 
-To cut a version release-please would not pick on its own, put `Release-As: 0.3.0` in a commit
-body on `main`. A version carrying a pre-release identifier (`v0.2.0-rc.1` — anything with a
+To cut a version release-please would not pick on its own — a specific number, or any release
+at all out of hidden-type commits — put `Release-As: 0.3.0` in a commit body on `main`. The
+footer is a note, and a commit carrying a note renders even under a hidden section, so it
+clears the empty-CHANGELOG gate that would otherwise suppress the release. A version carrying a pre-release identifier (`v0.2.0-rc.1` — anything with a
 `-`) is marked a GitHub pre-release and never becomes "latest".
 
 `scripts/bump-version.ts` predates release-please and is no longer part of this path; the

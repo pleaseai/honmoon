@@ -18,7 +18,7 @@
         {
           "type": "toml",
           "path": "Cargo.lock",
-          "jsonpath": "$.package[?(@.name.value.startsWith(\"honmoon-\"))].version"
+          "jsonpath": "$.package[?(@.name.value.startsWith(\"honmoon\"))].version"
         },
         {
           "type": "json",
