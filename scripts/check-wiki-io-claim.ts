@@ -9,7 +9,7 @@
  *
  * The wiki was not, and that is what this guards. The claim had to be chased
  * twice already — #206 fixed three normative documents and left four more places
- * asserting the opposite, and #207 then found the same sentence living in six
+ * asserting the opposite, and #207 then found the same sentence living in five
  * wiki pages and in the generated `llms-full.txt`. A contributor following one
  * document should not get the opposite rule from another, and here the other
  * document is the one users actually read.
@@ -29,14 +29,23 @@
  * list of known strings: a fresh paraphrase — "the core never touches the disk" —
  * passes it. Rule 2 fires only on a page that pairs "transport-agnostic" with an
  * explicit capability-absence phrase; a page implying purity without either
- * passes. Neither rule reads meaning. They are a floor under review, not a
- * replacement for it — the same checked/unchecked split `crates/AGENTS.md` draws
- * around `crates/honmoon-core/tests/crate_boundary.rs`.
+ * passes. The `I/O-free` negation search looks back 96 characters and stops at a
+ * sentence boundary, so a denial further away than that reads as an assertion —
+ * a false positive on correct prose rather than a miss. Neither rule reads
+ * meaning. They are a floor under review, not a replacement for it — the same
+ * checked/unchecked split `crates/AGENTS.md` draws around
+ * `crates/honmoon-core/tests/crate_boundary.rs`.
+ *
+ * And nothing here checks that a page restating the *audit-sink hardening*
+ * carries its caveats — the descriptor-scoped limit, the open issue #215 gap, the
+ * `cfg(not(unix))` arm. Those are review's, and `crates/AGENTS.md` is where they
+ * are written.
  *
  * `llms-full.txt` is scanned along with the pages. It is generated
- * (`wiki/.vitepress/gen-llms-full.mjs`) and inlines every page, so a page edited
- * without regenerating it leaves the retired wording there — which fails here
- * rather than shipping to the readers who consume that file.
+ * (`wiki/.vitepress/gen-llms-full.mjs`) and inlines the pages it lists — every
+ * page but `index.md` — so a page edited without regenerating it leaves the
+ * retired wording there, which fails here rather than shipping to the readers
+ * who consume that file.
  */
 
 import { readFileSync } from 'node:fs'
@@ -50,20 +59,30 @@ export const REPO_ROOT = fileURLToPath(new URL('..', import.meta.url))
 /**
  * Markdown under `wiki/` that VitePress does not publish.
  *
- * Mirrors `srcExclude` in `wiki/.vitepress/config.mts`: the instruction files
- * for agents working on the site are not pages, and a rule written there is
- * allowed to quote the wording the pages must not use.
+ * Mirrors `srcExclude` in `wiki/.vitepress/config.mts`, including the part that
+ * is easy to flatten. That list is `['**/AGENTS.md', '**/CLAUDE.md',
+ * 'README.md']`: the first two match at any depth, the third resolves against the
+ * source root only. So a nested `wiki/onboarding/README.md` is a page VitePress
+ * publishes, and excluding it by basename would leave a real page unscanned under
+ * a comment claiming the two lists agreed.
+ *
+ * The instruction files for agents working on the site are not pages, and a rule
+ * written in one may quote the wording the pages must not use.
  */
-const UNPUBLISHED = ['AGENTS.md', 'CLAUDE.md', 'README.md']
+const UNPUBLISHED_AT_ANY_DEPTH = new Set(['AGENTS.md', 'CLAUDE.md'])
+const UNPUBLISHED_AT_ROOT = new Set(['README.md'])
 
 /**
  * Directories under `wiki/` holding markdown that is not the site's source.
  *
  * `bun install` and `bun run build` inside `wiki/` leave both behind, and a
  * scan that picks them up reads a few hundred dependency READMEs — where a rule
- * here would be judging prose nobody in this repository wrote. CI never
- * installs into `wiki/`, so this only shows up after a local build, which is
- * exactly the run that would be trusted.
+ * here would be judging prose nobody in this repository wrote. The job that runs
+ * this check — `ci.yml`'s `js` — installs at the repository root and never enters
+ * `wiki/`, so the stray trees appear only after a local build, which is exactly
+ * the run whose green a contributor trusts before pushing. Not "CI never installs
+ * there": `deploy-wiki.yml` does, with `working-directory: wiki`. It does not run
+ * this check today, and this filter is what would keep it honest if it ever did.
  */
 const NOT_SOURCE = ['node_modules', '.vitepress/cache', '.vitepress/dist']
 
@@ -139,11 +158,13 @@ const NAMES_THE_SINK = /audit sink|JSONL sink/i
  *
  * Not cosmetic: `deep-dive/policy-engine.md` wrote "The crate has **no**
  * networking dependency", and every rule below that looks for a negation next to
- * a capability missed it over two asterisks. Only `*` is removed — `_` is more
- * often part of an identifier here (`open_sink`, `with_file`) than emphasis.
+ * a capability missed it over two asterisks. `_` is emphasis only at a word's
+ * edge (`_no_ networking`); between word characters it is an identifier
+ * (`open_sink`, `with_file`) and stays, so `\bno\b` still finds the one and
+ * never tears the other.
  */
 function plain(text: string): string {
-  return text.replaceAll('*', '')
+  return text.replaceAll('*', '').replace(/\b_+|_+\b/g, '')
 }
 
 /** Every problem in one document. `where` only labels the findings. */
@@ -180,15 +201,23 @@ export function checkDocument(source: string, where: string): Problem[] {
   return problems
 }
 
-/** Published wiki pages plus the two aggregate files, relative to the repo root. */
+/**
+ * Published wiki pages plus the two aggregate files, relative to the repo root.
+ *
+ * Always `/`-separated, whatever the host's separator: the paths label findings
+ * and are what the tests assert on, and `readFileSync` accepts them everywhere.
+ * The sort is by code unit, spelled out so the order does not depend on a
+ * locale.
+ */
 export function wikiDocuments(): string[] {
   const pages = [...new Glob('**/*.md').scanSync(join(REPO_ROOT, 'wiki'))]
     .map(rel => rel.split(/[/\\]/))
-    .filter(parts => !UNPUBLISHED.includes(parts.at(-1)!))
+    .filter(parts => !UNPUBLISHED_AT_ANY_DEPTH.has(parts.at(-1)!))
+    .filter(parts => !(parts.length === 1 && UNPUBLISHED_AT_ROOT.has(parts[0]!)))
     .filter(parts => !NOT_SOURCE.some(dir => parts.join('/').startsWith(`${dir}/`)))
-    .map(parts => join('wiki', ...parts))
-    .sort()
-  return [...pages, join('wiki', 'llms.txt'), join('wiki', 'llms-full.txt')]
+    .map(parts => ['wiki', ...parts].join('/'))
+    .sort((a, b) => (a < b ? -1 : a > b ? 1 : 0))
+  return [...pages, 'wiki/llms.txt', 'wiki/llms-full.txt']
 }
 
 export function checkRepository(): Problem[] {
@@ -207,7 +236,11 @@ export function main(): number {
     }
     console.error(
       `\nwiki I/O claim: ${problems.length} problem(s). \`honmoon-core\` is transport-agnostic, `
-      + 'not I/O-free — see `crates/AGENTS.md` under "What `honmoon-core` may touch".',
+      + 'not I/O-free — see `crates/AGENTS.md` under "What `honmoon-core` may touch".\n'
+      + 'Rewrite the page so the passage reaches that rule (no async runtime, no socket, no '
+      + 'network client, and exactly one file: the operator\'s JSONL audit sink), then regenerate '
+      + 'the bundle: `cd wiki && bun .vitepress/gen-llms-full.mjs`. A finding only in '
+      + '`wiki/llms-full.txt` means the page was fixed and the bundle was not regenerated.',
     )
     return 1
   }
