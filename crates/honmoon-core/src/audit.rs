@@ -613,14 +613,17 @@ impl AuditLog {
 ///   `/var/log/...` audit path would be refused on that platform, and a
 ///   root-installed `/var/log -> /mnt/log` is an ordinary Linux deployment. The
 ///   issue raised that risk explicitly. This is a trusted-path assumption, not a
-///   proof: it reads owner and write bits only, and says nothing about a root-owned
-///   directory reachable some other way, or about what root itself does. Nor about
-///   ACLs — and that one is not symmetric between the platforms. A Linux POSIX ACL
-///   granting write to a named user needs the ACL mask to carry write, and the mask
-///   is what `st_mode`'s group bits report, so `0o020` catches it; macOS NFSv4-style
-///   ACLs (`chmod +a`) do not appear in `st_mode` at all, so a root-owned `0755`
-///   directory carrying `user:mallory allow write` reads as trusted here. Tracked in
-///   issue #181.
+///   proof: it says nothing about a root-owned directory reachable some other way,
+///   or about what root itself does. It does now cover ACLs, which took a second
+///   test because the bits alone are the whole answer on one platform only
+///   (issue #181). A Linux POSIX ACL granting write to a named user needs the ACL
+///   mask to carry write, and the mask is what `st_mode`'s group bits report, so
+///   `0o020` catches it; macOS NFSv4-style ACLs (`chmod +a`) do not appear in
+///   `st_mode` at all, so a root-owned `0755` directory carrying
+///   `user:mallory allow write` used to read as trusted. On macOS the directory is
+///   now also asked whether it carries an extended ACL, and one that does is
+///   untrusted whatever the ACL says — see [`carries_an_extended_acl`] for what that
+///   coarseness costs, which is a symlink held directly in a home directory.
 /// - The **mode of a file that already exists**. `mode` applies only when this
 ///   call creates the file, so a log left group- or world-readable by an earlier
 ///   honmoon (which created it at the umask default) or by the operator keeps
@@ -1125,6 +1128,18 @@ fn from_raw_fd(fd: libc::c_int) -> std::io::Result<std::fs::File> {
 /// group-writable directory counts as untrusted even where the group is one this
 /// process belongs to: honmoon cannot tell that group's members apart from an
 /// attacker, and refusing is the fail-closed side.
+///
+/// **`st_mode` is the whole answer on one platform only**, which is why a second
+/// check follows the mode one (issue #181). A Linux POSIX ACL granting write to a
+/// named user takes
+/// effect only if the ACL *mask* carries write, and the mask is exactly what
+/// `st_mode`'s group bits report — so `0o020` above already catches it, and
+/// `ACL_OTHER` is `0o002` and `ACL_USER_OBJ` is the owner the uid test just named.
+/// macOS NFSv4-style ACLs (`chmod +a`) have no `st_mode` representation at all: a
+/// root-owned `0755` directory carrying `user:mallory allow write` reads as trusted
+/// from the bits alone, and the symlink `mallory` plants in it is followed.
+/// [`carries_an_extended_acl`] is what closes that; read it for the cost, which is
+/// an over-refusal this rule accepts rather than one it is unaware of.
 #[cfg(unix)]
 fn require_link_in_a_trusted_directory(
     path: &Path,
@@ -1138,7 +1153,22 @@ fn require_link_in_a_trusted_directory(
     // documented as always succeeding.
     let euid = unsafe { libc::geteuid() };
     if (meta.uid() == 0 || meta.uid() == euid) && meta.mode() & 0o022 == 0 {
-        return Ok(());
+        if !carries_an_extended_acl(dir) {
+            return Ok(());
+        }
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!(
+                "audit log {}: the path component {} is a symlink, and the directory holding \
+                 it is uid {} mode {:04o} but carries an extended ACL — the mode alone no \
+                 longer says who can write there, so the link may have been planted to choose \
+                 where the records land",
+                path.display(),
+                Path::new(name).display(),
+                meta.uid(),
+                meta.mode() & 0o7777,
+            ),
+        ));
     }
     Err(std::io::Error::new(
         std::io::ErrorKind::InvalidInput,
@@ -1152,6 +1182,89 @@ fn require_link_in_a_trusted_directory(
             meta.mode() & 0o7777,
         ),
     ))
+}
+
+/// The two `libSystem` entry points the macOS half of
+/// [`require_link_in_a_trusted_directory`] needs, and the one constant they take.
+///
+/// Declared here rather than taken from `libc`, which carries no `acl_*` on Apple
+/// targets — checked against the 0.2 line this workspace pins, whose Apple module
+/// has `getxattr`/`fgetxattr` and nothing from `sys/acl.h`. This is not a new
+/// dependency and not a new linked library: `acl_get_fd_np` and `acl_free` live in
+/// `libSystem`, which every Rust binary on this target already links for `std`, and
+/// the declarations below are `sys/acl.h`'s own, transcribed.
+///
+/// `acl_t` is `struct _acl *` — opaque on the C side too, never dereferenced here —
+/// so it is carried as `*mut c_void`, which is also what `acl_free` takes.
+#[cfg(target_os = "macos")]
+mod darwin_acl {
+    /// `ACL_TYPE_EXTENDED` from `sys/acl.h`: the NFSv4-style ACL, and the only type
+    /// macOS actually stores. The `acl_type_t` enum it belongs to has no negative
+    /// value, so C gives it unsigned rank.
+    pub(super) const ACL_TYPE_EXTENDED: libc::c_uint = 0x0000_0100;
+
+    unsafe extern "C" {
+        pub(super) fn acl_get_fd_np(fd: libc::c_int, acl_type: libc::c_uint) -> *mut libc::c_void;
+        pub(super) fn acl_free(obj: *mut libc::c_void) -> libc::c_int;
+    }
+}
+
+/// Does `dir` carry an NFSv4-style extended ACL — the thing `st_mode` cannot show?
+///
+/// Read with `acl_get_fd_np` on the descriptor the walk already holds, so it
+/// describes the same pinned directory the mode test just read and nothing can be
+/// swapped in between them. A search-only descriptor (the [`O_TRAVERSE`] retry in
+/// [`open_directory`]) answers this call as readily as a readable one.
+///
+/// **Presence, not contents — and that over-refuses.** Deciding which entries could
+/// grant write means walking the ACL with `acl_get_entry` / `acl_get_tag_type` and
+/// reading a permset, and a misread there fails *open*, which is the direction this
+/// whole issue is about. So any extended ACL makes the directory untrusted, on the
+/// same footing as the group-writable rule above: honmoon does not claim the
+/// directory is unsafe, it declines to claim it is safe. The cost is real and worth
+/// naming, because one case is not rare — macOS creates every home directory with
+/// `group:everyone deny delete`, an entry that grants nobody anything. A symlink
+/// held *directly* in `$HOME` on the audit path is therefore refused on macOS with
+/// nothing actually wrong; the remedy is to configure the path the link resolves to.
+/// Refining this to deny-only-is-still-trusted is a sound change — a deny ACE can
+/// only subtract access — and it is a change to make deliberately, not a gap.
+///
+/// **What is not refused**, on a host whose system directories are as macOS ships
+/// them: `/`, `/private/var`, `/private/tmp` and `/var/log` carry no ACL there, so
+/// the `/var -> private/var` hop the trusted-symlink exception exists for still
+/// resolves, and so does the default `TMPDIR` beneath it. That is a property of the
+/// host rather than of this code, which is why the walk's own root is asserted in
+/// `the_stock_macos_symlinked_system_directories_are_still_followed` rather than
+/// assumed here.
+#[cfg(target_os = "macos")]
+fn carries_an_extended_acl(dir: &std::fs::File) -> bool {
+    use std::os::unix::io::AsRawFd as _;
+
+    // SAFETY: `dir` owns the descriptor for the whole call and `acl_get_fd_np` only
+    // reads from it. A non-null return is a fresh allocation this function owns.
+    let acl = unsafe { darwin_acl::acl_get_fd_np(dir.as_raw_fd(), darwin_acl::ACL_TYPE_EXTENDED) };
+    if acl.is_null() {
+        // `ENOENT` is how "there is no extended ACL on this object" is reported, and
+        // it is the only outcome that answers no. Anything else — a descriptor the
+        // call will not take, a filesystem that cannot answer — leaves the question
+        // open, and an open question about who can write is not a yes.
+        return std::io::Error::last_os_error().raw_os_error() != Some(libc::ENOENT);
+    }
+    // SAFETY: `acl` is the non-null handle the call above returned and nothing else
+    // holds it; it is freed exactly once and never used again.
+    unsafe { darwin_acl::acl_free(acl) };
+    true
+}
+
+/// Every other Unix: `st_mode` already carries what an ACL here can grant, so there
+/// is nothing left to read — see [`require_link_in_a_trusted_directory`] for why the
+/// Linux mask makes that true rather than merely likely.
+///
+/// A `cfg` split rather than a branch inside one body, matching `open_sink_file` and
+/// `describe_file_type`.
+#[cfg(all(unix, not(target_os = "macos")))]
+fn carries_an_extended_acl(_dir: &std::fs::File) -> bool {
+    false
 }
 
 /// Read the target of the symlink `name` inside `dir`, without a path `std::fs`
@@ -1784,6 +1897,97 @@ mod tests {
         assert!(
             !elsewhere.join("audit.jsonl").exists(),
             "the refused open must not have created the sink through the link"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A macOS extended ACL has no `st_mode` representation, so a directory that
+    /// reads as owner-only-writable from the bits can grant write to anyone
+    /// (issue #181). The symlink a grantee plants there must not be followed.
+    ///
+    /// `everyone allow write` rather than the issue's `user:mallory allow write`:
+    /// it needs no second account to exist on the machine, and it is the same
+    /// blindness at its widest — `st_mode` stays `0755` either way, which the
+    /// assertions below check before the refusal is asserted, so a pass here cannot
+    /// come from `chmod` having quietly changed the mode instead.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn with_file_refuses_a_symlinked_parent_in_a_directory_an_acl_opens_up() {
+        use std::os::unix::fs::MetadataExt as _;
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = scratch_dir("symlink-parent-acl");
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755))
+            .expect("make the directory one only its owner can write");
+        let elsewhere = dir.join("elsewhere");
+        std::fs::create_dir(&elsewhere).expect("create the link's target");
+        std::os::unix::fs::symlink(&elsewhere, dir.join("logs")).expect("plant symlink");
+
+        let chmod = std::process::Command::new("/bin/chmod")
+            .arg("+a")
+            .arg("everyone allow write,file_inherit,directory_inherit")
+            .arg(&dir)
+            .output()
+            .expect("run chmod");
+        assert!(
+            chmod.status.success(),
+            "the fixture needs an ACL-capable filesystem: {}",
+            String::from_utf8_lossy(&chmod.stderr)
+        );
+
+        // The premise, checked rather than assumed: the bits still say trusted. If
+        // `chmod +a` ever started writing the mode too, the refusal below would be
+        // the pre-existing group-writable rule firing and would prove nothing.
+        let meta = std::fs::metadata(&dir).expect("stat the directory");
+        // SAFETY: `geteuid` reads process credentials, takes no arguments and is
+        // always successful.
+        let euid = unsafe { libc::geteuid() };
+        assert_eq!(meta.uid(), euid, "the fixture directory is ours");
+        assert_eq!(
+            meta.mode() & 0o022,
+            0,
+            "mode {:04o} already says untrusted, so the ACL is not what is being tested",
+            meta.mode() & 0o7777
+        );
+
+        let Err(err) = AuditLog::with_file(4, dir.join("logs").join("audit.jsonl")) else {
+            panic!("a symlink in a directory an extended ACL opens up must be refused");
+        };
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput, "{err}");
+        assert!(err.to_string().contains("extended ACL"), "{err}");
+        assert!(
+            !elsewhere.join("audit.jsonl").exists(),
+            "the refused open must not have created the sink through the link"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The companion to the test above, and the reason it is not enough on its own:
+    /// the walk must still follow the root-owned symlinks macOS ships. `/var ->
+    /// private/var` is held in `/`, and every sink test in this file resolves
+    /// through it because `temp_dir()` is `/var/folders/...`. This says so directly,
+    /// so a future tightening that refuses every macOS symlinked parent fails here
+    /// rather than only in the field.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn the_stock_macos_symlinked_system_directories_are_still_followed() {
+        let root = std::fs::File::open("/").expect("open the walk root");
+        assert!(
+            !carries_an_extended_acl(&root),
+            "/ carries an extended ACL on this host, so `/var -> private/var` would be refused"
+        );
+
+        let dir = scratch_dir("macos-tmpdir-walk");
+        let sink = dir.join("audit.jsonl");
+        let log = AuditLog::with_file(4, &sink)
+            .expect("a sink under the default TMPDIR opens, symlinked /var and all");
+        log.record(draft(Decision::Allowed));
+        assert_eq!(
+            std::fs::read_to_string(&sink)
+                .expect("the sink took the event")
+                .lines()
+                .count(),
+            1
         );
         let _ = std::fs::remove_dir_all(&dir);
     }

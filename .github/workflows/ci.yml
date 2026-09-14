@@ -80,13 +80,22 @@ jobs:
           fail_ci_if_error: false
 
   # macOS is not a second opinion on the Linux job — it is the only place the
-  # macOS half of ADR-0005 is compiled at all. `isolate::macos` sits behind
-  # `cfg(target_os = "macos")`, so the ubuntu job above never type-checks a line
-  # of it, and the Seatbelt profile it generates is a string that only means
-  # something once `sandbox-exec` has parsed it. Scoped to `honmoon-cli`: the
-  # rest of the workspace is platform-neutral and the ubuntu job covers it.
+  # workspace's `cfg(target_os = "macos")` code is compiled or run at all, and
+  # there are now two such places. `isolate::macos` in `honmoon-cli` sits behind
+  # that cfg, so the ubuntu job above never type-checks a line of it, and the
+  # Seatbelt profile it generates is a string that only means something once
+  # `sandbox-exec` has parsed it. `audit.rs`'s extended-ACL test in
+  # `honmoon-core` is the second: an NFSv4-style ACL has no `st_mode`
+  # representation, which is why the trusted-directory rule reads one on macOS
+  # and nothing on Linux (issue #181) — and the ACL fixture it is proved with
+  # can only be built by a `chmod +a` this runner is the only one to have.
+  #
+  # So the two crates are named rather than the whole workspace: everything else
+  # is platform-neutral and the ubuntu job covers it. A third crate growing a
+  # `cfg(target_os = "macos")` belongs on this list too, or its code ships
+  # compiled by nothing.
   rust-macos:
-    name: Rust — macOS enforced isolation
+    name: Rust — macOS-only code paths
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -100,7 +109,7 @@ jobs:
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
 
       - name: Clippy
-        run: cargo clippy --locked -p honmoon-cli --all-targets -- -D warnings
+        run: cargo clippy --locked -p honmoon-cli -p honmoon-core --all-targets -- -D warnings
 
       - name: Test
         # HONMOON_REQUIRE_ENFORCEMENT turns "this host cannot confine, so skip"
@@ -117,7 +126,7 @@ jobs:
         # targets rather than leaving runnable binaries there.
         run: |
           cargo build --locked -p honmoon-cli --example bypass_probe --example socks_probe
-          cargo test --locked -p honmoon-cli
+          cargo test --locked -p honmoon-cli -p honmoon-core
 
   js:
     name: JS — lint, build

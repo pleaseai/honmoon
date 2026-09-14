@@ -111,6 +111,17 @@ directory-relative syscalls `openat`, `fstatat` and `readlinkat`, `geteuid` for 
 and the flag, errno, file-type and struct definitions those four take. Every descriptor they
 return is handed straight to `std::fs::File`, which owns and closes it.
 
+One pair of calls the same open needs does **not** come through `libc`, and is named here rather
+than left to be discovered in a diff. `audit.rs` declares `acl_get_fd_np` and `acl_free` itself,
+in an `unsafe extern "C"` block gated to `cfg(target_os = "macos")`, because the `libc` line this
+workspace pins carries no `acl_*` on Apple targets. That is a transcription of `sys/acl.h`, not a
+new dependency and not a newly linked library — both symbols live in `libSystem`, which `std`
+already links on that target, and the manifest does not move, so `crate_boundary.rs` has nothing
+to say about it. They are there because the trusted-directory rule is otherwise wrong on macOS:
+an NFSv4-style ACL has no `st_mode` representation, so the mode bits alone under-refuse
+(issue #181). Treat a *further* hand-declared system symbol the way this section treats a second
+open file — a new decision, which this precedent does not grant.
+
 Test code is not held to this: the audit suite builds FIFO fixtures with `libc::mkfifo` and
 spawns threads, and nothing it links reaches a shipped binary.
 
