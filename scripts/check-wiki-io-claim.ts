@@ -60,11 +60,11 @@ export const REPO_ROOT = fileURLToPath(new URL('..', import.meta.url))
  * Markdown under `wiki/` that VitePress does not publish.
  *
  * Mirrors `srcExclude` in `wiki/.vitepress/config.mts`, including the part that
- * is easy to flatten. That list is `['**/AGENTS.md', '**/CLAUDE.md',
- * 'README.md']`: the first two match at any depth, the third resolves against the
- * source root only. So a nested `wiki/onboarding/README.md` is a page VitePress
- * publishes, and excluding it by basename would leave a real page unscanned under
- * a comment claiming the two lists agreed.
+ * is easy to flatten. It globs `AGENTS.md` and `CLAUDE.md` with a leading
+ * any-depth wildcard, but names `README.md` bare — and VitePress resolves a bare
+ * entry against the source root only. So a nested `wiki/onboarding/README.md` is
+ * a page it publishes, and excluding it by basename here would leave a real page
+ * unscanned under a comment claiming the two lists agreed.
  *
  * The instruction files for agents working on the site are not pages, and a rule
  * written in one may quote the wording the pages must not use.
@@ -86,6 +86,10 @@ const UNPUBLISHED_AT_ROOT = new Set(['README.md'])
  */
 const NOT_SOURCE = ['node_modules', '.vitepress/cache', '.vitepress/dist']
 
+/** The hand-maintained link index, and the generated bundle of every page it lists. */
+const LLMS = 'wiki/llms.txt'
+const LLMS_FULL = 'wiki/llms-full.txt'
+
 export interface Problem {
   where: string
   detail: string
@@ -105,7 +109,7 @@ interface Rule {
  * invariant paragraph and the invariant table in `deep-dive/architecture.md` were
  * two separate edits.
  */
-const RETIRED: Rule[] = [
+export const RETIRED: Rule[] = [
   {
     pattern: /zero I\/O/gi,
     detail: 'the policy engine is unit-tested without a runtime, a network or a container — not '
@@ -217,13 +221,53 @@ export function wikiDocuments(): string[] {
     .filter(parts => !NOT_SOURCE.some(dir => parts.join('/').startsWith(`${dir}/`)))
     .map(parts => ['wiki', ...parts].join('/'))
     .sort((a, b) => (a < b ? -1 : a > b ? 1 : 0))
-  return [...pages, 'wiki/llms.txt', 'wiki/llms-full.txt']
+  return [...pages, LLMS, LLMS_FULL]
+}
+
+/**
+ * The pages `llms-full.txt` says it inlines, as it names them.
+ *
+ * The generator writes one `<doc … path="wiki/…">` per page it bundles, so the
+ * committed artifact carries the canonical page list without this file keeping a
+ * second copy of it to drift.
+ */
+export function inlinedPages(aggregate: string): string[] {
+  return [...aggregate.matchAll(/<doc\s[^>]*\bpath="([^"]+)"/g)].map(match => match[1]!)
+}
+
+/**
+ * Findings about the *scan* rather than about any document's prose.
+ *
+ * Without this the guard's failure mode is a vacuous pass. `wikiDocuments()`
+ * appends `llms.txt` and `llms-full.txt` unconditionally and discovers everything
+ * else by glob, so anything that stops the glob matching pages — an `.mdx`
+ * migration, a directory rename, a pattern regression — leaves it scanning two
+ * committed files that contain no retired wording. `checkRepository()` would
+ * return `[]`, the end-to-end test would stay green, and every published page
+ * would be unread, while `main()` kept printing a reassuring document count.
+ *
+ * Cross-checking against the bundle's own `<doc>` list is what makes that loud
+ * instead: a page the generator bundles but the scan did not reach is reported.
+ * It needs no floor number to rot, and it moves on its own when a page is added.
+ */
+export function checkCoverage(documents: string[], aggregate: string): Problem[] {
+  const scanned = new Set(documents)
+  return inlinedPages(aggregate)
+    .filter(page => !scanned.has(page))
+    .map(page => ({
+      where: LLMS_FULL,
+      detail: `bundles \`${page}\`, which the page scan did not reach — the scan is not seeing `
+        + 'the published wiki, so a clean result here would mean nothing',
+    }))
 }
 
 export function checkRepository(): Problem[] {
-  return wikiDocuments().flatMap(rel =>
-    checkDocument(readFileSync(join(REPO_ROOT, rel), 'utf8'), rel),
-  )
+  const documents = wikiDocuments()
+  const read = (rel: string): string => readFileSync(join(REPO_ROOT, rel), 'utf8')
+  return [
+    ...checkCoverage(documents, read(LLMS_FULL)),
+    ...documents.flatMap(rel => checkDocument(read(rel), rel)),
+  ]
 }
 
 export function main(): number {

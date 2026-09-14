@@ -1,5 +1,15 @@
+import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
 import { describe, expect, test } from 'bun:test'
-import { checkDocument, checkRepository, wikiDocuments } from './check-wiki-io-claim'
+import {
+  checkCoverage,
+  checkDocument,
+  checkRepository,
+  inlinedPages,
+  REPO_ROOT,
+  RETIRED,
+  wikiDocuments,
+} from './check-wiki-io-claim'
 
 /** The corrected shape: the invariant stated, then the one file it excepts. */
 const ACCURATE = `
@@ -42,6 +52,31 @@ describe('checkDocument', () => {
     expect(details('`honmoon-core` is transport-agnostic and has _no_ networking dependency.'))
       .toEqual([expect.stringContaining('without naming the one file')])
   })
+
+  test('an underscore inside a word is an identifier and survives', () => {
+    // `plain()` must not tear `open_sink` apart while stripping `_no_`; the sink
+    // clause of the rule is written with exactly such identifiers.
+    expect(details(
+      'A descriptor `open_sink` did not produce. The audit sink is transport-agnostic '
+      + 'with no sockets.',
+    )).toEqual([])
+  })
+
+  test.each(['`tokio`', 'async runtime', 'sockets', 'network client', 'networking dependency'])(
+    'rule 2 triggers on "no %s" as the sole capability-absence phrase',
+    (capability) => {
+      expect(details(`\`honmoon-core\` is transport-agnostic and has no ${capability}.`))
+        .toEqual([expect.stringContaining('without naming the one file')])
+    },
+  )
+
+  test.each(['not', 'never', 'rather than', 'isn\'t', 'no longer', 'instead of'])(
+    '"%s" reads as a denial, so the correct sentence is not flagged',
+    (cue) => {
+      expect(details(`The crate is transport-agnostic ${cue} I/O-free. It opens the audit sink.`))
+        .toEqual([])
+    },
+  )
 
   test('asserting the crate is I/O-free fails', () => {
     expect(details('The audit sink aside, `honmoon-core` is I/O-free and transport-agnostic.'))
@@ -111,6 +146,35 @@ describe('wikiDocuments', () => {
     for (const rel of wikiDocuments()) {
       expect(rel).not.toContain('\\')
     }
+  })
+})
+
+describe('RETIRED', () => {
+  test('every pattern is global, which matchAll requires', () => {
+    // `checkDocument` calls `text.matchAll(pattern)`, which throws a TypeError on a
+    // non-global regex — so an entry added without `g` breaks the guard at runtime
+    // rather than at review. Nothing in the type expresses it; this does.
+    expect(RETIRED.filter(rule => !rule.pattern.global)).toEqual([])
+  })
+})
+
+describe('checkCoverage', () => {
+  const aggregate = (): string => readFileSync(join(REPO_ROOT, 'wiki/llms-full.txt'), 'utf8')
+
+  test('the real scan reaches every page the bundle inlines', () => {
+    expect(checkCoverage(wikiDocuments(), aggregate())).toEqual([])
+    // A bundle that named nothing would satisfy the line above vacuously.
+    expect(inlinedPages(aggregate()).length).toBeGreaterThan(10)
+  })
+
+  test('a scan that stopped finding pages is reported, not passed', () => {
+    // What an `.mdx` migration or a directory rename would leave behind:
+    // `wikiDocuments()` appends the two aggregates unconditionally, so the glob
+    // returning nothing still yields a readable, retired-wording-free file list.
+    const problems = checkCoverage(['wiki/llms.txt', 'wiki/llms-full.txt'], aggregate())
+
+    expect(problems.length).toBe(inlinedPages(aggregate()).length)
+    expect(problems[0]!.detail).toContain('the page scan did not reach')
   })
 })
 
