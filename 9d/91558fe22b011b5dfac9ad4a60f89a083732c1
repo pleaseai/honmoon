@@ -1,0 +1,31 @@
+release-please-config.json
+  s_9e6261ce54924e::t_5990b6a1fee8b2 45-48
+.github/workflows/release.yml
+  s_9e6261ce54924e::t_3fd67062fd05f4 116-117,122
+  s_9e6261ce54924e::t_a1755fd8e16279 64-65,69-72,105-115,118-121,123,152-158,160-164,183
+  s_9e6261ce54924e::t_88235afa64ec7b 66-68,75,146-151,159,168,186,260
+  s_9e6261ce54924e::t_69485c766d59f6 9-13,139-145,165
+.github/workflows/release-please.yml
+  s_9e6261ce54924e::t_bbdd4b320a87df 42,48,50
+  s_9e6261ce54924e::t_3762b043bb9a17 43-47,49
+docs/releasing.md
+  s_9e6261ce54924e::t_8e8ad3ebc7f2a2 59-60,62-70
+  s_9e6261ce54924e::t_dbc062a4ceab6c 61,71-77
+  s_9e6261ce54924e::t_a506bf7e264624 96-99
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "9d91558fe22b011b5dfac9ad4a60f89a083732c1",
+  "prompts": {},
+  "sessions": {
+    "s_9e6261ce54924e": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "1a8e36bc-a207-460e-8cfa-1fb5a1c9d93e",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
