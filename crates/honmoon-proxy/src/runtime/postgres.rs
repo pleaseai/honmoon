@@ -622,14 +622,25 @@ impl Relay {
         // long since satisfied, and a warning carrying only those reads as though
         // nothing was outstanding at all.
         //
-        // Which half stalled is still not *why* it did, and the flush half has
-        // two ways to reach here that no count separates: a database that
-        // stopped answering, and one that answered with a tag the settling gate
-        // in [`relay_backend_messages`] does not name. #212 made the second an
-        // expected outcome rather than an accident — that gate is a positive
-        // list now, so a tag nobody enumerated waits by design — and this line
-        // is the only place an operator would ever see it happen. So the tag
-        // goes in the line (#214).
+        // Which half stalled is still not *why* it did. Reaching here at all
+        // means the upstream sent no byte for a whole window, so a database that
+        // has stopped answering is the given rather than one of two hypotheses —
+        // what the counts cannot say is whether the flush half is *also* short
+        // because the last message the client received is one no quiet can
+        // settle on. #212 made that outcome expected rather than accidental: the
+        // settling gate in [`relay_backend_messages`] is a positive list now, so
+        // a tag nobody enumerated waits by design, and this line is the only
+        // place an operator would ever see it. So the tag goes in the line
+        // (#214).
+        //
+        // Session state, and the line says so rather than letting it read as a
+        // rival cause. It is the last message the client received at any point,
+        // not an answer to the flush that is outstanding: a `Flush` forwarded
+        // after it that elicits nothing leaves the earlier tag standing, and one
+        // tag cannot name which of several outstanding flushes is short. It
+        // still answers the operator's question, because the gate reads this
+        // very value and settles on nothing else — but it is context for the
+        // silence, not an alternative to it.
         //
         // Escaped, not rendered, for the reason the oversized-copy warnings in
         // [`relay_backend_messages`] give and about the same kind of byte: the
@@ -655,9 +666,11 @@ impl Relay {
             last_tag = %last_tag,
             "no database response for the whole stall window; the refusal may reach the \
              client out of statement order. `last_tag` is the last backend message tag \
-             the client received, `none` if it received none: when `drained` is short of \
-             `expected_flushes`, a tag that cannot end a flushed batch is why that flush \
-             never settled, rather than a database that stopped answering"
+             this session delivered, `none` if it delivered none — session state, not an \
+             answer to any one flush. Read it as whether a quiet could have settled an \
+             outstanding flush at all: a tag the settling rule does not name is one no \
+             quiet settles on, which is how `drained` sits short of `expected_flushes` by \
+             design. It does not displace the silence this line already reports"
         );
         self.abandoned = self.abandoned.max(sync_points);
         self.abandoned_flushes = self.abandoned_flushes.max(flushes);
@@ -3324,12 +3337,12 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn a_stall_after_a_tag_that_cannot_end_a_batch_names_that_tag() {
         // The counters say which half of the barrier ran out the window; they
-        // cannot say why the flush half did. Two upstreams produce the same
-        // `expected_flushes`/`drained` pair: one that stopped answering, and one
-        // that answered with a tag the settling gate does not name and then went
-        // quiet. Since #212 that gate is a positive list — everything it does
-        // not name waits by design — so the second is an expected outcome, and
-        // this warning is the only place an operator sees it (#214).
+        // cannot say whether the flush half is short because the last message
+        // the client received is one no quiet can settle on. Since #212 that
+        // gate is a positive list — everything it does not name waits by design
+        // — so that is an expected outcome, and this warning is the only place
+        // an operator sees it (#214). The silence is a given either way: nothing
+        // reaches `give_up` without a whole window of it.
         //
         // `T` `RowDescription` is one of the two the list leaves out
         // deliberately: a `Describe` of a portal followed by a `Flush` really
@@ -3394,6 +3407,51 @@ mod tests {
         assert!(
             logs.contains("last_tag=none"),
             "a session that delivered no message says so rather than naming a byte, got {logs}"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_tag_that_would_split_the_record_is_escaped_into_it() {
+        // The upstream chooses the tag byte and nothing on this path constrains
+        // it to the protocol's set, so it reaches the log as input the backend
+        // controls. A raw newline written into a `tracing` field would end the
+        // record and start another, and a collector reading lines would take the
+        // remainder as a record of its own — which is why the two oversized-copy
+        // warnings in this file escape their tag and why this one does.
+        //
+        // Pinned as one line rather than as one substring: `escape_default` is
+        // stdlib and needs no test, but *that this field goes through it* is the
+        // guarantee, and dropping it would leave every other assertion here
+        // green.
+        let mut acc = accounting().await;
+        acc.link.forwarded_flush();
+        let upstream = ScriptedUpstream::new([
+            (std::time::Duration::ZERO, vec![b'\n', 0, 0, 0, 4]),
+            (REFUSAL_ORDER_STALL_TIMEOUT * 2, Vec::new()),
+        ]);
+
+        let ack = queue_refusal(&acc.link, "honmoon: denied by policy");
+        let (logs, _guard) = capture_logs();
+        let (_stop, ()) = tokio::join!(
+            relay_backend_messages(upstream, &mut acc.relay, &mut acc.taken),
+            async {
+                ack.await.expect("the refusal is written");
+            },
+        );
+
+        let logs = logs.text();
+        let record: Vec<&str> = logs
+            .lines()
+            .filter(|line| line.contains("out of statement order"))
+            .collect();
+        assert_eq!(
+            record.len(),
+            1,
+            "one warning, and one line of it, got {logs}"
+        );
+        assert!(
+            record[0].contains(r"last_tag=\n"),
+            "the newline is escaped into the record rather than ending it, got {logs}"
         );
     }
 

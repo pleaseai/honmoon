@@ -147,15 +147,23 @@ that fails to parse: it is refused rather than forwarded blind.
     is never answered). An unbounded wait would cost the client its answer altogether, which is worse
     than the misattribution this removes, so the runtime warns and writes the answer anyway.
 
-    **That warning carries both sides' counters and the last tag the client received.** The
+    **That warning carries both sides' counters and the last tag the session delivered.** The
     counters — what each side was waiting for and what reached the client — say which half of the
-    barrier ran out the window; they cannot say why the flush half did, because a database that
-    sent nothing and one that sent a message the settling list further down does not name produce
-    the same pair. The second waits by design, and became an expected outcome rather than an
-    accident when that list was inverted into a positive one (#212), so the tag is reported
-    alongside them: escaped, because the upstream chooses that byte, and `none` rather than a byte
-    when the session received no message at all (issue #214). It is the only place an operator sees
-    which of the two happened.
+    barrier ran out the window. What they cannot say is whether the flush half is *also* short
+    because the last message the client received is one no quiet can settle on: since the settling
+    list further down was inverted into a positive one (#212), a tag nobody enumerated waits by
+    design, and this line is the only place an operator would see that. So the tag is reported
+    alongside them — escaped, because the upstream chooses that byte, and `none` rather than a byte
+    when the session delivered no message at all (issue #214).
+
+    **It is context for the silence, not a rival explanation of it, and the line says so.** A
+    database that has stopped answering is the given here rather than one of two hypotheses:
+    nothing reaches this warning without a whole window of silence, so a non-settling tag and a
+    dead backend are not alternatives and the message does not offer them as such. The tag is also
+    session state — the last message the client received at any point, not an answer to the flush
+    that is outstanding, and no help in picking which of several outstanding flushes is short. It
+    is reported anyway because the settling gate reads that very value and settles on nothing else,
+    so it is exactly the input to the decision the operator is asking about.
 
     **The one place the bound is not serviced is the oversized-payload copy.** A backend message too
     large to buffer is written head-first and streamed, and between the head going out and the
