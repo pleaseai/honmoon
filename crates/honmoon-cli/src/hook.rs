@@ -1044,6 +1044,34 @@ fn replaced_file_mode(_path: &Path) -> String {
     "its permissions are not something honmoon reads on this platform".to_string()
 }
 
+/// Load the persisted machine key from `dir/hook-salt`, minting and persisting
+/// one when there is nothing usable there.
+///
+/// **Adoption is an interface, not an implementation detail.** An existing file
+/// of **at least 16 bytes** is adopted *verbatim* — those bytes, at that length,
+/// whatever they are and however long the file is — and the loader only mints a
+/// new key when the file is shorter than that, unreadable, or absent. On the
+/// adopting path it also restricts the file to `0600`, or records what it could
+/// not restrict (see [`restrict_to_owner_only`]); an exposed mode changes what is
+/// audited, never whether the bytes are adopted.
+///
+/// That is what `packages/claude-plugin/README.md` tells an operator to use to
+/// get one key onto both hook transports, since placeholder minting is
+/// `HMAC(salt, secret)` over a salt of `HMAC(machine_key, session_id)` on both:
+/// identical bytes at each process's salt path is the whole of what parity takes,
+/// and the bytes coming back out *unchanged* is the part that carries it.
+/// Changing any of it changes a documented deployment, so it is pinned by
+/// `a_salt_at_exactly_the_sixteen_byte_floor_is_adopted_verbatim`,
+/// `a_salt_one_byte_under_the_floor_is_regenerated`,
+/// `a_salt_longer_than_a_generated_key_is_adopted_whole` and
+/// `salt_dirs_holding_the_same_bytes_derive_the_same_session_salt` (issue #126).
+///
+/// Adoption is also how a key spreads, and the key is what makes a placeholder
+/// unforgeable: everyone holding these bytes can mint the placeholder a given
+/// session would produce for a guessed secret and check it against a redacted
+/// transcript — the confirmation oracle in issue #125. Supplying key material
+/// through a first-class input rather than through this path is issue #126's
+/// second stage, deferred to `honmoon join` (#37).
 fn load_or_create_machine_salt(
     requested_dir: &Path,
 ) -> std::result::Result<LoadedSalt, SaltLoadFailure> {
@@ -1711,6 +1739,152 @@ mod tests {
             // any local user may already hold be reported as healthy.
             "a file found loose carries a closed-window exposure even though the correction took: {:?}",
             salt.exposed
+        );
+    }
+
+    /// The adoption contract at its lower boundary: a file of **exactly** 16
+    /// bytes is adopted, and its bytes come back out unchanged.
+    ///
+    /// Adoption is what `packages/claude-plugin/README.md` tells an operator to
+    /// provision a shared key with, so the floor is an interface rather than an
+    /// implementation detail, and issue #126 asks for it to be pinned as one.
+    /// The rest of the boundary already has tests and is named here so the set
+    /// reads as one contract: regenerated when the file is short
+    /// (`machine_salt_regenerates_short_or_corrupt_file`, and one byte under the
+    /// floor below), when it is absent (`machine_salt_persists_and_is_stable`),
+    /// and when it is unreadable
+    /// (`a_replaced_file_that_was_owner_only_is_recorded_as_such`); re-tightened
+    /// to `0600` on the way through
+    /// (`machine_salt_read_path_retightens_loose_permissions`).
+    ///
+    /// The bytes are distinct rather than uniform so a loader that truncated,
+    /// padded, reversed or re-derived them could not pass by accident — and the
+    /// file is read back afterwards, because adopting the bytes and leaving the
+    /// file alone are two claims and only the second one survives a loader that
+    /// rewrites what it adopts.
+    #[test]
+    fn a_salt_at_exactly_the_sixteen_byte_floor_is_adopted_verbatim() {
+        let tmp = TempDir::new("floor-adopted");
+        let path = tmp.path().join("hook-salt");
+        let seeded: Vec<u8> = (0u8..16).collect();
+        std::fs::write(&path, &seeded).expect("seed a salt at the floor");
+
+        let salt = load_or_create_machine_salt(tmp.path()).expect("adopt the seeded salt");
+        assert_eq!(
+            salt.bytes, seeded,
+            "16 bytes is on the adopted side of the floor, and the bytes are the file's own"
+        );
+        assert!(
+            salt.unpersisted.is_none(),
+            "an adopted key is the persisted one — nothing was minted"
+        );
+        assert_eq!(
+            std::fs::read(&path).expect("read the salt file back"),
+            seeded,
+            "adoption leaves the file as it found it"
+        );
+        assert_eq!(
+            load_or_create_machine_salt(tmp.path())
+                .expect("reload")
+                .bytes,
+            seeded,
+            "and every later invocation adopts the same bytes, which is what parity rests on"
+        );
+    }
+
+    /// The other side of the same boundary: 15 bytes is under the floor, so the
+    /// loader regenerates rather than adopting a key that short.
+    ///
+    /// Paired with the test above because a floor is only pinned by both sides
+    /// of it — `>= 16` and `> 16` differ in exactly this case, and a suite that
+    /// only seeds 8 bytes (as `machine_salt_regenerates_short_or_corrupt_file`
+    /// does) cannot tell them apart.
+    #[test]
+    fn a_salt_one_byte_under_the_floor_is_regenerated() {
+        let tmp = TempDir::new("floor-rejected");
+        let path = tmp.path().join("hook-salt");
+        let seeded: Vec<u8> = (0u8..15).collect();
+        std::fs::write(&path, &seeded).expect("seed a salt one byte under the floor");
+
+        let salt = load_or_create_machine_salt(tmp.path()).expect("regenerate");
+        assert_ne!(salt.bytes, seeded, "15 bytes is not adopted");
+        assert_eq!(salt.bytes.len(), 32, "a minted key is 32 random bytes");
+        assert!(salt.unpersisted.is_none(), "the replacement reached disk");
+        assert_eq!(
+            std::fs::read(&path).expect("read the salt file back"),
+            salt.bytes,
+            "and the file now holds the key in use, not the short one"
+        );
+    }
+
+    /// Adoption has a floor and no ceiling: a file longer than the 32 bytes the
+    /// loader mints is adopted **whole**, not truncated to 32 and not hashed
+    /// down to a fixed width.
+    ///
+    /// Worth its own test because 32 is the only length the loader ever
+    /// produces, so every other test in this file adopts either 32 bytes or
+    /// fewer; a loader that silently normalised to its own output length would
+    /// leave all of them green while breaking parity for anyone who provisioned
+    /// a longer key. `derive_hook_salt` keys an HMAC, which takes a key of any
+    /// length, so there is nothing downstream that needs the normalisation.
+    #[test]
+    fn a_salt_longer_than_a_generated_key_is_adopted_whole() {
+        let tmp = TempDir::new("over-length");
+        let path = tmp.path().join("hook-salt");
+        let seeded: Vec<u8> = (0u8..64).collect();
+        std::fs::write(&path, &seeded).expect("seed a 64-byte salt");
+
+        let salt = load_or_create_machine_salt(tmp.path()).expect("adopt the seeded salt");
+        assert_eq!(
+            salt.bytes, seeded,
+            "all 64 bytes are the key, at the length the file carried"
+        );
+        assert_eq!(
+            std::fs::read(&path).expect("read the salt file back"),
+            seeded,
+            "and the file is still the 64 bytes that were provisioned"
+        );
+    }
+
+    /// What the adoption contract is *for*: two processes whose salt paths hold
+    /// the same bytes derive the same session salt, and therefore mint the same
+    /// placeholder for a given secret.
+    ///
+    /// This is the invariant `packages/claude-plugin/README.md` states under
+    /// "Getting one key onto both sides", and the reason the tests above pin
+    /// bytes rather than lengths: parity rests on the bytes coming back out
+    /// unchanged, not on the file being accepted. Two directories stand in for
+    /// the two `$HOME/.honmoon`s of a cross-host or cross-container deployment —
+    /// the loader has no idea which host it is on, so identical bytes at each
+    /// path is the whole of what it takes.
+    ///
+    /// The differing-bytes half is the control. Without it this test would pass
+    /// against a loader that ignored the file and returned a constant, which is
+    /// the same failure the fallback key already is (see `FALLBACK_MACHINE_KEY`)
+    /// and the one thing that must not silently become the normal path.
+    #[test]
+    fn salt_dirs_holding_the_same_bytes_derive_the_same_session_salt() {
+        let provisioned: Vec<u8> = (0u8..32).map(|b| b.wrapping_mul(7)).collect();
+        let one = TempDir::new("parity-a");
+        let two = TempDir::new("parity-b");
+        std::fs::write(one.path().join("hook-salt"), &provisioned).expect("provision host A");
+        std::fs::write(two.path().join("hook-salt"), &provisioned).expect("provision host B");
+
+        let session = "session-shared-by-both-transports";
+        let derive =
+            |dir: &Path| honmoon_core::derive_hook_salt(machine_key_in(dir).as_slice(), session);
+        assert_eq!(
+            derive(one.path()),
+            derive(two.path()),
+            "same key bytes, same session: the same salt, whatever the path they were read from"
+        );
+
+        let three = TempDir::new("parity-c");
+        std::fs::write(three.path().join("hook-salt"), [9u8; 32]).expect("provision host C");
+        assert_ne!(
+            derive(one.path()),
+            derive(three.path()),
+            "and a different key does not agree — the bytes are what is doing the work"
         );
     }
 

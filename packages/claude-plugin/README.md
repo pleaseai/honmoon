@@ -242,7 +242,9 @@ it. (A process with no `HOME` reads a `.honmoon` relative to its working
 directory.) Those are examples of one condition, not a list to check off: different
 key bytes, so the same `session_id` mints different placeholders. Matching
 `--hook-salt-context` values do **not** close any of them — the context is mixed
-into an HMAC the machine key keys, so mismatched keys stay mismatched.
+into an HMAC the machine key keys, so mismatched keys stay mismatched. Provisioning
+one key to both sides is what closes them, and it costs something: see "Getting one
+key onto both sides" below, which describes both.
 
 **When the salt file is unusable, the key is not secret.** The loader only fails
 when it has to mint a new salt and cannot — no readable `/dev/urandom`, or a
@@ -507,18 +509,33 @@ degradation visible to whoever is driving the session but recorded nowhere durab
 **Getting one key onto both sides.** Co-located processes sharing a `HOME` read one
 file and need nothing. Anywhere else — separate hosts, containers, different users
 — provision the *same* `hook-salt` to both: the loader adopts any existing file of
-at least 16 bytes verbatim (re-tightening it to `0600`), so identical bytes at each
-process's salt path mint identical placeholders. Cross-host parity is therefore
-achievable; it is just not automatic.
+at least 16 bytes verbatim, so identical bytes at each process's salt path mint
+identical placeholders. Cross-host parity is therefore achievable; it is just not
+automatic.
+
+What "verbatim" covers, since this is what a deployment ends up depending on: the
+file's own bytes, at the length it carries — 16 is a floor and not a size, a longer
+key is used whole, and nothing is truncated, padded or re-derived. A file *under*
+16 bytes is not adopted; the loader replaces it with a fresh 32-byte key, as it does
+for one that is absent or unreadable. On the way through it restricts the file it
+adopted to `0600`, and where it cannot, it says so rather than going quiet — that is
+the `hook-salt-exposed` row in the table above. None of this depends on the mode: a
+world-readable file is still adopted, and audited for it. These are pinned by tests
+in `crates/honmoon-cli/src/hook.rs` (issue #126), so they are an interface you can
+deploy against rather than loader behaviour that might move.
 
 Treat that as copying a secret, because it is. The machine key is what makes a
 placeholder unforgeable, so everyone who holds it can mint the placeholder a given
 session would produce for a guessed secret and check it against a redacted
-transcript — the confirmation oracle tracked in #125. Move it only over a channel
-you would use for any other credential, put it in as few places as the deployment
-needs, and rotate it there if it leaks. It also rests on the salt loader's adoption
-behaviour rather than on a supported setting; #126 tracks making the key an explicit
-input. If none of that is worth it for your deployment, keep `transport: "process"`.
+transcript — the confirmation oracle tracked in #125. That is the real cost of
+spreading this key, and it does not depend on how the key got there: it is a
+property of holding the bytes, so a first-class flag would carry it unchanged. Move
+it only over a channel you would use for any other credential, put it in as few
+places as the deployment needs, and rotate it there if it leaks. What is still
+missing is a *supported input* — a flag or environment variable naming the key —
+rather than arranging for a file to be at each path; issue #126 tracks that for
+`honmoon join` (#37). If none of that is worth it for your deployment, keep
+`transport: "process"`.
 
 ### Typings
 
