@@ -3107,7 +3107,7 @@ those take one run each.
 Two properties are worth stating outright, because they are what make it usable.
 
 **It is the gateway's own loader, not a second opinion.** The command calls `load_policy`
-([main.rs:955-969](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-cli/src/main.rs#L955-L969)) — the same one call
+([main.rs:973-996](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-cli/src/main.rs#L973-L996)) — the same one call
 `honmoon gateway --config` and `honmoon run --policy` make ([main.rs:562](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-cli/src/main.rs#L562),
 [main.rs:733](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-cli/src/main.rs#L733)), and the only place in the binary that reads a
 policy from a path,
@@ -3118,12 +3118,13 @@ file and require the same verdict — `validate_and_the_gateway_report_the_same_
 both refuse, and `validate_and_the_gateway_accept_the_same_policy` on one both accept
 ([tests/policy_validate.rs](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-cli/tests/policy_validate.rs)).
 
-One thing the read says in its own words, and it refuses nothing extra: a file whose top level is
-not a mapping — plain text, a list, a single value — is named as *not a policy document* rather than
-handed to the parser ([main.rs:1018-1054](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-cli/src/main.rs#L1018-L1054)). The loader
-refuses those too; what changes is that the parser would have quoted the file to say so, and for a
-document that is one plain scalar the quote is the whole file. Pointed at a token file, an SSH key or
-a `.env` by a mistyped path, that lands in the log.
+The read says two things in its own words, and they are different kinds of check. **The first
+refuses nothing extra**: a file whose top level is not a mapping — plain text, a list, a single
+value — is named as *not a policy document* rather than handed to the parser
+([main.rs:1045-1047](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-cli/src/main.rs#L1045-L1047)). The loader refuses those
+too; what changes is that the parser would have quoted the file to say so, and for a document that
+is one plain scalar the quote is the whole file. Pointed at a token file, an SSH key or a `.env` by
+a mistyped path, that lands in the log.
 
 This was `policy validate`'s alone when it was added, because this command is the one documented for
 CI, where the path comes from the repository under test. It is not any more: the check lives in the
@@ -3139,6 +3140,26 @@ stream whose first document *is* a mapping still passes through, and the loader 
 a stream — in a message carrying no content. A policy file that opens with an explicit `---` is one
 document and loads normally.
 
+**The second does refuse something extra, on purpose.** A mapping in which none of `version`,
+`egress`, `endpoints` or `rules` appears is refused, and the parser would have taken it
+([main.rs:1155-1178](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-cli/src/main.rs#L1155-L1178)). Every `Policy` field
+carries `#[serde(default)]` and the struct has no `deny_unknown_fields`, so *any* mapping used to
+deserialize into a policy with every field at its default — which means a Kubernetes `Secret`
+manifest, a `DB_PASSWORD: …` file and a service-account JSON key (JSON is valid YAML) each loaded,
+and `honmoon policy validate` answered `policy is valid (0 rules, 0 endpoints)` on a credential file.
+Under `gateway --config` the file's whole text then reached `GET /api/policy`. Nothing was quoted
+because nothing went wrong, which is the opposite failure to the one above and the harder one to
+notice.
+
+The rule is **"a mapping with no recognised key"**, not "a document with no recognised key", and the
+two boundaries either side of that are the rule rather than exceptions to it. An empty file is
+`null`, not a mapping, so it is untouched and still loads. A mapping carrying **at least one**
+recognised key is accepted whatever else it carries, so a policy written for a newer honmoon that
+names a field this build has never heard of loads exactly as it did before — that
+forward-compatibility is why `#[serde(deny_unknown_fields)]` was rejected for this, and
+`an_unknown_sibling_of_a_recognised_key_still_loads` pins it. An explicitly empty mapping (`{}`) is
+refused, which is the literal rule and not an oversight: an empty file already spells "no policy".
+
 The bound is worth stating so it is not mistaken for a gap. A file that **is** a mapping but carries
 a mistyped field value (`version: "1.0"`) still reaches the parser's quoting, and the value quoted is
 the author's own field, with a line and column. That is the diagnosis they asked for; suppressing it
@@ -3149,8 +3170,9 @@ An empty file is **not** in this class — it is a valid policy. YAML reads it a
 ([lib.rs:51-80](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/lib.rs#L51-L80)),
 so a document with no fields in it loads as deny-by-default with no rules. `honmoon gateway
 --config` starts on one, and `a_file_that_is_not_a_policy_is_named_rather_than_quoted` pins that
-`validate` accepts it — the shape guard has to let `null` through, because refusing it would refuse
-a policy the gateway runs.
+`validate` accepts it — both guards have to let `null` through, because refusing it would refuse a
+policy the gateway runs. `an_explicitly_empty_mapping_is_refused_and_an_empty_file_is_not` holds the
+two apart.
 
 **It has no side effects.** No listener is bound, no audit log is opened, no CA is read or
 generated, and — the one that is easy to miss — the management token is never resolved. All four
