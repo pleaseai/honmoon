@@ -942,40 +942,61 @@ where
     U: AsyncRead + TryRead + Unpin,
 {
     loop {
-        // A flush is settled between messages, never mid-burst, and never after a
-        // message that cannot be the *last* one a `Flush` pushes — because a
-        // quiet there is a backend still working rather than one that has
-        // finished:
+        // A flush is settled between messages, never mid-burst, and only after a
+        // message that can be the *last* one a `Flush` pushes — because a quiet
+        // anywhere else is a backend still working rather than one that has
+        // finished.
         //
-        // - `DataRow` / `CopyData`: an `Execute` ends on `CommandComplete`,
-        //   `EmptyQueryResponse`, `PortalSuspended` or `ErrorResponse`, and a
-        //   copy-out on `CopyDone`, so a pause here is mid-result-set;
-        // - `NoticeResponse` / `NotificationResponse` / `ParameterStatus`: these
-        //   are asynchronous and can be emitted *during* a statement — a
-        //   function that raises a notice and then computes for a while flushes
-        //   the notice and goes quiet with its `CommandComplete` still to come;
-        // - `ParameterDescription` / `RowDescription`: a `Describe` of a
-        //   statement answers with the first and then the second or `NoData`,
-        //   and a `Bind`/`Describe`/`Execute` batch emits `RowDescription`
-        //   before the first row — a backend that has planned the query and not
-        //   yet produced a row pauses exactly there. `NoData` (`n`) is the same
-        //   position for a statement that returns no rows and is **not** in the
-        //   list below: that asymmetry is a real gap, not a decision, and is
-        //   tracked as #211 rather than closed here;
-        // - `CopyInResponse` / `CopyOutResponse` / `CopyBothResponse` /
-        //   `CopyDone`: each opens or punctuates a copy whose `CommandComplete`
-        //   has not been sent.
+        // The list names those messages and everything else waits, which is the
+        // point rather than a stylistic choice. Written the other way round — as
+        // the messages that *cannot* end a batch — the default for a tag nobody
+        // enumerated is "settle", and three tags reached that default in turn:
+        // `NoticeResponse` and `RowDescription`, both caught in review on #147
+        // before the list shipped, and then `NoData`, which shipped — named in
+        // the rationale for `ParameterDescription`/`RowDescription` and left out
+        // of the check itself (#211). This way round, a message no one
+        // enumerated — one a later protocol version adds, or a byte from an
+        // upstream that has stopped speaking the protocol — costs a stall window
+        // instead of releasing a refusal into the middle of a batch. So the list
+        // does not have to be exhaustive to be safe: being short of a member is
+        // latency, where being short of an exclusion was ordering.
         //
-        // This is a list of what can never end a batch, not of what always
-        // does: a terminal-looking message can still be mid-batch (two
-        // `Execute`s under one `Flush` both end on `CommandComplete`), which
-        // ADR-0007 records rather than claims to solve. The two ways of being
-        // wrong are not equal, so the list errs toward not settling.
+        // Each member ends an operation the client asked for, so a `Flush` sent
+        // straight after that frontend message has nothing further to push:
+        //
+        // - `1` `ParseComplete` / `2` `BindComplete` / `3` `CloseComplete`: the
+        //   whole of the answer to a `Parse`, a `Bind` or a `Close`;
+        // - `C` `CommandComplete` / `I` `EmptyQueryResponse` / `s`
+        //   `PortalSuspended`: the three ways an `Execute` ends;
+        // - `E` `ErrorResponse`: the backend discards frames until `Sync` after
+        //   it, so nothing more is coming for this batch either way.
+        //
+        // Two messages that really can be terminal are deliberately left out.
+        // `T` `RowDescription` and `n` `NoData` are how a `Describe` ends: of a
+        // prepared statement, after a `t` `ParameterDescription`; of a portal, on
+        // their own. So a bare `Describe` plus a `Flush` does end on one of them
+        // — but both sit in the same position inside a `Bind`/`Describe`/
+        // `Execute` batch, where the rows or the `CommandComplete` are still to
+        // come, and a backend that has planned the statement and not yet produced
+        // anything pauses exactly there. The ambiguity is resolved toward
+        // waiting, as it is everywhere else here: that bare `Describe` costs one
+        // stall window, or none at all when a `Sync` follows and answers for it
+        // (ADR-0007).
+        //
+        // `Z` `ReadyForQuery` is absent for a different reason: it cannot reach
+        // this check, because [`Relay::delivered`] resets `fresh` on it, and it
+        // settles flushes through `flushes_covered` — a stronger settlement than
+        // any quiet.
+        //
+        // Membership says a message *can* be the last one, never that it always
+        // is: two `Execute`s under one `Flush` both end on `CommandComplete`, so
+        // a quiet after the first still settles early. ADR-0007 records that
+        // rather than claiming to solve it.
         let owed = relay.forwarded.flushes.load(Ordering::Relaxed);
         let settling = relay.fresh > 0
-            && !matches!(
+            && matches!(
                 relay.last_tag,
-                b'D' | b'd' | b'N' | b'A' | b'S' | b't' | b'T' | b'G' | b'H' | b'W' | b'c'
+                b'1' | b'2' | b'3' | b'C' | b'I' | b's' | b'E'
             )
             && relay.drained < owed;
 
@@ -3614,6 +3635,139 @@ mod tests {
             .unwrap();
         database.write_all(&command_complete()).await.unwrap();
         written(&mut ack, "the batch ended, so the refusal is released").await;
+    }
+
+    #[tokio::test]
+    async fn a_no_data_before_the_completion_does_not_settle_the_flush() {
+        // `NoData` is `RowDescription`'s position for a statement that returns
+        // no rows. A `Parse`/`Bind`/`Describe`/`Execute`/`Flush` batch against an
+        // `UPDATE` or a `CALL` answers the `Describe` with it and then computes,
+        // with the `CommandComplete` still to come — so a mid-batch quiet there
+        // is a backend still working, exactly as it is after `RowDescription`.
+        //
+        // The list that decides this named `NoData` while explaining why
+        // `ParameterDescription` and `RowDescription` were in it, and then left
+        // it out of the check: a quiet after `n` credited the flush and released
+        // the refusal ahead of the rest of the batch's output, which is the #101
+        // misattribution the barrier exists to prevent (#211).
+        let Session {
+            link,
+            client: mut peer,
+            mut database,
+            _relay,
+        } = session().await;
+        link.forwarded_flush();
+        let mut ack = queue_refusal(&link, "honmoon: denied by policy");
+
+        // `ParseComplete`, `BindComplete`, and the `Describe`'s `NoData`.
+        database
+            .write_all(&[b'1', 0, 0, 0, 4, b'2', 0, 0, 0, 4, b'n', 0, 0, 0, 4])
+            .await
+            .unwrap();
+        for expected in *b"12n" {
+            assert_eq!(read_message_tag(&mut peer).await, expected);
+        }
+        still_waiting(
+            &mut ack,
+            "a pause after `NoData` settled a batch whose statement is still computing",
+        )
+        .await;
+
+        // The completion that really ends it.
+        database.write_all(&command_complete()).await.unwrap();
+        written(&mut ack, "the batch ended, so the refusal is released").await;
+    }
+
+    #[tokio::test]
+    async fn a_tag_the_settling_list_does_not_name_settles_nothing() {
+        // The rule that decides when a quiet may settle a flush names the
+        // messages that can end a batch, so anything it does not name waits.
+        // That default is the whole of #211: written the other way round, as the
+        // messages that cannot end a batch, a tag nobody enumerated settles —
+        // and `NoData` was the third tag to fall through that way.
+        //
+        // Driven here with a byte the protocol does not define at all, which is
+        // the case an exclusion list can never cover and the one that says what
+        // the default is. Real backend messages were falling through it too:
+        // `FunctionCallResponse`, `BackendKeyData`, `NegotiateProtocolVersion`
+        // and the `Authentication*` family are all followed by something else and
+        // were all absent from the old list.
+        let Session {
+            link,
+            client: mut peer,
+            mut database,
+            _relay,
+        } = session().await;
+        link.forwarded_flush();
+        let mut ack = queue_refusal(&link, "honmoon: denied by policy");
+
+        database
+            .write_all(&[b'1', 0, 0, 0, 4, b'x', 0, 0, 0, 4])
+            .await
+            .unwrap();
+        for expected in *b"1x" {
+            assert_eq!(read_message_tag(&mut peer).await, expected);
+        }
+        still_waiting(
+            &mut ack,
+            "a quiet after a message the settling list does not name credited the flush",
+        )
+        .await;
+
+        // And a message it does name settles it, so the wait above is the list
+        // doing its job rather than the relay having stopped settling at all.
+        database.write_all(&command_complete()).await.unwrap();
+        written(&mut ack, "the batch ended, so the refusal is released").await;
+    }
+
+    #[tokio::test]
+    async fn every_tag_the_settling_list_names_does_settle_a_flush() {
+        // The inverted list is a positive claim — each of these seven tags can
+        // be the last message a `Flush` pushes — and the two tests above pin
+        // only its negative half. `ParseComplete`, `BindComplete` and
+        // `CommandComplete` are driven as settling triggers by the batch tests
+        // elsewhere in this module; the other four are not, so a wrong member
+        // among them would ship with nothing to catch it.
+        //
+        // `PortalSuspended` is the one worth stating outright, because it looks
+        // like the `DataRow` case and is not: a suspended portal does have rows
+        // left, but fetching them takes another `Execute` from the client, so
+        // the backend has stopped and this flush's own output really is
+        // complete. `EmptyQueryResponse` is how an `Execute` of a portal built
+        // from an empty query string ends, `CloseComplete` is the whole of the
+        // answer to a `Close`, and after `ErrorResponse` the backend discards
+        // frames until `Sync`.
+        //
+        // This one does not fail against the exclusion list it replaced — none
+        // of the four were excluded there either. It guards the claim this
+        // change introduces, not the defect it fixes.
+        for frame in [
+            vec![b'3', 0, 0, 0, 4],
+            vec![b'I', 0, 0, 0, 4],
+            vec![b's', 0, 0, 0, 4],
+            vec![b'E', 0, 0, 0, 5, 0],
+        ] {
+            let tag = frame[0];
+            let Session {
+                link,
+                client: mut peer,
+                mut database,
+                _relay,
+            } = session().await;
+            link.forwarded_flush();
+            let mut ack = queue_refusal(&link, "honmoon: denied by policy");
+
+            database.write_all(&frame).await.unwrap();
+            assert_eq!(read_message_tag(&mut peer).await, tag);
+            written(
+                &mut ack,
+                &format!(
+                    "`{}` ends a flushed batch, so the quiet after it settles the flush",
+                    tag as char
+                ),
+            )
+            .await;
+        }
     }
 
     #[tokio::test]
