@@ -1,0 +1,32 @@
+scripts/check-release-draft.ts
+  s_89bb0ff98a3782::t_8adaf8a562b5d0 82,84,118,120,122,124,182,184,199,201
+  s_89bb0ff98a3782::t_0131589f8959b3 1-43,45-81,83,85-117,119,121,123,125-172,175-181,183,185-198,200
+  s_89bb0ff98a3782::t_bb6f05fee8d4a6 44,173-174
+scripts/check-release-draft.test.ts
+  s_89bb0ff98a3782::t_8d96001a2609cf 93-94,97
+  s_89bb0ff98a3782::t_5c50d2915271e3 1-92,95-96,98-123
+release-please-config.json
+  s_89bb0ff98a3782::t_4da901e38f849f 12-13
+.github/workflows/release.yml
+  s_89bb0ff98a3782::t_2ea86dd2d65442 3-8,17-29,152-153,300,307-316,328-339
+  s_89bb0ff98a3782::t_c1cabdd3c7d0d0 317-327
+  s_89bb0ff98a3782::t_a396601edc9b09 154-162,164-167
+.github/workflows/release-please.yml
+  s_89bb0ff98a3782::t_89691474d5d643 6-12,51-54
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "64f34461ad3fba248ce731e4d1e2765d5cf31bb9",
+  "prompts": {},
+  "sessions": {
+    "s_89bb0ff98a3782": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d8457d0b-63ba-4754-9853-e63daaf6e396",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
