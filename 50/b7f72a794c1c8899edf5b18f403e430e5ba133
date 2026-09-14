@@ -1,0 +1,31 @@
+wiki/llms-full.txt
+  s_45a769ffbfcb8e::t_0db2861805d6f0 409-412,418-440,1049-1053
+wiki/deep-dive/architecture.md
+  s_45a769ffbfcb8e::t_6a70adb04eb24f 84-88
+scripts/check-wiki-io-claim.ts
+  s_45a769ffbfcb8e::t_31c2e2b0f40f01 63-67
+  s_45a769ffbfcb8e::t_63499fe05c29c8 89-92,112,224-261,265-270
+wiki/onboarding/staff-engineer-guide.md
+  s_45a769ffbfcb8e::t_0db2861805d6f0 74
+  s_45a769ffbfcb8e::t_6a70adb04eb24f 48-51,57-73,75-78
+  s_45a769ffbfcb8e::t_4171a2ad4c8e11 79
+scripts/check-wiki-io-claim.test.ts
+  s_45a769ffbfcb8e::t_27ae609e834948 73
+  s_45a769ffbfcb8e::t_fd92ad6a38bd1c 1-2,4-12,56-72,74-80,152-180
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "50b7f72a794c1c8899edf5b18f403e430e5ba133",
+  "prompts": {},
+  "sessions": {
+    "s_45a769ffbfcb8e": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d73956ac-5f89-4244-95a3-bb2b2718ce45",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
