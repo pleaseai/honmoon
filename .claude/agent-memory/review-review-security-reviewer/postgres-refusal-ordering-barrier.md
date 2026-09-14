@@ -1,6 +1,6 @@
 ---
 name: postgres-refusal-ordering-barrier
-description: 'The honmoon postgres runtime''s refusal ordering barrier after issue #121 (the relay owns the client write half) — what it covers, its live gaps (per-stall bound, the swallowed COPY-Sync of #128, the per-refusal window of #148, the single coverage snapshot of #153), the #211 inversion of the flush-settling tag list into a positive list, the #218 quiet warning inside the oversized copy (escaped tag, holding_refusal read at write time), and the settled rules not to undo.'
+description: 'The honmoon postgres runtime''s refusal ordering barrier after issue #121 (the relay owns the client write half) — what it covers, its live gaps (per-stall bound, the swallowed COPY-Sync of #128, the per-refusal window of #148, the single coverage snapshot of #153), the #211 inversion of the flush-settling tag list into a positive list, the #218 quiet warning inside the oversized copy (escaped tag, holding_refusal read at write time), the #229 second (client-side) window with its pinned non-recreated write_all, and the settled rules not to undo.'
 metadata:
   type: project
 ---
@@ -189,3 +189,19 @@ Verified once against the #121 shape, so do not re-derive:
   because a statement refused part-way through waits there — a snapshot alone
   reported `false` for exactly the stalled-with-a-refusal session the field
   exists to name (also found and fixed in #225's review).
+
+- **#229 added a second quiet window, on the client side of the same copy.**
+  `copy_exact_reporting_quiet` now takes two `FnOnce` reporters (`upstream_quiet`,
+  `client_quiet`), each `Option::take`n so each fires **at most once per copy**;
+  both share the one `OVERSIZED_COPY_QUIET_WARNING`. The client window is armed
+  per chunk and races a `tokio::pin!`ed `write_all` that is **resumed, never
+  recreated** — recreating it would restart from the front of the 16 KiB buffer
+  and duplicate bytes inside a frame whose length the client was already told.
+  Verified once: the timer arm only calls the closure and loops back to the same
+  pinned future, `until(None)` pends forever after the reporter is taken, the
+  arms are `biased` toward the write, and both log lines escape the
+  upstream-chosen tag (`std::ascii::escape_default`) and carry only integers and
+  a bool otherwise — no CWE-117 regression, no duplication/drop/reorder, no
+  per-copy timer or allocation growth. Do not re-report these; the absence of a
+  deadline on the copy remains deliberate (ADR-0007).
+
