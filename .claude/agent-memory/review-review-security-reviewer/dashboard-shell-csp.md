@@ -1,6 +1,6 @@
 ---
 name: dashboard-shell-csp
-description: 'The dashboard shell CSP after #195 — what each directive is for, why style-src carries unsafe-inline and img-src exists at all (both measured, neither a control, do not report either as a weakness), that script-src has no unsafe-* and connect-src is self, what the policy does NOT bound (outbound navigation and WebRTC are outside CSP, so exfiltration is harder not closed — a finding saying so is correct), that every HTML document including /login carries it, what a change here has to re-verify in a browser rather than by reading the header, and that an external <a href> is deliberately not a finding in the build-side checker (issue #200 tracks the bundle-level gap)'
+description: 'The dashboard shell CSP after #195 — what each directive is for, why style-src carries unsafe-inline and img-src exists at all (both measured, neither a control, do not report either as a weakness), that script-src has no unsafe-* and connect-src is self, what the policy does NOT bound (outbound navigation and WebRTC are outside CSP, so exfiltration is harder not closed — a finding saying so is correct), that every HTML document including /login carries it, what a change here has to re-verify in a browser rather than by reading the header, that an external <a href> is deliberately not a finding in the build-side checker, and that the emitted bundle is guarded separately by scripts/check-dashboard-bundle.ts, which parses for eval/Function call expressions, deliberately does not flag obj.eval and deliberately does not follow an alias or a computed name (issue #200)'
 metadata:
   type: project
 ---
@@ -114,7 +114,29 @@ raised it in one round against the version that did flag it; `NAVIGATION_HREF` i
 `<link href>` stays checked because that one is a fetch. A `javascript:` href is the exception to
 the exception — it is code, not navigation.
 
-**That guard reads the shell HTML only, not the emitted bundle**, so it would not catch a dependency
-that introduces `eval(`/`new Function(` — which `script-src 'self'` refuses, since no `'unsafe-eval'`
-is present. Verified absent from today's bundle; tracked as issue #200, so a finding about the
-*bundle* is in scope while one about the shell's script tags is not.
+**That guard reads the shell HTML only, not the emitted bundle.** The code the shell loads is the
+other half of the same property — `script-src 'self'` carries no `'unsafe-eval'`, so the policy
+refuses `eval` and the `Function` constructor in that code too — and it is guarded by a sibling
+script, `scripts/check-dashboard-bundle.ts` (issue #200), running as its own CI step after the same
+two builds. It **parses** each file with TypeScript's parser (already a root devDependency; nothing
+was added for it) and reports a *call expression*, never a character match: `eval(` occurs inside
+string literals, in comments, and as a method name, so a pattern over minified output would fail CI
+on an unrelated dependency bump — this checker's own "worse than no CSP". Verified clean on the
+build at the time it was added.
+
+It reads the files `scriptFiles` names from the shell's own `<script src>` tags, deliberately not a
+`dist/assets/*.js` glob: a glob would be a second idea of what "the build" is, and would drift from
+the shell the first time Vite emitted a chunk the shell does not load, or the demo shim landed
+outside `assets/`.
+
+**Its coverage is narrow on purpose, and a finding that it misses an evasion is answered by that
+rather than by an edit.** It reads `eval`/`Function` reached directly, through the parenthesised
+comma form a bundler emits for indirect eval (`(0, eval)(…)`), or as a property of `window`,
+`globalThis`, `self` or `global`. It does **not** follow an alias (`const f = Function; f(src)`), a
+computed name (`globalThis['ev' + 'al']`), or `setTimeout` given a string — all of which the policy
+also refuses. What it defends against is a dependency that starts calling `eval` in a first-party
+build, not a bundle written to defeat the guard, and claiming the stronger property would be the
+more expensive mistake. **`obj.eval(x)` on anything that is not a named global is deliberately not a
+finding**: that is a method sharing the name, no directive governs it, and flagging it is exactly
+the false positive parsing is here to avoid. A file the parser cannot read fails rather than passing
+uninspected, the same stance as the unreadable-`<script>` rule above.

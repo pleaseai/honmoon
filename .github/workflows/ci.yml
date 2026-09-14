@@ -175,6 +175,12 @@ jobs:
       - name: Dashboard CSP — built shells load only same-origin script
         run: bun scripts/check-dashboard-csp.ts
 
+      # The other half of that policy: it carries no `'unsafe-eval'`, so the
+      # code those files hold must not construct any. Parses the files the step
+      # above resolved from the shell's own `<script src>` tags (issue #200).
+      - name: Dashboard CSP — the emitted bundle constructs no code
+        run: bun scripts/check-dashboard-bundle.ts
+
   pii-benchmark:
     name: PII — Tier-1 benchmark gate
     runs-on: ubuntu-latest
