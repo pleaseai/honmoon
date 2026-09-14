@@ -331,7 +331,14 @@ jobs:
           TAG: ${{ inputs.tag }}
         run: |
           set -euo pipefail
-          if [ "$(gh release view "$TAG" --json isDraft --jq .isDraft)" = "true" ]; then
+          # Read on its own line, not inside the `if` condition. `set -e` does not
+          # apply to a command substitution embedded in a condition, so a failing
+          # `gh release view` there would read as an empty string, take the `else`
+          # branch, and exit 0 — reporting success while leaving the Release a
+          # draft nobody publishes, which is the one outcome this step exists to
+          # prevent. As a plain assignment the failure aborts the job.
+          is_draft=$(gh release view "$TAG" --json isDraft --jq .isDraft)
+          if [ "$is_draft" = "true" ]; then
             gh release edit "$TAG" --draft=false
             echo "published $TAG"
           else
