@@ -69,6 +69,21 @@
  * Silently dropping any of those is the failure the unreadable-file rule above
  * exists to prevent, arriving through the walk.
  *
+ * **A path that stays inside the build is not yet a file inside the build**, so
+ * every file the walk reaches is resolved with {@link realPathInside} before it
+ * is opened. Those specifier rules are arithmetic over strings and
+ * `readFileSync` follows symlinks, so a symlink emitted under `dist/` was read,
+ * parsed and counted in the pass line while every path stayed lexically inside
+ * (#233). One gate rather than two, because a `<script src>` and an `import`
+ * arrive at the same read.
+ *
+ * **The shell itself is read without that gate, deliberately.** It is named on
+ * the command line or by `DEFAULT_SHELLS`, and it is the path `buildDir`
+ * derives the boundary *from* — there is no enclosing directory to bound it
+ * against, and whoever can point this script at a shell can point it anywhere
+ * already. The gate covers the walked files, which is where a path arrives
+ * from inside the build rather than from the operator.
+ *
  * **It is the *static ESM* graph, and the residue is named rather than left to
  * be found.** Not walked and not reported: code a chunk reaches by something
  * that is not an ES module specifier — `new Worker(new URL('./w.js',
@@ -104,6 +119,8 @@ import {
   buildDir,
   containedIn,
   DEFAULT_SHELLS,
+  errno,
+  realPathInside,
   scriptFiles,
   shellPath,
 } from './check-dashboard-csp'
@@ -350,6 +367,9 @@ export function checkBundle(code: string, file: string): Problem[] {
  * a specifier reaches the filesystem by the same route and `..` is spellable in
  * one just as it is in a `src`.
  *
+ * What that bounds is the specifier. What the file it names turns out to be on
+ * disk is bounded where the file is opened, by {@link realPathInside} (#233).
+ *
  * Percent-escapes are deliberately *not* decoded, and both directions were
  * measured rather than reasoned about. A bundler emits the file name it wrote:
  * asked for a chunk whose name carries a space, Vite emitted
@@ -444,14 +464,38 @@ export function inspectBundles(shells: string[]): Inspection {
       }
       seen.add(file)
 
-      let code: string
-      try {
-        code = readFileSync(file, 'utf8')
-      }
-      catch {
+      // The boundary that holds for a read rather than for a path expression.
+      // `containedIn` bounded the specifier; this bounds what opening it
+      // reaches, and a symlink under the build is where the two differ (#233).
+      const real = realPathInside(dir, file)
+      if ('missing' in real) {
         problems.push({
           file,
           detail: `not found, though ${shell} reaches it — run \`${BUILD_COMMANDS}\` first`,
+        })
+        continue
+      }
+      if ('reason' in real) {
+        problems.push({
+          file,
+          detail: `${real.reason}, so the code it holds went uninspected`,
+        })
+        continue
+      }
+
+      let code: string
+      try {
+        code = readFileSync(real.path, 'utf8')
+      }
+      catch (error) {
+        // Residual: `realPathInside` already settled missing, unresolvable,
+        // out-of-build and not-a-regular-file, so what is left here is a file
+        // that resolved and then would not open — a permission, in practice.
+        // Naming the errno keeps it from reading as "the build is stale", which
+        // is a remedy that would not fix it.
+        problems.push({
+          file,
+          detail: `could not be read (${errno(error)}), though ${shell} reaches it`,
         })
         continue
       }
