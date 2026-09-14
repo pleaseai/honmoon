@@ -1,6 +1,6 @@
 ---
 name: honmoon-proxy-sync-point-tracking
-description: 'The three shared counters in crates/honmoon-proxy/src/runtime/postgres.rs (Forwarded) after issue #121 — why Relaxed is correct, why the give-up floors are deliberately NOT in shared state, and the encapsulation gap that survived the rewrite'
+description: 'The three shared counters in crates/honmoon-proxy/src/runtime/postgres.rs (Forwarded) after issue #121 — why Relaxed is correct, why the give-up floors are deliberately NOT in shared state, and which half of the encapsulation gap #210 closed'
 metadata:
   type: project
 ---
@@ -30,9 +30,9 @@ re-read later.
 gives atomicity and per-location modification order, not a happens-before edge,
 so the relay may read a stale value. Because every field only rises, a stale read
 is always *low*, and low reads only ever make the relay wait longer: the clamp
-(`if self.answered < forwarded.sync_points`) declines an increment, and the
-coverage (`self.drained.max(flushes_covered)`) applies less credit. Declining
-costs a stall; allowing costs the ordering guarantee. **If a future edit makes any
+(`Progress::receive_one`, given `forwarded.sync_points`) declines an increment,
+and the coverage (`Progress::receive_through`, given `flushes_covered`) applies
+less credit. Declining costs a stall; allowing costs the ordering guarantee. **If a future edit makes any
 of these three non-monotonic, this argument is gone** — not because of data
 visibility (nothing is published *through* them; no pointer or payload's
 visibility depends on them), but because a stale read could then err high.
@@ -44,15 +44,16 @@ database's turnaround sit between the increment and the read. It is true today
 and it is an argument from the environment, not from the memory model: the
 `ScriptedUpstream` test harness in this file already short-circuits the loopback.
 
-**The give-up floors are deliberately not here.** `Relay::abandoned` /
-`abandoned_flushes` live in the relay task because giving up is the relay's own
-decision, taken from its own read deadline. The predicate is
-`answered.max(abandoned) >= tag && drained.max(abandoned_flushes) >= tag`, which
-is why the pre-#121 `debt` / `flush_debt` bookkeeping is gone rather than
-reimplemented: a late answer raises the truthful count, the floor is unmoved by
-it, and neither number has reached a later statement's tag. Putting a floor back
-into shared state would recreate the "credit then remember the credit" shape the
-rewrite removed.
+**The give-up floors are deliberately not here.** They live in the relay task
+because giving up is the relay's own decision, taken from its own read deadline.
+Since #210 each side of the barrier is a `Progress` — a received count paired
+with its own give-up floor — and the predicate is
+`self.sync.covers(refusal.sync_points) && self.flush.covers(refusal.flushes)`,
+where `covers(tag)` is `received.max(abandoned) >= tag`. That is why the pre-#121
+`debt` / `flush_debt` bookkeeping is gone rather than reimplemented: a late answer
+raises the truthful count, the floor is unmoved by it, and neither number has
+reached a later statement's tag. Putting a floor back into shared state would
+recreate the "credit then remember the credit" shape the rewrite removed.
 
 **Why `flushes_covered` has to be shared, though it looks like it could be
 derived.** It is the flush count as it stood when a sync point was forwarded, and
@@ -64,14 +65,38 @@ tag would conflate two different flushes. It is still only one snapshot, so a
 second sync point overwrites the first's coverage — the reason issue #153 is
 neither fixed nor worsened by #121.
 
-**Known gap, unchanged by the rewrite (reported, moderate confidence, not
-critical)**: the fields are module-private, not struct-private via a submodule,
-so any code in `postgres.rs` — the tests included — can bypass the
-`forwarded_sync_point` / `forwarded_flush` / `refusal` method surface and touch
-them directly. A real fix (nested submodule, or an explicit read accessor for
-tests) was judged plausible but not clearly required: the file is cohesive and
-each call site is comment-justified. Useful context if more call sites for
-counter tracking appear here later.
+**The encapsulation gap, half closed by #210.** It was reported against
+`Forwarded`, `Relay` and `Refusal` alike: the fields are module-private, not
+struct-private via a submodule, so any code in `postgres.rs` — the tests included
+— can bypass the `forwarded_sync_point` / `forwarded_flush` / `refusal` method
+surface and touch them directly.
+
+In #210 the nested-submodule fix was taken for the relay's barrier counters
+alone. `Progress` lives in `mod progress` with private fields, so the crossing
+that motivated it — one side's received count compared against the other side's
+give-up floor — has no spelling in the **shipped binary**: naming a field fails
+outside the module, and reading a side's write-off at all is the `#[cfg(test)]`
+`abandoned()`. **Do not re-raise it against production code.**
+
+Be exact about the boundary, because the first draft of this note was not and a
+review caught it. Under `cfg(test)` the crossing does compile —
+`self.sync.received().max(self.flush.abandoned())` — since the assertions need
+both numbers separately, and `received()` is a plain accessor called from
+production in two places besides. An earlier version of this note, of the
+`mod progress` doc and of ADR-0007 all claimed the numbers were reachable only
+through `covers()`; that was false and was corrected. Do not restore it.
+
+The other thing #210 does not settle is which side a refusal's tag reaches:
+`Refusal::sync_points` and `Refusal::flushes` are both `u64`, so
+`self.sync.covers(refusal.flushes)` compiles anywhere. That was weighed and left,
+on the grounds that the crossing would name both halves of one struct on one line
+rather than reading as the arithmetic around it — raise it only with an argument
+about that, not as the finding above.
+
+`Forwarded` and `Refusal` are unchanged, as is the rest of `Relay`. A fix there
+was judged plausible but not clearly required: the file is cohesive and each call
+site is comment-justified. Useful context if more call sites for counter tracking
+appear here later.
 
 Related: [[postgres-refusal-ordering-barrier]] for what the barrier does and does
 not cover, and the live gaps.

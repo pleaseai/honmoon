@@ -444,50 +444,231 @@ struct HandBack {
     tx_status: u8,
 }
 
+/// One side of the refusal barrier: what the client has really received, and how
+/// far a wait that gave up has written off.
+///
+/// In its own module, so the pairing belongs to the type rather than to each
+/// caller. The barrier is one comparison per side, and what it must never become
+/// is a comparison holding one side's received count beside the other side's
+/// write-off. As four bare `u64`s on [`Relay`],
+/// `answered.max(abandoned_flushes) >= refusal.sync_points` was a well-typed
+/// sentence that read like the arithmetic around it.
+///
+/// Be exact about what writing that crossing now costs, because the fields being
+/// private is not the whole of it. Naming either number directly does not
+/// compile anywhere outside this module. Going through the accessors does not
+/// compile in the shipped binary either, but for a second reason: reading a
+/// side's write-off at all is [`Progress::abandoned`], which is `#[cfg(test)]`,
+/// so the crossing has no spelling in code that ships. Under `cfg(test)` it has
+/// one — `self.sync.received().max(self.flush.abandoned())` — because the
+/// assertions need both numbers separately. What is gone everywhere is the
+/// crossing that looks like arithmetic; what is left is one that names two sides
+/// on a single line, in the tests.
+///
+/// It does not settle which *tag* reaches which side either — both are `u64` —
+/// so [`Relay::releasable`] handing `refusal.sync_points` to the sync side is
+/// read rather than checked.
+mod progress {
+    /// See the module documentation.
+    pub(super) struct Progress {
+        /// What the client really received: `ReadyForQuery` frames delivered on
+        /// the sync side, drained flushes on the flush side. Only ever raised,
+        /// and only by something that really happened.
+        received: u64,
+        /// How far a wait that gave up has written off. A floor beside
+        /// `received` rather than a credit to it, so a late answer still raises
+        /// `received` truthfully and cannot be counted twice.
+        abandoned: u64,
+    }
+
+    impl Progress {
+        pub(super) fn new() -> Self {
+            Self {
+                received: 0,
+                abandoned: 0,
+            }
+        }
+
+        /// Whether this side has reached `tag`, by either route.
+        pub(super) fn covers(&self, tag: u64) -> bool {
+            self.received.max(self.abandoned) >= tag
+        }
+
+        /// Record one more really received, never past what was `forwarded`.
+        pub(super) fn receive_one(&mut self, forwarded: u64) {
+            if self.received < forwarded {
+                self.received += 1;
+            }
+        }
+
+        /// Raise the received count to a floor something stronger than a quiet
+        /// has already proven.
+        pub(super) fn receive_through(&mut self, proven: u64) {
+            self.received = self.received.max(proven);
+        }
+
+        /// Write off everything up to `tag`: a wait gave up on it.
+        pub(super) fn abandon(&mut self, tag: u64) {
+            self.abandoned = self.abandoned.max(tag);
+        }
+
+        /// What the client really received.
+        pub(super) fn received(&self) -> u64 {
+            self.received
+        }
+
+        /// How far a wait that gave up has written off.
+        ///
+        /// Nothing outside the tests reads this — the barrier reads it only
+        /// through [`Progress::covers`], and the stall warning reports what
+        /// really arrived — so it is not compiled into the binary.
+        #[cfg(test)]
+        pub(super) fn abandoned(&self) -> u64 {
+            self.abandoned
+        }
+    }
+}
+use progress::Progress;
+
+/// The one injection the relay has taken off the channel, and where it stands.
+///
+/// One value rather than the three fields it replaces (`queued: Option<Injected>`
+/// / `forced: bool` / `stall_deadline: Option<Instant>`), which carried an
+/// invariant between them that no type stated: a deadline and a forced flag mean
+/// nothing with an empty queue, and `forced: true` with nothing queued was
+/// representable — a stale flag for the next call to read. Both variants that
+/// mean anything carry the injection they are about, so there is nothing left to
+/// latch onto emptiness.
+enum Pending {
+    /// Nothing taken off the channel.
+    Empty,
+    /// Queued and still being ordered behind what the client is owed, until
+    /// `stall_deadline`. Armed when it is queued and re-armed by every byte that
+    /// arrives from the database (see [`Relay::progressed`]), so the bound is on
+    /// the stall and not on the wait.
+    Waiting {
+        injected: Injected,
+        stall_deadline: tokio::time::Instant,
+    },
+    /// A bound expired, so this is no longer being ordered: it goes out on the
+    /// next check whether or not the client has received what it was owed.
+    ///
+    /// It carries no deadline of its own, and only one of the two bounds really
+    /// stops applying. The stall bound does: it is a field of
+    /// [`Pending::Waiting`], so [`Pending::stall_deadline`] is `None` here and
+    /// [`Pending::rearm`] does nothing. The caller's ordering budget does not —
+    /// [`Relay::order_deadline`] reads it through whatever is queued, so it
+    /// still fires, exactly as it did when this was a `forced` flag the lookup
+    /// ignored. Firing it forces what is already forced, which is why that costs
+    /// nothing.
+    ///
+    /// [`Relay::write_unordered`] is the only caller that builds one, and writes
+    /// it in the same call with no await in between. That is a property of this
+    /// file rather than one the type enforces — unlike [`Progress`], whose
+    /// invariant is about a comparison and so needs its fields hidden, every
+    /// variant here is valid whoever writes it, and what the enum removes is the
+    /// combination rather than the construction.
+    Forced(Injected),
+}
+
+impl Pending {
+    /// Queue an injection and arm its stall bound.
+    fn waiting(injected: Injected) -> Self {
+        Pending::Waiting {
+            injected,
+            stall_deadline: tokio::time::Instant::now() + REFUSAL_ORDER_STALL_TIMEOUT,
+        }
+    }
+
+    fn is_empty(&self) -> bool {
+        matches!(self, Pending::Empty)
+    }
+
+    /// What is queued, however it stands.
+    fn injected(&self) -> Option<&Injected> {
+        match self {
+            Pending::Empty => None,
+            Pending::Waiting { injected, .. } | Pending::Forced(injected) => Some(injected),
+        }
+    }
+
+    /// When the queued answer stops waiting to be ordered.
+    fn stall_deadline(&self) -> Option<tokio::time::Instant> {
+        match self {
+            Pending::Waiting { stall_deadline, .. } => Some(*stall_deadline),
+            Pending::Empty | Pending::Forced(_) => None,
+        }
+    }
+
+    /// Buy the queued answer another stall window.
+    ///
+    /// A no-op on the other two variants, and that is the guard the old
+    /// `if self.queued.is_some()` was: a window is a property of waiting, so
+    /// there is no longer a deadline field to set with nothing to release.
+    fn rearm(&mut self) {
+        if let Pending::Waiting { stall_deadline, .. } = self {
+            *stall_deadline = tokio::time::Instant::now() + REFUSAL_ORDER_STALL_TIMEOUT;
+        }
+    }
+
+    /// Stop ordering whatever is queued. Nothing queued is nothing to force —
+    /// where the flag this replaces would have latched on and outlived the call.
+    fn force(&mut self) {
+        *self = match std::mem::replace(self, Pending::Empty) {
+            Pending::Empty => Pending::Empty,
+            Pending::Waiting { injected, .. } | Pending::Forced(injected) => {
+                Pending::Forced(injected)
+            }
+        };
+    }
+
+    /// Take what is queued, leaving nothing behind — neither a deadline nor a
+    /// flag, because there is nowhere for either to live.
+    fn take(&mut self) -> Option<Injected> {
+        match std::mem::replace(self, Pending::Empty) {
+            Pending::Empty => None,
+            Pending::Waiting { injected, .. } | Pending::Forced(injected) => Some(injected),
+        }
+    }
+}
+
 /// The relay's own view of the session: the client writer it owns outright, and
 /// what the client has actually received.
 ///
 /// Every count here is written and read by this one task, so none of it needs to
 /// be atomic and none of it can interleave. In particular there is no *debt*:
-/// [`Relay::answered`] and [`Relay::drained`] only ever count what the client
-/// really received, and a wait that gives up records that separately in
-/// [`Relay::abandoned`] / [`Relay::abandoned_flushes`]. The earlier design
-/// credited the delivered counts for answers that never arrived and then had to
-/// remember the credit so a late answer was not counted twice; keeping the two
-/// apart makes that bookkeeping unnecessary rather than merely easier.
+/// each side's received count only ever counts what the client really received,
+/// and a wait that gives up records that separately in the same side's write-off
+/// (see [`Progress`]). The earlier design credited the delivered counts for
+/// answers that never arrived and then had to remember the credit so a late
+/// answer was not counted twice; keeping the two apart makes that bookkeeping
+/// unnecessary rather than merely easier.
 struct Relay {
     /// The client write half. Nothing else in the process holds one.
     client: tokio::net::tcp::OwnedWriteHalf,
     forwarded: Arc<Forwarded>,
-    /// The one injection taken off the channel and not yet written.
-    queued: Option<Injected>,
-    /// Set when a bound expired on the queued answer: it is written on the next
-    /// check whether or not the client has received what it was owed.
-    forced: bool,
-    /// When the queued answer stops waiting to be ordered. Armed when it is
-    /// queued and re-armed by every byte that arrives from the database (see
-    /// [`Relay::progressed`]), so the bound is on the stall and not on the wait.
-    stall_deadline: Option<tokio::time::Instant>,
+    /// The one injection taken off the channel and not yet written, and where it
+    /// stands.
+    pending: Pending,
     /// Whether the message loop's end of the channel is gone. It closes when the
     /// session's inspected direction ends; the relay keeps going, because the
     /// database may still owe the client its last response.
     injections_closed: bool,
-    /// `ReadyForQuery` frames written to the client. This is what a refusal
-    /// tagged with a sync-point count waits for.
-    answered: u64,
-    /// Sync points the relay gave up waiting for. A floor beside `answered`
-    /// rather than a credit to it: a refusal is released once *either* reaches
-    /// its tag, so the rest of the session is ordered against what actually
-    /// arrives, while an answer that turns up after all still raises `answered`
-    /// truthfully and cannot be counted twice.
-    abandoned: u64,
-    /// `Flush` frames whose output the relay has seen drained: it delivered at
-    /// least one message the flush could have produced, and then found the
-    /// upstream socket empty at a message boundary.
-    drained: u64,
-    /// `Flush` frames the relay gave up waiting for — the flush counterpart to
-    /// [`Relay::abandoned`], and a floor for the same reason.
-    abandoned_flushes: u64,
+    /// The sync side of the barrier: `ReadyForQuery` frames written to the
+    /// client — what a refusal tagged with a sync-point count waits for — beside
+    /// the sync points the relay gave up waiting for.
+    ///
+    /// The write-off is a floor beside the received count rather than a credit
+    /// to it: a refusal is released once *either* reaches its tag, so the rest of
+    /// the session is ordered against what actually arrives, while an answer that
+    /// turns up after all still raises the received count truthfully and cannot
+    /// be counted twice.
+    sync: Progress,
+    /// The flush side: `Flush` frames whose output the relay has seen drained —
+    /// it delivered at least one message the flush could have produced, and then
+    /// found the upstream socket empty at a message boundary — beside the flushes
+    /// the relay gave up waiting for, a floor for the same reason.
+    flush: Progress,
     /// Messages delivered since the last settlement that could belong to a
     /// flush's output. A flush is settled between messages, never mid-burst: an
     /// upstream that was already quiet when the `Flush` went out has not answered
@@ -518,14 +699,10 @@ impl Relay {
         Self {
             client,
             forwarded,
-            queued: None,
-            forced: false,
-            stall_deadline: None,
+            pending: Pending::Empty,
             injections_closed: false,
-            answered: 0,
-            abandoned: 0,
-            drained: 0,
-            abandoned_flushes: 0,
+            sync: Progress::new(),
+            flush: Progress::new(),
             fresh: 0,
             last_tag: None,
             tx_status: STATUS_IDLE,
@@ -540,13 +717,7 @@ impl Relay {
     /// only flushed, and either one arriving after the refusal is the
     /// misattribution this barrier exists to prevent.
     fn releasable(&self, refusal: &Refusal) -> bool {
-        self.answered.max(self.abandoned) >= refusal.sync_points
-            && self.drained.max(self.abandoned_flushes) >= refusal.flushes
-    }
-
-    /// Arm the stall bound for the queued answer.
-    fn arm_stall(&mut self) {
-        self.stall_deadline = Some(tokio::time::Instant::now() + REFUSAL_ORDER_STALL_TIMEOUT);
+        self.sync.covers(refusal.sync_points) && self.flush.covers(refusal.flushes)
     }
 
     /// Record that the upstream moved, and buy the queued answer another window.
@@ -562,10 +733,11 @@ impl Relay {
     /// does not reach it is the oversized-payload copy, which cannot write an
     /// answer at all; that exception is stated where it happens.
     ///
-    /// Guarded on there being something queued so that [`Relay::stall_deadline`]
-    /// is never set with nothing to release: a deadline that fires on an empty
-    /// queue would leave [`Relay::forced`] latched, and the next refusal would
-    /// go out unordered.
+    /// A no-op with nothing queued, which is no longer a guard to remember: the
+    /// deadline lives inside [`Pending::Waiting`], so there is no field to set
+    /// with nothing to release. What that state used to cost is why it mattered
+    /// — a deadline firing on an empty queue left the forced flag latched, and
+    /// the next refusal went out unordered.
     ///
     /// It grants a dripping backend nothing worth having. Holding a refusal for
     /// good needs only a complete message per window — five bytes — which
@@ -579,14 +751,12 @@ impl Relay {
     /// arriving. What this closes is the case where the same backend is *honest*
     /// and merely slow.
     fn progressed(&mut self) {
-        if self.queued.is_some() {
-            self.arm_stall();
-        }
+        self.pending.rearm();
     }
 
     /// The deadline the queued answer's own caller set on being ordered, if any.
     fn order_deadline(&self) -> Option<tokio::time::Instant> {
-        match &self.queued.as_ref()?.what {
+        match &self.pending.injected()?.what {
             Injection::Refusal(refusal) => refusal.order_deadline,
             Injection::NoEncryption => None,
         }
@@ -612,7 +782,7 @@ impl Relay {
         let Some(Injected {
             what: Injection::Refusal(refusal),
             ..
-        }) = &self.queued
+        }) = self.pending.injected()
         else {
             return;
         };
@@ -660,9 +830,9 @@ impl Relay {
         );
         tracing::warn!(
             expected = sync_points,
-            delivered = self.answered,
+            delivered = self.sync.received(),
             expected_flushes = flushes,
-            drained = self.drained,
+            drained = self.flush.received(),
             last_tag = %last_tag,
             "no database response for the whole stall window; the refusal may reach the \
              client out of statement order. `last_tag` is the last backend message tag \
@@ -672,8 +842,8 @@ impl Relay {
              quiet settles on, which is how `drained` sits short of `expected_flushes` by \
              design. It does not displace the silence this line already reports"
         );
-        self.abandoned = self.abandoned.max(sync_points);
-        self.abandoned_flushes = self.abandoned_flushes.max(flushes);
+        self.sync.abandon(sync_points);
+        self.flush.abandon(flushes);
     }
 
     /// Record that the relay has drained the output of **one** `Flush`, never
@@ -719,9 +889,7 @@ impl Relay {
     /// a mechanism rather than a tweak, so it is recorded rather than taken
     /// here.
     fn flush_drained(&mut self, owed: u64) {
-        if self.drained < owed {
-            self.drained += 1;
-        }
+        self.flush.receive_one(owed);
     }
 
     /// Record one complete backend message written to the client.
@@ -737,7 +905,7 @@ impl Relay {
             // snapshot taken when the sync point went out, so a `Flush` sent
             // after it is not credited here.
             let covered = self.forwarded.flushes_covered.load(Ordering::Relaxed);
-            self.drained = self.drained.max(covered);
+            self.flush.receive_through(covered);
             // Never count past what was forwarded. In ordinary operation this
             // cannot bind — every `ReadyForQuery` answers a sync point counted
             // before the frame that earns it goes out — so it stands as a guard
@@ -751,9 +919,8 @@ impl Relay {
             // for — the client is the adversary here, and a client that also
             // controls the database learns nothing it did not already know,
             // since the denied statement is never forwarded either way.
-            if self.answered < self.forwarded.sync_points.load(Ordering::Relaxed) {
-                self.answered += 1;
-            }
+            self.sync
+                .receive_one(self.forwarded.sync_points.load(Ordering::Relaxed));
             // A request cycle just ended, so everything delivered so far is
             // accounted for by the sync-point count. Anything a still-unsettled
             // `Flush` is owed comes after this, not before it.
@@ -770,17 +937,23 @@ impl Relay {
     /// framing structural: there is no point in the relay's loop where this runs
     /// with part of a server frame already on the client's socket.
     async fn write_queued(&mut self) -> Result<(), Stop> {
-        let ready = match self.queued.as_ref().map(|queued| &queued.what) {
-            None => false,
-            Some(Injection::NoEncryption) => true,
-            Some(Injection::Refusal(refusal)) => self.forced || self.releasable(refusal),
+        let ready = match &self.pending {
+            Pending::Empty => false,
+            // No longer being ordered, so there is nothing left to check it
+            // against.
+            Pending::Forced(_) => true,
+            Pending::Waiting { injected, .. } => match &injected.what {
+                Injection::NoEncryption => true,
+                Injection::Refusal(refusal) => self.releasable(refusal),
+            },
         };
         if !ready {
             return Ok(());
         }
-        let injected = self.queued.take().expect("checked just above");
-        self.forced = false;
-        self.stall_deadline = None;
+        // Taking it clears the bound with it: a deadline is a field of
+        // [`Pending::Waiting`], so an answer that has gone out cannot leave one
+        // behind, and neither can one that was forced.
+        let injected = self.pending.take().expect("checked just above");
         let written = match &injected.what {
             Injection::NoEncryption => self.client.write_all(b"N").await,
             Injection::Refusal(refusal) => self.write_refusal(&refusal.message).await,
@@ -794,6 +967,21 @@ impl Relay {
         Ok(())
     }
 
+    /// Stop ordering the queued answer and write it now.
+    ///
+    /// Every caller is a bound that expired or a relay that is leaving: in all
+    /// three the question of what the client is still owed has been decided
+    /// against waiting, and the only thing left to do is write.
+    ///
+    /// The two steps are one method because they belong together. Forcing and
+    /// then not writing is what leaves an answer with no bound left to service
+    /// it, and forcing an empty queue — which used to latch a flag the next
+    /// refusal read — is now nothing at all.
+    async fn write_unordered(&mut self) -> Result<(), Stop> {
+        self.pending.force();
+        self.write_queued().await
+    }
+
     /// Write the `ErrorResponse`/`ReadyForQuery` pair, echoing the transaction
     /// status of the last `ReadyForQuery` the client received.
     async fn write_refusal(&mut self, message: &str) -> std::io::Result<()> {
@@ -805,7 +993,7 @@ impl Relay {
 
     /// Whether another injection may be taken off the channel.
     fn accepting(&self) -> bool {
-        !self.injections_closed && self.queued.is_none()
+        !self.injections_closed && self.pending.is_empty()
     }
 
     /// Read `buf` full from the upstream, writing queued answers and honouring
@@ -831,7 +1019,7 @@ impl Relay {
         U: AsyncRead + Unpin,
     {
         while filled < buf.len() {
-            let stall = self.stall_deadline;
+            let stall = self.pending.stall_deadline();
             let order = self.order_deadline();
             tokio::select! {
                 // The channel first. A refusal the message loop has decided
@@ -842,8 +1030,7 @@ impl Relay {
                 biased;
                 taken = injections.recv(), if self.accepting() => match taken {
                     Some(injected) => {
-                        self.queued = Some(injected);
-                        self.arm_stall();
+                        self.pending = Pending::waiting(injected);
                         self.write_queued().await?;
                     }
                     // The inspected direction has ended, so nothing more will be
@@ -853,16 +1040,14 @@ impl Relay {
                 },
                 () = until(stall) => {
                     self.give_up();
-                    self.forced = true;
-                    self.write_queued().await?;
+                    self.write_unordered().await?;
                 }
                 () = until(order) => {
                     // The caller budgeted ordering and writing apart and its
                     // ordering slice is spent. Nothing is written off: this is
                     // one answer giving up its place, not the pipeline being
                     // declared dead.
-                    self.forced = true;
-                    self.write_queued().await?;
+                    self.write_unordered().await?;
                 }
                 read = upstream.read(&mut buf[filled..]) => match read {
                     // `Ok(0)` is end of input, so every read that reaches the arm
@@ -1031,8 +1216,7 @@ where
         // dropped when this task ends, which is what keeps a client whose own
         // socket is fine from reading an unexplained close instead of its 42501.
         Stop::Upstream => {
-            relay.forced = true;
-            relay.write_queued().await.ok()?;
+            relay.write_unordered().await.ok()?;
             Some(HandBack {
                 client: relay.client,
                 tx_status: relay.tx_status,
@@ -1114,7 +1298,7 @@ where
                 relay.last_tag,
                 Some(b'1' | b'2' | b'3' | b'C' | b'I' | b's' | b'E')
             )
-            && relay.drained < owed;
+            && relay.flush.received() < owed;
 
         // Every backend message is `tag(1) | len(4, self-inclusive) | payload`.
         //
@@ -1220,7 +1404,7 @@ where
             // Whether an answer honmoon generated is waiting on this copy. Two
             // places can hold one, and they have to be read differently.
             //
-            // `Relay::queued` is the one already taken off the channel. It is
+            // [`Relay::pending`] is the one already taken off the channel. It is
             // read here because it cannot change while the copy runs — the
             // channel is not polled from in there — and because the writer is
             // borrowed for the whole copy, so it could not be read later anyway.
@@ -1228,7 +1412,7 @@ where
             // The channel is the other, and reading it here would be wrong: the
             // message loop can refuse a pipelined statement at any point during
             // the copy, and that refusal waits in the channel rather than in
-            // `queued`, precisely because nothing dequeues it until the copy
+            // `pending`, precisely because nothing dequeues it until the copy
             // ends. A snapshot taken now would report `false` for exactly the
             // case the operator is looking for, so the channel is read when the
             // line is written instead.
@@ -1236,7 +1420,7 @@ where
             // Both are refusals on this path. The only other injection answers
             // an `SSLRequest`, which is settled during startup, before any
             // backend message exists to be oversized.
-            let dequeued_refusal = relay.queued.is_some();
+            let dequeued_refusal = !relay.pending.is_empty();
             let unread_injections = &*injections;
             if relay.client.write_all(&head).await.is_err()
                 || copy_exact_reporting_quiet(
@@ -2382,15 +2566,18 @@ mod tests {
 
         /// Give up on ordering a refusal decided right now, the way the stall
         /// bound does, and clear it as writing it would.
+        ///
+        /// Clearing is one statement rather than three: the bound the stall
+        /// armed is a field of [`Pending::Waiting`], so emptying the queue is
+        /// what unarms it.
         fn abandon(&mut self) {
             let (written, _ack) = oneshot::channel();
-            self.relay.queued = Some(Injected {
+            self.relay.pending = Pending::waiting(Injected {
                 what: Injection::Refusal(self.refusal()),
                 written,
             });
             self.relay.give_up();
-            self.relay.queued = None;
-            self.relay.stall_deadline = None;
+            self.relay.pending = Pending::Empty;
         }
 
         /// Settle one flush the way the relay does on a quiet upstream.
@@ -3093,6 +3280,56 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
+    async fn a_written_off_flush_is_still_settled_by_its_own_late_output() {
+        // The settling gate reads the delivered count alone — `flush.received() <
+        // owed` — and must not read `flush.covers(owed)`, which folds the
+        // write-off in. The two agree everywhere except right here: after a stall
+        // has written a flush off, `covers` is already satisfied, so a gate asking
+        // it would stop probing for the quiet and the flush's own output would
+        // never be settled. What that costs is not this refusal, which is already
+        // out, but the delivered count the *next* one is measured against.
+        //
+        // Nothing in the suite pinned that before: every write-off test drives
+        // `give_up`/`flush_drained` through the `Accounting` helpers, which call
+        // them directly and never reach this gate, and every test that does reach
+        // the gate has nothing written off. So the two expressions were
+        // indistinguishable to the tests, and telling them apart is this test's
+        // whole job (#210).
+        let mut acc = accounting().await;
+        acc.link.forwarded_flush();
+        let upstream = ScriptedUpstream::new([
+            // Quiet long enough for the stall to write the flush off, then the
+            // output that flush was owed all along.
+            (REFUSAL_ORDER_STALL_TIMEOUT * 2, command_complete()),
+            // A quiet after it, which is the only signal a `Flush` has that its
+            // output is all delivered.
+            (REFUSAL_ORDER_STALL_TIMEOUT / 2, Vec::new()),
+        ]);
+
+        let ack = queue_refusal(&acc.link, "honmoon: denied by policy");
+        let (stop, ()) = tokio::join!(
+            relay_backend_messages(upstream, &mut acc.relay, &mut acc.taken),
+            async {
+                ack.await
+                    .expect("the refusal is written when the stall expires");
+            },
+        );
+
+        assert!(matches!(stop, Stop::Upstream));
+        assert_eq!(
+            acc.relay.flush.abandoned(),
+            1,
+            "the stall wrote the flush off, which is what arms this case at all"
+        );
+        assert_eq!(
+            acc.relay.flush.received(),
+            1,
+            "and the output that arrived afterwards still settled it — a gate on \
+             `covers` would have stopped probing once the write-off covered `owed`"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
     async fn a_sync_swallowed_during_copy_in_still_lets_the_queued_refusal_out() {
         // PostgreSQL ignores `Flush` and `Sync` received during copy-in mode, so
         // a `Sync` forwarded there is counted and can never be answered: the
@@ -3132,11 +3369,13 @@ mod tests {
             "bounded by the stall window, not unbounded"
         );
         assert_eq!(
-            acc.relay.answered, 0,
+            acc.relay.sync.received(),
+            0,
             "the backend answered neither sync point, `CopyInResponse` and all"
         );
         assert_eq!(
-            acc.relay.abandoned, 2,
+            acc.relay.sync.abandoned(),
+            2,
             "both were given up on at once, so no later refusal on the session pays again"
         );
     }
@@ -3182,7 +3421,8 @@ mod tests {
             "the wait ended on the last answer, not on the stall bound"
         );
         assert_eq!(
-            acc.relay.abandoned, 0,
+            acc.relay.sync.abandoned(),
+            0,
             "nothing was given up on — every answer arrived"
         );
     }
@@ -3218,7 +3458,8 @@ mod tests {
 
         assert_eq!(written_at - started, 3 * step, "rows counted as progress");
         assert_eq!(
-            acc.relay.abandoned, 0,
+            acc.relay.sync.abandoned(),
+            0,
             "a working database is never given up on"
         );
     }
@@ -3261,23 +3502,31 @@ mod tests {
             "the wait ended on the answer, not on the stall bound"
         );
         assert_eq!(
-            acc.relay.answered, 1,
+            acc.relay.sync.received(),
+            1,
             "the answer the refusal waited for reached the client first"
         );
         assert_eq!(
-            acc.relay.abandoned, 0,
+            acc.relay.sync.abandoned(),
+            0,
             "a message still arriving is not a pipeline that stopped"
         );
     }
 
     #[tokio::test(start_paused = true)]
     async fn bytes_arriving_with_nothing_queued_arm_no_deadline() {
-        // The re-arm is guarded on there being something to release, and the
-        // guard is what keeps the rest of the session honest. Without it a
-        // deadline would be set with an empty queue, `until(stall)` would fire
-        // into `give_up`'s early return, and `forced` would be left latched — so
-        // the *next* refusal on the session would be written without waiting for
-        // anything at all, and without the warning that says so.
+        // The re-arm reaches an empty queue and must leave it bounded by
+        // nothing, which is what keeps the rest of the session honest. A
+        // deadline set with an empty queue would fire into `give_up`'s early
+        // return and latch the force, so the *next* refusal on the session would
+        // be written without waiting for anything at all, and without the
+        // warning that says so.
+        //
+        // `Pending` is why that combination no longer has a spelling — the
+        // deadline is a field of `Waiting` and the force carries the injection
+        // it forces — so what is asserted below is the behaviour the old three
+        // fields had to be checked for: after this session the relay is bounded
+        // by nothing and holds nothing to force out.
         let mut acc = accounting().await;
         acc.link.forwarded_sync_point();
         let step = REFUSAL_ORDER_STALL_TIMEOUT - std::time::Duration::from_secs(5);
@@ -3290,12 +3539,19 @@ mod tests {
         let stop = relay_backend_messages(upstream, &mut acc.relay, &mut acc.taken).await;
 
         assert!(matches!(stop, Stop::Upstream));
-        assert_eq!(acc.relay.answered, 1, "the answer reached the client");
+        assert_eq!(
+            acc.relay.sync.received(),
+            1,
+            "the answer reached the client"
+        );
         assert!(
-            acc.relay.stall_deadline.is_none(),
+            acc.relay.pending.stall_deadline().is_none(),
             "nothing was queued, so nothing was bounded"
         );
-        assert!(!acc.relay.forced, "and nothing is left to force out later");
+        assert!(
+            matches!(acc.relay.pending, Pending::Empty),
+            "and nothing is left to force out later"
+        );
     }
 
     #[tokio::test(start_paused = true)]
@@ -3325,7 +3581,8 @@ mod tests {
             "the wait is bounded by the stall window, not unbounded"
         );
         assert_eq!(
-            acc.relay.abandoned_flushes, 1,
+            acc.relay.flush.abandoned(),
+            1,
             "the flush that was never answered is given up on"
         );
         assert!(
@@ -3365,7 +3622,8 @@ mod tests {
         );
 
         assert_eq!(
-            acc.relay.abandoned_flushes, 1,
+            acc.relay.flush.abandoned(),
+            1,
             "`T` settles nothing, so the flush is the side that was given up on"
         );
         let logs = logs.text();
@@ -3400,7 +3658,8 @@ mod tests {
         );
 
         assert_eq!(
-            acc.relay.abandoned_flushes, 1,
+            acc.relay.flush.abandoned(),
+            1,
             "the flush the database never answered is given up on"
         );
         let logs = logs.text();
@@ -3472,7 +3731,7 @@ mod tests {
             "a write-off never lowers what was forwarded"
         );
         assert_eq!(
-            (acc.relay.answered, acc.relay.abandoned),
+            (acc.relay.sync.received(), acc.relay.sync.abandoned()),
             (0, 1),
             "the answer that never came is recorded beside what was delivered, not inside it"
         );
@@ -3484,7 +3743,7 @@ mod tests {
         // The database was slow, not silent: the answer arrives after all.
         acc.relay.delivered(b'Z');
         assert_eq!(
-            (acc.relay.answered, acc.relay.abandoned),
+            (acc.relay.sync.received(), acc.relay.sync.abandoned()),
             (1, 1),
             "a late answer is counted once, where it belongs"
         );
@@ -3555,7 +3814,7 @@ mod tests {
 
         acc.abandon();
         assert_eq!(
-            (acc.relay.abandoned, acc.relay.abandoned_flushes),
+            (acc.relay.sync.abandoned(), acc.relay.flush.abandoned()),
             (1, 1),
             "both sides are given up on, each in its own counter"
         );
@@ -3564,7 +3823,7 @@ mod tests {
         // says nothing about the flush, which was sent after its `Sync`.
         acc.relay.delivered(b'Z');
         assert_eq!(
-            (acc.relay.answered, acc.relay.drained),
+            (acc.relay.sync.received(), acc.relay.flush.received()),
             (1, 0),
             "the late answer was credited to the statement, not to the flush"
         );
@@ -3591,7 +3850,7 @@ mod tests {
 
         acc.abandon();
         assert_eq!(
-            (acc.relay.drained, acc.relay.abandoned_flushes),
+            (acc.relay.flush.received(), acc.relay.flush.abandoned()),
             (0, 1),
             "the flush given up on is recorded as such, and nothing is credited as delivered"
         );
@@ -3603,7 +3862,8 @@ mod tests {
         // socket quiet behind it.
         acc.quiet();
         assert_eq!(
-            acc.relay.drained, 1,
+            acc.relay.flush.received(),
+            1,
             "the late drain counted one flush, which is all one quiet can prove"
         );
         assert!(
@@ -3629,7 +3889,8 @@ mod tests {
         acc.link.forwarded_sync_point();
         acc.relay.delivered(b'Z');
         assert_eq!(
-            acc.relay.drained, 2,
+            acc.relay.flush.received(),
+            2,
             "the answer proved the output of every flush before its Sync"
         );
 
@@ -3638,7 +3899,8 @@ mod tests {
         acc.link.forwarded_flush();
         acc.quiet();
         assert_eq!(
-            acc.relay.drained, 3,
+            acc.relay.flush.received(),
+            3,
             "the quiet settled a flush already proved instead of its own batch"
         );
         assert!(
@@ -3662,7 +3924,7 @@ mod tests {
         acc.link.forwarded_flush();
         acc.abandon();
         assert_eq!(
-            (acc.relay.abandoned, acc.relay.abandoned_flushes),
+            (acc.relay.sync.abandoned(), acc.relay.flush.abandoned()),
             (1, 2),
             "both flushes were given up on, and the one sync point once"
         );
@@ -3671,7 +3933,8 @@ mod tests {
         // the flush it covers — the first — and nothing about the second.
         acc.relay.delivered(b'Z');
         assert_eq!(
-            acc.relay.drained, 1,
+            acc.relay.flush.received(),
+            1,
             "the answer proved one flush, so exactly one is accounted for"
         );
 
@@ -3681,7 +3944,8 @@ mod tests {
         acc.quiet();
         acc.quiet();
         assert_eq!(
-            acc.relay.drained, 3,
+            acc.relay.flush.received(),
+            3,
             "a flush already proved swallowed the quiet that should have settled this batch"
         );
         assert!(acc.releasable_now());
@@ -4380,7 +4644,7 @@ mod tests {
         // So an answer relayed at that instant is credited rather than clamped
         // away as an over-count.
         acc.relay.delivered(b'Z');
-        assert_eq!(acc.relay.answered, 1, "the answer was not discarded");
+        assert_eq!(acc.relay.sync.received(), 1, "the answer was not discarded");
         assert!(
             acc.releasable_now(),
             "the handshake was answered, so nothing is owed and the refusal waits for nothing"
@@ -4391,7 +4655,8 @@ mod tests {
         // its way past a statement nobody has answered.
         acc.relay.delivered(b'Z');
         assert_eq!(
-            acc.relay.answered, 1,
+            acc.relay.sync.received(),
+            1,
             "a `ReadyForQuery` for a sync point that was never forwarded was counted"
         );
     }
@@ -4486,7 +4751,8 @@ mod tests {
         assert_eq!(read_message_tag(&mut peer).await, b'C');
         assert_eq!(read_message_tag(&mut peer).await, b'Z');
         assert_eq!(
-            relay.answered, 1,
+            relay.sync.received(),
+            1,
             "the answer the session was still owed was delivered after the channel closed"
         );
     }

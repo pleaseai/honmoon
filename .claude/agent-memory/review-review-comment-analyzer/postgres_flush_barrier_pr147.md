@@ -52,9 +52,10 @@ for `Delivered`, `flush_answers`, `flush_drained` as a `Delivered` method, the
   relay's own `try_read_now` probe, not from lock re-acquisition. A comment still
   making the lock argument is stale prose, not a live claim.
 - **Dead: the `flush_answers <= flushes` invariant as a stated pair.** Bounding is
-  now `drained.max(abandoned_flushes) >= refusal.flushes` inside the relay, and
-  `drained` is relay-task-local rather than shared, so there is no shared value to
-  state an invariant *on*. The monotonicity argument moved to the three
+  now `self.flush.covers(refusal.flushes)` inside the relay — `drained.max(
+  abandoned_flushes) >= refusal.flushes` until #210 regrouped the pair into a
+  `Progress` — and the delivered count is relay-task-local rather than shared, so
+  there is no shared value to state an invariant *on*. The monotonicity argument moved to the three
   `Forwarded` counters — see [[honmoon-proxy-sync-point-tracking]].
 - **Alive and re-verified at #121: the `D`/`d` exclusion.** The list widened to
   `D d N A S t T G H W c` and the protocol reasoning is unchanged (an `Execute`
