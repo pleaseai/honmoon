@@ -1,0 +1,27 @@
+wiki/deep-dive/egress-gateway.md
+  s_26fa4496ae5d90::t_9cd8f0a57b1115 158,184,191,193,225,227,231-234
+wiki/deep-dive/control-plane.md
+  s_26fa4496ae5d90::t_9cd8f0a57b1115 60
+wiki/deep-dive/architecture.md
+  s_26fa4496ae5d90::t_9cd8f0a57b1115 191
+wiki/getting-started/quick-start.md
+  s_26fa4496ae5d90::t_9cd8f0a57b1115 18-20,31,70,122
+wiki/getting-started/overview.md
+  s_26fa4496ae5d90::t_9cd8f0a57b1115 123
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "48abdb12d6a65ce535bbab1bc59a67dfa0b02b6d",
+  "prompts": {},
+  "sessions": {
+    "s_26fa4496ae5d90": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "4904e4df-31e2-4534-ad76-15edcb599525",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}

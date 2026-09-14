@@ -1,0 +1,36 @@
+crates/honmoon-cli/tests/stall_diagnostics.rs
+  s_e32ecb4c2c83cd::t_d6ec7dd5429c62 1-272
+wiki/getting-started/quick-start.md
+  s_e32ecb4c2c83cd::t_0a8640e83e57f7 158,164-175,178-181
+  s_e32ecb4c2c83cd::t_4dc03408540c99 176-177
+  s_e32ecb4c2c83cd::t_a69670d87c1def 182
+crates/honmoon-cli/src/main.rs
+  s_e32ecb4c2c83cd::t_f6e449ed8e9907 859-863
+  s_e32ecb4c2c83cd::t_09d2b2f5dd0bde 38-47
+  s_e32ecb4c2c83cd::t_5102c0dac968d1 392-395
+  s_e32ecb4c2c83cd::t_ef2b4790af11b3 59-64
+  s_e32ecb4c2c83cd::t_3291d1efbea6ce 438-473
+  s_e32ecb4c2c83cd::t_cea56b437595d0 56-58
+  s_e32ecb4c2c83cd::t_4fb4f688b4ad2b 622-627
+wiki/llms-full.txt
+  s_e32ecb4c2c83cd::t_e6a4f1810052e2 1089,2615,2621-2638
+  s_e32ecb4c2c83cd::t_2c37e1536ecfa8 2639
+wiki/deep-dive/architecture.md
+  s_e32ecb4c2c83cd::t_a49daf3e587bed 192
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "2f455a2a54e68d9d4d2686a587e00ef5fba2207d",
+  "prompts": {},
+  "sessions": {
+    "s_e32ecb4c2c83cd": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "5bf1843e-b57a-4cbb-bd83-478fde1e8377",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
