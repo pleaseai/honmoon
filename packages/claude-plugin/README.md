@@ -516,13 +516,32 @@ automatic.
 What "verbatim" covers, since this is what a deployment ends up depending on: the
 file's own bytes, at the length it carries — 16 is a floor and not a size, a longer
 key is used whole, and nothing is truncated, padded or re-derived. A file *under*
-16 bytes is not adopted; the loader replaces it with a fresh 32-byte key, as it does
-for one that is absent or unreadable. On the way through it restricts the file it
-adopted to `0600`, and where it cannot, it says so rather than going quiet — that is
-the `hook-salt-exposed` row in the table above. None of this depends on the mode: a
-world-readable file is still adopted, and audited for it. These are pinned by tests
-in `crates/honmoon-cli/src/hook.rs` (issue #126), so they are an interface you can
-deploy against rather than loader behaviour that might move.
+16 bytes is not adopted, and neither is one that is absent or unreadable: the loader
+mints a fresh 32-byte key for each of those, or, if it cannot write one, falls back
+to the public constant under "When the salt file is unusable" above. On the way
+through it restricts the file it adopted to `0600`; where that leaves the file still
+readable beyond its owner, it says so rather than going quiet — the
+`hook-salt-exposed` row in the table above, which reaches you only where an audit
+sink is configured. (A `chmod` that fails on a file already at `0600` is deliberately
+silent, because a correction that was not needed is not evidence of exposure.) None
+of this depends on the mode: a world-readable file is still adopted, and audited for
+it. These are pinned by tests in `crates/honmoon-cli/src/hook.rs` (issue #126), so
+they are an interface you can deploy against rather than loader behaviour that might
+move.
+
+**Generate the bytes; do not choose them.** The loader checks length and nothing
+else, so 16 bytes of a memorable phrase are adopted, re-tightened, and reported as a
+healthy `persisted` key — no audit rule looks at key strength. Produce the file the
+way honmoon produces it:
+
+```sh
+head -c 32 /dev/urandom > hook-salt   # then copy to each host's ~/.honmoon/hook-salt
+```
+
+A key small enough to search is worse than a shared one. Someone who sees a
+placeholder and can guess the secret behind it recovers the key offline, and a
+recovered key forges placeholders as well as confirming them — without the bytes ever
+having been handed over.
 
 Treat that as copying a secret, because it is. The machine key is what makes a
 placeholder unforgeable, so everyone who holds it can mint the placeholder a given
@@ -530,8 +549,12 @@ session would produce for a guessed secret and check it against a redacted
 transcript — the confirmation oracle tracked in #125. That is the real cost of
 spreading this key, and it does not depend on how the key got there: it is a
 property of holding the bytes, so a first-class flag would carry it unchanged. Move
-it only over a channel you would use for any other credential, put it in as few
-places as the deployment needs, and rotate it there if it leaks. What is still
+it only over a channel you would use for any other credential, and put it in as few
+places as the deployment needs. Rotating one is not the single-host recipe above:
+deleting one host's `hook-salt` mints a key only that host holds, which breaks the
+parity this section exists to establish, while every host you did not touch carries
+on adopting the leaked bytes. Generate one new key and re-provision it everywhere in
+the same operation, between sessions where you can. What is still
 missing is a *supported input* — a flag or environment variable naming the key —
 rather than arranging for a file to be at each path; issue #126 tracks that for
 `honmoon join` (#37). If none of that is worth it for your deployment, keep

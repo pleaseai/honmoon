@@ -1057,9 +1057,14 @@ fn replaced_file_mode(_path: &Path) -> String {
 ///
 /// That is what `packages/claude-plugin/README.md` tells an operator to use to
 /// get one key onto both hook transports, since placeholder minting is
-/// `HMAC(salt, secret)` over a salt of `HMAC(machine_key, session_id)` on both:
-/// identical bytes at each process's salt path is the whole of what parity takes,
-/// and the bytes coming back out *unchanged* is the part that carries it.
+/// `HMAC(salt, secret)` over a salt of `HMAC(machine_key, salt_context)` on both.
+/// This loader settles one of those two inputs, and identical bytes at each
+/// process's salt path is the whole of what *it* contributes — the bytes coming
+/// back out *unchanged* is the part that carries it. The other input has to agree
+/// as well, and a matching key does not make it: the context is the payload's
+/// `session_id` unless an operator pinned one, so a gateway started with
+/// `--hook-salt-context` and command hooks left unpinned still disagree (see
+/// [`honmoon_core::hook_salt_context`]).
 /// Changing any of it changes a documented deployment, so it is pinned by
 /// `a_salt_at_exactly_the_sixteen_byte_floor_is_adopted_verbatim`,
 /// `a_salt_one_byte_under_the_floor_is_regenerated`,
