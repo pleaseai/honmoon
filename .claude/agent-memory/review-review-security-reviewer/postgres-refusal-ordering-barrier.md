@@ -1,6 +1,6 @@
 ---
 name: postgres-refusal-ordering-barrier
-description: 'The honmoon postgres runtime''s refusal ordering barrier after issue #121 (the relay owns the client write half) — what it covers, its live gaps (per-stall bound, the swallowed COPY-Sync of #128, the per-refusal window of #148, the single coverage snapshot of #153), the #211 inversion of the flush-settling tag list into a positive list, the #218 quiet warning inside the oversized copy (escaped tag, holding_refusal read at write time), the #229 second (client-side) window with its pinned non-recreated write_all, and the settled rules not to undo.'
+description: 'The honmoon postgres runtime''s refusal ordering barrier after issue #121 (the relay owns the client write half) — what it covers, its live gaps (per-stall bound, the swallowed COPY-Sync of #128, the per-refusal window of #148, the single coverage snapshot of #153), the #211 inversion of the flush-settling tag list into a positive list, the #218 quiet warning inside the oversized copy (escaped tag, holding_refusal read at write time), the #229 second (client-side) window with its pinned non-recreated write_all, the #214 `last_tag` field on give_up''s stall warning (Option<u8>, escape_default, unforgeable `none` sentinel), and the settled rules not to undo.'
 metadata:
   type: project
 ---
@@ -205,3 +205,24 @@ Verified once against the #121 shape, so do not re-derive:
   per-copy timer or allocation growth. Do not re-report these; the absence of a
   deadline on the copy remains deliberate (ADR-0007).
 
+
+- **#214 put a third database-controlled byte in a log line: `give_up`'s
+  `last_tag`.** `Relay::last_tag` became `Option<u8>` (`None` until a message is
+  delivered) and the warning renders `escape_default(tag).to_string()`, or the
+  literal `"none"`. Settled once, do not re-derive:
+  `std::ascii::escape_default` on ONE byte emits exactly one of — the byte
+  itself for `0x20..=0x7e` except `\ ' "`, a two-char escape (`\t \r \n \\ \' \"`),
+  or a four-char `\xNN`. So no newline/CR can ever reach the record (no CWE-117),
+  and no output can spell `none` (that needs 4 chars with no backslash, and the
+  only 4-char form starts with one) — the sentinel is unforgeable. The residual
+  is cosmetic only: `0x20` and `0x3d` pass through literally into an unquoted
+  logfmt-ish field (`tracing_subscriber::fmt`, not JSON — see honmoon-cli
+  main.rs), which can empty or confuse a naive key=value split but cannot forge
+  a second field or a second record from one byte.
+  The `u8` -> `Option<u8>` change does not touch fail-closed: the settling gate
+  became `matches!(relay.last_tag, Some(b'1' | ...))`, and both the old `0`
+  sentinel and the new `None` fail that match identically.
+  The escaping now has a regression guard —
+  `a_tag_that_would_split_the_record_is_escaped_into_it` drives a newline tag and
+  asserts the warning stays one line carrying `last_tag=\n` — so a later diff
+  that drops `escape_default` fails a test rather than needing this re-derived.
