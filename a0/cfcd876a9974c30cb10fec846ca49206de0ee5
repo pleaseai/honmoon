@@ -1,0 +1,35 @@
+scripts/check-dashboard-bundle.test.ts
+  s_0c168ba18ed711::t_6ad6a16116293a 69-96,212-242
+  s_0c168ba18ed711::t_e5d3c4b7e0aab8 243
+scripts/check-dashboard-csp.test.ts
+  s_0c168ba18ed711::t_9043c1946ad144 300-302,306-328,345-354
+  s_0c168ba18ed711::t_6ad6a16116293a 329-344,355
+scripts/check-dashboard-csp.ts
+  s_0c168ba18ed711::t_d6c916d91685da 371,373-374,409-412,416-418,427,429-439
+  s_0c168ba18ed711::t_9043c1946ad144 53,392-402,424,479-485
+  s_0c168ba18ed711::t_a5bb0df906f504 413-415
+.claude/agent-memory/review-review-security-reviewer/dashboard-shell-csp.md
+  s_0c168ba18ed711::t_fed823f3f5b0ed 3,143-174
+.github/workflows/ci.yml
+  s_0c168ba18ed711::t_0940f48673237a 179-182
+crates/honmoon-mgmt/src/lib.rs
+  s_0c168ba18ed711::t_cbd11f500a771b 779-781
+scripts/check-dashboard-bundle.ts
+  s_0c168ba18ed711::t_35941653beddb6 40-49
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "a0cfcd876a9974c30cb10fec846ca49206de0ee5",
+  "prompts": {},
+  "sessions": {
+    "s_0c168ba18ed711": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "95fdc41d-58bd-4732-8d6c-4602119f8f68",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
