@@ -1,0 +1,26 @@
+scripts/check-wiki-io-claim.test.ts
+  s_45a769ffbfcb8e::t_e6962b9beb3b1c 9,153-172,182-191
+  s_45a769ffbfcb8e::t_952d3a832072a1 192
+wiki/llms-full.txt
+  s_45a769ffbfcb8e::t_966450dcfa6bcc 435-438
+wiki/onboarding/staff-engineer-guide.md
+  s_45a769ffbfcb8e::t_5c57c2d85a78e1 74-77
+scripts/check-wiki-io-claim.ts
+  s_45a769ffbfcb8e::t_5c57c2d85a78e1 170,267-270,273-282,284
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "383b24d31bdd25a907c483f44912148129fc5f1c",
+  "prompts": {},
+  "sessions": {
+    "s_45a769ffbfcb8e": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d73956ac-5f89-4244-95a3-bb2b2718ce45",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}

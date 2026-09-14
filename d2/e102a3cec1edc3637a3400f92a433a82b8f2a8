@@ -1,0 +1,19 @@
+.claude/agent-memory/review-review-documentation-analyzer/project_wiki_is_a_fourth_claim_site.md
+  s_45a769ffbfcb8e::t_9b443dfbc36eba 1-60
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "d2e102a3cec1edc3637a3400f92a433a82b8f2a8",
+  "prompts": {},
+  "sessions": {
+    "s_45a769ffbfcb8e": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d73956ac-5f89-4244-95a3-bb2b2718ce45",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}

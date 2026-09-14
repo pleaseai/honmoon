@@ -1,0 +1,33 @@
+wiki/deep-dive/architecture.md
+  s_45a769ffbfcb8e::t_b24574882a98c4 190,195,197-198
+  s_45a769ffbfcb8e::t_714dd1050d3b94 74-92,196
+wiki/onboarding/contributor-guide.md
+  s_45a769ffbfcb8e::t_e8fba9de4f3b95 317
+  s_45a769ffbfcb8e::t_b24574882a98c4 320
+wiki/onboarding/staff-engineer-guide.md
+  s_45a769ffbfcb8e::t_b24574882a98c4 164
+  s_45a769ffbfcb8e::t_69f1a666f9bfe2 41
+  s_45a769ffbfcb8e::t_c2484ab9e8688e 15-16,18-23,35-40,42-79,85
+wiki/getting-started/overview.md
+  s_45a769ffbfcb8e::t_09587ecb843a49 116-121
+wiki/deep-dive/policy-engine.md
+  s_45a769ffbfcb8e::t_e8fba9de4f3b95 11-13
+wiki/llms-full.txt
+  s_45a769ffbfcb8e::t_8c012222ce89fa 319,322,376-377,379-384,396-440,446,525,1016-1034,1132,1137-1140,1204-1206,2295-2300
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "c4efefcffc3acfa82ae2f3d281cd489d13f0e633",
+  "prompts": {},
+  "sessions": {
+    "s_45a769ffbfcb8e": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d73956ac-5f89-4244-95a3-bb2b2718ce45",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
