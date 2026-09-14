@@ -1,0 +1,29 @@
+wiki/llms-full.txt
+  s_e32ecb4c2c83cd::t_67970e70d5b4c4 2621-2624
+crates/honmoon-cli/tests/stall_diagnostics.rs
+  s_e32ecb4c2c83cd::t_c7dfa51d5e4205 148-149,182-187,209-212
+  s_e32ecb4c2c83cd::t_67970e70d5b4c4 4-5
+  s_e32ecb4c2c83cd::t_d8a1df0e560913 213
+wiki/getting-started/quick-start.md
+  s_e32ecb4c2c83cd::t_67970e70d5b4c4 164-167
+.please/docs/review/rejected-findings.jsonl
+  s_e32ecb4c2c83cd::t_c89c1fbdfb8cd8 17-18
+crates/honmoon-cli/src/main.rs
+  s_e32ecb4c2c83cd::t_0e629b81227003 40-41,58-59,860
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "5a2007230c2425b140b1efc14a15b93bfd8bc63a",
+  "prompts": {},
+  "sessions": {
+    "s_e32ecb4c2c83cd": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "5bf1843e-b57a-4cbb-bd83-478fde1e8377",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
