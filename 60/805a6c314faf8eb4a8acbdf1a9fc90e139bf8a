@@ -1,0 +1,19 @@
+crates/honmoon-cli/src/hook.rs
+  s_95d195685af58a::t_3ccd85ae8b00da 1075-1085
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "60805a6c314faf8eb4a8acbdf1a9fc90e139bf8a",
+  "prompts": {},
+  "sessions": {
+    "s_95d195685af58a": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "af1def52-0618-4c76-a794-2ad255ac81ef",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
