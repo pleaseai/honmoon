@@ -1,6 +1,6 @@
 ---
 name: audit-sink-residual-gaps
-description: 'What the audit-sink open still accepts after #138/#179/#161 — a loose mode, a foreign owner and a hard link are accepted and *reported* as degraded events (report-don''t-enforce, settled in #161), a symlinked parent is refused (#179), and an untrusted plain-directory component is accepted with no event; check the in-code list matches before re-reporting any of them'
+description: 'What the audit-sink open still accepts after #138/#179/#161/#181 — a loose mode, a foreign owner and a hard link are accepted and *reported* as degraded events (report-don''t-enforce, settled in #161), a symlinked parent is refused (#179, and its trust test now reads macOS extended ACLs too, #181, with Linux''s POSIX.1e-only residual tracked in #215), and an untrusted plain-directory component is accepted with no event; check the in-code list matches before re-reporting any of them'
 metadata:
   type: project
 ---
@@ -11,8 +11,16 @@ reported, or tracked; report one as a new finding only if the prose stops matchi
 
 1. **A symlinked parent directory** — closed by #179 (issue #160): a component-by-component
    `openat` walk refuses a symlink at every step, following one only when the directory
-   holding it is root- or euid-owned with no group/other write bit. That trust test reads
-   `st_mode` only, so a macOS extended ACL is invisible to it — issue #181, open.
+   holding it is root- or euid-owned with no group/other write bit. That trust test read
+   `st_mode` only until #181 (PR #213), which adds a macOS-only `carries_an_extended_acl`
+   (`acl_get_fd_np(fd, ACL_TYPE_EXTENDED)` on the same pinned descriptor the `fstat`
+   read): *any* extended ACL now makes the holder untrusted. Closed on macOS. **Three
+   `cfg` arms, not two** — do not describe this as "the non-macOS arm". Linux returns
+   `false`, sound only where the ACL is POSIX.1e, whose mask shows in `st_mode`'s group
+   bits; an NFSv4 ACL on an NFS mount or OpenZFS `acltype=nfsv4` is invisible to it and
+   is tracked in issue #215. Any other Unix returns `true` — FreeBSD's and illumos's
+   NFSv4 ACLs are *refused*, not invisible, because honmoon will not claim there is no
+   ACL on a host whose ACLs it cannot read.
 2. **The mode of a file that already exists** — still accepted, **now reported**. `mode`
    applies on creation only, so a log created by a pre-#138 honmoon at the umask default
    stays loose; #161 settled report-don't-enforce and `observe_sink` raises an

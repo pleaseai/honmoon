@@ -106,10 +106,22 @@ objection that survives, and a future proposal should be answered on it rather t
 Moving the open to `honmoon-cli` was the alternative, and it buys less than it appears to:
 `AuditLog` would still own the descriptor and still write and flush through it, so the crate
 does file I/O either way and this section would read much as it does now. What would change is
-only which crate calls `open`. `libc` is here for that open and nothing else: the
-directory-relative syscalls `openat`, `fstatat` and `readlinkat`, `geteuid` for the trust rule,
-and the flag, errno, file-type and struct definitions those four take. Every descriptor they
-return is handed straight to `std::fs::File`, which owns and closes it.
+only which crate calls `open`. `libc` is here for that open and nothing else — four syscalls and
+the vocabulary they and the pair below are written in: the directory-relative `openat`, `fstatat`
+and `readlinkat`, `geteuid` for the trust rule, and the flag, errno, file-type, raw-integer and
+struct definitions those calls take. Every descriptor they return is handed straight to
+`std::fs::File`, which owns and closes it.
+
+One pair of calls the same open needs does **not** come through `libc`, and is named here rather
+than left to be discovered in a diff. `audit.rs` declares `acl_get_fd_np` and `acl_free` itself,
+in an `unsafe extern "C"` block gated to `cfg(target_os = "macos")`, because the `libc` line this
+workspace pins carries no `acl_*` on Apple targets. That is a transcription of `sys/acl.h`, not a
+new dependency and not a newly linked library — both symbols live in `libSystem`, which `std`
+already links on that target, and the manifest does not move, so `crate_boundary.rs` has nothing
+to say about it. They are there because the trusted-directory rule is otherwise wrong on macOS:
+an NFSv4-style ACL has no `st_mode` representation, so the mode bits alone under-refuse
+(issue #181). Treat a *further* hand-declared system symbol the way this section treats a second
+open file — a new decision, which this precedent does not grant.
 
 Test code is not held to this: the audit suite builds FIFO fixtures with `libc::mkfifo` and
 spawns threads, and nothing it links reaches a shipped binary.

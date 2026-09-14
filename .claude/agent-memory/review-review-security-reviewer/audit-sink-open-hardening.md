@@ -1,6 +1,6 @@
 ---
 name: audit-sink-open-hardening
-description: 'What AuditLog::open_sink (honmoon-core/src/audit.rs, #138) does and does not defend against — O_NOFOLLOW/O_NONBLOCK/fstat semantics, each verified once, so do not re-derive them — and the hard-link + hostile-pre-creation gap the doc comment omits'
+description: 'What AuditLog::open_sink (honmoon-core/src/audit.rs, #138) does and does not defend against — O_NOFOLLOW/O_NONBLOCK/fstat semantics plus the macOS acl_get_fd_np/ACL_TYPE_EXTENDED/errno facts behind #181, each verified once, so do not re-derive them — and the hard-link + hostile-pre-creation gap the doc comment omits'
 metadata:
   type: project
 ---
@@ -22,6 +22,13 @@ Verified once, do not re-derive:
   it on Linux and macOS (the only exception, Linux mandatory locking, was removed in 5.15).
 - `O_CREAT | O_NOFOLLOW` refuses a *dangling* symlink too (ELOOP, both platforms) —
   it does not create the link's target.
+- macOS extended-ACL probe (#181 / PR #213), measured on Darwin 24 with a C harness:
+  `ACL_TYPE_EXTENDED` is `0x0000_0100` in the SDK's `sys/acl.h` (matches the
+  hand-declared constant in `darwin_acl`); `acl_get_fd_np` on a directory with no ACL
+  returns NULL **with errno `ENOENT`** (not `ENOATTR`), and returns a non-NULL handle
+  as soon as one `chmod +a` ACE exists; it answers identically on an `O_SEARCH`
+  descriptor, so the walk's `O_TRAVERSE` retry does not blind it. `libc` still carries
+  no `acl_*` on Apple targets, which is why the two symbols are declared in-crate.
 - A FIFO is refused either way: no reader → `ENXIO` from the nonblocking open; reader
   attached → open succeeds, fstat rejects it.
 
