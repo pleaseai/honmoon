@@ -1,0 +1,24 @@
+.please/docs/decisions/0007-inline-postgresql-runtime-semantics.md
+  s_293a460dfe7067::t_c2bbb4d0127243 173-196
+crates/honmoon-proxy/src/runtime/postgres.rs
+  s_293a460dfe7067::t_e1a1cdc46924d6 3520-3529,3533
+  s_293a460dfe7067::t_5cc7f4fd1e26dc 133-134,1914-1919
+  s_293a460dfe7067::t_d51a30da57b2b8 1908-1909,1911-1913,1936-1940,1943-1946,1963-1964,1980-1981
+  s_293a460dfe7067::t_09127d8d8abbc4 1164-1170,1186-1188,1920-1935,1965-1979,1983-1985,1987-1988,1990-1991,3447-3453,3456-3458,3530-3532,3534-3559
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "016019af2d926f5ae380067a0d61c958aa6879a7",
+  "prompts": {},
+  "sessions": {
+    "s_293a460dfe7067": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "9c6b5759-b2dc-4f12-8fce-5c6be7fb08ea",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
