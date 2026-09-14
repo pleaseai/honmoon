@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test'
@@ -447,5 +447,104 @@ describe('the module graph beyond the shell tags', () => {
     const { files, problems } = inspectBundles([path])
     expect(problems).toEqual([])
     expect([...files].sort()).toEqual([...emitted].sort())
+  })
+})
+
+// `containedIn` bounds the path a specifier names; what opening that path
+// reaches is bounded by `realPathInside`, and a symlink emitted under the build
+// is where the two differ. Measured before the fix: an out-of-tree file reached
+// through `dist/assets/link.js` was read, parsed and counted in the `N file(s)`
+// pass line with the guard green, and aimed at `/etc/hosts` it printed a parse
+// diagnostic for it (#233, CWE-59 and CWE-22).
+describe('the symlink boundary on what is opened', () => {
+  test('a symlink inside the build pointing outside it is refused, not read', () => {
+    writeFileSync(join(root, 'outside-eval.js'), 'export const run = (s) => eval(s)\n')
+    const path = shell('symlink-out', ENTRY, { 'assets/index-abc.js': 'import "./link.js"\n' })
+    symlinkSync(join(root, 'outside-eval.js'), join(dirname(path), 'assets/link.js'))
+
+    const { files, problems } = inspectBundles([path])
+    // The refusal, and nothing from inside the file — it was never opened.
+    expect(problems).toEqual([
+      {
+        file: expect.stringContaining('assets/link.js'),
+        detail: expect.stringContaining('outside the build directory'),
+      },
+    ])
+    expect(files.some(file => file.endsWith('link.js'))).toBe(false)
+  })
+
+  // The other half of the same rule. A symlink is ordinary in a build tree, and
+  // a guard that refused one pointing at a sibling chunk would break a working
+  // build — the failure this whole pair of scripts is shaped to avoid. The
+  // `eval` is what proves the file behind it was actually read.
+  test('a symlink pointing inside the build is followed and its target read', () => {
+    const path = shell('symlink-in', ENTRY, {
+      'assets/index-abc.js': 'import "./link.js"\n',
+      'assets/real-chunk.js': 'export const run = (s) => eval(s)\n',
+    })
+    const assets = join(dirname(path), 'assets')
+    symlinkSync(join(assets, 'real-chunk.js'), join(assets, 'link.js'))
+
+    const { files, problems } = inspectBundles([path])
+    expect(problems).toEqual([
+      {
+        file: expect.stringContaining('assets/link.js'),
+        detail: expect.stringContaining('call to `eval`'),
+      },
+    ])
+    expect(files.some(file => file.endsWith('link.js'))).toBe(true)
+  })
+
+  // Resolving only the file is the identical mismatch pointing the other way:
+  // the build directory can itself be reached through a symlink, and then no
+  // real file path lies under the unresolved one — every file in the build is
+  // refused and a walk that read nothing reports clean.
+  test('a build directory reached through a symlink still resolves its files', () => {
+    const path = shell('symlink-dir', ENTRY, {
+      'assets/index-abc.js': 'export const run = (s) => eval(s)\n',
+    })
+    const linked = join(root, 'symlink-dir-via-link')
+    symlinkSync(dirname(path), linked)
+
+    expect(checkBundles([join(linked, 'index.html')])).toEqual([
+      {
+        file: expect.stringContaining('assets/index-abc.js'),
+        detail: expect.stringContaining('call to `eval`'),
+      },
+    ])
+  })
+
+  // The reporting stance, on the two ways a path can fail to resolve at all.
+  // Both guards close their gaps by reporting rather than skipping, so a
+  // `realpath` that throws must fail the shell rather than quietly narrow the
+  // set of files the pass line counts.
+  test('a dangling symlink is reported, not skipped', () => {
+    const path = shell('symlink-dangling', ENTRY, {
+      'assets/index-abc.js': 'import "./gone-link.js"\n',
+    })
+    symlinkSync(join(root, 'no-such-target.js'), join(dirname(path), 'assets/gone-link.js'))
+
+    expect(checkBundles([path])).toEqual([
+      {
+        file: expect.stringContaining('assets/gone-link.js'),
+        detail: expect.stringContaining('not found'),
+      },
+    ])
+  })
+
+  test('a symlink cycle is reported rather than throwing out of the walk', () => {
+    const path = shell('symlink-cycle', ENTRY, {
+      'assets/index-abc.js': 'import "./loop-a.js"\n',
+    })
+    const assets = join(dirname(path), 'assets')
+    symlinkSync(join(assets, 'loop-b.js'), join(assets, 'loop-a.js'))
+    symlinkSync(join(assets, 'loop-a.js'), join(assets, 'loop-b.js'))
+
+    expect(checkBundles([path])).toEqual([
+      {
+        file: expect.stringContaining('assets/loop-a.js'),
+        detail: expect.stringContaining('did not resolve'),
+      },
+    ])
   })
 })

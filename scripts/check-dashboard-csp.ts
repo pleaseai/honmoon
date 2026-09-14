@@ -47,11 +47,18 @@
  * is — and following the `import` specifiers in those files from there, since
  * a code-split chunk is script the shell never names (#227).
  *
+ * Both halves of the boundary that walk stays inside live here rather than
+ * there, so neither is hand-rolled twice: {@link containedIn} bounds the path a
+ * specifier spells, {@link realPathInside} bounds the file opening that path
+ * reaches (#233). The scope sentence above still holds for this check — it
+ * reads `index.html` and nothing else, and only the sibling calls the second
+ * half.
+ *
  * Usage:
  *   bun scripts/check-dashboard-csp.ts                 # both built shells
  *   bun scripts/check-dashboard-csp.ts <path…>         # explicit files
  */
-import { readFileSync } from 'node:fs'
+import { readFileSync, realpathSync } from 'node:fs'
 import { dirname, isAbsolute, join, resolve, sep } from 'node:path'
 import process from 'node:process'
 import { fileURLToPath } from 'node:url'
@@ -405,10 +412,78 @@ export function buildDir(shell: string): string {
  * walk in `check-dashboard-bundle.ts` has to make this same assertion about
  * every `import` specifier it follows, and a second hand-rolled prefix is
  * exactly how the root case comes back.
+ *
+ * **It is arithmetic over strings, so what it bounds is a path expression — a
+ * `src` value, an `import` specifier — and not the file that opening that path
+ * would reach.** `readFileSync` follows symlinks, so the two part company the
+ * moment the build emits one. {@link realPathInside} is the half of the
+ * boundary that holds for a read, and it is what has to run before one (#233).
  */
 export function containedIn(dir: string, file: string): boolean {
   const prefix = dir.endsWith(sep) ? dir : dir + sep
   return file === dir || file.startsWith(prefix)
+}
+
+/** The `errno` code a failed filesystem call carries, or the error itself. */
+function errno(error: unknown): string {
+  const code = (error as { code?: unknown } | null)?.code
+  return typeof code === 'string' ? code : String(error)
+}
+
+/**
+ * The path a read of `file` would actually open, when that path is inside `dir`.
+ *
+ * {@link containedIn} bounds the path expression; this bounds the read, and the
+ * gap between the two was measurable. A symlink emitted under the build
+ * directory redirects a read out of it while every string stays inside: with
+ * `dist/assets/link.js` pointing at a file outside the tree and the entry chunk
+ * importing `./link.js`, the bundle guard read that file, counted it in its
+ * `N file(s)` pass line and exited 0; aimed at `/etc/hosts` it printed a parse
+ * diagnostic for it (#233, CWE-59 and CWE-22).
+ *
+ * So both sides go through `realpathSync` and the same predicate decides on the
+ * results. **Both sides**, because resolving only the file is the identical
+ * mismatch pointing the other way: `TMPDIR` on macOS sits under `/var`, itself
+ * a symlink to `/private/var`, so a resolved file compared against an
+ * unresolved build directory matches nothing — every file in the build would be
+ * refused and a walk that read nothing would pass vacuously.
+ *
+ * `dir` is resolved here rather than by the caller so there is no way to hand
+ * this an unresolved one. A walk reads a few dozen files in CI and parses a
+ * bundler chunk out of each, so the extra `realpathSync` per file does not
+ * signify.
+ *
+ * Three outcomes, and every one of them is for the caller to report rather than
+ * skip — the stance both guards take on everything they cannot read. `missing`
+ * is a path with nothing behind it: a chunk the build did not emit, or a
+ * symlink that dangles. `reason` is a path that resolved outside the build, or
+ * did not resolve at all (a symlink cycle, an unreadable parent). Only `path`
+ * is a file the caller may open, and it is the resolved one, so what is read is
+ * the path this checked rather than the chain walked a second time.
+ */
+export function realPathInside(dir: string, file: string):
+  { path: string } | { missing: true } | { reason: string } {
+  let realDir: string
+  try {
+    realDir = realpathSync(dir)
+  }
+  catch (error) {
+    return { reason: `cannot be bounded — the build directory did not resolve (${errno(error)})` }
+  }
+
+  let realFile: string
+  try {
+    realFile = realpathSync(file)
+  }
+  catch (error) {
+    const code = errno(error)
+    return code === 'ENOENT' ? { missing: true } : { reason: `did not resolve (${code})` }
+  }
+
+  if (!containedIn(realDir, realFile)) {
+    return { reason: `resolves to ${realFile}, outside the build directory ${realDir}` }
+  }
+  return { path: realFile }
 }
 
 /** Script the shell loads that no build artifact could be named for, and why. */
@@ -444,6 +519,12 @@ export interface UnresolvedScript {
  * separator. Measured: `src="/assets/..%2f..%2foutside.js"` named a file two
  * levels above `dist/`, same-origin the whole way, with both guards green. So
  * the containment is asserted against the joined path instead.
+ *
+ * That assertion is {@link containedIn}, and it bounds the path a `src` names
+ * rather than the file opening that path would reach. Nothing here opens
+ * anything — this is path arithmetic, which is why it resolves the scripts of a
+ * shell that was never built — so the guard that does open these files asserts
+ * {@link realPathInside} on each one first (#233).
  *
  * A `src` with no file behind it comes back in `unresolved` for the caller to
  * report in its own words, rather than being dropped: a script this cannot

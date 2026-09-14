@@ -69,6 +69,14 @@
  * Silently dropping any of those is the failure the unreadable-file rule above
  * exists to prevent, arriving through the walk.
  *
+ * **A path that stays inside the build is not yet a file inside the build**, so
+ * every file the walk reaches is resolved with {@link realPathInside} before it
+ * is opened. Those specifier rules are arithmetic over strings and
+ * `readFileSync` follows symlinks, so a symlink emitted under `dist/` was read,
+ * parsed and counted in the pass line while every path stayed lexically inside
+ * (#233). One gate rather than two, because a `<script src>` and an `import`
+ * arrive at the same read.
+ *
  * **It is the *static ESM* graph, and the residue is named rather than left to
  * be found.** Not walked and not reported: code a chunk reaches by something
  * that is not an ES module specifier — `new Worker(new URL('./w.js',
@@ -104,6 +112,7 @@ import {
   buildDir,
   containedIn,
   DEFAULT_SHELLS,
+  realPathInside,
   scriptFiles,
   shellPath,
 } from './check-dashboard-csp'
@@ -350,6 +359,9 @@ export function checkBundle(code: string, file: string): Problem[] {
  * a specifier reaches the filesystem by the same route and `..` is spellable in
  * one just as it is in a `src`.
  *
+ * What that bounds is the specifier. What the file it names turns out to be on
+ * disk is bounded where the file is opened, by {@link realPathInside} (#233).
+ *
  * Percent-escapes are deliberately *not* decoded, and both directions were
  * measured rather than reasoned about. A bundler emits the file name it wrote:
  * asked for a chunk whose name carries a space, Vite emitted
@@ -444,14 +456,33 @@ export function inspectBundles(shells: string[]): Inspection {
       }
       seen.add(file)
 
+      // The boundary that holds for a read rather than for a path expression.
+      // `containedIn` bounded the specifier; this bounds what opening it
+      // reaches, and a symlink under the build is where the two differ (#233).
+      const real = realPathInside(dir, file)
+      if ('missing' in real) {
+        problems.push({
+          file,
+          detail: `not found, though ${shell} reaches it — run \`${BUILD_COMMANDS}\` first`,
+        })
+        continue
+      }
+      if ('reason' in real) {
+        problems.push({
+          file,
+          detail: `${real.reason}, so the code it holds went uninspected`,
+        })
+        continue
+      }
+
       let code: string
       try {
-        code = readFileSync(file, 'utf8')
+        code = readFileSync(real.path, 'utf8')
       }
       catch {
         problems.push({
           file,
-          detail: `not found, though ${shell} reaches it — run \`${BUILD_COMMANDS}\` first`,
+          detail: `could not be read, though ${shell} reaches it — run \`${BUILD_COMMANDS}\` first`,
         })
         continue
       }
