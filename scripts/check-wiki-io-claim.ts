@@ -168,7 +168,10 @@ const NAMES_THE_SINK = /audit sink|JSONL sink/i
  * never tears the other.
  */
 function plain(text: string): string {
-  return text.replaceAll('*', '').replace(/\b_+|_+\b/g, '')
+  return text
+    .replaceAll('*', '')
+    .replace(/\b_+/g, '')
+    .replace(/_+\b/g, '')
 }
 
 /** Every problem in one document. `where` only labels the findings. */
@@ -220,8 +223,20 @@ export function wikiDocuments(): string[] {
     .filter(parts => !(parts.length === 1 && UNPUBLISHED_AT_ROOT.has(parts[0]!)))
     .filter(parts => !NOT_SOURCE.some(dir => parts.join('/').startsWith(`${dir}/`)))
     .map(parts => ['wiki', ...parts].join('/'))
-    .sort((a, b) => (a < b ? -1 : a > b ? 1 : 0))
+    .sort(byCodeUnit)
   return [...pages, LLMS, LLMS_FULL]
+}
+
+/**
+ * Order two paths by code unit, which is what a bare `.sort()` would do for
+ * strings — spelled out so the order cannot follow a locale, and so nothing has
+ * to infer the element type to know that.
+ */
+function byCodeUnit(a: string, b: string): number {
+  if (a < b) {
+    return -1
+  }
+  return a > b ? 1 : 0
 }
 
 /**

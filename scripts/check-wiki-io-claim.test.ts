@@ -173,7 +173,7 @@ describe('checkCoverage', () => {
     // returning nothing still yields a readable, retired-wording-free file list.
     const problems = checkCoverage(['wiki/llms.txt', 'wiki/llms-full.txt'], aggregate())
 
-    expect(problems.length).toBe(inlinedPages(aggregate()).length)
+    expect(problems).toHaveLength(inlinedPages(aggregate()).length)
     expect(problems[0]!.detail).toContain('the page scan did not reach')
   })
 })
