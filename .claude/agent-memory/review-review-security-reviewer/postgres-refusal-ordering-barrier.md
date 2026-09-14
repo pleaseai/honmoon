@@ -239,7 +239,10 @@ Verified once against the #121 shape, so do not re-derive:
   `sync.covers(refusal.sync_points) && flush.covers(refusal.flushes)` — same
   sides, same tags. The settling gate in `relay_backend_messages` is
   `relay.flush.received() < owed`, i.e. delivered-only and deliberately **not**
-  `covers()`; folding the write-off in there would settle flushes early.
+  `covers()`; folding the write-off in there would stop the probe once a stall had
+  written the flush off, so its own late output would never settle. Pinned by
+  `a_written_off_flush_is_still_settled_by_its_own_late_output` — added in #252
+  because nothing else in the suite could tell the two expressions apart.
   `flush_drained` -> `flush.receive_one(owed)` (clamped `+= 1`), `delivered`'s
   `drained.max(covered)` -> `flush.receive_through(covered)`, the `Z` arm ->
   `sync.receive_one(forwarded.sync_points)`, `give_up` -> `sync.abandon` /

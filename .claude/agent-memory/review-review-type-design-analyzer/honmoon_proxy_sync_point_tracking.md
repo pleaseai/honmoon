@@ -74,10 +74,21 @@ surface and touch them directly.
 In #210 the nested-submodule fix was taken for the relay's barrier counters
 alone. `Progress` lives in `mod progress` with private fields, so the crossing
 that motivated it — one side's received count compared against the other side's
-give-up floor — no longer compiles from anywhere in the file. **Do not re-raise
-that one.** What it does not settle is which side a refusal's tag reaches:
+give-up floor — has no spelling in the **shipped binary**: naming a field fails
+outside the module, and reading a side's write-off at all is the `#[cfg(test)]`
+`abandoned()`. **Do not re-raise it against production code.**
+
+Be exact about the boundary, because the first draft of this note was not and a
+review caught it. Under `cfg(test)` the crossing does compile —
+`self.sync.received().max(self.flush.abandoned())` — since the assertions need
+both numbers separately, and `received()` is a plain accessor called from
+production in two places besides. An earlier version of this note, of the
+`mod progress` doc and of ADR-0007 all claimed the numbers were reachable only
+through `covers()`; that was false and was corrected. Do not restore it.
+
+The other thing #210 does not settle is which side a refusal's tag reaches:
 `Refusal::sync_points` and `Refusal::flushes` are both `u64`, so
-`self.sync.covers(refusal.flushes)` still compiles. That was weighed and left,
+`self.sync.covers(refusal.flushes)` compiles anywhere. That was weighed and left,
 on the grounds that the crossing would name both halves of one struct on one line
 rather than reading as the arithmetic around it — raise it only with an argument
 about that, not as the finding above.
