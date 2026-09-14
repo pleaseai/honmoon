@@ -1,0 +1,39 @@
+.claude/agent-memory/review-review-comment-analyzer/pr217_load_policy_consumer_claim.md
+  s_92c81a3f5dfacf::t_21ae637a6469c5 1-8,12-33
+  s_92c81a3f5dfacf::t_2368c1adeb62f5 9-11
+.claude/agent-memory/review-review-pr-test-analyzer/policy_guard_multidoc_scalar_escapes.md
+  s_92c81a3f5dfacf::t_22e137fdc33f31 1-2,4-7,16,24,31,40,45-47
+  s_92c81a3f5dfacf::t_767b1b07627c55 3,8-15,17-23,25-30,32-39,41-44,48-51
+.claude/agent-memory/review-review-silent-failure-hunter/project_pr217_policy_scalar_leak.md
+  s_92c81a3f5dfacf::t_767b1b07627c55 3,8-14,18-21,23-28,30-47,49-50
+  s_92c81a3f5dfacf::t_e62ca547b6c2bf 1-2,4-7,15-17,22,29,48
+.claude/agent-memory/review-review-security-reviewer/policy-load-error-echoes-file.md
+  s_92c81a3f5dfacf::t_9075daa065f4a9 32-40
+  s_92c81a3f5dfacf::t_28ee4c7ea6b30d 3,22-31,41-50
+.claude/agent-memory/review-review-type-design-analyzer/honmoon_cli_load_policy_tuple.md
+  s_92c81a3f5dfacf::t_2368c1adeb62f5 3,12-14
+  s_92c81a3f5dfacf::t_f04998fb485f4a 1-2,4-11,15-31
+.claude/agent-memory/review-review-code-reviewer/project_policy_read_guard_202.md
+  s_92c81a3f5dfacf::t_2368c1adeb62f5 10-15,17-23,34-46
+  s_92c81a3f5dfacf::t_ad4f82b770894f 1-2,4-9,16,24-33
+  s_92c81a3f5dfacf::t_cc7ec4145fb463 3
+.claude/agent-memory/review-review-security-reviewer/policy-yaml-trust-boundary.md
+  s_92c81a3f5dfacf::t_9075daa065f4a9 10
+  s_92c81a3f5dfacf::t_2cc7fd826d5c02 14
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "957bb841c095cb93a1eacd54497600a22c7400ef",
+  "prompts": {},
+  "sessions": {
+    "s_92c81a3f5dfacf": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "41058c74-753c-4f0b-84d6-51857d7b8e31",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
