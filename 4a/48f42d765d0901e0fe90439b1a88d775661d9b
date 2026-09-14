@@ -1,0 +1,19 @@
+packages/claude-plugin/README.md
+  s_30e248d713e6d3::t_b42d9d888e77ca 524-528,538-540,543-544
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "4a48f42d765d0901e0fe90439b1a88d775661d9b",
+  "prompts": {},
+  "sessions": {
+    "s_30e248d713e6d3": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "53756eec-9208-48be-a863-8cc3afa3a03b",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
