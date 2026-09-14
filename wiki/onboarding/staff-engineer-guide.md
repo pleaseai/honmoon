@@ -71,9 +71,10 @@ audit path is safe:
   blindness [#181](https://github.com/pleaseai/honmoon/issues/181) closed on macOS, still open on
   Linux as [#215](https://github.com/pleaseai/honmoon/issues/215).
 - <span class="status-caveat">Unix only</span> — the `cfg(not(unix))` arm has neither `O_NOFOLLOW`
-  nor `openat`, so the regular-file check is all that applies there, and none of the
-  `audit-sink-*` degradation events fire
-  ([audit.rs:899-909](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/audit.rs#L899-L909)). No shipped artifact takes
+  nor `openat`, so the regular-file check is all that applies there
+  ([audit.rs:899-909](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/audit.rs#L899-L909)), and none of the
+  `audit-sink-*` degradation events fire, because there is no POSIX mode or uid to read them off
+  ([audit.rs:741-746](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/audit.rs#L741-L746)). No shipped artifact takes
   that arm — the release matrix is Linux and macOS — but the crate compiles for it.
 
 None of that moves the decision about where the open lives; it is what a review of a *change* to

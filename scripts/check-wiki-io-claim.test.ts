@@ -6,6 +6,7 @@ import {
   checkDocument,
   checkRepository,
   inlinedPages,
+  plain,
   REPO_ROOT,
   RETIRED,
   wikiDocuments,
@@ -51,15 +52,6 @@ describe('checkDocument', () => {
     // The other emphasis syntax: `_no_` is emphasis, `open_sink` is not.
     expect(details('`honmoon-core` is transport-agnostic and has _no_ networking dependency.'))
       .toEqual([expect.stringContaining('without naming the one file')])
-  })
-
-  test('an underscore inside a word is an identifier and survives', () => {
-    // `plain()` must not tear `open_sink` apart while stripping `_no_`; the sink
-    // clause of the rule is written with exactly such identifiers.
-    expect(details(
-      'A descriptor `open_sink` did not produce. The audit sink is transport-agnostic '
-      + 'with no sockets.',
-    )).toEqual([])
   })
 
   test.each(['`tokio`', 'async runtime', 'sockets', 'network client', 'networking dependency'])(
@@ -158,6 +150,26 @@ describe('RETIRED', () => {
   })
 })
 
+describe('plain', () => {
+  // Asserted on `plain()` directly rather than through `checkDocument`. No rule's
+  // verdict turns on an identifier today — every retired phrasing and every
+  // capability-absence phrase is written without underscores — so routed through
+  // the rules, stripping every `_` and stripping only the emphasis ones are
+  // indistinguishable. The contract is still that the rules read the page's
+  // prose, not a mangling of it, and this is where that is pinned.
+  test('strips emphasis underscores at a word edge', () => {
+    expect(plain('has _no_ networking')).toBe('has no networking')
+    expect(plain('has __no__ networking')).toBe('has no networking')
+    expect(plain('has **no** networking')).toBe('has no networking')
+  })
+
+  test('leaves an underscore inside a word alone', () => {
+    expect(plain('a descriptor `open_sink` did not produce')).toContain('open_sink')
+    expect(plain('with_file is the only path')).toContain('with_file')
+    expect(plain('foo__bar')).toBe('foo__bar')
+  })
+})
+
 describe('checkCoverage', () => {
   const aggregate = (): string => readFileSync(join(REPO_ROOT, 'wiki/llms-full.txt'), 'utf8')
 
@@ -165,6 +177,17 @@ describe('checkCoverage', () => {
     expect(checkCoverage(wikiDocuments(), aggregate())).toEqual([])
     // A bundle that named nothing would satisfy the line above vacuously.
     expect(inlinedPages(aggregate()).length).toBeGreaterThan(10)
+  })
+
+  test('a bundle that names no page is reported, not passed', () => {
+    // The cross-check's own vacuous pass: with nothing to compare against it has
+    // no finding to make, and would go quiet in exactly the silence it exists to
+    // break. An emptied `llms-full.txt`, or a generator that stopped writing
+    // `<doc path="…">`, gets there.
+    const problems = checkCoverage(wikiDocuments(), '# Honmoon — Full Documentation\n')
+
+    expect(problems).toHaveLength(1)
+    expect(problems[0]!.detail).toContain('names no inlined page')
   })
 
   test('a scan that stopped finding pages is reported, not passed', () => {

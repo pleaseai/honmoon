@@ -167,7 +167,7 @@ const NAMES_THE_SINK = /audit sink|JSONL sink/i
  * (`open_sink`, `with_file`) and stays, so `\bno\b` still finds the one and
  * never tears the other.
  */
-function plain(text: string): string {
+export function plain(text: string): string {
   return text
     .replaceAll('*', '')
     .replace(/\b_+/g, '')
@@ -264,10 +264,24 @@ export function inlinedPages(aggregate: string): string[] {
  * Cross-checking against the bundle's own `<doc>` list is what makes that loud
  * instead: a page the generator bundles but the scan did not reach is reported.
  * It needs no floor number to rot, and it moves on its own when a page is added.
+ *
+ * That list is the second thing that can go empty, and an empty one would
+ * disable this rule in exactly the silence it exists to break — so it is
+ * reported rather than trusted.
  */
 export function checkCoverage(documents: string[], aggregate: string): Problem[] {
+  const bundled = inlinedPages(aggregate)
+  if (bundled.length === 0) {
+    return [{
+      where: LLMS_FULL,
+      detail: 'names no inlined page, so the cross-check below has nothing to compare the scan '
+        + 'against — regenerate it with `cd wiki && bun .vitepress/gen-llms-full.mjs`, or update '
+        + '`inlinedPages()` if the generator no longer writes `<doc path="…">`',
+    }]
+  }
+
   const scanned = new Set(documents)
-  return inlinedPages(aggregate)
+  return bundled
     .filter(page => !scanned.has(page))
     .map(page => ({
       where: LLMS_FULL,
