@@ -948,19 +948,18 @@ where
         // finished.
         //
         // The list names those messages and everything else waits, which is the
-        // point rather than a stylistic choice (#211). Written the other way
-        // round — as the messages that *cannot* end a batch — the default for a
-        // tag nobody enumerated is "settle", and three tags reached that default
-        // in turn: `NoticeResponse` and `RowDescription`, both caught in review
-        // on #147 before the list shipped, and then `NoData`, which shipped —
-        // named in the rationale for `ParameterDescription`/`RowDescription` and
-        // left out of the check itself (#211). This way round, a message no one
-        // enumerated — one a later
-        // protocol version adds, or a byte from an upstream that has stopped
-        // speaking the protocol — costs a stall window instead of releasing a
-        // refusal into the middle of a batch. So the list does not have to be
-        // exhaustive to be safe: being short of a member is latency, where being
-        // short of an exclusion was ordering.
+        // point rather than a stylistic choice. Written the other way round — as
+        // the messages that *cannot* end a batch — the default for a tag nobody
+        // enumerated is "settle", and three tags reached that default in turn:
+        // `NoticeResponse` and `RowDescription`, both caught in review on #147
+        // before the list shipped, and then `NoData`, which shipped — named in
+        // the rationale for `ParameterDescription`/`RowDescription` and left out
+        // of the check itself (#211). This way round, a message no one
+        // enumerated — one a later protocol version adds, or a byte from an
+        // upstream that has stopped speaking the protocol — costs a stall window
+        // instead of releasing a refusal into the middle of a batch. So the list
+        // does not have to be exhaustive to be safe: being short of a member is
+        // latency, where being short of an exclusion was ordering.
         //
         // Each member ends an operation the client asked for, so a `Flush` sent
         // straight after that frontend message has nothing further to push:
@@ -972,17 +971,17 @@ where
         // - `E` `ErrorResponse`: the backend discards frames until `Sync` after
         //   it, so nothing more is coming for this batch either way.
         //
-        // Two messages that really can be terminal are deliberately left out. A
-        // `Describe` of a prepared statement answers with `t`
-        // `ParameterDescription` and then `T` `RowDescription` or `n` `NoData`,
-        // and a `Describe` of a portal with the second of those alone — so those
-        // two do end *such* a batch —
-        // but they sit in the same position inside a `Bind`/`Describe`/`Execute`
-        // batch, where the rows or the `CommandComplete` are still to come, and a
-        // backend that has planned the statement and not yet produced anything
-        // pauses exactly there. The ambiguity is resolved toward waiting, as it
-        // is everywhere else here: a bare `Describe` costs one stall window, or
-        // none at all when a `Sync` follows and answers for it (ADR-0007).
+        // Two messages that really can be terminal are deliberately left out.
+        // `T` `RowDescription` and `n` `NoData` are how a `Describe` ends: of a
+        // prepared statement, after a `t` `ParameterDescription`; of a portal, on
+        // their own. So a bare `Describe` plus a `Flush` does end on one of them
+        // — but both sit in the same position inside a `Bind`/`Describe`/
+        // `Execute` batch, where the rows or the `CommandComplete` are still to
+        // come, and a backend that has planned the statement and not yet produced
+        // anything pauses exactly there. The ambiguity is resolved toward
+        // waiting, as it is everywhere else here: that bare `Describe` costs one
+        // stall window, or none at all when a `Sync` follows and answers for it
+        // (ADR-0007).
         //
         // `Z` `ReadyForQuery` is absent for a different reason: it cannot reach
         // this check, because [`Relay::delivered`] resets `fresh` on it, and it
