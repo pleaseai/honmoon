@@ -54,8 +54,18 @@ export const WORKFLOW_PATH = '.github/workflows/release.yml'
 /** The job in `release.yml` that owns the upload and the publish. */
 export const RELEASE_JOB = 'release'
 
-/** What the publish step's `run:` must contain for this check to find it. */
-export const PUBLISH_MARKER = '--draft=false'
+/**
+ * What the publish step's `run:` must contain for this check to find it — both
+ * of them, in the same step.
+ *
+ * Two markers rather than one because `--draft=false` alone is a string a
+ * diagnostic `echo` can hold, and this file's own steps are written with long
+ * `#` commentary around the command. A step that merely *mentions* publishing
+ * would then be mistaken for the step that does it, which moves `publishAt` and
+ * makes this checker report on the wrong line — or, if the decoy sits last and
+ * the real step is gone, report nothing at all.
+ */
+export const PUBLISH_MARKERS = ['gh release edit', '--draft=false']
 
 /** What the upload step's `run:` must contain for this check to find it. */
 export const UPLOAD_MARKER = 'gh release upload'
@@ -113,6 +123,27 @@ export function checkConfig(config: unknown): Problem[] {
   return problems
 }
 
+/**
+ * One `run:` script with its whole-line `#` comments removed.
+ *
+ * The markers have to be matched against what the shell will execute. These
+ * workflows carry paragraphs of commentary inside `run:` blocks — the publish
+ * step's own comment discusses the command it guards — so matching the raw text
+ * would let prose about a command stand in for the command.
+ */
+function commands(run: string): string {
+  return run
+    .split('\n')
+    .filter(line => !/^\s*#/.test(line))
+    .join('\n')
+}
+
+/** Whether one step runs a command carrying every one of `markers`. */
+function runsAll(run: string, markers: string[]): boolean {
+  const script = commands(run)
+  return markers.every(marker => script.includes(marker))
+}
+
 /** The `run:` scripts of one job's steps, in order. */
 function stepRuns(workflow: unknown, job: string): string[] | undefined {
   if (!isRecord(workflow) || !isRecord(workflow.jobs)) {
@@ -134,17 +165,17 @@ export function checkWorkflow(workflow: unknown): Problem[] {
     }]
   }
 
-  const publishAt = runs.findIndex(run => run.includes(PUBLISH_MARKER))
+  const publishAt = runs.findIndex(run => runsAll(run, PUBLISH_MARKERS))
   if (publishAt === -1) {
     return [{
       where: WORKFLOW_PATH,
-      detail: `no step in \`${RELEASE_JOB}\` runs \`${PUBLISH_MARKER}\` — nothing publishes the draft, `
-        + 'so a release would never become visible (#230)',
+      detail: `no step in \`${RELEASE_JOB}\` runs \`${PUBLISH_MARKERS.join('… ')}\` — nothing publishes `
+        + 'the draft, so a release would never become visible (#230)',
     }]
   }
 
   const problems: Problem[] = []
-  const uploadAt = runs.findIndex(run => run.includes(UPLOAD_MARKER))
+  const uploadAt = runs.findIndex(run => runsAll(run, [UPLOAD_MARKER]))
   if (uploadAt === -1) {
     problems.push({
       where: WORKFLOW_PATH,

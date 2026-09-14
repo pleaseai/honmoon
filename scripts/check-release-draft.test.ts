@@ -3,7 +3,7 @@ import {
   checkConfig,
   checkRepository,
   checkWorkflow,
-  PUBLISH_MARKER,
+  PUBLISH_MARKERS,
   UPLOAD_MARKER,
 } from './check-release-draft'
 
@@ -26,7 +26,7 @@ const WORKFLOW = {
         { uses: 'actions/checkout@sha' },
         { name: 'Combine checksums', run: 'shasum -a 256 -c SHA256SUMS' },
         { name: 'Upload binaries', run: `${UPLOAD_MARKER} "$TAG" --clobber artifacts/*.tar.gz` },
-        { name: 'Publish the Release', run: `gh release edit "$TAG" ${PUBLISH_MARKER}` },
+        { name: 'Publish the Release', run: PUBLISH_MARKERS.join(' "$TAG" ') },
       ],
     },
   },
@@ -82,7 +82,7 @@ describe('checkWorkflow', () => {
     const noPublish = structuredClone(WORKFLOW)
     noPublish.jobs.release.steps = WORKFLOW.jobs.release.steps.slice(0, -1)
     expect(details(checkWorkflow(noPublish))).toEqual([
-      expect.stringContaining(`no step in \`release\` runs \`${PUBLISH_MARKER}\``),
+      expect.stringContaining('no step in `release` runs'),
     ])
   })
 
@@ -109,6 +109,31 @@ describe('checkWorkflow', () => {
   test('a workflow with no release job is reported rather than passing vacuously', () => {
     expect(details(checkWorkflow({ jobs: { build: {} } }))).toEqual([
       expect.stringContaining('no `release` job with a `steps` list'),
+    ])
+  })
+
+  // The publish step is located by what a step *runs*. These two pin that: a
+  // step that only mentions publishing must not be mistaken for the one that
+  // does it, in either direction — standing in for the real step (which moves
+  // every reported index) or standing in for a real step that is gone.
+  test('an earlier step that merely echoes the flag is not mistaken for the publish', () => {
+    const decoyed = structuredClone(WORKFLOW)
+    decoyed.jobs.release.steps.splice(1, 0, {
+      name: 'Announce',
+      run: 'echo "the last step will pass --draft=false"',
+    })
+    expect(checkWorkflow(decoyed)).toEqual([])
+  })
+
+  test('a commented-out publish does not satisfy the check', () => {
+    const commented = structuredClone(WORKFLOW)
+    const steps = commented.jobs.release.steps
+    steps[steps.length - 1] = {
+      name: 'Publish the Release',
+      run: `# TODO: restore ${PUBLISH_MARKERS.join(' "$TAG" ')}\necho skipped`,
+    }
+    expect(details(checkWorkflow(commented))).toEqual([
+      expect.stringContaining('nothing publishes'),
     ])
   })
 })
