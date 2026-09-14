@@ -624,3 +624,189 @@ fn no_command_quotes(fixture: &str, name: &str, contents: &str) {
         );
     }
 }
+
+/// #220: a mapping is a policy's *shape*, which is not the same as being one.
+///
+/// Every `Policy` field carries `#[serde(default)]` and the struct has no
+/// `deny_unknown_fields`, so any mapping deserialized into a policy with every
+/// field at its default. These three files are the ones the issue measured, and
+/// all three exited 0 with `policy is valid (0 rules, 0 endpoints)` — the
+/// opposite failure to #202's, and the worse one: #202 said too much about a
+/// file it refused, this said nothing at all about a file it took. Under
+/// `gateway --config` the text then reached `AppState.policy_yaml` and was
+/// served at `GET /api/policy`.
+///
+/// Run over all three commands for the reason `no_command_quotes` is: the file a
+/// mistyped path resolves to is the same file whichever flag named it, and the
+/// rule lives in the read they share.
+///
+/// The no-quoting claim rides along rather than being assumed. A refusal that
+/// named the offending keys would be a new disclosure on the same files these
+/// fixtures stand in for — the key names of a secrets file are not its values,
+/// but `AWS_SECRET_ACCESS_KEY` in a CI log is still a fact about that host.
+#[test]
+fn no_command_accepts_a_mapping_that_declares_no_policy_field() {
+    for (fixture, name, contents) in [
+        (
+            "a Kubernetes Secret",
+            "secret.yaml",
+            NOT_A_POLICY_K8S_SECRET,
+        ),
+        (
+            "a colon-style secrets file",
+            "creds.yaml",
+            NOT_A_POLICY_DOTENV,
+        ),
+        (
+            "a service-account JSON key",
+            "sa-key.json",
+            NOT_A_POLICY_SERVICE_ACCOUNT,
+        ),
+    ] {
+        no_command_takes_it(fixture, name, contents);
+    }
+}
+
+/// A Kubernetes `Secret`, which is what a `--config` pointed one directory over
+/// in a deploy repository lands on.
+///
+/// Not a real credential: the `data` value is base64 for
+/// `throwaway-not-a-real-value`. It has to be base64 for the file to read as a
+/// `Secret` at all, and being decodable is the point — a leaked one is readable.
+const NOT_A_POLICY_K8S_SECRET: &str = "\
+apiVersion: v1
+kind: Secret
+metadata:
+  name: honmoon-db-credentials
+  namespace: production
+type: Opaque
+data:
+  password: dGhyb3dhd2F5LW5vdC1hLXJlYWwtdmFsdWU=
+";
+
+/// The shape a `.env` takes when it is spelled with colons — and the one that
+/// makes the old behaviour easiest to hit, because it is one mapping of two
+/// keys and nothing about it is malformed.
+const NOT_A_POLICY_DOTENV: &str = "\
+DB_PASSWORD: throwaway-not-a-real-value
+AWS_SECRET_ACCESS_KEY: throwaway-also-not-real
+";
+
+/// JSON is valid YAML, so a service-account key is a mapping like any other.
+///
+/// The `private_key` is a fixture, not a key: a PEM envelope around a line of
+/// text. The envelope is kept because it is what a reader of a leaked log
+/// recognises.
+const NOT_A_POLICY_SERVICE_ACCOUNT: &str = r#"{
+  "type": "service_account",
+  "project_id": "throwaway-not-a-real-project",
+  "private_key_id": "0000000000000000000000000000000000000000",
+  "private_key": "-----BEGIN PRIVATE KEY-----\nnot-a-key-just-a-fixture\n-----END PRIVATE KEY-----\n",
+  "client_email": "throwaway@not-a-real-project.iam.gserviceaccount.com"
+}
+"#;
+
+/// The body of the test above, run once per fixture — the counterpart of
+/// `no_command_quotes`, asserting the verdict it could not.
+fn no_command_takes_it(fixture: &str, name: &str, contents: &str) {
+    let home = TempHome::new(&format!("no-policy-field-{name}"));
+    let mistyped = home.write_policy(name, contents);
+    let path = mistyped.to_str().unwrap();
+
+    let commands = vec![
+        ("policy validate", vec!["policy", "validate", path]),
+        ("run --policy", vec!["run", "--policy", path, "--", "true"]),
+        // Gated for the reason every other gateway control in this file is:
+        // `gateway` mints a management token before it reads the policy, and
+        // cannot on a non-Unix host, so it never reaches the read there.
+        #[cfg(unix)]
+        ("gateway --config", vec!["gateway", "--config", path]),
+    ];
+
+    for (label, args) in commands {
+        let output = run(&home, &args);
+        assert!(
+            !output.status.success(),
+            "`{label}` must refuse {fixture}: it is a mapping, but it declares no \
+             policy field, so accepting it reports a credential file as a valid \
+             0-rule policy"
+        );
+        let printed = format!("{}{}", stdout(&output), stderr(&output));
+        assert!(
+            printed.contains("none of its keys is a policy field"),
+            "`{label}` must say what is actually wrong with {fixture}; got: {printed}"
+        );
+        // Not a repeat of `no_command_quotes`: that test's fixtures are refused
+        // by the *shape* guard, and these reach a different refusal, so the
+        // absence has to be measured again on this path.
+        for line in contents.lines() {
+            assert!(
+                !printed.contains(line.trim()),
+                "`{label}` put the file's contents in its error ({fixture}) — \
+                 the line {line:?} is in: {printed}"
+            );
+        }
+    }
+}
+
+/// The property that made "require a recognised key" the chosen option rather
+/// than `#[serde(deny_unknown_fields)]`, so it is the one most worth pinning.
+///
+/// A policy written for a newer honmoon carries fields this build has never
+/// heard of. It loaded before and it has to go on loading: an operator rolling
+/// a fleet back one version must not have the old binary refuse the file the new
+/// one wrote. One recognised key is the whole admission test, and what sits
+/// beside it is not this check's business.
+///
+/// Asserted through the gateway as well as `validate`, because accepting a
+/// policy the gateway then refuses is the drift that matters most here — the
+/// unbindable address turns "it got past the loader" into an immediate exit.
+#[test]
+fn a_policy_carrying_an_unknown_field_still_loads() {
+    let home = TempHome::new("forward-compat");
+    let policy = home.write_policy(
+        "from-the-future.yaml",
+        r#"
+version: 2
+egress:
+  default: deny
+telemetry:
+  exporter: otlp
+  endpoint: https://collector.internal:4317
+"#,
+    );
+
+    let output = run(&home, &["policy", "validate", policy.to_str().unwrap()]);
+    assert!(
+        output.status.success(),
+        "an unknown field beside a recognised one must still load — that is the \
+         forward-compatibility `deny_unknown_fields` would have broken; got: {}",
+        stderr(&output)
+    );
+
+    #[cfg(unix)]
+    {
+        let gateway_home = TempHome::new("forward-compat-gateway");
+        let gateway_policy = gateway_home.write_policy(
+            "from-the-future.yaml",
+            "version: 2\negress:\n  default: deny\ntelemetry:\n  exporter: otlp\n",
+        );
+        let started = run(
+            &gateway_home,
+            &[
+                "gateway",
+                "--config",
+                gateway_policy.to_str().unwrap(),
+                "--addr",
+                UNBINDABLE_ADDR,
+            ],
+        );
+        let stderr = stderr(&started);
+        assert!(
+            stderr.contains("binding proxy"),
+            "the gateway must have got past the loader and failed at the bind — \
+             anything about a policy field here means the read refused a policy \
+             `validate` had just accepted; got: {stderr}"
+        );
+    }
+}
