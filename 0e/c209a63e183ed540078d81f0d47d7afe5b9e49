@@ -1,0 +1,21 @@
+wiki/getting-started/policy-authoring.md
+  s_05641692ca4795::t_c2e87e4bb729a6 454
+wiki/llms-full.txt
+  s_05641692ca4795::t_f4a22190841ab0 3146
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "0ec209a63e183ed540078d81f0d47d7afe5b9e49",
+  "prompts": {},
+  "sessions": {
+    "s_05641692ca4795": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "afbc8675-12ac-47e1-8dd0-7a724d07ddb0",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
