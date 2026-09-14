@@ -1287,8 +1287,8 @@ fn carries_an_extended_acl(dir: &std::fs::File) -> bool {
 /// ACL rather than bounding it, and this arm answers `false` for them — the #181
 /// blindness, on a filesystem instead of a platform. Not closed here because reading
 /// one means a second mechanism (`getxattr` of `system.nfs4_acl`) on a filesystem
-/// neither CI job mounts, which would ship untested. Tracked as its own issue rather
-/// than left to be rediscovered from this sentence.
+/// neither CI job mounts, which would ship untested. Tracked in issue #215 rather than
+/// left to be rediscovered from this sentence.
 #[cfg(target_os = "linux")]
 fn carries_an_extended_acl(_dir: &std::fs::File) -> bool {
     false
