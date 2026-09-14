@@ -45,29 +45,54 @@
  * skip it" — would trade a false positive nobody has hit for a missed `eval`,
  * which is the wrong direction for a guard.
  *
- * The files it reads are the ones {@link scriptFiles} names from the shell's
- * own `<script src>` tags — the same set `check-dashboard-csp.ts` judges, so
- * the two guards cannot disagree about what "the build" is. A `dist/assets`
- * glob would have been a second notion of it.
+ * The files it reads *start* at the ones {@link scriptFiles} names from the
+ * shell's own `<script src>` tags — the same set `check-dashboard-csp.ts`
+ * judges, so the two guards cannot disagree about what "the build" is. A
+ * `dist/assets` glob would have been a second notion of it.
  *
- * **That set is the shell's tags, not the reachable module graph**, and the two
- * are the same only while the build emits one chunk, which is what it does
- * today. The first lazy route or `manualChunks` entry emits a chunk the entry
- * module imports and the shell references only as `<link rel="modulepreload">`,
- * and nothing here would read it — while the pass line below still printed a
- * green count. Said here rather than left to be discovered, because a glob is
- * the *wider* set and choosing the tag list over it trades that reach for
- * agreement between the two guards. Closing it means following the emitted
- * `import` specifiers; tracked separately.
+ * **From there it follows the emitted module graph** (#227). The tags alone are
+ * what the browser runs only while the build emits one chunk, which is what it
+ * does today; the first lazy route or `manualChunks` entry emits a chunk the
+ * entry module imports and the shell references only as
+ * `<link rel="modulepreload">`, and reading the tags alone would leave that
+ * chunk unparsed while the pass line below still printed a green count. The
+ * graph is walked rather than globbed for the reason the tag list was chosen
+ * over a glob to begin with: it stays one notion of the build, derived from the
+ * same shells.
+ *
+ * **A specifier this cannot follow is a finding, not a skip**, which is what
+ * keeps that set closed. Followed: a string literal on an `import`, on an
+ * `export … from`, or on an `import(…)`, naming a relative path that stays
+ * inside the shell's own directory. Reported instead: a specifier that is not a
+ * string literal (`import(route)`), one that is not a relative path, one that
+ * resolves outside the build, and one naming a file the build did not emit.
+ * Silently dropping any of those is the failure the unreadable-file rule above
+ * exists to prevent, arriving through the walk.
+ *
+ * **It is the *static* graph.** Code a chunk reaches by something that is not
+ * an `import` specifier — `new Worker(new URL('./w.js', import.meta.url))`, a
+ * `<script>` element appended at runtime — is not in it and is not reported,
+ * for the same reason the alias and computed-name cases above are not: this
+ * guards a first-party build against a dependency that starts calling `eval`,
+ * not a bundle written to evade the guard. Nothing in this repository emits
+ * either shape today.
  *
  * Usage:
  *   bun scripts/check-dashboard-bundle.ts              # both built shells
  *   bun scripts/check-dashboard-bundle.ts <path…>      # explicit shells
  */
 import { readFileSync } from 'node:fs'
+import { dirname, resolve } from 'node:path'
 import process from 'node:process'
 import ts from 'typescript'
-import { BUILD_COMMANDS, DEFAULT_SHELLS, scriptFiles, shellPath } from './check-dashboard-csp'
+import {
+  BUILD_COMMANDS,
+  buildDir,
+  containedIn,
+  DEFAULT_SHELLS,
+  scriptFiles,
+  shellPath,
+} from './check-dashboard-csp'
 
 /** One thing wrong with one file. */
 export interface Problem {
@@ -156,6 +181,32 @@ function refusal(node: ts.Node): string | null {
   return null
 }
 
+/**
+ * The module specifier `node` imports through, if `node` imports at all.
+ *
+ * The three forms a bundler emits, and `null` for anything else. A dynamic
+ * import is modelled as a call whose callee is the `import` *keyword* rather
+ * than an identifier, so it is not a shape {@link globalBinding} could reach.
+ *
+ * `import()` written with no argument names nothing, and comes back as the call
+ * itself so the caller reports it — a node that is not a string literal — for
+ * the same reason an unreadable file fails rather than passing: an import this
+ * cannot name is code that would go unread.
+ */
+function importSpecifier(node: ts.Node): ts.Node | null {
+  if (ts.isImportDeclaration(node)) {
+    return node.moduleSpecifier
+  }
+  // `export { a } from './x.js'` names a file. A bare `export { a }` does not.
+  if (ts.isExportDeclaration(node)) {
+    return node.moduleSpecifier ?? null
+  }
+  if (ts.isCallExpression(node) && node.expression.kind === ts.SyntaxKind.ImportKeyword) {
+    return node.arguments[0] ?? node
+  }
+  return null
+}
+
 /** A one-line window on the source at `start`, for a finding to point at. */
 function excerpt(code: string, start: number): string {
   return code.slice(start, start + 80).split('\n')[0]
@@ -207,20 +258,34 @@ function position(source: ts.SourceFile, start: number): string {
   return `${line + 1}:${character + 1}`
 }
 
+/** What one file holds: everything refused in it, and everything it imports. */
+export interface Chunk {
+  problems: Problem[]
+  /** Each string-literal module specifier, in source order. */
+  imports: string[]
+}
+
 /**
- * Everything in `code` that the served CSP would refuse.
+ * Everything in `code` that the served CSP would refuse, and what it imports.
  *
- * Pure, so the test can exercise the rules without a build. `file` only labels
- * the results and names the source to the parser.
+ * One parse for both: the specifiers are nodes in the very tree the refusal
+ * rules walk, so reaching the rest of the build costs nothing beyond reading
+ * them off. Pure, so the test can exercise the rules without a build; `file`
+ * only labels the results and names the source to the parser.
+ *
+ * A file that does not parse reports that and nothing else — no imports either,
+ * which is the same refusal to guess as the empty problem list would have been
+ * a lie.
  */
-export function checkBundle(code: string, file: string): Problem[] {
+export function inspectChunk(code: string, file: string): Chunk {
   const source = ts.createSourceFile(file, code, ts.ScriptTarget.Latest, false, ts.ScriptKind.JS)
   const unreadable = syntaxErrors(source, file, code)
   if (unreadable !== null) {
-    return [{ file, detail: unreadable }]
+    return { problems: [{ file, detail: unreadable }], imports: [] }
   }
 
   const problems: Problem[] = []
+  const imports: string[] = []
   const visit = (node: ts.Node): void => {
     const detail = refusal(node)
     if (detail !== null) {
@@ -232,13 +297,74 @@ export function checkBundle(code: string, file: string): Problem[] {
           + `at ${position(source, start)}: ${excerpt(code, start)}`,
       })
     }
+
+    const specifier = importSpecifier(node)
+    if (specifier !== null) {
+      if (ts.isStringLiteralLike(specifier)) {
+        imports.push(specifier.text)
+      }
+      else {
+        // Reported rather than skipped: a specifier this cannot read names a
+        // file that would then go unparsed while everything else passed.
+        const start = specifier.getStart(source)
+        problems.push({
+          file,
+          detail:
+            'imports through a specifier this check cannot read as a string, so the code it '
+            + `loads went uninspected — at ${position(source, start)}: ${excerpt(code, start)}`,
+        })
+      }
+    }
+
     ts.forEachChild(node, visit)
   }
   visit(source)
-  return problems
+  return { problems, imports }
 }
 
-/** The files checked for a set of shells, and everything wrong with them. */
+/** Everything in `code` that the served CSP would refuse. */
+export function checkBundle(code: string, file: string): Problem[] {
+  return inspectChunk(code, file).problems
+}
+
+/**
+ * The file `specifier` names when read from `importer`, or why none could be.
+ *
+ * Every specifier a bundler emits into a chunk is a relative path carrying an
+ * extension, so this is a `join` against the importing file's directory — with
+ * the containment {@link scriptFiles} asserts about the shell's own tags, since
+ * a specifier reaches the filesystem by the same route and `..` is spellable in
+ * one just as it is in a `src`.
+ *
+ * Percent-escapes are deliberately *not* decoded, and that direction is the
+ * safe one: an escape left intact can only name a file that does not exist,
+ * which is reported by the caller, whereas decoding one re-opens the `%2f`
+ * measured on `scriptFiles` — a separator arriving after the containment check
+ * would have run.
+ */
+function importedFile(specifier: string, importer: string, dir: string):
+  { file: string } | { reason: string } {
+  if (!specifier.startsWith('./') && !specifier.startsWith('../')) {
+    return {
+      reason:
+        'is not a relative path — a bare, root-absolute or off-origin specifier names no file '
+        + 'in the build',
+    }
+  }
+  const file = resolve(dirname(importer), specifier)
+  if (!containedIn(dir, file)) {
+    return { reason: 'resolves outside the build directory, so no file in the build holds its code' }
+  }
+  return { file }
+}
+
+/**
+ * The files checked for a set of shells, and everything wrong with them.
+ *
+ * `files` is the walked set — each shell's `<script src>` tags plus everything
+ * reachable from them through an `import` — in the order it was read, so the
+ * pass line can show what was actually inspected rather than a bare count.
+ */
 export interface Inspection {
   files: string[]
   problems: Problem[]
@@ -283,7 +409,20 @@ export function inspectBundles(shells: string[]): Inspection {
       })
     }
 
-    for (const file of files) {
+    // The tags are the entry points; what the browser runs is those files and
+    // everything they import, so the queue grows as each file is read. `seen`
+    // is the cycle guard — a chunk graph is routinely circular — and it also
+    // keeps a diamond from being parsed and reported twice.
+    const dir = buildDir(shell)
+    const queue = [...files]
+    const seen = new Set<string>()
+    for (let next = 0; next < queue.length; next += 1) {
+      const file = queue[next]
+      if (seen.has(file)) {
+        continue
+      }
+      seen.add(file)
+
       let code: string
       try {
         code = readFileSync(file, 'utf8')
@@ -291,12 +430,27 @@ export function inspectBundles(shells: string[]): Inspection {
       catch {
         problems.push({
           file,
-          detail: `not found, though ${shell} loads it — run \`${BUILD_COMMANDS}\` first`,
+          detail: `not found, though ${shell} reaches it — run \`${BUILD_COMMANDS}\` first`,
         })
         continue
       }
       inspected.push(file)
-      problems.push(...checkBundle(code, file))
+
+      const chunk = inspectChunk(code, file)
+      problems.push(...chunk.problems)
+      for (const specifier of chunk.imports) {
+        const imported = importedFile(specifier, file, dir)
+        if ('reason' in imported) {
+          problems.push({
+            file,
+            detail:
+              `its import of \`${specifier}\` ${imported.reason}, so the code it loads went `
+              + 'uninspected',
+          })
+          continue
+        }
+        queue.push(imported.file)
+      }
     }
   }
 
@@ -329,7 +483,7 @@ export function main(argv: string[]): number {
   // and the list is what shows it did not.
   console.log(
     `dashboard bundle: no \`eval\`/\`Function\` construction in the ${files.length} file(s) `
-    + `${shells.length} shell(s) load (${files.join(', ')})`,
+    + `${shells.length} shell(s) load and import (${files.join(', ')})`,
   )
   return 0
 }

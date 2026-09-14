@@ -1,6 +1,6 @@
 ---
 name: dashboard-shell-csp
-description: 'The dashboard shell CSP after #195 — what each directive is for, why style-src carries unsafe-inline and img-src exists at all (both measured, neither a control, do not report either as a weakness), that script-src has no unsafe-* and connect-src is self, what the policy does NOT bound (outbound navigation and WebRTC are outside CSP, so exfiltration is harder not closed — a finding saying so is correct), that every HTML document including /login carries it, what a change here has to re-verify in a browser rather than by reading the header, that an external <a href> is deliberately not a finding in the build-side checker, and that the emitted bundle is guarded separately by scripts/check-dashboard-bundle.ts, which parses for eval/Function call expressions, deliberately does not flag obj.eval, deliberately does not follow an alias or a computed name, and reads the shell tag list rather than the reachable module graph so a code-split chunk would go unread; and the three traps found building it that a finding should not re-report - the Map-not-object-literal lookup, the %2f containment check, and scriptFiles counting unclosed script tags (issue #200)'
+description: 'The dashboard shell CSP after #195 — what each directive is for, why style-src carries unsafe-inline and img-src exists at all (both measured, neither a control, do not report either as a weakness), that script-src has no unsafe-* and connect-src is self, what the policy does NOT bound (outbound navigation and WebRTC are outside CSP, so exfiltration is harder not closed — a finding saying so is correct), that every HTML document including /login carries it, what a change here has to re-verify in a browser rather than by reading the header, that an external <a href> is deliberately not a finding in the build-side checker, and that the emitted bundle is guarded separately by scripts/check-dashboard-bundle.ts, which parses for eval/Function call expressions, deliberately does not flag obj.eval, deliberately does not follow an alias or a computed name, and since #227 starts at the shell tag list and walks the emitted static import graph from there, reporting rather than skipping a specifier it cannot follow, so a code-split chunk is read and a finding saying one would go unread is stale; and the three traps found building it that a finding should not re-report - the Map-not-object-literal lookup, the %2f containment check, and scriptFiles counting unclosed script tags (issue #200)'
 metadata:
   type: project
 ---
@@ -124,10 +124,10 @@ string literals, in comments, and as a method name, so a pattern over minified o
 on an unrelated dependency bump — this checker's own "worse than no CSP". Verified clean on the
 build at the time it was added.
 
-It reads the files `scriptFiles` names from the shell's own `<script src>` tags, deliberately not a
-`dist/assets/*.js` glob: a glob would be a second idea of what "the build" is, and would drift from
-the shell the first time Vite emitted a chunk the shell does not load, or the demo shim landed
-outside `assets/`.
+It starts from the files `scriptFiles` names from the shell's own `<script src>` tags, deliberately
+not a `dist/assets/*.js` glob: a glob would be a second idea of what "the build" is, and would drift
+from the shell the first time Vite emitted a chunk the shell does not load, or the demo shim landed
+outside `assets/`. Where it goes from there is the import graph — see below.
 
 **Its coverage is narrow on purpose, and a finding that it misses an evasion is answered by that
 rather than by an edit.** It reads `eval`/`Function` reached directly, through the parenthesised
@@ -150,13 +150,31 @@ shim is a classic script where `var eval` is legal, and is forty hand-written li
 two-letter name, and an approximate shadow check would trade a false positive nobody has hit for a
 missed `eval`. Raised by Greptile on #224 as a P1 and answered there.
 
-**One more declared gap, and it is the widest: it reads the shell's `<script src>` tags, not the
-reachable module graph.** Those are the same set only while the build emits one chunk, which is what
-it does today. A lazy route or a `manualChunks` entry emits a chunk the entry module imports and the
-shell references only as `<link rel="modulepreload">` — unread, while the pass line still prints a
-green count. A `dist/assets/*.js` glob is the *wider* set; the tag list was chosen over it so the two
-guards cannot disagree about what "the build" is, and that trade is the reason the gap exists rather
-than an oversight. Tracked separately; a finding that names it is correct but already recorded.
+**It starts at the shell's `<script src>` tags and walks the emitted import graph from there, so
+the gap #227 named is closed and a finding saying a code-split chunk goes unread is now wrong.**
+The tags alone are the executed set only while the build emits one chunk, which is still true today
+(verified on the build at the time: three `.js` files across both shells, and the walked set equals
+them exactly). A lazy route or a `manualChunks` entry emits a chunk the entry imports and the shell
+references only as `<link rel="modulepreload">`, and that chunk is now parsed. The graph is walked
+rather than globbed for the reason the tag list was chosen over a glob in the first place: one
+notion of "the build", derived from the same shells, so the two guards still cannot disagree.
+
+**What keeps that set closed is that an unfollowable specifier is a finding, not a skip.** Followed:
+a string literal on an `import`, an `export … from`, or an `import(…)`, naming a relative path that
+stays inside the shell's own directory — the containment asserted with the *same* predicate
+`scriptFiles` uses (`containedIn` in `check-dashboard-csp.ts`), which is how the filesystem-root
+prefix bug below cannot come back on the new path. Reported: a specifier that is not a string
+literal (`import(route)`), one that is not relative (bare, root-absolute, off-origin), one resolving
+outside the build, and one naming a file the build did not emit. Percent-escapes in a specifier are
+deliberately not decoded — an undecoded escape can only name a file that does not exist, which is
+reported, while decoding one would re-open the `%2f` case measured below.
+
+**It is the *static* graph, and that residue is declared rather than closed.** A module reached by
+something that is not an `import` specifier — `new Worker(new URL('./w.js', import.meta.url))`, a
+`<script>` element appended at runtime — is not walked and not reported, on the same ground as the
+alias and computed-name cases: this guards a first-party build against a dependency that starts
+calling `eval`, not a bundle written to evade it. Nothing in this repository emits either shape. A
+finding naming *that* residue is correct and new; one naming the module graph itself is stale.
 
 **Three traps were found building that guard under review, and a finding re-reporting any of them is
 answered by this rather than by an edit.** All three are fixed and tested.
@@ -176,7 +194,9 @@ answered by this rather than by an edit.** All three are fixed and tested.
   way, with both guards green. `scriptFiles` now asserts the joined path stays under the shell's
   directory — and that prefix has to account for `resolve` leaving no trailing separator *except* at
   a filesystem root, where `dir` already is one and `dir + sep` becomes `//`, refusing every script
-  a root-served shell loads. Both halves are tested; a finding on either is answered here.
+  a root-served shell loads. Both halves are tested; a finding on either is answered here. Since
+  #227 that assertion lives in one exported predicate, `containedIn`, which the import-graph walk
+  calls too — so a finding proposing a hand-rolled prefix on either side is going backwards.
 - **`scriptFiles` counts `<script>` opening tags, for the same reason `checkShell` does.**
   `SCRIPT_TAG` is lazy and skips an opening tag with no `</script>`, so its `src` landed in neither
   the file list nor the unresolved list — and a shell whose remaining tags resolved then handed the
