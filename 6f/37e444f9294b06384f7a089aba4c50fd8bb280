@@ -1,0 +1,27 @@
+.claude/agent-memory/review-review-security-reviewer/dashboard-shell-csp.md
+  s_0c168ba18ed711::t_51fdf6860b9ed5 3,117-142
+scripts/check-dashboard-bundle.ts
+  s_0c168ba18ed711::t_23f21567587646 1-142,148,159-306
+  s_0c168ba18ed711::t_927e2f5e262a74 143-147,149-158
+scripts/check-dashboard-bundle.test.ts
+  s_0c168ba18ed711::t_c798c0b7a4e0dd 61
+  s_0c168ba18ed711::t_8db62a56af9bf4 1-60,62-176
+.github/workflows/ci.yml
+  s_0c168ba18ed711::t_6952899f31b316 178-183
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "6f37e444f9294b06384f7a089aba4c50fd8bb280",
+  "prompts": {},
+  "sessions": {
+    "s_0c168ba18ed711": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "95fdc41d-58bd-4732-8d6c-4602119f8f68",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
