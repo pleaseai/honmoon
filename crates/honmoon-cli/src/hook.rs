@@ -1867,7 +1867,11 @@ mod tests {
     /// unchanged, not on the file being accepted. Two directories stand in for
     /// the two `$HOME/.honmoon`s of a cross-host or cross-container deployment —
     /// the loader has no idea which host it is on, so identical bytes at each
-    /// path is the whole of what it takes.
+    /// path is the whole of what *the loader* contributes. It is not the whole of
+    /// parity: the salt context is the other input and must agree as well, which
+    /// the shared `session` below stands in for (a gateway pinned with
+    /// `--hook-salt-context` and an unpinned hook disagree on a matching key — see
+    /// the rustdoc on `load_or_create_machine_salt`).
     ///
     /// The differing-bytes half is the control. Without it this test would pass
     /// against a loader that ignored the file and returned a constant, which is

@@ -524,9 +524,10 @@ readable beyond its owner, it says so rather than going quiet — the
 `hook-salt-exposed` row in the table above. Where it reaches you is the transport's
 affair, per "Where each event is visible": a gateway records it into the ring its
 dashboard polls whether or not `--audit-log` is set, while a `honmoon hook` invocation
-needs `HONMOON_AUDIT_LOG` for its record to outlive the process, and the dashboard
-never shows it. (A `chmod` that fails on a file already at `0600` is deliberately
-silent, because a correction that was not needed is not evidence of exposure.) None
+needs `HONMOON_AUDIT_LOG` — or `--audit-log`, when run by hand — for its record to
+outlive the process, and the dashboard never shows it. (A `chmod` that fails on a
+file already at `0600` is deliberately silent, because a correction that was not
+needed is not evidence of exposure.) None
 of this depends on the mode: a world-readable file is still adopted, and audited for
 it. These are pinned by tests in `crates/honmoon-cli/src/hook.rs` (issue #126), so
 they are an interface you can deploy against rather than loader behaviour that might
@@ -541,7 +542,8 @@ holds a key the loader's later `0600` correction cannot recall.
 
 ```sh
 (umask 077; head -c 32 /dev/urandom > hook-salt)   # created 0600, not your umask's 0644
-install -m 0600 hook-salt ~/.honmoon/hook-salt       # on each host, so the copy is 0600 too
+# on each host — install does not create the parent, and umask 077 makes it 0700
+(umask 077; mkdir -p ~/.honmoon; install -m 0600 hook-salt ~/.honmoon/hook-salt)
 ```
 
 A key small enough to search is worse than a shared one. Someone who sees a
