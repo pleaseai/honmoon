@@ -1,9 +1,11 @@
 name: Release
 
-# Builds the `honmoon` binary for every supported target and attaches it to a GitHub Release.
-#   - called by release-please.yml → build, then upload the tarballs + SHA256SUMS onto the
-#     Release release-please has already tagged and published
-#   - manual run with a tag        → the same, to redo an upload that failed
+# Builds the `honmoon` binary for every supported target, attaches it to a GitHub Release, and
+# publishes that Release.
+#   - called by release-please.yml → build, upload the tarballs + SHA256SUMS onto the *draft*
+#     Release release-please tagged, then publish it
+#   - manual run with a tag        → the same, to redo an upload that failed. A Release that is
+#     already published is left exactly as it is
 #   - manual run with no tag       → dry run: build and keep the artifacts, touch no Release
 #
 # Whenever a tag is given the checkout is pinned to that tag, in every job, so the artifacts
@@ -12,9 +14,19 @@ name: Release
 # published Release's binaries with a build of unrelated source.
 #
 # release-please owns the version, the tag, and the Release itself, so nothing here creates
-# any of them — this workflow only uploads into a Release that already exists. There is
-# deliberately no `push: tags` trigger: release-please tags as the org App rather than as
-# GITHUB_TOKEN, so its tag *does* raise events, and a tag trigger would run this a second
+# any of them — this workflow uploads into a Release that already exists and then makes it
+# visible. It exists as a **draft** (`draft: true` in release-please-config.json), so the last
+# step of the last job is what publishes it: a failure anywhere before that leaves a draft,
+# which users never see and which never becomes `/releases/latest`, rather than a stable
+# Release carrying a CHANGELOG and no binaries (#230).
+#
+# That draft is also why `force-tag-creation` sits beside it in that config. GitHub does not
+# create the tag ref for a draft Release, and release-please pushes `refs/tags/<tag>` itself
+# only under that option — without it the three `refs/tags/${{ inputs.tag }}` checkouts below
+# resolve nothing.
+#
+# There is deliberately no `push: tags` trigger: release-please tags as the org App rather than
+# as GITHUB_TOKEN, so its tag *does* raise events, and a tag trigger would run this a second
 # time alongside release-please.yml's own call and upload every asset twice.
 #
 # The dashboard MUST be built before `cargo build`. `crates/honmoon-mgmt/build.rs` drops a
@@ -137,18 +149,22 @@ jobs:
           echo "version=$cargo_version" >> "$GITHUB_OUTPUT"
 
   # A tag carrying a pre-release identifier (v0.2.0-rc.1) must never be "latest", and
-  # release-please publishes it as an ordinary Release, so something has to set the flag.
-  # It cannot be release-please: its own `prerelease` option is
-  # `prerelease && (preRelease || major === 0)`, so enabling it would also mark every 0.x
-  # release a pre-release and leave `/releases/latest` — the link the README hands users —
-  # with nothing to point at.
+  # release-please drafts it as an ordinary Release, so something has to set the flag before
+  # the `release` job publishes that draft. It cannot be release-please: its own `prerelease`
+  # option is `prerelease && (preRelease || major === 0)`, so enabling it would also mark
+  # every 0.x release a pre-release and leave `/releases/latest` — the link the README hands
+  # users — with nothing to point at.
   #
-  # The job graph around it is deliberate on both sides. It `needs` nothing, so a failing
-  # `verify-version` still cannot leave a pre-release sitting at /releases/latest; and
-  # `build` needs *it*, so a failed `gh release edit` cannot let binaries reach a Release
-  # that is still "latest". The tag predicate sits on the step rather than the job for that
-  # second half: a job skipped by its own `if` would skip `build` along with it, so a stable
-  # or dry run has to reach a job that succeeds while doing nothing.
+  # `build` needs this job, and that edge is load-bearing: a failed `gh release edit` must
+  # stop the run before the step that publishes the draft, or an unflagged pre-release would
+  # be published straight to "latest". The tag predicate therefore sits on the step rather
+  # than on the job — a job skipped by its own `if` would skip `build` along with it, so a
+  # stable or dry run has to reach a job that succeeds while doing nothing.
+  #
+  # This job itself `needs` nothing, which once kept a failing `verify-version` from stranding
+  # a pre-release at `/releases/latest`. The draft subsumes that (nothing is published until
+  # the final step, which `verify-version` gates through `build`), so what the missing edge
+  # buys now is only that this runs alongside `verify-version` rather than after it.
   mark-prerelease:
     name: Mark pre-release
     runs-on: ubuntu-latest
@@ -281,10 +297,50 @@ jobs:
           TAG: ${{ inputs.tag }}
         run: |
           set -euo pipefail
-          # The Release already exists, published by release-please with the CHANGELOG entry
+          # The Release already exists — release-please drafted it with the CHANGELOG entry
           # as its notes; only the binaries are missing. `--clobber` overwrites an asset of
           # the same name, so redoing a partly-failed upload is safe.
           gh release upload "$TAG" \
             --clobber \
             artifacts/*.tar.gz \
             artifacts/SHA256SUMS
+
+      # The step that ends the release. Everything above can fail without a user ever seeing a
+      # Release, because until this runs there is only a draft; that is the whole point of
+      # #230, so nothing may be added after it.
+      #
+      # Only a draft is edited. Re-dispatching this workflow onto a Release that is already
+      # published — the documented way to redo a failed upload — must not PATCH it: `gh` sends
+      # no `make_latest` either way, and rather than depend on what GitHub does with an absent
+      # `make_latest` on an old Release, the request is not sent at all.
+      #
+      # Addressing the draft as "$TAG" is load-bearing, and it is not an API guarantee:
+      # `GET /releases/tags/{tag}` does not return drafts. `gh` covers the gap client-side —
+      # `shared.FetchRelease` races that REST lookup against a GraphQL
+      # `repository.release(tagName:)` query, which does see drafts, and `view`, `edit` and
+      # `upload` all resolve a tag through it. Every `gh` call in this workflow runs on
+      # `ubuntu-latest`, whose `gh` is the runner image's and is pinned nowhere here: it was
+      # 2.100.0 when this was written, and it will move. `gh release view` therefore runs
+      # first, so that an image that ever stops resolving the draft fails this job by name —
+      # with the Release still a draft — rather than leaving the behaviour untested. The
+      # by-id alternative would be release-please's own `id` output, threaded through
+      # release-please.yml and driven with `gh api`; it is not needed while this holds.
+      - name: Publish the Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          # Read on its own line, not inside the `if` condition. `set -e` does not
+          # apply to a command substitution embedded in a condition, so a failing
+          # `gh release view` there would read as an empty string, take the `else`
+          # branch, and exit 0 — reporting success while leaving the Release a
+          # draft nobody publishes, which is the one outcome this step exists to
+          # prevent. As a plain assignment the failure aborts the job.
+          is_draft=$(gh release view "$TAG" --json isDraft --jq .isDraft)
+          if [ "$is_draft" = "true" ]; then
+            gh release edit "$TAG" --draft=false
+            echo "published $TAG"
+          else
+            echo "$TAG is already published — leaving it as it is"
+          fi
