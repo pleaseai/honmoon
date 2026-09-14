@@ -399,7 +399,7 @@ It is tempting to compress all of that to "`honmoon-core` is pure", and the comp
 a way that costs something. The core opens exactly one file: the operator's JSONL audit sink, in
 `audit.rs`. It has done so since the sink existed, and
 [issue #166](https://github.com/pleaseai/honmoon/issues/166) settled that it should — after the
-crate's own boundary document had spent several releases claiming the opposite.
+crate's own boundary document had claimed the opposite for some time.
 
 The reasoning is worth carrying, because this is the kind of call you will be asked to re-open.
 `append_jsonl` writes synchronously on the decision path, which makes *what the descriptor turns
