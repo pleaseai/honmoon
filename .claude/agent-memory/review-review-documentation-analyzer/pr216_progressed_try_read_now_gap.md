@@ -1,39 +1,38 @@
 ---
 name: pr216-progressed-try-read-now-gap
-description: 'PR #216 (issue #209) restored ADR-0007''s "every byte re-arms the window" claim and added Relay::progressed() called from delivered() and fill()''s read arm, naming the oversized-payload copy as the only exception — but relay_backend_messages'' `settling` branch reads the 5-byte header via TryRead::try_read_now (a raw non-blocking try_read, bypassing fill()) before calling fill(), so a header that arrives whole in one non-blocking read (or any zero-payload message completed there) never calls progressed(); a second, undocumented exception to the completeness claim'
+description: 'PR #216 (issue #209) restored ADR-0007''s "every byte re-arms the stall window" claim and first named the oversized-payload copy as its only exception — review found a second one, relay_backend_messages'' settling branch reading the header through a raw try_read_now that bypasses Relay::fill; closed in the same PR by covering the probe, so the single-exception claim is now true. The reusable check: on any claim of this shape, enumerate the raw read sites, not the ones the abstraction names.'
 metadata:
   type: project
 ---
 
 ADR-0007 (`.please/docs/decisions/0007-inline-postgresql-runtime-semantics.md`) and the
-rustdoc for `Relay::progressed` in `crates/honmoon-proxy/src/runtime/postgres.rs` both
-state, after PR #216, that a byte taken off the upstream wire always re-arms the stall
-window, with **one** named exception (the oversized-payload streaming copy in
-`relay_backend_messages`).
+rustdoc for `Relay::progressed` in `crates/honmoon-proxy/src/runtime/postgres.rs` state
+that a byte read off the upstream always re-arms the stall window, with **one** named
+exception: the oversized-payload streaming copy in `relay_backend_messages`.
 
-That completeness claim is one exception short. `relay_backend_messages`'s `settling`
-branch (entered when `relay.fresh > 0` and the last tag was one of the
-flush-terminating messages, used to detect a quiet upstream after a `Flush`) does a
-direct non-blocking read via `TryRead::try_read_now(&mut head)` **before** calling
-`Relay::fill`. `try_read_now` wraps `tokio::net::tcp::OwnedReadHalf::try_read`, which
-can and does return a full 5-byte read in one syscall when the header is already
-buffered. When that happens, `fill(..., filled = 5)` is called with `filled == buf.len()`,
-so `fill`'s `while filled < buf.len()` loop body — the only place that calls
-`self.progressed()` — never executes for those bytes. A message whose header (and, for
-a zero-payload message like `NoData`, the whole message) arrives this way is real
-backend traffic that does not re-arm the stall window, contradicting "every byte that
-arrives from the database buys another window" and the progressed() rustdoc's "every
-place a backend byte is taken off the wire — save the oversized-payload copy".
+As first written in PR #216 that enumeration was one short, and the miss is the
+instructive part. `relay_backend_messages`'s `settling` branch — entered when
+`relay.fresh > 0` and the last tag was one of the flush-terminating messages, to probe
+for the quiet that settles a `Flush` — reads the head through
+`TryRead::try_read_now(&mut head)` **before** calling `Relay::fill`. `try_read_now` is a
+raw non-blocking read (`OwnedReadHalf::try_read` in production, mirrored in the test
+harness's `ScriptedUpstream`), and when it returns the whole 5-byte header `fill` is
+entered with `filled == buf.len()`, so `fill`'s `while filled < buf.len()` body — which
+carries the only `progressed()` call in that function — never runs for those bytes.
 
-Practical impact is narrow (only fires mid-settling, right after fresh delivery already
-re-armed the window recently, and needs a full header already buffered in the socket at
-the moment of the non-blocking try), so this is a completeness/accuracy gap in the
-documentation's "only one exception" claim rather than a functional security bug — but
-it is the exact class [[pr208_adr0007_ownership_rewrite]] and
-[[docs-completeness-claim-unbounded-review]] describe: an enumeration ("the one place")
-drifts from the code's actual list.
+**Closed in #216 itself**, by calling `relay.progressed()` from the probe's `Ok(read)`
+arm. So do **not** report the settling probe as an un-enumerated exception on a later
+review: the code covers it and the single-exception claim is accurate against the merged
+head. It was covered rather than documented as a second exception even though it cannot
+change an outcome on its own — the probe does not await, so it runs in the same instant
+as the `delivered` that ended the previous loop iteration, and that call has just
+re-armed. Covering it keeps the rule at one stated exception instead of two, and stops a
+later `await` inserted above the probe from reintroducing #209 in that corner unnoticed.
 
-**How to apply:** on any future edit to `Relay::progressed`'s call sites or to
-`relay_backend_messages`'s settling branch, check `try_read_now` call sites specifically
-— any raw read that bypasses `Relay::fill` is a candidate un-enumerated exception to
-this completeness claim.
+**How to apply:** this is the enumeration-drift class [[pr208_adr0007_ownership_rewrite]]
+and [[docs-completeness-claim-unbounded-review]] describe, with a specific tell. When a
+claim quantifies over an *operation* ("every read", "every write", "every message"),
+resolve the list from the raw call sites — `grep` the trait method or syscall — not from
+the helper the prose names. A read that bypasses `Relay::fill` is invisible to anyone
+enumerating `fill`'s call sites, which is how three finders and the author all had to
+reach the same conclusion the hard way.

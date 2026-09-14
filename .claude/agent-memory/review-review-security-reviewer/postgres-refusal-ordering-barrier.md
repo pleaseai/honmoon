@@ -155,8 +155,10 @@ Verified once against the #121 shape, so do not re-derive:
   the adversary here — but do not read the clamp as per-statement robustness when
   hardening this file.
 - **The stall window is re-armed by every *byte* off the upstream socket** (#209,
-  PR #216). `Relay::progressed()` is called from `Relay::delivered` *and* from the
-  `Ok(read)` arm of `Relay::fill`; it is guarded on `queued.is_some()` so
+  PR #216). `Relay::progressed()` is called from every read that takes bytes off
+  the upstream — the `Ok(read)` arm of `Relay::fill` and the settling
+  `try_read_now` probe in `relay_backend_messages` — and from `Relay::delivered`
+  once a message is whole; it is guarded on `queued.is_some()` so
   `stall_deadline` is never armed with nothing to release (an empty-queue fire
   would leave `forced` latched and send the *next* refusal unordered). Do not
   re-report the old "a message trickling in is given up on mid-arrival" behaviour
