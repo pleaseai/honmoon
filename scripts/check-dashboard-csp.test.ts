@@ -216,13 +216,23 @@ describe('checkShell', () => {
   // prototype chain to `Object`, so the name was never `undefined`, never
   // reported, and `function Object() { [native code] }` was substituted into
   // the URL instead — the table's stated stance silently not holding for the
-  // handful of names `Object.prototype` happens to carry (#226, the same trap
-  // `REFUSED` hit in `check-dashboard-bundle.ts` under #200).
+  // names `Object.prototype` happens to carry (#226, the same trap `REFUSED`
+  // hit in `check-dashboard-bundle.ts` under #200).
+  //
+  // Every one of them `CHAR_REF` can spell, not a sample: its name group is
+  // `[a-z][a-z0-9]*`, which is what excludes the four dunder accessors and
+  // `__proto__` and leaves exactly the seven below on V8 today. The fix is
+  // generic, so four would have caught a regression — the list is the whole
+  // set so that a reviewer meeting `&isPrototypeOf;` finds it settled here
+  // rather than reading it as a name nobody looked at.
   test.each([
     'constructor',
     'toString',
+    'toLocaleString',
     'valueOf',
     'hasOwnProperty',
+    'isPrototypeOf',
+    'propertyIsEnumerable',
   ])('`&%s;`, a prototype member, is refused like any other name the table omits', (name) => {
     const inherited = BUILT_SHELL.replace(
       '<div id="root">',
@@ -231,12 +241,15 @@ describe('checkShell', () => {
     expect(details(inherited)).toEqual([expect.stringContaining('cannot decode')])
   })
 
-  // `&__proto__;` passes undecoded too, but not through the table: `CHAR_REF`
-  // reads a name as `[a-z][a-z0-9]*`, so the underscore ends the match and
-  // there is no reference here for the lookup or `UNKNOWN_REF` to see. The
-  // parser a browser uses reads it as literal text for the same reason, so
-  // this is the intended outcome rather than the one above — pinned because
-  // the two look alike and only one of them was ever a defect.
+  // `&__proto__;` passes undecoded too, but not through the table, and not by
+  // a truncated match either: `CHAR_REF`'s name group is `[a-z][a-z0-9]*`, and
+  // the character right after the `&` is one it cannot start on, so no match
+  // begins there at all and neither the lookup nor `UNKNOWN_REF` is ever
+  // reached. (An underscore *inside* a name is the other case and does
+  // truncate: `&proto_x;` matches `&proto`, unterminated.) A browser's parser
+  // reads this as literal text for the same reason, so it is the intended
+  // outcome rather than the one above — pinned because the two look alike and
+  // only one of them was ever a defect.
   test('`&__proto__;` is literal text, not a reference this check has to decode', () => {
     const dunder = BUILT_SHELL.replace(
       '<div id="root">',
