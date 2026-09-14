@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import process from 'node:process'
 import { describe, expect, test } from 'bun:test'
-import { checkShell, checkShells } from './check-dashboard-csp'
+import { checkShell, checkShells, REPO_ROOT, scriptFiles } from './check-dashboard-csp'
 
 /** The shape `vite build` emits today: one external module script, one stylesheet. */
 const BUILT_SHELL = `<!doctype html>
@@ -262,5 +262,45 @@ describe('checkShells', () => {
   test('a missing artifact fails rather than being skipped', () => {
     expect(checkShells(['apps/dashboard/dist/no-such-shell.html']))
       .toEqual([{ shell: 'apps/dashboard/dist/no-such-shell.html', detail: expect.stringContaining('not found') }])
+  })
+})
+
+// The file set the bundle guard (`check-dashboard-bundle.ts`, #200) reads, taken
+// from the very tags this file judges so the two cannot disagree about what
+// "the build" is.
+describe('scriptFiles', () => {
+  const SHELL = 'apps/dashboard/dist/index.html'
+  const DIST = join(REPO_ROOT, 'apps/dashboard/dist')
+
+  test('a root-absolute and a relative src both land under the shell\'s own directory', () => {
+    expect(scriptFiles(DEMO_SHELL, SHELL)).toEqual({
+      files: [join(DIST, 'demo-mode.js'), join(DIST, 'assets/index-ChyO-qsg.js')],
+      unresolved: [],
+    })
+  })
+
+  // `<link href>` is a fetch this file checks, but it is not script, and a
+  // `<script>` with no src has no file behind it — both would be a second,
+  // wrong idea of what the bundle is.
+  test('only <script src> is collected — not a stylesheet, not a srcless tag', () => {
+    const extra = BUILT_SHELL.replace('<div id="root"></div>', '<script>window.x = 1</script>')
+    expect(scriptFiles(extra, SHELL).files).toEqual([join(DIST, 'assets/index-ChyO-qsg.js')])
+  })
+
+  // Reading the file is impossible, so the code it loads goes uninspected. It
+  // comes back for the caller to fail on rather than being dropped.
+  test('a src with no file behind it is reported, not silently dropped', () => {
+    const cdn = BUILT_SHELL.replace('/assets/index-ChyO-qsg.js', 'https://cdn.example/app.js')
+    expect(scriptFiles(cdn, SHELL)).toEqual({
+      files: [],
+      unresolved: [{ src: 'https://cdn.example/app.js', reason: expect.stringContaining('off this origin') }],
+    })
+  })
+
+  // `new URL` collapses the `..` against the origin before the path is joined,
+  // so a shell cannot name a file outside the directory it is served from.
+  test('a traversing src cannot escape the build directory', () => {
+    const up = BUILT_SHELL.replace('/assets/index-ChyO-qsg.js', '../../../etc/passwd')
+    expect(scriptFiles(up, SHELL).files).toEqual([join(DIST, 'etc/passwd')])
   })
 })

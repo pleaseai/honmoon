@@ -38,17 +38,19 @@
  *
  * **Scope: the shell's own markup, not the code it loads.** This reads
  * `index.html` and nothing else, so it is a guard on the shell's `<script>`
- * tags rather than on everything `script-src 'self'` implies. It would not see
- * a dependency that introduces `eval(`/`new Function(` into the emitted bundle,
- * which the policy also refuses (there is no `'unsafe-eval'`) — absent from
- * today's bundle, and tracked separately rather than claimed here.
+ * tags rather than on everything `script-src 'self'` implies. The emitted code
+ * is the other half, and it is checked by a sibling script rather than here:
+ * `scripts/check-dashboard-bundle.ts` looks for the `eval`/`Function`
+ * construction the policy also refuses (there is no `'unsafe-eval'`), over the
+ * files {@link scriptFiles} names from the very `<script src>` tags this file
+ * judges — so the two guards cannot disagree about what "the build" is.
  *
  * Usage:
  *   bun scripts/check-dashboard-csp.ts                 # both built shells
  *   bun scripts/check-dashboard-csp.ts <path…>         # explicit files
  */
 import { readFileSync } from 'node:fs'
-import { isAbsolute, join } from 'node:path'
+import { dirname, isAbsolute, join } from 'node:path'
 import process from 'node:process'
 import { fileURLToPath } from 'node:url'
 
@@ -355,15 +357,109 @@ export function checkShell(html: string, shell: string): Problem[] {
   return problems
 }
 
+/**
+ * A path as given on the command line, as an absolute path.
+ *
+ * `join` would graft an absolute argument onto the root — `join('/repo',
+ * '/tmp/x')` is `/repo/tmp/x` — and everything downstream would then report a
+ * misread path as a missing build.
+ */
+export function shellPath(path: string): string {
+  return isAbsolute(path) ? path : join(REPO_ROOT, path)
+}
+
+/** A `<script src>` no build artifact could be named for, and why. */
+export interface UnresolvedScript {
+  src: string
+  reason: string
+}
+
+/**
+ * The files a built shell's `<script src>` tags load, as absolute paths.
+ *
+ * {@link checkShell} decides *whether* each of those URLs stays on the serving
+ * origin. This names the file each one resolves to, so the guard over the
+ * emitted code (`scripts/check-dashboard-bundle.ts`, issue #200) reads exactly
+ * the set this file already judged. A `dist/assets/*.js` glob would have been
+ * a second, independent notion of "the build" — one that drifts the first time
+ * Vite emits a chunk the shell does not load, or the demo shim lands somewhere
+ * other than `assets/`.
+ *
+ * The shell is served from the root of its own directory (`dist/index.html` is
+ * `/`), so a root-absolute `src` and a relative one both land under that
+ * directory. `new URL` does the resolving — the same parser, for the same
+ * reasons, as everywhere else here — which also means any `..` is collapsed
+ * against the origin before the path is joined, so a shell cannot name a file
+ * outside its own build.
+ *
+ * A `src` with no file behind it comes back in `unresolved` for the caller to
+ * report in its own words, rather than being dropped: a script this cannot
+ * read is code that went uninspected. {@link checkShell} fails the shell for
+ * those separately, and this deliberately does not repeat its wording — the
+ * two scripts run as two CI steps and each has to stand on its own.
+ */
+export function scriptFiles(html: string, shell: string): {
+  files: string[]
+  unresolved: UnresolvedScript[]
+} {
+  const dir = dirname(shellPath(shell))
+  const files: string[] = []
+  const unresolved: UnresolvedScript[] = []
+  const skip = (src: string, reason: string) => unresolved.push({ src, reason })
+
+  for (const [, attrs] of html.matchAll(SCRIPT_TAG)) {
+    for (const [, name, doubleQuoted, singleQuoted, bare] of attrs.matchAll(URL_ATTR)) {
+      if (name.toLowerCase() !== 'src') {
+        continue
+      }
+      const raw = doubleQuoted ?? singleQuoted ?? bare ?? ''
+      const { url, unknown } = decodeAttr(raw)
+      if (unknown !== null) {
+        skip(raw, `carries the character reference \`${unknown}\`, which cannot be decoded here`)
+        continue
+      }
+
+      let here: URL
+      let there: URL
+      try {
+        here = new URL(url, SHELL_BASE)
+        there = new URL(url, OTHER_BASE)
+      }
+      catch {
+        skip(raw, 'is not a URL this check can parse')
+        continue
+      }
+
+      if (here.protocol === 'javascript:') {
+        skip(raw, 'is a `javascript:` URL, which is inline code rather than a file')
+        continue
+      }
+      if (here.origin !== SHELL_ORIGIN || there.origin !== OTHER_ORIGIN) {
+        skip(raw, 'loads from off this origin, so no file in the build holds its code')
+        continue
+      }
+
+      let pathname: string
+      try {
+        pathname = decodeURIComponent(here.pathname)
+      }
+      catch {
+        skip(raw, 'carries a percent-escape this check cannot decode')
+        continue
+      }
+      files.push(join(dir, pathname))
+    }
+  }
+
+  return { files, unresolved }
+}
+
 /** Check the shells at `paths` (relative to the repository root, or absolute). */
 export function checkShells(paths: string[]): Problem[] {
   return paths.flatMap((path) => {
     let html: string
     try {
-      // `join` would graft an absolute argument onto the root — `join('/repo',
-      // '/tmp/x')` is `/repo/tmp/x` — and report the result as "not found",
-      // which reads as a missing build rather than as a misread path.
-      html = readFileSync(isAbsolute(path) ? path : join(REPO_ROOT, path), 'utf8')
+      html = readFileSync(shellPath(path), 'utf8')
     }
     catch {
       // Not found is a failure, not a skip: a check that silently passes when
