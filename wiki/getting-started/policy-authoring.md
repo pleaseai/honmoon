@@ -428,7 +428,7 @@ both refuse, and `validate_and_the_gateway_accept_the_same_policy` on one both a
 
 One thing the read says in its own words, and it refuses nothing extra: a file whose top level is
 not a mapping — plain text, a list, a single value — is named as *not a policy document* rather than
-handed to the parser ([main.rs:1018-1048](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-cli/src/main.rs#L1018-L1048)). The loader
+handed to the parser ([main.rs:1018-1054](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-cli/src/main.rs#L1018-L1054)). The loader
 refuses those too; what changes is that the parser would have quoted the file to say so, and for a
 document that is one plain scalar the quote is the whole file. Pointed at a token file, an SSH key or
 a `.env` by a mistyped path, that lands in the log.
