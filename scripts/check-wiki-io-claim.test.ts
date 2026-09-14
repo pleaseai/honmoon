@@ -90,6 +90,16 @@ describe('wikiDocuments', () => {
     expect(documents).not.toContain('wiki/AGENTS.md')
     expect(documents).not.toContain('wiki/CLAUDE.md')
   })
+
+  test('nothing a build or install left under wiki/ is scanned', () => {
+    // `bun install` and `bun run build` inside `wiki/` leave `node_modules` and
+    // `.vitepress/dist` behind; CI never installs there, so a scan that picked
+    // them up would pass in CI and judge dependency READMEs locally.
+    const stray = wikiDocuments().filter(rel =>
+      rel.includes('node_modules') || rel.includes('.vitepress'),
+    )
+    expect(stray).toEqual([])
+  })
 })
 
 describe('checkRepository', () => {

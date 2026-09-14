@@ -56,6 +56,17 @@ export const REPO_ROOT = fileURLToPath(new URL('..', import.meta.url))
  */
 const UNPUBLISHED = ['AGENTS.md', 'CLAUDE.md', 'README.md']
 
+/**
+ * Directories under `wiki/` holding markdown that is not the site's source.
+ *
+ * `bun install` and `bun run build` inside `wiki/` leave both behind, and a
+ * scan that picks them up reads a few hundred dependency READMEs — where a rule
+ * here would be judging prose nobody in this repository wrote. CI never
+ * installs into `wiki/`, so this only shows up after a local build, which is
+ * exactly the run that would be trusted.
+ */
+const NOT_SOURCE = ['node_modules', '.vitepress/cache', '.vitepress/dist']
+
 export interface Problem {
   where: string
   detail: string
@@ -172,8 +183,10 @@ export function checkDocument(source: string, where: string): Problem[] {
 /** Published wiki pages plus the two aggregate files, relative to the repo root. */
 export function wikiDocuments(): string[] {
   const pages = [...new Glob('**/*.md').scanSync(join(REPO_ROOT, 'wiki'))]
-    .filter(rel => !UNPUBLISHED.includes(rel.split(/[/\\]/).pop()!))
-    .map(rel => join('wiki', rel))
+    .map(rel => rel.split(/[/\\]/))
+    .filter(parts => !UNPUBLISHED.includes(parts.at(-1)!))
+    .filter(parts => !NOT_SOURCE.some(dir => parts.join('/').startsWith(`${dir}/`)))
+    .map(parts => join('wiki', ...parts))
     .sort()
   return [...pages, join('wiki', 'llms.txt'), join('wiki', 'llms-full.txt')]
 }
