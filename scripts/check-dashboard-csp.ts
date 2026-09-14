@@ -149,24 +149,34 @@ const CHAR_REF = /&(?:#x([0-9a-f]+)|#(\d+)|([a-z][a-z0-9]*));?/gi
  * Deliberately not the full HTML table — that is ~2200 entries and would be a
  * dependency. It does not have to be complete, because a name that is *not*
  * here is reported rather than passed through: see {@link UNKNOWN_REF}.
+ *
+ * A `Map`, not an object literal, and that is what makes the sentence above
+ * true rather than nearly true: a plain object resolves `NAMED_REFS[name]`
+ * through the prototype chain, so `&constructor;` and `&toString;` came back as
+ * `Object` and `Object.prototype.toString` instead of `undefined` — never
+ * reported, and their `[native code]` source substituted into the URL. The
+ * gap the table is allowed to have is closed by reporting, so a name that
+ * silently skips the report is the one shape it cannot afford (#226). The
+ * sibling guard's `REFUSED` hit the identical trap and took the identical fix
+ * (`scripts/check-dashboard-bundle.ts`, #200).
  */
-const NAMED_REFS: Record<string, string> = {
-  amp: '&',
-  AMP: '&',
-  apos: '\'',
-  colon: ':',
-  gt: '>',
-  GT: '>',
-  lt: '<',
-  LT: '<',
-  NewLine: '\n',
-  num: '#',
-  period: '.',
-  quot: '"',
-  QUOT: '"',
-  sol: '/',
-  Tab: '\t',
-}
+const NAMED_REFS = new Map<string, string>([
+  ['amp', '&'],
+  ['AMP', '&'],
+  ['apos', '\''],
+  ['colon', ':'],
+  ['gt', '>'],
+  ['GT', '>'],
+  ['lt', '<'],
+  ['LT', '<'],
+  ['NewLine', '\n'],
+  ['num', '#'],
+  ['period', '.'],
+  ['quot', '"'],
+  ['QUOT', '"'],
+  ['sol', '/'],
+  ['Tab', '\t'],
+])
 
 /**
  * A named reference {@link NAMED_REFS} does not cover.
@@ -221,7 +231,7 @@ export function decodeAttr(value: string): { url: string, unknown: string | null
     if (hex !== undefined || dec !== undefined) {
       return fromCodePoint(Number.parseInt(hex ?? dec, hex === undefined ? 10 : 16))
     }
-    const decoded = NAMED_REFS[name]
+    const decoded = NAMED_REFS.get(name)
     if (decoded === undefined && whole.endsWith(';') && UNKNOWN_REF.test(name)) {
       unknown ??= whole
     }

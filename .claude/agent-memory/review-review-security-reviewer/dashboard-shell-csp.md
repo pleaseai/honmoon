@@ -1,6 +1,6 @@
 ---
 name: dashboard-shell-csp
-description: 'The dashboard shell CSP after #195 — what each directive is for, why style-src carries unsafe-inline and img-src exists at all (both measured, neither a control, do not report either as a weakness), that script-src has no unsafe-* and connect-src is self, what the policy does NOT bound (outbound navigation and WebRTC are outside CSP, so exfiltration is harder not closed — a finding saying so is correct), that every HTML document including /login carries it, what a change here has to re-verify in a browser rather than by reading the header, that an external <a href> is deliberately not a finding in the build-side checker, and that the emitted bundle is guarded separately by scripts/check-dashboard-bundle.ts, which parses for eval/Function call expressions, deliberately does not flag obj.eval, deliberately does not follow an alias or a computed name, and since #227 starts at the shell tag list and walks the emitted static import graph from there, reporting rather than skipping a specifier it cannot follow, so a code-split chunk is read and a finding saying one would go unread is stale, with the declared residue now being Worker/runtime-appended-script/`require` (each measured, each tracked) and `containedIn` bounding the specifier lexically rather than realpath-ing the read; and the three traps found building it that a finding should not re-report - the Map-not-object-literal lookup, the %2f containment check, and scriptFiles counting unclosed script tags (issue #200)'
+description: 'The dashboard shell CSP after #195 — what each directive is for, why style-src carries unsafe-inline and img-src exists at all (both measured, neither a control, do not report either as a weakness), that script-src has no unsafe-* and connect-src is self, what the policy does NOT bound (outbound navigation and WebRTC are outside CSP, so exfiltration is harder not closed — a finding saying so is correct), that every HTML document including /login carries it, what a change here has to re-verify in a browser rather than by reading the header, that an external <a href> is deliberately not a finding in the build-side checker, and that the emitted bundle is guarded separately by scripts/check-dashboard-bundle.ts, which parses for eval/Function call expressions, deliberately does not flag obj.eval, deliberately does not follow an alias or a computed name, and since #227 starts at the shell tag list and walks the emitted static import graph from there, reporting rather than skipping a specifier it cannot follow, so a code-split chunk is read and a finding saying one would go unread is stale, with the declared residue now being Worker/runtime-appended-script/`require` (each measured, each tracked) and `containedIn` bounding the specifier lexically rather than realpath-ing the read; and the three traps found building it that a finding should not re-report - the Map-not-object-literal lookup, which since #226 is settled in both files rather than open on NAMED_REFS, the %2f containment check, and scriptFiles counting unclosed script tags (issue #200)'
 metadata:
   type: project
 ---
@@ -105,7 +105,9 @@ both are tested: the scan runs over the *raw* attribute token by token, so `&amp
 known reference plus literal text rather than an unknown one; and a `;` is required, so `?a=1&b=2`
 is a query string. Malformed numeric references (`&#x110000;`, a lone surrogate, `&#0;`) decode to
 U+FFFD as the spec says rather than throwing — a `RangeError` in CI is a stack trace where a finding
-belongs, and leaves the shell unchecked.
+belongs, and leaves the shell unchecked. The table is a `Map` since #226, which is what makes the
+reporting stance hold for every name rather than for all but the few `Object.prototype` carries —
+see the first trap below.
 
 **An external `<a href>` is deliberately NOT a finding** and re-reporting it is wrong: CSP governs
 what the document fetches, not where a link takes the reader, so failing CI over a working link
@@ -209,10 +211,18 @@ answered by this rather than by an edit.** All three are fixed and tested.
   `REFUSED['toString']` resolved through the prototype chain to `Object.prototype.toString` —
   truthy — so a bundle calling a function named `toString`, `valueOf`, `constructor` or
   `hasOwnProperty` failed CI with `function toString() { [native code] }` printed where the finding
-  belongs. **`NAMED_REFS` in `check-dashboard-csp.ts` still has the identical shape** (`&constructor;`
-  decodes to that same string instead of being reported as an unknown reference); it is pre-existing,
-  out of that PR's scope, and tracked on its own issue — so a finding about it is correct and new,
-  while one about `REFUSED` is settled.
+  belongs. **`NAMED_REFS` in `check-dashboard-csp.ts` had the identical shape and took the identical
+  fix in #226**, so a finding about *either* lookup is now settled: an `Object.prototype` member
+  whose name `CHAR_REF` can spell is reported as undecodable rather than substituting its
+  `[native code]` source into the URL. The tests cover every such name rather than a sample —
+  `constructor`, `toString`, `toLocaleString`, `valueOf`, `hasOwnProperty`, `isPrototypeOf`,
+  `propertyIsEnumerable` — so a finding naming any one of them is answered here. `&__proto__;` is
+  the near-miss to leave alone: it passes undecoded, but not through the table and not by a
+  truncated match — `CHAR_REF`'s name group is `[a-z][a-z0-9]*`, the character after the `&` is one
+  it cannot start on, so no match begins there and neither the table nor `UNKNOWN_REF` is reached,
+  which is how a browser reads it too. (An underscore *inside* a name does truncate: `&proto_x;`
+  matches `&proto`, unterminated.) A test pins that, and a finding proposing to report it is
+  answered here.
 - **`new URL` does not percent-decode a path segment, so the containment is checked, not inferred.**
   A literal `../` and `%2e%2e` are both collapsed by the parser, which reads as sufficient — but
   `%2f` survives into the `decodeURIComponent` that follows and becomes a separator again. Measured:
