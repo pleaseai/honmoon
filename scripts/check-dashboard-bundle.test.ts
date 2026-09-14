@@ -73,6 +73,19 @@ describe('checkBundle', () => {
     expect(checkBundle('const v = interpreter.eval(node)', 'chunk.js')).toEqual([])
   })
 
+  // A plain object would resolve these through the prototype chain — truthy —
+  // and report `function toString() { [native code] }` as the finding. The same
+  // false positive the parse exists to avoid, arriving through the lookup.
+  test.each([
+    ['constructor', 'constructor(x)'],
+    ['toString', 'toString(x)'],
+    ['valueOf', 'valueOf(x)'],
+    ['hasOwnProperty', 'hasOwnProperty(x)'],
+    ['window.toString', 'window.toString(x)'],
+  ])('a call to `%s` passes — a prototype member is not a refused construct', (_label, code) => {
+    expect(checkBundle(code, 'chunk.js')).toEqual([])
+  })
+
   test('`obj.Function(x)` passes for the same reason', () => {
     expect(checkBundle('const v = lib.Function("x")', 'chunk.js')).toEqual([])
   })

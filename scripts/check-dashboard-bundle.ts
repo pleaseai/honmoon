@@ -63,11 +63,21 @@ export interface Problem {
  */
 const GLOBAL_OBJECTS = new Set(['window', 'globalThis', 'self', 'global'])
 
-/** What a finding calls each refused construct. */
-const REFUSED: Record<string, string> = {
-  eval: 'a call to `eval`',
-  Function: 'a call to the `Function` constructor',
-}
+/**
+ * What a finding calls each refused construct, keyed by the name being called.
+ *
+ * A `Map`, not an object literal, and that is load-bearing rather than taste: a
+ * plain object resolves `REFUSED['toString']` through the prototype chain to
+ * `Object.prototype.toString`, which is truthy — so a bundle calling a function
+ * named `toString`, `valueOf`, `constructor` or `hasOwnProperty` would fail CI
+ * with `function toString() { [native code] }` where the finding belongs. That
+ * is the same false positive this whole file is shaped to avoid, arriving
+ * through the lookup instead of through a pattern. A `Map` has no such chain.
+ */
+const REFUSED = new Map<string, string>([
+  ['eval', 'a call to `eval`'],
+  ['Function', 'a call to the `Function` constructor'],
+])
 
 /** Whether `expression` names one of {@link GLOBAL_OBJECTS}. */
 function isGlobalObject(expression: ts.Expression): boolean {
@@ -113,12 +123,12 @@ function globalBinding(expression: ts.Expression): string | null {
 /** What `node` is, if it is a construct the policy refuses. */
 function refusal(node: ts.Node): string | null {
   if (ts.isCallExpression(node)) {
-    return REFUSED[globalBinding(node.expression) ?? ''] ?? null
+    return REFUSED.get(globalBinding(node.expression) ?? '') ?? null
   }
   // `new eval()` is a `TypeError`, not a policy violation — `eval` is not a
   // constructor — so only the one that really is one is read here.
   if (ts.isNewExpression(node) && globalBinding(node.expression) === 'Function') {
-    return REFUSED.Function
+    return REFUSED.get('Function') ?? null
   }
   return null
 }
