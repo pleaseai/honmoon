@@ -1,0 +1,22 @@
+.claude/agent-memory/review-review-security-reviewer/release-pipeline-draft-invariant.md
+  s_89bb0ff98a3782::t_66ab7d4cec51f7 35-37
+  s_89bb0ff98a3782::t_39ba3823daa1b0 24-26,29-32
+  s_89bb0ff98a3782::t_94278161189205 1-2,4-23,27-28,33-34
+  s_89bb0ff98a3782::t_cbafb58009b16a 3,38-40
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "01a45abde618306198b543a05c76ac6d80077c7c",
+  "prompts": {},
+  "sessions": {
+    "s_89bb0ff98a3782": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d8457d0b-63ba-4754-9853-e63daaf6e396",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
