@@ -58,7 +58,7 @@
  *   bun scripts/check-dashboard-csp.ts                 # both built shells
  *   bun scripts/check-dashboard-csp.ts <path…>         # explicit files
  */
-import { readFileSync, realpathSync } from 'node:fs'
+import { lstatSync, readFileSync, realpathSync, statSync } from 'node:fs'
 import { dirname, isAbsolute, join, resolve, sep } from 'node:path'
 import process from 'node:process'
 import { fileURLToPath } from 'node:url'
@@ -425,7 +425,7 @@ export function containedIn(dir: string, file: string): boolean {
 }
 
 /** The `errno` code a failed filesystem call carries, or the error itself. */
-function errno(error: unknown): string {
+export function errno(error: unknown): string {
   const code = (error as { code?: unknown } | null)?.code
   return typeof code === 'string' ? code : String(error)
 }
@@ -445,21 +445,37 @@ function errno(error: unknown): string {
  * results. **Both sides**, because resolving only the file is the identical
  * mismatch pointing the other way: `TMPDIR` on macOS sits under `/var`, itself
  * a symlink to `/private/var`, so a resolved file compared against an
- * unresolved build directory matches nothing — every file in the build would be
- * refused and a walk that read nothing would pass vacuously.
+ * unresolved build directory matches nothing. That direction does not pass
+ * vacuously — every outcome below is reported, so it fails, and it fails on a
+ * build that is perfectly legitimate. Which is the *other* failure these two
+ * scripts are shaped to avoid: a guard that breaks a working build is this
+ * file's own version of "a CSP that breaks the dashboard is worse than none".
+ * Measured: resolving only the file side turned 26 of the existing bundle tests
+ * red on macOS.
  *
  * `dir` is resolved here rather than by the caller so there is no way to hand
  * this an unresolved one. A walk reads a few dozen files in CI and parses a
- * bundler chunk out of each, so the extra `realpathSync` per file does not
- * signify.
+ * bundler chunk out of each, so the extra syscalls per file do not signify.
  *
- * Three outcomes, and every one of them is for the caller to report rather than
+ * **Inside the build is not yet something that can be read to an end.**
+ * `realpathSync` succeeds on a FIFO and `readFileSync` on one blocks until a
+ * writer appears — measured, the walk hung with no output, and there is no
+ * timeout here to end it, so the CI step would run to the job limit. A build
+ * emits regular files, so anything else is reported like everything else this
+ * cannot read. That is what closes the stall the issue named, rather than the
+ * containment alone: containment covers a symlink to `/dev/zero`, which leaves
+ * the build, but not a pipe sitting inside it.
+ *
+ * Four outcomes, and every one of them is for the caller to report rather than
  * skip — the stance both guards take on everything they cannot read. `missing`
- * is a path with nothing behind it: a chunk the build did not emit, or a
- * symlink that dangles. `reason` is a path that resolved outside the build, or
- * did not resolve at all (a symlink cycle, an unreadable parent). Only `path`
- * is a file the caller may open, and it is the resolved one, so what is read is
- * the path this checked rather than the chain walked a second time.
+ * is a path with nothing behind it at all, which a rebuild fixes. `reason`
+ * covers the rest and says which: a symlink whose target is gone (which a
+ * rebuild may well leave in place, so it must not be reported as "not built"),
+ * a path that did not resolve (a cycle, an unreadable parent), one that
+ * resolved outside the build, and one that resolved to something that is not a
+ * regular file. Only `path` is a file the caller may open, and it is the
+ * resolved one, so what is read is the path this checked rather than the chain
+ * walked a second time.
  */
 export function realPathInside(dir: string, file: string):
   { path: string } | { missing: true } | { reason: string } {
@@ -477,11 +493,36 @@ export function realPathInside(dir: string, file: string):
   }
   catch (error) {
     const code = errno(error)
-    return code === 'ENOENT' ? { missing: true } : { reason: `did not resolve (${code})` }
+    if (code !== 'ENOENT') {
+      return { reason: `did not resolve (${code})` }
+    }
+    // `ENOENT` covers two things a caller has to tell apart, because their
+    // remedies differ: a chunk the build never emitted, which running the build
+    // fixes, and a symlink whose target is gone, which running the build may
+    // leave exactly where it is. `lstatSync` separates them by not following
+    // the link — it succeeds on the dangling one.
+    try {
+      lstatSync(file)
+    }
+    catch {
+      return { missing: true }
+    }
+    return { reason: 'is a symlink whose target does not exist' }
   }
 
   if (!containedIn(realDir, realFile)) {
     return { reason: `resolves to ${realFile}, outside the build directory ${realDir}` }
+  }
+
+  let regular: boolean
+  try {
+    regular = statSync(realFile).isFile()
+  }
+  catch (error) {
+    return { reason: `resolves to ${realFile}, which could not be inspected (${errno(error)})` }
+  }
+  if (!regular) {
+    return { reason: `resolves to ${realFile}, which is not a regular file — reading it could block` }
   }
   return { path: realFile }
 }

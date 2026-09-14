@@ -77,6 +77,13 @@
  * (#233). One gate rather than two, because a `<script src>` and an `import`
  * arrive at the same read.
  *
+ * **The shell itself is read without that gate, deliberately.** It is named on
+ * the command line or by `DEFAULT_SHELLS`, and it is the path `buildDir`
+ * derives the boundary *from* — there is no enclosing directory to bound it
+ * against, and whoever can point this script at a shell can point it anywhere
+ * already. The gate covers the walked files, which is where a path arrives
+ * from inside the build rather than from the operator.
+ *
  * **It is the *static ESM* graph, and the residue is named rather than left to
  * be found.** Not walked and not reported: code a chunk reaches by something
  * that is not an ES module specifier — `new Worker(new URL('./w.js',
@@ -112,6 +119,7 @@ import {
   buildDir,
   containedIn,
   DEFAULT_SHELLS,
+  errno,
   realPathInside,
   scriptFiles,
   shellPath,
@@ -479,10 +487,15 @@ export function inspectBundles(shells: string[]): Inspection {
       try {
         code = readFileSync(real.path, 'utf8')
       }
-      catch {
+      catch (error) {
+        // Residual: `realPathInside` already settled missing, unresolvable,
+        // out-of-build and not-a-regular-file, so what is left here is a file
+        // that resolved and then would not open — a permission, in practice.
+        // Naming the errno keeps it from reading as "the build is stale", which
+        // is a remedy that would not fix it.
         problems.push({
           file,
-          detail: `could not be read, though ${shell} reaches it — run \`${BUILD_COMMANDS}\` first`,
+          detail: `could not be read (${errno(error)}), though ${shell} reaches it`,
         })
         continue
       }

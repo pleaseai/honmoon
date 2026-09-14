@@ -3,7 +3,14 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import process from 'node:process'
 import { describe, expect, test } from 'bun:test'
-import { checkShell, checkShells, containedIn, REPO_ROOT, scriptFiles } from './check-dashboard-csp'
+import {
+  checkShell,
+  checkShells,
+  containedIn,
+  realPathInside,
+  REPO_ROOT,
+  scriptFiles,
+} from './check-dashboard-csp'
 
 /** The shape `vite build` emits today: one external module script, one stylesheet. */
 const BUILT_SHELL = `<!doctype html>
@@ -432,5 +439,18 @@ describe('containedIn', () => {
     ['a path above it', '/build', '/index.js', false],
   ])('%s', (_label, dir, file, expected) => {
     expect(containedIn(dir, file)).toBe(expected)
+  })
+})
+
+// The build-directory arm of `realPathInside`. Every caller derives `dir` from a
+// shell it has already read, so this arm is unreachable through `inspectBundles`
+// and has to be exercised directly — and it is one of the two resolutions the
+// #233 boundary rests on, so "unreachable today" is not a reason to leave it
+// unpinned.
+describe('realPathInside', () => {
+  test('a build directory that does not resolve is reported, not treated as containing', () => {
+    const missingDir = join(tmpdir(), `honmoon-no-such-build-${process.pid}`)
+    const result = realPathInside(missingDir, join(missingDir, 'assets/index.js'))
+    expect(result).toEqual({ reason: expect.stringContaining('build directory did not resolve') })
   })
 })
