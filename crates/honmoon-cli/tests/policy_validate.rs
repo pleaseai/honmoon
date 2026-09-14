@@ -22,9 +22,11 @@
 //! 4. No command prints the file it was pointed at. A path that resolves to
 //!    something other than a policy has to be named, not quoted, and that is a
 //!    property of the shared read rather than of any one subcommand — so it is
-//!    asserted for all three of `policy validate`, `run --policy` and
-//!    `gateway --config`. It lives here because this is where the harness for
-//!    running the binary under a scratch `HOME` already is.
+//!    asserted for `policy validate`, `run --policy` and, on Unix, for
+//!    `gateway --config`, which cannot reach the read on a host where it cannot
+//!    mint a management token (the same gating claims 2 and 3 carry). It lives
+//!    here because this is where the harness for running the binary under a
+//!    scratch `HOME` already is.
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
@@ -379,6 +381,17 @@ fn a_file_that_is_not_a_policy_is_named_rather_than_quoted() {
             !gateway.status.success(),
             "the gateway refuses this file too"
         );
+        // Pinned to the stage it reached, like every other gateway control in
+        // this file. `honmoon gateway` exits non-zero for plenty of reasons that
+        // never reach the policy read — an unwritable scratch HOME, a failed
+        // token mint, a renamed flag — so the exit code alone would let this
+        // block pass with the guard gone.
+        assert!(
+            stderr(&gateway).contains("not a policy document"),
+            "…and it must have got as far as the guard to refuse it for that \
+             reason; got: {}",
+            stderr(&gateway)
+        );
     }
 
     // The other edge of the same claim, and the one that caught a real bug: a
@@ -499,16 +512,43 @@ rules:
 /// A file whose top level is a plain scalar, in the shape that makes the leak
 /// worst: YAML folds the lines of a plain scalar into one, so serde's
 /// `invalid type: string "<value>"` carries the *whole* file rather than one
-/// line of it. Every line is distinctive so the output can be searched for it.
+/// line of it.
 ///
-/// Not a real key — 512-bit PEM bodies are base64, and this is not even that.
-/// The shape is what matters: no YAML structure, several lines, and a first
-/// line that is itself a disclosure.
+/// Not a real key. The body lines are base64 — they have to be, or the file
+/// would not read as a PEM — but they decode to `not-a-key-just-a-fixture-…`
+/// rather than to a DER key. The shape is what matters: no YAML structure,
+/// several lines, and a first line that is itself a disclosure.
+///
+/// The test searches for *every* line, including the two `-----BEGIN/END-----`
+/// markers. Those are boilerplate rather than distinctive, and they are asserted
+/// anyway on purpose: the marker is the first thing a reader of a leaked log
+/// sees, and it is what tells them a key was printed. Do not trim the fixture to
+/// its "interesting" lines.
 const NOT_A_POLICY_PEM: &str = "\
 -----BEGIN PRIVATE KEY-----
 bm90LWEta2V5LWp1c3QtYS1maXh0dXJlLWZpcnN0LWxpbmU
 bm90LWEta2V5LWp1c3QtYS1maXh0dXJlLXNlY29uZC1saW5l
 -----END PRIVATE KEY-----
+";
+
+/// The same file with a second YAML document after it — the shape that defeated
+/// the first version of this fix, and the reason the guard reads one document
+/// rather than the stream.
+///
+/// `serde_yaml::from_str::<Value>` refuses a multi-document stream instead of
+/// returning its first document, so a guard that classified the stream deferred
+/// every file carrying a `---` line to the loader. The loader deserializes the
+/// first document *before* it notices the second, so the key came back out — on
+/// all three commands, past a guard whose whole purpose was to stop exactly that.
+/// A `.env`, a Kubernetes manifest and a `helm` values file all routinely carry a
+/// `---` line, so this is not a contrived shape.
+const NOT_A_POLICY_MULTIDOC: &str = "\
+-----BEGIN PRIVATE KEY-----
+bm90LWEta2V5LWp1c3QtYS1maXh0dXJlLWZpcnN0LWxpbmU
+bm90LWEta2V5LWp1c3QtYS1maXh0dXJlLXNlY29uZC1saW5l
+-----END PRIVATE KEY-----
+---
+also: not a policy
 ";
 
 /// #202: the exposure is the *read*, not the command.
@@ -528,8 +568,25 @@ bm90LWEta2V5LWp1c3QtYS1maXh0dXJlLXNlY29uZC1saW5l
 /// absence cannot be satisfied by a command that says nothing useful.
 #[test]
 fn no_command_that_loads_a_policy_by_path_quotes_the_file() {
-    let home = TempHome::new("path-leak");
-    let mistyped = home.write_policy("mistyped.pem", NOT_A_POLICY_PEM);
+    for (fixture, name, contents) in [
+        ("one document", "mistyped.pem", NOT_A_POLICY_PEM),
+        (
+            "two documents",
+            "mistyped-multidoc.pem",
+            NOT_A_POLICY_MULTIDOC,
+        ),
+    ] {
+        no_command_quotes(fixture, name, contents);
+    }
+}
+
+/// The body of the test above, run once per fixture.
+///
+/// A fresh `TempHome` per fixture, because `gateway` writes a management token
+/// into it and the label is what keeps two of them apart.
+fn no_command_quotes(fixture: &str, name: &str, contents: &str) {
+    let home = TempHome::new(&format!("path-leak-{}", name));
+    let mistyped = home.write_policy(name, contents);
     let path = mistyped.to_str().unwrap();
 
     let commands = vec![
@@ -551,19 +608,19 @@ fn no_command_that_loads_a_policy_by_path_quotes_the_file() {
         let output = run(&home, &args);
         assert!(
             !output.status.success(),
-            "`{label}` must refuse a file that is not a policy"
+            "`{label}` must refuse a file that is not a policy ({fixture})"
         );
         let printed = format!("{}{}", stdout(&output), stderr(&output));
-        for line in NOT_A_POLICY_PEM.lines() {
+        for line in contents.lines() {
             assert!(
                 !printed.contains(line),
-                "`{label}` put the file's contents in its error — the line \
-                 {line:?} is in: {printed}"
+                "`{label}` put the file's contents in its error ({fixture}) — \
+                 the line {line:?} is in: {printed}"
             );
         }
         assert!(
             printed.contains("not a policy document"),
-            "`{label}` must say what is actually wrong; got: {printed}"
+            "`{label}` must say what is actually wrong ({fixture}); got: {printed}"
         );
     }
 }

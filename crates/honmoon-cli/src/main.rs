@@ -941,8 +941,11 @@ fn hook_salt_for(context: Option<&str>, wire_salt: Vec<u8>, machine_key: Vec<u8>
 /// and `honmoon policy validate`.
 ///
 /// The source comes back alongside the `Policy` because `gateway` needs both —
-/// the policy to run on, and the text the management API serves to the Claude
-/// Code hook endpoint. The other two callers drop it.
+/// the policy to run on, and the text the management API serves verbatim at
+/// `GET /api/policy` for the dashboard's read-only policy view. It reaches that
+/// route through `AppState::with_hook_config`, whose name is about the salt
+/// argument beside it and not about this one: nothing on the hook endpoint reads
+/// `policy_yaml`. The other two callers drop it.
 ///
 /// [`not_a_policy_document`] runs here rather than in any one command, which is
 /// the whole of #202: classifying the file's shape belongs to the *read*, since
@@ -971,8 +974,19 @@ fn load_policy(path: &Path) -> Result<(Policy, String)> {
 /// `None` means "hand it to the loader", and covers three cases: a mapping (an
 /// ordinary policy), a null document (an empty file, which *is* a valid policy
 /// — every field at its default), and text YAML itself cannot parse, where
-/// serde's own syntax diagnostic is the useful one and quotes only the token it
-/// stopped on, with a line and column.
+/// serde's own syntax diagnostic is the useful one: it names what it stopped on
+/// rather than reproducing the document, and carries a line and column once the
+/// scanner got past the start. (Not always — a reserved indicator as the very
+/// first character has no position to report relative to. The half that holds
+/// unconditionally is the one that matters, and
+/// `a_syntax_error_keeps_serdes_positional_diagnostic` asserts both, marking
+/// which inputs carry a position.)
+///
+/// A multi-document stream is **not** a fourth case. It is classified by its
+/// first document like any other file, because that is the document the loader
+/// tries to deserialize first and therefore the one it can quote. A stream whose
+/// first document is a mapping still passes through, and the loader refuses it
+/// for being a stream — in a message that carries no content.
 ///
 /// The remaining shapes are why this exists. serde renders a top-level type
 /// mismatch as `invalid type: string "<value>"`, and when the top level is a
@@ -1002,12 +1016,33 @@ fn load_policy(path: &Path) -> Result<(Policy, String)> {
 /// a policy, and the value quoted is the author's own field, which is the
 /// diagnosis they need.
 fn not_a_policy_document(src: &str) -> Option<&'static str> {
-    match serde_yaml::from_str::<serde_yaml::Value>(src) {
+    use serde::Deserialize as _;
+
+    // The *first* document, not the stream. `serde_yaml::from_str::<Value>`
+    // refuses a multi-document stream outright rather than handing back the
+    // first document, so asking it would send every file carrying a `---` line
+    // down the `Err` arm below and on to the loader — and the loader
+    // deserializes the first document *before* it notices the second, so a file
+    // whose first document is a plain scalar has that scalar quoted whole. A
+    // `---` line under a PEM key was enough to leak the key on every one of the
+    // three commands. Reading one document at a time removes the distinction:
+    // what gets classified is the shape the loader will try to deserialize.
+    let mut documents = serde_yaml::Deserializer::from_str(src);
+    let Some(first) = documents.next() else {
+        // No document at all. An empty file is a valid policy — every field at
+        // its default — so this is the loader's to accept, not this function's
+        // to refuse.
+        return None;
+    };
+
+    match serde_yaml::Value::deserialize(first) {
         Ok(value) => shape_unfit_for_a_policy(&value),
         // Not a YAML document at all. serde's own syntax diagnostic is the
-        // useful one here — it carries a line and column and quotes only the
-        // token it stopped on — so this defers to the loader rather than
-        // replacing it.
+        // useful one here — it names what it stopped on rather than reproducing
+        // the document — so this defers to the loader rather than replacing it.
+        // That the deferred text cannot come back out is the claim the deferral
+        // rests on, and it is asserted rather than assumed:
+        // `a_syntax_error_keeps_serdes_positional_diagnostic`.
         Err(_) => None,
     }
 }
@@ -1075,13 +1110,22 @@ mod tests {
     /// The guard's central claim, checked where it cannot be circular.
     ///
     /// `not_a_policy_document` exists to reword serde's diagnostic, never to
-    /// change a verdict: every shape it names must be one the loader refuses
-    /// anyway, and every shape it passes through must be one the loader can
-    /// take. Before #202 that was checked by running `policy validate` and
-    /// `gateway --config` over the same file and requiring them to agree — which
-    /// stopped meaning anything the moment the guard moved into the read they
-    /// share. `Policy::from_yaml` is the independent witness that is left, so it
-    /// is asked directly.
+    /// change a verdict. Before #202 that was checked by running
+    /// `policy validate` and `gateway --config` over the same file and requiring
+    /// them to agree — which stopped meaning anything the moment the guard moved
+    /// into the read they share. `Policy::from_yaml` is the independent witness
+    /// that is left, so it is asked directly.
+    ///
+    /// The claim is one-directional, and the loops below say so rather than
+    /// overstating it. **Refusing** is where a verdict could move, so every shape
+    /// the guard names must be one the loader refuses anyway. Passing a shape
+    /// through cannot move a verdict at all — the loader simply decides, as it
+    /// did before — so the second loop is not "everything it passes through
+    /// loads": it is the narrower and more useful claim that the shapes a
+    /// *policy* arrives in still reach the loader and still load. A mapping with
+    /// a mistyped field passes the guard and is refused by the loader, which is
+    /// the documented bound, and `a_documented_bound_still_reaches_the_loader`
+    /// pins it separately.
     ///
     /// The second loop is the direction that matters more. A guard that refuses
     /// a policy the gateway would have run turns a diagnostic improvement into
@@ -1102,6 +1146,14 @@ mod tests {
             "42\n",
             // A tag over a scalar is still a scalar.
             "!Secret ghp_notarealcredential\n",
+            // The same PEM with a second document after it (#202). `serde_yaml`
+            // refuses a multi-document stream rather than handing back its first
+            // document, so classifying the stream deferred this to the loader —
+            // which deserializes the first document before it notices the second
+            // and quoted the key whole.
+            "-----BEGIN PRIVATE KEY-----\nbm90LWEta2V5\n-----END PRIVATE KEY-----\n---\nsecond\n",
+            // The minimal form of the same shape: a scalar and a `---` line.
+            "ghp_notarealcredential\n---\n",
         ] {
             assert!(
                 not_a_policy_document(src).is_some(),
@@ -1118,6 +1170,10 @@ mod tests {
             // Empty: a policy with every field at its default.
             "",
             "version: 1\n",
+            // An explicit document-start marker is one document, not two. A
+            // policy file beginning `---` is ordinary YAML, and a guard that
+            // counted it as a stream would refuse one the gateway runs.
+            "---\nversion: 1\n",
             // A tagged mapping is a mapping.
             "!Foo {version: 1}\n",
         ] {
@@ -1131,6 +1187,89 @@ mod tests {
                  refuse a policy the gateway runs: {src:?}"
             );
         }
+    }
+
+    /// The guard's deferral arm, which is a security claim and was not checked.
+    ///
+    /// For text YAML cannot parse, `not_a_policy_document` returns `None` on
+    /// purpose: serde's own syntax diagnostic names what it stopped on rather
+    /// than reproducing the document, and carries a line and column wherever the
+    /// scanner got past the start — which is more useful to whoever is fixing a
+    /// real policy than "this is not a policy document". #202 is what
+    /// makes `run --policy` and `gateway --config` depend on that being true, so
+    /// it is asserted rather than assumed — the arm is the one place the guard
+    /// hands a file's own text to serde by choice.
+    ///
+    /// Pinned as an absence, like the integration test: the distinctive lines of
+    /// the input must not appear in what the loader renders.
+    #[test]
+    fn a_syntax_error_keeps_serdes_positional_diagnostic() {
+        use super::not_a_policy_document;
+        use honmoon_core::Policy;
+
+        // Each of these is a single document YAML cannot parse, carrying a line
+        // that would be a disclosure if it were echoed. The flag is whether
+        // serde's message carries a position: it does once the scanner has
+        // advanced, and does not when the very first character is what stopped
+        // it — which is why the doc comments here claim a position "where the
+        // scanner got past the start" rather than always.
+        for (src, has_position) in [
+            // A tab where indentation is expected.
+            ("rules:\n\tghp_notarealcredential: 1\n", true),
+            // An unterminated quoted scalar — two positions, in fact.
+            ("version: \"ghp_notarealcredential\n", true),
+            // A reserved indicator as the first character: nothing to report a
+            // position relative to.
+            ("@ghp_notarealcredential\n", false),
+        ] {
+            assert!(
+                not_a_policy_document(src).is_none(),
+                "this is the deferral arm — the guard must hand it to serde: {src:?}"
+            );
+            let error = Policy::from_yaml(src)
+                .expect_err("YAML this malformed cannot load")
+                .to_string();
+            // The security property, and the whole reason deferring is allowed.
+            assert!(
+                !error.contains("ghp_notarealcredential"),
+                "the deferral only holds while serde's syntax diagnostic names \
+                 what it stopped on rather than reproducing the document: {error}"
+            );
+            assert_eq!(
+                error.contains("line") && error.contains("column"),
+                has_position,
+                "the position half of the claim moved for {src:?}: {error}"
+            );
+        }
+    }
+
+    /// The bound the guard draws on purpose, pinned so a later change has to
+    /// move it deliberately.
+    ///
+    /// A file that *is* a mapping but carries a mistyped field value reaches
+    /// serde's quoting, and the value quoted is the author's own field — which
+    /// is the diagnosis they need, with a line and column. Widening the guard to
+    /// suppress it would turn a useful error into a useless one; narrowing the
+    /// guard so it stopped passing mappings through would refuse policies the
+    /// gateway runs. Neither direction should happen without this test saying so.
+    #[test]
+    fn a_documented_bound_still_reaches_the_loader() {
+        use super::not_a_policy_document;
+        use honmoon_core::Policy;
+
+        let src = "version: not-a-number\n";
+        assert!(
+            not_a_policy_document(src).is_none(),
+            "a mapping is a policy's shape — the guard passes it through"
+        );
+        let error = Policy::from_yaml(src)
+            .expect_err("`version` is a u32")
+            .to_string();
+        assert!(
+            error.contains("not-a-number"),
+            "the author's own field value is the diagnosis, and is quoted on \
+             purpose — this is the stated bound of the guard, not a leak: {error}"
+        );
     }
 
     #[test]
