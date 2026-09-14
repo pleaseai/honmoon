@@ -1746,7 +1746,7 @@ right now. SQL/K8s `pause` rules need the live inline relay + TLS termination (*
 ## CLI wiring: `run` vs `gateway`
 
 `honmoon-cli` exposes three subcommands via `clap`. Two drive the gateway; one is a stub
-([main.rs:35-48](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-cli/src/main.rs#L35-L48)).
+([main.rs:36-225](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-cli/src/main.rs#L36-L225)).
 
 ```mermaid
 flowchart TD
@@ -1772,7 +1772,7 @@ flowchart TD
   style gwstate fill:#161b22,stroke:#30363d,color:#e6edf3
   style gwboth fill:#161b22,stroke:#30363d,color:#e6edf3
 ```
-<!-- Sources: crates/honmoon-cli/src/main.rs:24-147 -->
+<!-- Sources: crates/honmoon-cli/src/main.rs:36-225 (Command enum), main.rs:325-383 (dispatch), main.rs:586-788 (gateway), main.rs:792-912 (run) -->
 
 ### `honmoon run`
 
