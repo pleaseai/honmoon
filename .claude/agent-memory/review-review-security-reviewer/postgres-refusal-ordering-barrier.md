@@ -169,4 +169,13 @@ Verified once against the #121 shape, so do not re-derive:
   `MAX_BUFFERED_BACKEND_MESSAGE`) still services neither the stall timer nor the
   injection channel, deliberately: the head is already on the client's socket, so
   an `ErrorResponse` written there would be eaten as that frame's payload. The
-  copy ends in `delivered`, which re-arms in full.
+  copy ends in `delivered`, which re-arms in full. Since #218 the copy runs in
+  `copy_exact_reporting_quiet`, which *does* poll one timer of the same length
+  (`OVERSIZED_COPY_QUIET_WARNING == REFUSAL_ORDER_STALL_TIMEOUT`) — but its only
+  effect is a single `tracing::warn!` per copy; it writes nothing, releases
+  nothing and gives up on nothing, so the framing/ordering story above is
+  unchanged. The copy is still exact (`want = len.min(buf.len())`, 16 KiB
+  buffer, `read == 0` -> `UnexpectedEof`), and the closure cannot write to the
+  client because `dst` holds the mutable borrow. The warning renders the raw
+  upstream tag byte as `tag = %(tag as char)` — the one place in this file a
+  byte the database controls reaches a log line.
