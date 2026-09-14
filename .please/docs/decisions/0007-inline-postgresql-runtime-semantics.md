@@ -133,22 +133,33 @@ that fails to parse: it is refused rather than forwarded blind.
     of a pipelined pair means waiting out the first half's query. That is the point — the client
     asked in that order — but it makes a denial's latency a property of the client's own pipeline
     rather than of the policy engine.
-  - **What is bounded is the stall, not the wait.** Every **backend message** that reaches the
-    client buys another full 30-second window — the rows of a long result set included, not only
-    the `ReadyForQuery` a refusal is actually waiting for. A database working steadily through a
-    slow statement is therefore never cut off however long that statement runs; counting only sync
-    points would have made a query streaming rows for longer than the window indistinguishable from
-    one that had stopped, and injected the refusal into the middle of its result set. What re-arms
-    the window is a **complete** message, so what expires is a pipeline that delivers nothing whole
-    for a whole window — which is what the two ways the count can go wrong look like from here: a
-    database that stopped answering, and a sync point the backend swallowed (PostgreSQL ignores `Sync` while a `COPY` is
-    in progress, so the `Sync` honmoon counted is never answered). An unbounded wait would cost the
-    client its answer altogether, which is worse than the misattribution this removes, so the
-    runtime warns and writes the answer anyway.
+  - **What is bounded is the stall, not the wait.** Every **byte** that arrives from the database
+    buys another full 30-second window — the rows of a long result set included, not only the
+    `ReadyForQuery` a refusal is actually waiting for, and not only whole messages. A database
+    working steadily through a slow statement is therefore never cut off however long that statement
+    runs; counting only sync points would have made a query streaming rows for longer than the
+    window indistinguishable from one that had stopped, and injected the refusal into the middle of
+    its result set, and counting only complete messages would have done the same to a single message
+    arriving over a link too slow to finish it inside the window (#209). What expires is an upstream
+    that has sent nothing at all for a whole window — which is what the two ways the count can go
+    wrong look like from here: a database that stopped answering, and a sync point the backend
+    swallowed (PostgreSQL ignores `Sync` while a `COPY` is in progress, so the `Sync` honmoon counted
+    is never answered). An unbounded wait would cost the client its answer altogether, which is worse
+    than the misattribution this removes, so the runtime warns and writes the answer anyway.
 
-    The timer is the relay's own, around its own read of the upstream, re-armed by every **complete**
-    message it delivers, because the relay is the task that knows whether any backend traffic
-    arrived: "waiting on sync point N with nothing from the
+    **The one place the bound is not serviced is the oversized-payload copy.** A backend message too
+    large to buffer is written head-first and streamed, and between the head going out and the
+    payload finishing the relay polls neither the timer nor the injection channel. The reason is not
+    that nothing can be late there but that nothing can be *written*: the client is inside a frame
+    whose length it has been told, and an `ErrorResponse` injected into it would be read as that
+    frame's payload. A queued refusal therefore waits out the whole copy, and an upstream that goes
+    quiet mid-payload holds it for as long as it stays open — which costs the client nothing a direct
+    connection would not, since it is itself mid-frame waiting on a message only the backend can
+    finish. The copy ends by re-arming the window in full, so everything after it is bounded again.
+
+    The timer is the relay's own, around its own read of the upstream, re-armed by every read that
+    takes bytes off it — the streamed copy above excepted — because the relay is the task that knows
+    whether any backend traffic arrived: "waiting on sync point N with nothing from the
     database for T" is one local decision rather than an inference from a counter another task
     publishes. What it gives up on is recorded **beside** what the client received rather than added
     to it. The relay keeps two numbers per side — how many answers it has really delivered, and how
@@ -157,8 +168,15 @@ that fails to parse: it is refused rather than forwarded blind.
     later refusal on that connection pay the bound again for the rest of the session) while a
     delivered count that states only what the client actually holds cannot be falsified by an answer
     that turns up after all. The bounded quantity is the delivered `ReadyForQuery` count
-    specifically; progress for the stall window is every backend message of any kind, and runs far
-    ahead of it, since one query's sync point can carry thousands of rows.
+    specifically; progress for the stall window is every byte of backend traffic of any kind, and runs
+    far ahead of it, since one query's sync point can carry thousands of rows.
+
+    A backend that drips bytes without ever completing a message therefore holds a queued refusal for
+    as long as it keeps dripping. It gains nothing worth having by it: holding one has always needed
+    no more than a complete five-byte message per window, and while the message is unfinished the
+    client is waiting on something only the backend can finish — where a direct connection would
+    leave it too. Writing the refusal early would not free the client; it would only misattribute the
+    denial to the statement still arriving, which is what this barrier exists to prevent.
   - **An answer that arrives after the relay gave up on it is counted where it belongs, and cannot
     be counted twice.** Giving up must not be recorded as the client having received something,
     because the database can still send it. An earlier design credited the delivered count and then

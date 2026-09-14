@@ -134,13 +134,15 @@ const DRAIN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 /// whole.
 const MAX_BUFFERED_BACKEND_MESSAGE: usize = 64 * 1024;
 
-/// How long the pipeline may go **without delivering anything** before a queued
+/// How long the pipeline may go **without sending anything** before a queued
 /// refusal gives up on being ordered and is written anyway.
 ///
-/// This bounds the stall, not the whole wait: every response that reaches the
-/// client buys another full window, so a database working steadily through a
-/// slow statement is never cut off no matter how long the statement runs. Only
-/// a pipeline that stops moving altogether expires — which is what the two ways
+/// This bounds the stall, not the whole wait: every byte read from the database
+/// buys another full window (see [`Relay::progressed`], which states the one
+/// read that is excepted), so a database working steadily through a slow
+/// statement is never cut off no matter how long the statement runs, and nor is
+/// one whose link is slow enough that a single message takes longer than the
+/// window to arrive. Only a pipeline that stops moving altogether expires — which is what the two ways
 /// the count can be wrong look like from here: a database that stopped
 /// answering, and a sync point the backend swallowed (see
 /// [`ClientLink::forwarded_sync_point`]). An unbounded wait would cost the
@@ -438,8 +440,8 @@ struct Relay {
     /// check whether or not the client has received what it was owed.
     forced: bool,
     /// When the queued answer stops waiting to be ordered. Armed when it is
-    /// queued and re-armed by every message delivered, so the bound is on the
-    /// stall and not on the wait.
+    /// queued and re-armed by every byte that arrives from the database (see
+    /// [`Relay::progressed`]), so the bound is on the stall and not on the wait.
     stall_deadline: Option<tokio::time::Instant>,
     /// Whether the message loop's end of the channel is gone. It closes when the
     /// session's inspected direction ends; the relay keeps going, because the
@@ -515,6 +517,41 @@ impl Relay {
         self.stall_deadline = Some(tokio::time::Instant::now() + REFUSAL_ORDER_STALL_TIMEOUT);
     }
 
+    /// Record that the upstream moved, and buy the queued answer another window.
+    ///
+    /// Progress is bytes off the socket, not messages finished: a message still
+    /// arriving is a database working, exactly as a result set still streaming
+    /// is, and the two are indistinguishable to a wait that only counts whole
+    /// messages.
+    ///
+    /// Called from every read that takes bytes off the upstream — the read arm
+    /// of [`Relay::fill`] and the settling probe in [`relay_backend_messages`] —
+    /// and from [`Relay::delivered`] once a message is whole. The one read that
+    /// does not reach it is the oversized-payload copy, which cannot write an
+    /// answer at all; that exception is stated where it happens.
+    ///
+    /// Guarded on there being something queued so that [`Relay::stall_deadline`]
+    /// is never set with nothing to release: a deadline that fires on an empty
+    /// queue would leave [`Relay::forced`] latched, and the next refusal would
+    /// go out unordered.
+    ///
+    /// It grants a dripping backend nothing worth having. Holding a refusal for
+    /// good needs only a complete message per window — five bytes — which
+    /// [`Relay::delivered`] has always re-armed on, and that per-stall gap is
+    /// ADR-0007's, recorded there. What a byte-granular window adds is the case
+    /// where the message never completes at all, and there the client is not
+    /// held by honmoon: it is waiting on a message only the backend can finish,
+    /// which is exactly where a direct connection would leave it. The refusal it
+    /// does not receive is for a statement honmoon never forwarded, and writing
+    /// it early would only misattribute the denial to the statement still
+    /// arriving. What this closes is the case where the same backend is *honest*
+    /// and merely slow.
+    fn progressed(&mut self) {
+        if self.queued.is_some() {
+            self.arm_stall();
+        }
+    }
+
     /// The deadline the queued answer's own caller set on being ordered, if any.
     fn order_deadline(&self) -> Option<tokio::time::Instant> {
         match &self.queued.as_ref()?.what {
@@ -523,17 +560,16 @@ impl Relay {
         }
     }
 
-    /// Give up on ordering the queued refusal: no *complete* backend message for
-    /// a whole window means the missing answers are not late, they are not
+    /// Give up on ordering the queued refusal: nothing at all from the database
+    /// for a whole window means the missing answers are not late, they are not
     /// coming.
     ///
-    /// Complete is the precise word, and it is weaker than it looks: the window
-    /// is re-armed by [`Relay::delivered`], so a single message whose bytes
-    /// trickle in over longer than the window does not re-arm it and is given up
-    /// on mid-arrival. That needs a link slower than roughly 2 KiB/s for a
-    /// message up to [`MAX_BUFFERED_BACKEND_MESSAGE`], errs toward releasing a
-    /// refusal early rather than late, and is unchanged from the pre-#121 timer,
-    /// which restarted on the same signal. Tracked as #209.
+    /// Nothing at all is the precise phrase. The window is re-armed by
+    /// [`Relay::progressed`], which every read that takes bytes off the upstream
+    /// reaches — the oversized-payload copy excepted, and it services no bound
+    /// either way — so a message whose bytes trickle in over longer than the
+    /// window keeps it open and is not given up on mid-arrival (#209). What
+    /// expires is an upstream that has sent no byte for the whole window.
     ///
     /// Recorded as a floor rather than as a credit to what was delivered. The
     /// floor is compared against each refusal's own tag, so it releases exactly
@@ -650,9 +686,7 @@ impl Relay {
         } else {
             self.fresh += 1;
         }
-        if self.queued.is_some() {
-            self.arm_stall();
-        }
+        self.progressed();
     }
 
     /// Write the queued injection if it may go out now, and acknowledge it.
@@ -756,8 +790,15 @@ impl Relay {
                     self.write_queued().await?;
                 }
                 read = upstream.read(&mut buf[filled..]) => match read {
+                    // `Ok(0)` is end of input, so every read that reaches the arm
+                    // below moved at least one byte: there is no quiet keepalive
+                    // in this protocol that could re-arm the window without the
+                    // upstream having actually sent something.
                     Ok(0) | Err(_) => return Err(Stop::Upstream),
-                    Ok(read) => filled += read,
+                    Ok(read) => {
+                        filled += read;
+                        self.progressed();
+                    }
                 },
             }
         }
@@ -1013,7 +1054,18 @@ where
         if settling {
             match upstream.try_read_now(&mut head) {
                 Ok(0) => return Stop::Upstream,
-                Ok(read) => filled = read,
+                Ok(read) => {
+                    filled = read;
+                    // Bytes off the wire, so the window is re-armed here as it is
+                    // for every other read. It cannot change an outcome: this
+                    // probe does not await, so it runs in the same instant as the
+                    // `delivered` that ended the previous iteration, and that
+                    // call has just re-armed. It is here so the rule stays "every
+                    // read re-arms" with one stated exception rather than two,
+                    // and so an `await` added above this line later cannot
+                    // reintroduce #209 in this corner unnoticed.
+                    relay.progressed();
+                }
                 Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
                     relay.fresh = 0;
                     relay.flush_drained(owed);
@@ -1045,9 +1097,28 @@ where
 
         if payload_len > MAX_BUFFERED_BACKEND_MESSAGE {
             // Too large to hold in memory: written head-first and streamed. No
-            // injection is considered from here until the copy is done — the
-            // client is mid-frame for all of it, and this task is the only one
-            // that could write into it.
+            // injection is considered from here until the copy is done, and the
+            // stall bound is not serviced either — neither timer nor channel is
+            // polled between the head going out and the payload finishing.
+            //
+            // Not because nothing can be late here, but because nothing can be
+            // *written*. The head is already on the client's socket, so the
+            // client is inside a frame whose length it has been told, and an
+            // `ErrorResponse` written now would be consumed as that frame's
+            // payload. That is the asymmetry with [`Relay::fill`], which does
+            // service both: there, nothing of the message being read has reached
+            // the client yet, so an answer written from inside it still lands on
+            // a message boundary.
+            //
+            // So a queued refusal waits out the whole copy, and an upstream that
+            // goes quiet mid-payload holds it for as long as it stays open. That
+            // costs the client nothing it would not already be paying: it is
+            // itself mid-frame, waiting on a message only the backend can finish,
+            // which is exactly where a direct connection would leave it. Honmoon
+            // adds no hang here — it only declines to speak where speaking would
+            // desynchronise the stream. The copy ends in `delivered` below, which
+            // re-arms the window in full, so what follows the copy is bounded
+            // again from there.
             if relay.client.write_all(&head).await.is_err()
                 || copy_exact(&mut upstream, &mut relay.client, payload_len)
                     .await
@@ -2758,6 +2829,81 @@ mod tests {
             acc.relay.abandoned, 0,
             "a working database is never given up on"
         );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_message_arriving_in_slow_pieces_holds_the_stall_window_open() {
+        // Progress is bytes, not whole messages. A single `ReadyForQuery` whose
+        // bytes trickle in over longer than the window is the same working
+        // database as the row stream above — it has simply not finished the
+        // message yet — and treating it as stopped writes the refusal ahead of
+        // the very answer it is waiting for, which is the misattribution #101
+        // removed.
+        //
+        // A `Z` is the sharpest case: it is the message the refusal's tag is
+        // actually counted against, so giving up mid-arrival loses the ordering
+        // by one answer rather than by a slice of a result set.
+        let mut acc = accounting().await;
+        acc.link.forwarded_sync_point();
+        let step = REFUSAL_ORDER_STALL_TIMEOUT - std::time::Duration::from_secs(5);
+        let upstream = ScriptedUpstream::new([
+            (step, vec![b'Z']),
+            (step, vec![0, 0, 0, 5, b'I']),
+            (std::time::Duration::ZERO, Vec::new()),
+        ]);
+
+        let ack = queue_refusal(&acc.link, "honmoon: denied by policy");
+        let started = tokio::time::Instant::now();
+        let written = async {
+            ack.await.expect("the refusal is written");
+            tokio::time::Instant::now()
+        };
+        let (_stop, written_at) = tokio::join!(
+            relay_backend_messages(upstream, &mut acc.relay, &mut acc.taken),
+            written,
+        );
+
+        assert_eq!(
+            written_at - started,
+            2 * step,
+            "the wait ended on the answer, not on the stall bound"
+        );
+        assert_eq!(
+            acc.relay.answered, 1,
+            "the answer the refusal waited for reached the client first"
+        );
+        assert_eq!(
+            acc.relay.abandoned, 0,
+            "a message still arriving is not a pipeline that stopped"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn bytes_arriving_with_nothing_queued_arm_no_deadline() {
+        // The re-arm is guarded on there being something to release, and the
+        // guard is what keeps the rest of the session honest. Without it a
+        // deadline would be set with an empty queue, `until(stall)` would fire
+        // into `give_up`'s early return, and `forced` would be left latched — so
+        // the *next* refusal on the session would be written without waiting for
+        // anything at all, and without the warning that says so.
+        let mut acc = accounting().await;
+        acc.link.forwarded_sync_point();
+        let step = REFUSAL_ORDER_STALL_TIMEOUT - std::time::Duration::from_secs(5);
+        let upstream = ScriptedUpstream::new([
+            (step, vec![b'Z']),
+            (step, vec![0, 0, 0, 5, b'I']),
+            (std::time::Duration::ZERO, Vec::new()),
+        ]);
+
+        let stop = relay_backend_messages(upstream, &mut acc.relay, &mut acc.taken).await;
+
+        assert!(matches!(stop, Stop::Upstream));
+        assert_eq!(acc.relay.answered, 1, "the answer reached the client");
+        assert!(
+            acc.relay.stall_deadline.is_none(),
+            "nothing was queued, so nothing was bounded"
+        );
+        assert!(!acc.relay.forced, "and nothing is left to force out later");
     }
 
     #[tokio::test(start_paused = true)]
