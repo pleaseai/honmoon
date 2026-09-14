@@ -170,16 +170,30 @@ that fails to parse: it is refused rather than forwarded blind.
     intact and a queued refusal keeps its place
     ```
 
-    once per copy, carrying the message tag, the payload length, the bytes still outstanding and
-    whether a refusal is being held. Deliberately not `give_up`'s line, which says the refusal *may
-    reach the client out of statement order*: here nothing was given up on and the ordering is
-    exactly what was promised, and a warning implying the barrier had broken would be worse than the
-    silence it replaces. The timer can do nothing but log — the only write in that stretch of code
-    is the copy itself — so the bound above is still not serviced and the paragraph above still
-    holds. Quiet is measured from the last byte read rather than from the start of the copy, because
-    the messages that reach this path are the ones a slow link is slowest over: a copy that runs for
-    an hour while the database keeps sending is a working backend, and reporting it as quiet would
-    be false.
+    once per copy, carrying the message tag (escaped, because the upstream chooses that byte), the
+    payload length, the bytes still to come and whether a refusal is being held. Deliberately not
+    `give_up`'s line, which says the refusal *may reach the client out of statement order*: here
+    nothing was given up on and the ordering is exactly what was promised, and a warning implying
+    the barrier had broken would be worse than the silence it replaces. The timer can do nothing but
+    log — the only write in that stretch of code is the copy itself — so the bound above is still
+    not serviced and the paragraph above still holds, and the copy is otherwise unchanged: same
+    chunk size, same writes, same bytes.
+
+    **What the window measures is time spent waiting on the database, and only that.** Every read
+    that moves bytes re-arms it, so the grain is the byte rather than the message, for the reason
+    #209 gives one paragraph up: the messages that reach this path are the ones a slow link is
+    slowest over, and a copy running for an hour while the database keeps sending is a working
+    backend that it would be false to call quiet. It is re-armed again once each chunk is on its way
+    to the client, which is the separate half of the same rule — between those two points the copy
+    is waiting on the *client*, and a client too slow to drain would otherwise spend the window and
+    be reported as a database that had stopped. The line is only worth adding if it is true when it
+    fires.
+
+    Reported once per copy. Not because a later silence is the same silence — an upstream that
+    resumes and stops again has genuinely stalled twice — but because the second line buys nothing
+    and is unbounded: the operator already knows this copy is stalling, nothing here can act on it
+    either way, and an upstream that oscillates on the window boundary would otherwise emit a line
+    every window for as long as it cared to keep the copy open.
 
     **Bounding the copy instead was rejected.** Giving it a deadline and ending the session on it
     would leave the client holding a frame header with a truncated payload behind it — a
