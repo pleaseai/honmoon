@@ -138,10 +138,38 @@ function commands(run: string): string {
     .join('\n')
 }
 
-/** Whether one step runs a command carrying every one of `markers`. */
-function runsAll(run: string, markers: string[]): boolean {
-  const script = commands(run)
-  return markers.every(marker => script.includes(marker))
+/**
+ * Where a command sits: the index of its step, then its offset within that
+ * step's script.
+ *
+ * A step index alone cannot order two commands that share one `run:` block, and
+ * nothing stops the upload and the publish from being written as one step. Two
+ * commands at the same index compared by index alone read as simultaneous, so a
+ * block that publishes *before* it uploads would satisfy an index-only check.
+ */
+interface Position {
+  step: number
+  offset: number
+}
+
+/**
+ * The first step whose script carries every one of `markers`, and where in that
+ * script the command starts — located by `markers[0]`, which is the command word
+ * rather than one of its flags.
+ */
+function findCommand(runs: string[], markers: string[]): Position | undefined {
+  for (const [step, run] of runs.entries()) {
+    const script = commands(run)
+    if (markers.every(marker => script.includes(marker))) {
+      return { step, offset: script.indexOf(markers[0]!) }
+    }
+  }
+  return undefined
+}
+
+/** Whether `a` runs before `b` — by step, then within a shared step. */
+function runsBefore(a: Position, b: Position): boolean {
+  return a.step === b.step ? a.offset < b.offset : a.step < b.step
 }
 
 /** The `run:` scripts of one job's steps, in order. */
@@ -165,8 +193,8 @@ export function checkWorkflow(workflow: unknown): Problem[] {
     }]
   }
 
-  const publishAt = runs.findIndex(run => runsAll(run, PUBLISH_MARKERS))
-  if (publishAt === -1) {
+  const publish = findCommand(runs, PUBLISH_MARKERS)
+  if (!publish) {
     return [{
       where: WORKFLOW_PATH,
       detail: `no step in \`${RELEASE_JOB}\` runs \`${PUBLISH_MARKERS.join('… ')}\` — nothing publishes `
@@ -175,26 +203,29 @@ export function checkWorkflow(workflow: unknown): Problem[] {
   }
 
   const problems: Problem[] = []
-  const uploadAt = runs.findIndex(run => runsAll(run, [UPLOAD_MARKER]))
-  if (uploadAt === -1) {
+  const upload = findCommand(runs, [UPLOAD_MARKER])
+  if (!upload) {
     problems.push({
       where: WORKFLOW_PATH,
       detail: `no step in \`${RELEASE_JOB}\` runs \`${UPLOAD_MARKER}\` — the publish step has nothing to publish`,
     })
   }
-  else if (uploadAt > publishAt) {
+  else if (!runsBefore(upload, publish)) {
+    const where = upload.step === publish.step
+      ? `later in step ${publish.step + 1} than the publish does`
+      : `at step ${upload.step + 1}, after the publish at step ${publish.step + 1}`
     problems.push({
       where: WORKFLOW_PATH,
-      detail: `\`${UPLOAD_MARKER}\` runs at step ${uploadAt + 1}, after the publish at step ${publishAt + 1}`
-        + ' — that publishes a Release with no binaries on it, which is the window #230 closed',
+      detail: `\`${UPLOAD_MARKER}\` runs ${where} — that publishes a Release with no `
+        + 'binaries on it, which is the window #230 closed',
     })
   }
 
-  if (publishAt !== runs.length - 1) {
+  if (publish.step !== runs.length - 1) {
     problems.push({
       where: WORKFLOW_PATH,
-      detail: `the publish is step ${publishAt + 1} of ${runs.length} in \`${RELEASE_JOB}\` — it has to be `
-        + 'the last one, because every step after it runs against a Release users can already see',
+      detail: `the publish is step ${publish.step + 1} of ${runs.length} in \`${RELEASE_JOB}\` — it has to `
+        + 'be the last one, because every step after it runs against a Release users can already see',
     })
   }
   return problems

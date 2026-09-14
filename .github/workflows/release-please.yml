@@ -49,9 +49,11 @@ jobs:
           # `autorelease:` label through the issues API after tagging, un-caught, so a token
           # without `issues` throws once the tag and Release already exist and before the
           # action sets its outputs — leaving `publish-binaries` skipped, and with it a tag
-          # and a draft Release that no run will ever publish. Recoverable by re-running this
-          # workflow, and invisible to users meanwhile, but still a release that did not
-          # happen.
+          # and a draft Release that no run has published. Recover by dispatching release.yml
+          # with that tag, not by re-running this workflow: the Release already exists, so
+          # `createReleases()` raises DuplicateReleaseError, relabels the PR `autorelease:
+          # tagged` and rethrows, and `publish-binaries` is skipped a second time. Invisible
+          # to users throughout, but still a release that did not happen.
           permission-contents: write
           permission-issues: write
           permission-pull-requests: write

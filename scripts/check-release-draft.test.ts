@@ -112,6 +112,30 @@ describe('checkWorkflow', () => {
     ])
   })
 
+  // Nothing stops the upload and the publish from being written as one step, and
+  // then only their order *within* the block decides whether the invariant holds.
+  test('one step that uploads and then publishes is accepted', () => {
+    const merged = structuredClone(WORKFLOW)
+    const steps = merged.jobs.release.steps
+    steps.splice(2, 2, {
+      name: 'Upload and publish',
+      run: `${UPLOAD_MARKER} "$TAG" --clobber artifacts/*.tar.gz\n${PUBLISH_MARKERS.join(' "$TAG" ')}`,
+    })
+    expect(checkWorkflow(merged)).toEqual([])
+  })
+
+  test('one step that publishes before it uploads is reported', () => {
+    const inverted = structuredClone(WORKFLOW)
+    const steps = inverted.jobs.release.steps
+    steps.splice(2, 2, {
+      name: 'Publish and upload',
+      run: `${PUBLISH_MARKERS.join(' "$TAG" ')}\n${UPLOAD_MARKER} "$TAG" --clobber artifacts/*.tar.gz`,
+    })
+    expect(details(checkWorkflow(inverted))).toEqual([
+      expect.stringContaining('later in step'),
+    ])
+  })
+
   // The publish step is located by what a step *runs*. These two pin that: a
   // step that only mentions publishing must not be mistaken for the one that
   // does it, in either direction — standing in for the real step (which moves
