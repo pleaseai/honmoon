@@ -155,14 +155,17 @@ that fails to parse: it is refused rather than forwarded blind.
     it would be read as that frame's payload. A queued refusal therefore waits out the whole copy,
     and an upstream that goes quiet mid-payload holds it for as long as it stays open — which costs
     the client nothing a direct connection would not, since it is itself mid-frame waiting on a
-    message only the backend can finish. The copy ends by re-arming the window in full, so
-    everything after it is bounded again.
+    message only the backend can finish. A client that stops draining mid-payload holds all of it
+    just as long, at its own expense. The copy ends by re-arming the window in full, so everything
+    after it is bounded again.
 
-    **What the operator sees there is one warning, and nothing else changes.** Silence inside the
-    copy used to produce no signal at all — every other way a wait here ends logs, and a session
-    pinned open by an upstream that sent a frame head and then stopped looked exactly like an idle
-    one (#218). So the copy is raced against a timer of the same length as the stall window, and the
-    first window that passes with no byte from the database logs
+    **What the operator sees there is one of two warnings, and nothing else changes.** Silence
+    inside the copy used to produce no signal at all — every other way a wait here ends logs, and a
+    session pinned open by an upstream that sent a frame head and then stopped looked exactly like
+    an idle one (#218). So the copy is raced against timers of the same length as the stall window,
+    one for each side it can be waiting on, because an operator staring at a session that never
+    ends is asking which end stopped and the copy has two. The first window that passes with no
+    byte from the database logs
 
     ```
     no database bytes for a whole stall window inside a message too large to buffer; the client
@@ -170,20 +173,39 @@ that fails to parse: it is refused rather than forwarded blind.
     intact and a queued refusal keeps its place
     ```
 
-    once per copy, carrying the message tag (escaped, because the upstream chooses that byte), the
-    payload length, the bytes still to come and whether a refusal is being held. That last field is
-    read **when the line is written**, not when the copy starts: a statement refused part-way
+    and the first window that passes with a chunk the client has not taken logs
+
+    ```
+    one chunk of a message too large to buffer has not cleared to the client for a whole stall
+    window; the wait is on the client and not on the database — the copy, both sockets and any
+    queued refusal are pinned on it, ordering is intact and nothing has been given up on
+    ```
+
+    The second is #229's. It reports the failure #218 explicitly is not about: a client that stops
+    reading mid-frame pins exactly the same task, sockets and queued refusal, and the upstream
+    window could never say so — it is not counting while the copy waits on the client, for the
+    reason the next paragraph gives, so anchoring it differently would only have made the first
+    line fire sooner and blame the wrong side. The answer is a second observation, not a different
+    anchor.
+
+    Each carries the message tag (escaped, because the upstream chooses that byte), the payload
+    length, the bytes outstanding — what the database still owes for the first line, what the
+    client has not yet taken for the second — and whether a refusal is being held. That last field
+    is read **when the line is written**, not when the copy starts: a statement refused part-way
     through the copy waits in the injection channel rather than in the relay, precisely because
     nothing dequeues it until the copy ends, and a snapshot taken at the head would report `false`
-    for exactly the session an operator is looking for. Deliberately not
-    `give_up`'s line, which says the refusal *may reach the client out of statement order*: here
-    nothing was given up on and the ordering is exactly what was promised, and a warning implying
-    the barrier had broken would be worse than the silence it replaces. The timer can do nothing but
-    log — the only write in that stretch of code is the copy itself — so the bound above is still
-    not serviced and the paragraph above still holds, and the copy is otherwise unchanged: same
-    chunk size, same writes, same bytes.
+    for exactly the session an operator is looking for. Neither is `give_up`'s line, deliberately:
+    that one says the refusal *may reach the client out of statement order*, and here nothing was
+    given up on and the ordering is exactly what was promised, so a warning implying the barrier
+    had broken would be worse than the silence it replaces. The timers can do nothing but log — the
+    only write in that stretch of code is the copy itself — so the bound above is still not
+    serviced and the paragraph above still holds, and the copy is otherwise unchanged: same chunk
+    size, same writes, same bytes. Not quite the same futures, though: the write of each chunk is
+    now pinned once and resumed across the race rather than recreated, because `write_all` is not
+    cancel-safe and a fresh one would start from the front of the chunk and hand the client bytes
+    it already has, inside a frame whose length it was told.
 
-    **What the window measures is time spent waiting on the database, and only that.** Every read
+    **The upstream window measures time spent waiting on the database, and only that.** Every read
     that moves bytes re-arms it, so the grain is the byte rather than the message, for the reason
     #209 gives one paragraph up: the messages that reach this path are the ones a slow link is
     slowest over, and a copy running for an hour while the database keeps sending is a working
@@ -193,11 +215,29 @@ that fails to parse: it is refused rather than forwarded blind.
     be reported as a database that had stopped. The line is only worth adding if it is true when it
     fires.
 
-    Reported once per copy. Not because a later silence is the same silence — an upstream that
-    resumes and stops again has genuinely stalled twice — but because the second line buys nothing
-    and is unbounded: the operator already knows this copy is stalling, nothing here can act on it
-    either way, and an upstream that oscillates on the window boundary would otherwise emit a line
-    every window for as long as it cared to keep the copy open.
+    **The client window measures time spent waiting on the client, and its grain is the chunk.**
+    It is armed when a chunk's write begins and answered when that write completes, so what it
+    observes is that a chunk has not *cleared*, not how much of it has. That is the honest measure
+    for this side rather than a shortcut around the pinned write: the client is a socket, a write
+    completes when the kernel takes the bytes and not when the peer reads them, and a chunk that
+    has not cleared for a whole window is a send buffer that has stayed full for a whole window. A
+    trickle on the upstream side is an ordinary working database on this path, which is why that
+    window counts bytes; a send buffer that never drains is not the same event, and there is no
+    trickle on this side to be fair to. A client that clears every chunk inside a window is
+    draining — slowly, which is what this path is for — and is never reported as stopped.
+
+    Both windows are the same length, and it is one constant rather than two on purpose. They
+    measure different things but answer the same operator question — *has this stopped, or is it
+    merely slow* — and the answer does not depend on which socket the copy is parked on. A second
+    number would be a second thing to tune with no second judgement behind it, and would let the
+    two drift into an ordering that reads as meaningful when nothing chose it.
+
+    Each is reported once per copy. Not because a later silence is the same silence — an upstream
+    that resumes and stops again has genuinely stalled twice — but because the second line buys
+    nothing and is unbounded: the operator already knows this copy is stalling, nothing here can
+    act on it either way, and an upstream that oscillates on the window boundary would otherwise
+    emit a line every window for as long as it cared to keep the copy open. The two are counted
+    separately, so a copy stuck on both ends says so once about each.
 
     **Bounding the copy instead was rejected.** Giving it a deadline and ending the session on it
     would leave the client holding a frame header with a truncated payload behind it — a
