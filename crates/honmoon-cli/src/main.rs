@@ -559,9 +559,7 @@ fn gateway(args: GatewayArgs) -> Result<()> {
         anyhow::bail!("--pii-mode block requires --tls-intercept");
     }
 
-    let policy_yaml = std::fs::read_to_string(&config)
-        .with_context(|| format!("reading policy {}", config.display()))?;
-    let policy = Policy::from_yaml(&policy_yaml)?;
+    let (policy, policy_yaml) = load_policy(&config)?;
     tracing::info!(rules = policy.rules.len(), %addr, %socks_addr, %mgmt_addr, "starting gateway");
 
     let audit = match &audit_log {
@@ -732,7 +730,7 @@ fn run(policy: PathBuf, argv: Vec<String>) -> Result<()> {
         .split_first()
         .context("no command given; usage: honmoon run --policy P -- <cmd> [args]")?;
 
-    let policy = load_policy(&policy)?;
+    let (policy, _) = load_policy(&policy)?;
 
     // Bind the proxy socket here and hand it to the proxy thread. Binding in one
     // place (rather than allocating a port, dropping it, and rebinding) closes
@@ -938,10 +936,36 @@ fn hook_salt_for(context: Option<&str>, wire_salt: Vec<u8>, machine_key: Vec<u8>
     }
 }
 
-fn load_policy(path: &Path) -> Result<Policy> {
+/// Read a policy file and parse it — the one path every command that takes a
+/// policy path goes through: `honmoon run --policy`, `honmoon gateway --config`
+/// and `honmoon policy validate`.
+///
+/// The source comes back alongside the `Policy` because `gateway` needs both —
+/// the policy to run on, and the text the management API serves verbatim at
+/// `GET /api/policy` for the dashboard's read-only policy view. It reaches that
+/// route through `AppState::with_hook_config`, whose name is about the salt
+/// argument beside it and not about this one: nothing on the hook endpoint reads
+/// `policy_yaml`. The other two callers drop it.
+///
+/// [`not_a_policy_document`] runs here rather than in any one command, which is
+/// the whole of #202: classifying the file's shape belongs to the *read*, since
+/// the file a mistyped path resolves to is the same file whichever flag named it
+/// and serde quotes it the same way. With the check in `policy validate` alone
+/// after #201, the other two printed the file whole.
+fn load_policy(path: &Path) -> Result<(Policy, String)> {
     let src = std::fs::read_to_string(path)
         .with_context(|| format!("reading policy {}", path.display()))?;
-    Ok(Policy::from_yaml(&src)?)
+
+    if let Some(shape) = not_a_policy_document(&src) {
+        anyhow::bail!(
+            "{} is not a policy document: its top level is {shape}, not a mapping of \
+             policy fields. Contents withheld — check the path.",
+            path.display()
+        );
+    }
+
+    let policy = Policy::from_yaml(&src)?;
+    Ok((policy, src))
 }
 
 /// A top-level shape a policy can never have, named without quoting what it
@@ -950,36 +974,81 @@ fn load_policy(path: &Path) -> Result<Policy> {
 /// `None` means "hand it to the loader", and covers three cases: a mapping (an
 /// ordinary policy), a null document (an empty file, which *is* a valid policy
 /// — every field at its default), and text YAML itself cannot parse, where
-/// serde's own syntax diagnostic is the useful one and quotes only the token it
-/// stopped on, with a line and column.
+/// serde's own syntax diagnostic is the useful one: it names what it stopped on
+/// rather than reproducing the document, and carries a line and column once the
+/// scanner got past the start. (Not always — a reserved indicator as the very
+/// first character has no position to report relative to. The half that holds
+/// unconditionally is the one that matters, and
+/// `a_syntax_error_keeps_serdes_positional_diagnostic` asserts both, marking
+/// which inputs carry a position.)
+///
+/// A multi-document stream is **not** a fourth case. It is classified by its
+/// first document like any other file, because that is the document the loader
+/// tries to deserialize first and therefore the one it can quote. A stream whose
+/// first document is a mapping still passes through, and the loader refuses it
+/// for being a stream — in a message that carries no content.
 ///
 /// The remaining shapes are why this exists. serde renders a top-level type
 /// mismatch as `invalid type: string "<value>"`, and when the top level is a
-/// plain scalar that value is **the whole file**. `policy validate` is
-/// documented for CI, where the path it is given comes from the repository
-/// under test — so a mistyped path, or a branch that replaces `policy.yaml`
-/// with a symlink to `~/.honmoon/mgmt-token`, an SSH key or a `.env`, would put
-/// that file in the log. Classifying the shape first says what is wrong without
-/// reading the contents out.
+/// plain scalar that value is **the whole file** — YAML folds its lines into one
+/// scalar, so a PEM key arrives entire. `policy validate` is documented for CI,
+/// where the path it is given comes from the repository under test, so a
+/// mistyped path or a branch that replaces `policy.yaml` with a symlink to
+/// `~/.honmoon/mgmt-token`, an SSH key or a `.env` would put that file in the
+/// log. `run --policy` and `gateway --config` take a path from an operator
+/// rather than a repository, which is why #201 fixed the CI-facing one first —
+/// but their stderr is not always read by the person who typed the path: a
+/// supervisor ships it to a journal or a log aggregator. Classifying the shape
+/// first says what is wrong without reading the contents out.
 ///
 /// No verdict moves: every shape named here fails [`Policy::from_yaml`] as
-/// well, so the two paths refuse the same files and only the message differs.
-/// That is a claim about this function, so it is checked rather than asserted —
-/// `a_file_that_is_not_a_policy_is_named_rather_than_quoted` runs the gateway
-/// over the same file, and it caught this over-refusing a tagged mapping once
-/// already.
+/// well, so the guard and the loader refuse the same files and only the message
+/// differs. That is a claim about this function, so it is checked rather than
+/// asserted — and since #202 lifted the guard into [`load_policy`], it cannot be
+/// checked by running one command against another, because all three now run
+/// this. The loader is the independent witness that is left, and
+/// `every_shape_the_guard_refuses_is_one_the_loader_refuses_anyway` asks it
+/// directly, in both directions. The pass-through direction is the one that
+/// caught a real bug: this over-refused a tagged mapping once already.
 ///
 /// It is a bound, not a blanket. A *mapping* carrying a long string still
 /// reaches serde's quoting (`version: "<…>"`) — but that is a file shaped like
 /// a policy, and the value quoted is the author's own field, which is the
 /// diagnosis they need.
 fn not_a_policy_document(src: &str) -> Option<&'static str> {
-    match serde_yaml::from_str::<serde_yaml::Value>(src) {
+    use serde::Deserialize as _;
+
+    // The *first* document, not the stream. `serde_yaml::from_str::<Value>`
+    // refuses a multi-document stream outright rather than handing back the
+    // first document, so asking it would send every file carrying a `---` line
+    // down the `Err` arm below and on to the loader — and the loader
+    // deserializes the first document *before* it notices the second, so a file
+    // whose first document is a plain scalar has that scalar quoted whole. A
+    // `---` line under a PEM key was enough to leak the key on every one of the
+    // three commands. Reading one document at a time removes the distinction:
+    // what gets classified is the shape the loader will try to deserialize.
+    let mut documents = serde_yaml::Deserializer::from_str(src);
+    let Some(first) = documents.next() else {
+        // Defensive, and measured as unreachable rather than assumed to be the
+        // empty-file case: `serde_yaml` 0.9 yields a first document for every
+        // `&str`, an empty one included, so an empty file arrives below as
+        // `Value::Null` and is passed through there. Kept because the only
+        // correct reading of "no document" is that there is nothing to classify,
+        // and deferring is what this function does when it cannot classify — a
+        // `unreachable!()` here would turn a `serde_yaml` change into a panic in
+        // a binary whose job is to refuse things safely. It is the one line in
+        // this function no test covers, for the same reason.
+        return None;
+    };
+
+    match serde_yaml::Value::deserialize(first) {
         Ok(value) => shape_unfit_for_a_policy(&value),
         // Not a YAML document at all. serde's own syntax diagnostic is the
-        // useful one here — it carries a line and column and quotes only the
-        // token it stopped on — so this defers to the loader rather than
-        // replacing it.
+        // useful one here — it names what it stopped on rather than reproducing
+        // the document — so this defers to the loader rather than replacing it.
+        // That the deferred text cannot come back out is the claim the deferral
+        // rests on, and it is asserted rather than assumed:
+        // `a_syntax_error_keeps_serdes_positional_diagnostic`.
         Err(_) => None,
     }
 }
@@ -1008,35 +1077,24 @@ fn shape_unfit_for_a_policy(value: &serde_yaml::Value) -> Option<&'static str> {
 /// `honmoon policy validate` — load a policy the way the gateway does, say what
 /// the loader found, and exit.
 ///
-/// The body is deliberately thin, and shaped like `gateway`'s own first steps:
-/// read the file, then [`Policy::from_yaml`]. Everything that decides whether a
-/// policy is acceptable lives in that one call — the same one `gateway` and
-/// `honmoon run` reach — so there is no second implementation here to drift
-/// from the one that matters. The loader's error travels up unwrapped for the
-/// same reason: `main`'s `Result` prints it, so a rejected policy reads the way
-/// the gateway would have reported it.
+/// The body is deliberately thin: [`load_policy`] — the same call `gateway` and
+/// `honmoon run` make — and then a count. Everything that decides whether a
+/// policy is acceptable lives in that one function, so there is no second
+/// implementation here to drift from the one that matters. Its error travels up
+/// unwrapped for the same reason: `main`'s `Result` prints it, so a rejected
+/// policy reads the way the gateway would have reported it.
 ///
-/// The one thing this path says in its own words is
-/// [`not_a_policy_document`], which refuses a file the loader would refuse
-/// anyway, before serde can quote it into a CI log.
+/// That now covers [`not_a_policy_document`] too. It was this path's own words
+/// when #201 added it, and the other two callers went on quoting the file;
+/// #202 moved it into the shared read, so the three commands refuse a
+/// non-policy in the same words and not merely with the same verdict.
 ///
 /// What this function *adds* is everything the gateway does around that load and
 /// this one must not: no management token is resolved (the side effect #198 is
 /// about), no audit log is opened, no CA is read or generated, no listener is
 /// bound. Not suppressing those — never reaching them.
 fn policy_validate(path: &Path) -> Result<()> {
-    let src = std::fs::read_to_string(path)
-        .with_context(|| format!("reading policy {}", path.display()))?;
-
-    if let Some(shape) = not_a_policy_document(&src) {
-        anyhow::bail!(
-            "{} is not a policy document: its top level is {shape}, not a mapping of \
-             policy fields. Contents withheld — check the path.",
-            path.display()
-        );
-    }
-
-    let policy = Policy::from_yaml(&src)?;
+    let (policy, _) = load_policy(path)?;
 
     // Counts, not contents: enough to see the file that loaded was the one
     // meant, without putting an operator's endpoint names in a CI log.
@@ -1054,6 +1112,171 @@ fn policy_validate(path: &Path) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::percent_encode_query_value;
+
+    /// The guard's central claim, checked where it cannot be circular.
+    ///
+    /// `not_a_policy_document` exists to reword serde's diagnostic, never to
+    /// change a verdict. Before #202 that was checked by running
+    /// `policy validate` and `gateway --config` over the same file and requiring
+    /// them to agree — which stopped meaning anything the moment the guard moved
+    /// into the read they share. `Policy::from_yaml` is the independent witness
+    /// that is left, so it is asked directly.
+    ///
+    /// The claim is one-directional, and the loops below say so rather than
+    /// overstating it. **Refusing** is where a verdict could move, so every shape
+    /// the guard names must be one the loader refuses anyway. Passing a shape
+    /// through cannot move a verdict at all — the loader simply decides, as it
+    /// did before — so the second loop is not "everything it passes through
+    /// loads": it is the narrower and more useful claim that the shapes a
+    /// *policy* arrives in still reach the loader and still load. A mapping with
+    /// a mistyped field passes the guard and is refused by the loader, which is
+    /// the documented bound, and `a_documented_bound_still_reaches_the_loader`
+    /// pins it separately.
+    ///
+    /// The second loop is the direction that matters more. A guard that refuses
+    /// a policy the gateway would have run turns a diagnostic improvement into
+    /// an outage, and it has happened once here already: an earlier version
+    /// refused every tagged node, and serde looks straight through a tag.
+    #[test]
+    fn every_shape_the_guard_refuses_is_one_the_loader_refuses_anyway() {
+        use super::not_a_policy_document;
+        use honmoon_core::Policy;
+
+        for src in [
+            // The mistyped-path shapes: a token file, a PEM, and the scalars a
+            // stray value lands as.
+            "ghp_notarealcredential\n",
+            "-----BEGIN PRIVATE KEY-----\nbm90LWEta2V5\n-----END PRIVATE KEY-----\n",
+            "- one\n- two\n",
+            "true\n",
+            "42\n",
+            // A tag over a scalar is still a scalar.
+            "!Secret ghp_notarealcredential\n",
+            // The same PEM with a second document after it (#202). `serde_yaml`
+            // refuses a multi-document stream rather than handing back its first
+            // document, so classifying the stream deferred this to the loader —
+            // which deserializes the first document before it notices the second
+            // and quoted the key whole.
+            "-----BEGIN PRIVATE KEY-----\nbm90LWEta2V5\n-----END PRIVATE KEY-----\n---\nsecond\n",
+            // The minimal form of the same shape: a scalar and a `---` line.
+            "ghp_notarealcredential\n---\n",
+        ] {
+            assert!(
+                not_a_policy_document(src).is_some(),
+                "the guard must name this shape rather than quote it: {src:?}"
+            );
+            assert!(
+                Policy::from_yaml(src).is_err(),
+                "…and the loader must refuse it too, or the guard has moved a \
+                 verdict rather than reworded one: {src:?}"
+            );
+        }
+
+        for src in [
+            // Empty: a policy with every field at its default.
+            "",
+            "version: 1\n",
+            // An explicit document-start marker is one document, not two. A
+            // policy file beginning `---` is ordinary YAML, and a guard that
+            // counted it as a stream would refuse one the gateway runs.
+            "---\nversion: 1\n",
+            // A tagged mapping is a mapping.
+            "!Foo {version: 1}\n",
+        ] {
+            assert!(
+                not_a_policy_document(src).is_none(),
+                "the guard must hand this to the loader: {src:?}"
+            );
+            assert!(
+                Policy::from_yaml(src).is_ok(),
+                "…and the loader must accept it, so refusing it early would \
+                 refuse a policy the gateway runs: {src:?}"
+            );
+        }
+    }
+
+    /// The guard's deferral arm, which is a security claim and was not checked.
+    ///
+    /// For text YAML cannot parse, `not_a_policy_document` returns `None` on
+    /// purpose: serde's own syntax diagnostic names what it stopped on rather
+    /// than reproducing the document, and carries a line and column wherever the
+    /// scanner got past the start — which is more useful to whoever is fixing a
+    /// real policy than "this is not a policy document". #202 is what
+    /// makes `run --policy` and `gateway --config` depend on that being true, so
+    /// it is asserted rather than assumed — the arm is the one place the guard
+    /// hands a file's own text to serde by choice.
+    ///
+    /// Pinned as an absence, like the integration test: the distinctive lines of
+    /// the input must not appear in what the loader renders.
+    #[test]
+    fn a_syntax_error_keeps_serdes_positional_diagnostic() {
+        use super::not_a_policy_document;
+        use honmoon_core::Policy;
+
+        // Each of these is a single document YAML cannot parse, carrying a line
+        // that would be a disclosure if it were echoed. The flag is whether
+        // serde's message carries a position: it does once the scanner has
+        // advanced, and does not when the very first character is what stopped
+        // it — which is why the doc comments here claim a position "where the
+        // scanner got past the start" rather than always.
+        for (src, has_position) in [
+            // A tab where indentation is expected.
+            ("rules:\n\tghp_notarealcredential: 1\n", true),
+            // An unterminated quoted scalar — two positions, in fact.
+            ("version: \"ghp_notarealcredential\n", true),
+            // A reserved indicator as the first character: nothing to report a
+            // position relative to.
+            ("@ghp_notarealcredential\n", false),
+        ] {
+            assert!(
+                not_a_policy_document(src).is_none(),
+                "this is the deferral arm — the guard must hand it to serde: {src:?}"
+            );
+            let error = Policy::from_yaml(src)
+                .expect_err("YAML this malformed cannot load")
+                .to_string();
+            // The security property, and the whole reason deferring is allowed.
+            assert!(
+                !error.contains("ghp_notarealcredential"),
+                "the deferral only holds while serde's syntax diagnostic names \
+                 what it stopped on rather than reproducing the document: {error}"
+            );
+            assert_eq!(
+                error.contains("line") && error.contains("column"),
+                has_position,
+                "the position half of the claim moved for {src:?}: {error}"
+            );
+        }
+    }
+
+    /// The bound the guard draws on purpose, pinned so a later change has to
+    /// move it deliberately.
+    ///
+    /// A file that *is* a mapping but carries a mistyped field value reaches
+    /// serde's quoting, and the value quoted is the author's own field — which
+    /// is the diagnosis they need, with a line and column. Widening the guard to
+    /// suppress it would turn a useful error into a useless one; narrowing the
+    /// guard so it stopped passing mappings through would refuse policies the
+    /// gateway runs. Neither direction should happen without this test saying so.
+    #[test]
+    fn a_documented_bound_still_reaches_the_loader() {
+        use super::not_a_policy_document;
+        use honmoon_core::Policy;
+
+        let src = "version: not-a-number\n";
+        assert!(
+            not_a_policy_document(src).is_none(),
+            "a mapping is a policy's shape — the guard passes it through"
+        );
+        let error = Policy::from_yaml(src)
+            .expect_err("`version` is a u32")
+            .to_string();
+        assert!(
+            error.contains("not-a-number"),
+            "the author's own field value is the diagnosis, and is quoted on \
+             purpose — this is the stated bound of the guard, not a leak: {error}"
+        );
+    }
 
     #[test]
     fn a_wildcard_bind_is_not_advertised_as_a_dashboard_url() {

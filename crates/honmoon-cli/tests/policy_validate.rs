@@ -1,7 +1,9 @@
-//! `honmoon policy validate` — the load-and-exit check (#198).
+//! `honmoon policy validate` — the load-and-exit check (#198) — plus the
+//! no-quoting claim it shares with every other command that reads a policy from
+//! a path (#201, then #202).
 //!
-//! Three claims are asserted against the *shipped binary* rather than the
-//! loader, because all three are about what running the command does rather
+//! Four claims are asserted against the *shipped binary* rather than the
+//! loader, because all four are about what running a command does rather
 //! than about what `Policy::from_yaml` returns:
 //!
 //! 1. The exit code is the interface. Zero on a policy the gateway would
@@ -17,6 +19,14 @@
 //! 3. The two paths cannot drift. `validate` accepting a policy the gateway
 //!    then refuses would make the command worse than useless, so both are run
 //!    on one bad file and required to report the same thing.
+//! 4. No command prints the file it was pointed at. A path that resolves to
+//!    something other than a policy has to be named, not quoted, and that is a
+//!    property of the shared read rather than of any one subcommand — so it is
+//!    asserted for `policy validate`, `run --policy` and, on Unix, for
+//!    `gateway --config`, which cannot reach the read on a host where it cannot
+//!    mint a management token (the same gating claims 2 and 3 carry). It lives
+//!    here because this is where the harness for running the binary under a
+//!    scratch `HOME` already is.
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
@@ -349,8 +359,16 @@ fn a_file_that_is_not_a_policy_is_named_rather_than_quoted() {
         "…and the operator must be told what is actually wrong; got: {printed}"
     );
 
-    // Refusing it early changes no verdict — it is refused either way. Without
-    // this, the guard could quietly start rejecting files the gateway accepts.
+    // The gateway refuses the same file. Read for what it still shows, not for
+    // what it used to: when #201 put the guard in `policy validate` alone, this
+    // was the independent verdict — the gateway reached `Policy::from_yaml`
+    // without the guard and refused anyway, so "the guard only changes the
+    // wording" was measured rather than asserted. #202 lifted the guard into the
+    // read both commands share, so both now run it and neither can witness the
+    // other. What survives here is parity of *behaviour* across the two
+    // commands; the claim that no verdict moved is checked against the loader
+    // directly, in `every_shape_the_guard_refuses_is_one_the_loader_refuses_anyway`
+    // (`src/main.rs`).
     #[cfg(unix)]
     {
         let control = TempHome::new("not-a-policy-gateway");
@@ -361,7 +379,18 @@ fn a_file_that_is_not_a_policy_is_named_rather_than_quoted() {
         );
         assert!(
             !gateway.status.success(),
-            "the gateway refuses this file too, so the guard only changes the wording"
+            "the gateway refuses this file too"
+        );
+        // Pinned to the stage it reached, like every other gateway control in
+        // this file. `honmoon gateway` exits non-zero for plenty of reasons that
+        // never reach the policy read — an unwritable scratch HOME, a failed
+        // token mint, a renamed flag — so the exit code alone would let this
+        // block pass with the guard gone.
+        assert!(
+            stderr(&gateway).contains("not a policy document"),
+            "…and it must have got as far as the guard to refuse it for that \
+             reason; got: {}",
+            stderr(&gateway)
         );
     }
 
@@ -478,4 +507,120 @@ rules:
         stdout(&output).is_empty(),
         "the warning belongs on stderr, not in whatever a caller is piping"
     );
+}
+
+/// A file whose top level is a plain scalar, in the shape that makes the leak
+/// worst: YAML folds the lines of a plain scalar into one, so serde's
+/// `invalid type: string "<value>"` carries the *whole* file rather than one
+/// line of it.
+///
+/// Not a real key. The body lines are base64 — they have to be, or the file
+/// would not read as a PEM — but they decode to `not-a-key-just-a-fixture-…`
+/// rather than to a DER key. The shape is what matters: no YAML structure,
+/// several lines, and a first line that is itself a disclosure.
+///
+/// The test searches for *every* line, including the two `-----BEGIN/END-----`
+/// markers. Those are boilerplate rather than distinctive, and they are asserted
+/// anyway on purpose: the marker is the first thing a reader of a leaked log
+/// sees, and it is what tells them a key was printed. Do not trim the fixture to
+/// its "interesting" lines.
+const NOT_A_POLICY_PEM: &str = "\
+-----BEGIN PRIVATE KEY-----
+bm90LWEta2V5LWp1c3QtYS1maXh0dXJlLWZpcnN0LWxpbmU
+bm90LWEta2V5LWp1c3QtYS1maXh0dXJlLXNlY29uZC1saW5l
+-----END PRIVATE KEY-----
+";
+
+/// The same file with a second YAML document after it — the shape that defeated
+/// the first version of this fix, and the reason the guard reads one document
+/// rather than the stream.
+///
+/// `serde_yaml::from_str::<Value>` refuses a multi-document stream instead of
+/// returning its first document, so a guard that classified the stream deferred
+/// every file carrying a `---` line to the loader. The loader deserializes the
+/// first document *before* it notices the second, so the key came back out — on
+/// all three commands, past a guard whose whole purpose was to stop exactly that.
+/// A `.env`, a Kubernetes manifest and a `helm` values file all routinely carry a
+/// `---` line, so this is not a contrived shape.
+const NOT_A_POLICY_MULTIDOC: &str = "\
+-----BEGIN PRIVATE KEY-----
+bm90LWEta2V5LWp1c3QtYS1maXh0dXJlLWZpcnN0LWxpbmU
+bm90LWEta2V5LWp1c3QtYS1maXh0dXJlLXNlY29uZC1saW5l
+-----END PRIVATE KEY-----
+---
+also: not a policy
+";
+
+/// #202: the exposure is the *read*, not the command.
+///
+/// `policy validate` was fixed first (#201) because it is the documented CI
+/// path, where the file a mistyped `policy.yaml` resolves to belongs to the
+/// repository under test. It was the only one fixed, and the other two printed
+/// the file whole: `honmoon run --policy` through `load_policy`, and
+/// `honmoon gateway --config` through its own inlined read. Operator-interactive
+/// is not the same as read by one person — a supervisor ships stderr to a
+/// journal or a log aggregator, which is the exposure with a different audience,
+/// and the same reasoning the management-token banner already follows when it
+/// declines to print a credential to a pipe.
+///
+/// Asserted as an absence, because that is the security property: the content
+/// must not be in the output. Naming the problem is asserted alongside it so the
+/// absence cannot be satisfied by a command that says nothing useful.
+#[test]
+fn no_command_that_loads_a_policy_by_path_quotes_the_file() {
+    for (fixture, name, contents) in [
+        ("one document", "mistyped.pem", NOT_A_POLICY_PEM),
+        (
+            "two documents",
+            "mistyped-multidoc.pem",
+            NOT_A_POLICY_MULTIDOC,
+        ),
+    ] {
+        no_command_quotes(fixture, name, contents);
+    }
+}
+
+/// The body of the test above, run once per fixture.
+///
+/// A fresh `TempHome` per fixture, because `gateway` writes a management token
+/// into it and the label is what keeps two of them apart.
+fn no_command_quotes(fixture: &str, name: &str, contents: &str) {
+    let home = TempHome::new(&format!("path-leak-{}", name));
+    let mistyped = home.write_policy(name, contents);
+    let path = mistyped.to_str().unwrap();
+
+    let commands = vec![
+        ("policy validate", vec!["policy", "validate", path]),
+        // `run` loads the policy as its first step — before it binds a port or
+        // spawns anything — so the command after `--` is never reached and needs
+        // to be no more than a placeholder.
+        ("run --policy", vec!["run", "--policy", path, "--", "true"]),
+        // `gateway` resolves a management token before it reads the policy, and
+        // minting one reads `/dev/urandom`; on a non-Unix host it refuses
+        // outright, so the run never reaches the loader and there is nothing
+        // here to observe. Gated for the reason the other gateway controls in
+        // this file are.
+        #[cfg(unix)]
+        ("gateway --config", vec!["gateway", "--config", path]),
+    ];
+
+    for (label, args) in commands {
+        let output = run(&home, &args);
+        assert!(
+            !output.status.success(),
+            "`{label}` must refuse a file that is not a policy ({fixture})"
+        );
+        let printed = format!("{}{}", stdout(&output), stderr(&output));
+        for line in contents.lines() {
+            assert!(
+                !printed.contains(line),
+                "`{label}` put the file's contents in its error ({fixture}) — \
+                 the line {line:?} is in: {printed}"
+            );
+        }
+        assert!(
+            printed.contains("not a policy document"),
+            "`{label}` must say what is actually wrong ({fixture}); got: {printed}"
+        );
+    }
 }
