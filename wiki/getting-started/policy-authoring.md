@@ -429,7 +429,7 @@ both refuse, and `validate_and_the_gateway_accept_the_same_policy` on one both a
 The read says two things in its own words, and they are different kinds of check. **The first
 refuses nothing extra**: a file whose top level is not a mapping — plain text, a list, a single
 value — is named as *not a policy document* rather than handed to the parser
-([main.rs:1045-1047](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-cli/src/main.rs#L1045-L1047)). The loader refuses those
+([main.rs:1051-1053](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-cli/src/main.rs#L1051-L1053)). The loader refuses those
 too; what changes is that the parser would have quoted the file to say so, and for a document that
 is one plain scalar the quote is the whole file. Pointed at a token file, an SSH key or a `.env` by
 a mistyped path, that lands in the log.
@@ -444,13 +444,14 @@ What is classified is the file's **first document**, not the stream, because tha
 loader deserializes first and therefore the one it can quote. A `---` line under a PEM key would
 otherwise slip past: `serde_yaml` refuses a multi-document stream instead of returning its first
 document, so a stream-level check defers, and the loader then reaches the scalar and quotes it. A
-stream whose first document *is* a mapping still passes through, and the loader refuses it for being
-a stream — in a message carrying no content. A policy file that opens with an explicit `---` is one
-document and loads normally.
+stream whose first document *is* a mapping still passes through *that* guard, and is refused
+content-free either way past it — by the recognised-key rule below when the mapping declares no
+policy field, and by the parser, for being a stream, when it declares one. A policy file that opens
+with an explicit `---` is one document and loads normally.
 
 **The second does refuse something extra, on purpose.** A mapping in which none of `version`,
 `egress`, `endpoints` or `rules` appears is refused, and the parser would have taken it
-([main.rs:1155-1178](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-cli/src/main.rs#L1155-L1178)). Every `Policy` field
+([main.rs:1178-1201](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-cli/src/main.rs#L1178-L1201)). Every `Policy` field
 carries `#[serde(default)]` and the struct has no `deny_unknown_fields`, so *any* mapping used to
 deserialize into a policy with every field at its default — which means a Kubernetes `Secret`
 manifest, a `DB_PASSWORD: …` file and a service-account JSON key (JSON is valid YAML) each loaded,
@@ -472,6 +473,17 @@ The bound is worth stating so it is not mistaken for a gap. A file that **is** a
 a mistyped field value (`version: "1.0"`) still reaches the parser's quoting, and the value quoted is
 the author's own field, with a line and column. That is the diagnosis they asked for; suppressing it
 would turn a useful error into a useless one.
+
+**One residual is left open deliberately, and the rule looks tighter than it is without it.** The
+admission test is by *name*, and `version` is the one of the four keys that is not honmoon-specific —
+a `docker-compose.yml` opens with an unquoted `version: 3`, so it is admitted and still loads as a
+0-rule policy whose source `gateway --config` serves. Closing it would mean dropping `version` from
+the admission set, which refuses a file containing only `version: 1` — a policy the gateway starts
+on — so narrowing the ticket is its own decision rather than part of this rule. It is measured and
+pinned by `version_alone_admits_a_file_no_operator_wrote_as_a_policy`, and tracked in
+[issue #240](https://github.com/pleaseai/honmoon/issues/240). The quoted spelling (`version: "3.8"`)
+does not reach the rule at all: `version` is a `u32`, so the parser refuses it and quotes only those
+three characters.
 
 An empty file is **not** in this class — it is a valid policy. YAML reads it as `null`, and every
 `Policy` field carries `#[serde(default)]`

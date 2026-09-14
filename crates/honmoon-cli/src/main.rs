@@ -1012,8 +1012,14 @@ fn load_policy(path: &Path) -> Result<(Policy, String)> {
 /// A multi-document stream is **not** a fourth case. It is classified by its
 /// first document like any other file, because that is the document the loader
 /// tries to deserialize first and therefore the one it can quote. A stream whose
-/// first document is a mapping still passes through, and the loader refuses it
-/// for being a stream — in a message that carries no content.
+/// first document is a mapping still passes through *this* guard, and is refused
+/// content-free either way past it — by [`mapping_names_no_policy_field`] when
+/// that mapping declares no policy field, and by the loader, for being a stream,
+/// when it declares one. Which of the two answers is not incidental: a
+/// Kubernetes manifest carries both a `---` line and no policy key, so the
+/// mistyped-path case gets the message about the path rather than one about
+/// streams. `a_secrets_mapping_before_a_second_document_is_refused_for_the_path`
+/// pins that, because before #220 the loader answered for both.
 ///
 /// The remaining shapes are why this exists. serde renders a top-level type
 /// mismatch as `invalid type: string "<value>"`, and when the top level is a
@@ -1151,7 +1157,24 @@ const POLICY_FIELDS: [&str; 4] = ["version", "egress", "endpoints", "rules"];
 /// appears in it. Exempting it would buy a spelling of "no policy" that an empty
 /// file already spells, at the cost of a special case in a one-sentence rule.
 /// `an_explicitly_empty_mapping_is_refused_and_an_empty_file_is_not` pins both
-/// halves so the two cannot be confused for each other later.
+/// halves so the two cannot be confused for each other later. A templating step
+/// that renders an empty policy as `{}` rather than as an empty file fails the
+/// read from here on — fail-closed, and the operator is told which keys are
+/// missing, but it is a behaviour change and not only a refusal of bad input.
+///
+/// **The residual, stated because the rule looks tighter than it is.** This is a
+/// name-only test, and `version` is the one of the four that is not
+/// honmoon-specific: a `docker-compose.yml` opens with an unquoted `version: 3`,
+/// so it is admitted and still loads as a 0-rule policy whose source `gateway`
+/// serves. Measured, and pinned by
+/// `version_alone_admits_a_file_no_operator_wrote_as_a_policy` so it cannot drift
+/// unnoticed. It is not closed here because the alternative — dropping `version`
+/// from the admission set — refuses a file containing only `version: 1`, which is
+/// a policy the gateway starts on, and over-refusal is the failure that costs an
+/// operator an outage rather than a diagnosis. The quoted spelling
+/// (`version: "3.8"`) does not even reach this rule: `version` is a `u32`, so the
+/// loader refuses it and quotes only the author's own three characters. Narrowing
+/// the ticket is its own decision, filed rather than taken in passing.
 fn mapping_names_no_policy_field(src: &str) -> bool {
     first_document(src).is_some_and(|value| names_no_policy_field(&value))
 }
@@ -1473,9 +1496,15 @@ mod tests {
             "!Foo {version: 1}\n",
             // Not a mapping at all: `not_a_policy_document` owns these, and this
             // check must not answer for them. The empty document is the one that
-            // matters — it is a valid policy.
+            // matters — it is a valid policy. The rest reach the catch-all arm,
+            // which defers; they are here so that arm is exercised by something
+            // other than `Null`, since deferring is only safe while the guard
+            // that runs first still names them.
             "",
             "ghp_notarealcredential\n",
+            "- one\n- two\n",
+            "true\n",
+            "42\n",
         ] {
             assert!(
                 !mapping_names_no_policy_field(src),
@@ -1543,6 +1572,171 @@ mod tests {
                 "…and the loader goes on ignoring the unknown field: {src:?}"
             );
         }
+    }
+
+    /// Three mapping shapes the rule has to answer for, each measured against
+    /// the loader rather than reasoned about — the two that look like
+    /// over-refusals are not, and the third moved which guard answers.
+    ///
+    /// A **top-level merge key** (`<<: *anchor`) is the one that looks worst. It
+    /// is refused, and `Policy::from_yaml` "accepts" the same file — but what it
+    /// accepts is a policy with `version` at 0 and no rules, because `serde_yaml`
+    /// does not apply a merge on the way into a struct (`Value::apply_merge` is
+    /// opt-in and nothing here calls it). The merge never took, so the file was
+    /// already a silently-empty policy: refusing it is #220's case exactly, not a
+    /// regression against one. An **alias** is different and is not affected —
+    /// `egress: *defaults` resolves, and `egress` is a recognised key, so the
+    /// document is admitted on it like any other.
+    ///
+    /// A **nested-only** recognised key is refused for the same reason: `rules`
+    /// under `spec` declares nothing honmoon reads, and the gateway would have
+    /// started enforcing none of it.
+    #[test]
+    fn a_merge_key_or_a_nested_only_key_declares_nothing_at_the_top_level() {
+        use super::mapping_names_no_policy_field;
+        use honmoon_core::Policy;
+
+        for (label, src) in [
+            (
+                "a top-level merge key",
+                "base: &b\n  version: 1\n  egress:\n    default: allow\n<<: *b\n",
+            ),
+            (
+                "a nested-only recognised key",
+                "spec:\n  rules:\n    - name: x\n",
+            ),
+        ] {
+            assert!(
+                mapping_names_no_policy_field(src),
+                "{label} declares no policy field at the top level"
+            );
+            let policy = Policy::from_yaml(src)
+                .unwrap_or_else(|error| panic!("the loader takes {label}: {error}"));
+            assert_eq!(
+                (policy.version, policy.rules.len()),
+                (0, 0),
+                "…and what it takes is an empty policy, which is why refusing \
+                 {label} is #220's case rather than an over-refusal"
+            );
+        }
+
+        // The control, and the half that must not move: an alias is resolved, so
+        // a document admitted on a recognised key stays admitted.
+        let aliased = "defaults: &d\n  default: allow\negress: *d\n";
+        assert!(
+            !mapping_names_no_policy_field(aliased),
+            "`egress` is a recognised key however its value is spelled"
+        );
+        assert_eq!(
+            Policy::from_yaml(aliased)
+                .expect("an aliased egress loads")
+                .egress
+                .default,
+            honmoon_core::Verdict::Allow,
+            "the alias must still resolve — otherwise this control passes \
+             vacuously against a policy that lost its egress"
+        );
+    }
+
+    /// The shape that moved which guard answers, pinned because #217's account of
+    /// it is now only half true.
+    ///
+    /// `not_a_policy_document` passes a stream whose first document is a mapping
+    /// through, and before #220 the loader then refused it for being a stream.
+    /// It still does when that mapping declares a policy field — but a Kubernetes
+    /// manifest carries both a `---` line and no policy key, and that is the
+    /// mistyped-path case, so it now gets the message about the path instead.
+    /// Both refusals carry no content; which one answers is the point.
+    #[test]
+    fn a_secrets_mapping_before_a_second_document_is_refused_for_the_path() {
+        use super::{mapping_names_no_policy_field, not_a_policy_document};
+        use honmoon_core::Policy;
+
+        let secrets_first =
+            "apiVersion: v1\nkind: Secret\ndata:\n  p: dGhyb3dhd2F5\n---\nsecond: doc\n";
+        assert!(
+            not_a_policy_document(secrets_first).is_none(),
+            "a mapping first document passes the shape guard, stream or not"
+        );
+        assert!(
+            mapping_names_no_policy_field(secrets_first),
+            "…and the recognised-key rule answers it, because the mistyped path \
+             is the useful diagnosis for a manifest carrying a `---` line"
+        );
+
+        // The other half of the old claim, still true: a *policy* before a second
+        // document is admitted here and refused by the loader for being a stream.
+        let policy_first = "version: 1\negress:\n  default: deny\n---\nsecond: doc\n";
+        assert!(
+            !mapping_names_no_policy_field(policy_first),
+            "one recognised key admits it past this rule"
+        );
+        let error = Policy::from_yaml(policy_first)
+            .expect_err("a stream is not a policy")
+            .to_string();
+        assert!(
+            error.contains("more than one document"),
+            "…and the loader refuses it for being a stream: {error}"
+        );
+        assert!(
+            !error.contains("second: doc"),
+            "that refusal must carry no content either: {error}"
+        );
+    }
+
+    /// The rule's residual, measured rather than left to be discovered.
+    ///
+    /// The admission test is by *name*, and `version` is the one of the four keys
+    /// that other config formats also use. A `docker-compose.yml` opens with an
+    /// unquoted `version: 3`, so it is admitted, loads as a 0-rule policy, and
+    /// under `gateway --config` its source — inline environment secrets included —
+    /// is what `GET /api/policy` serves. That is #220's consequence on a narrower
+    /// file class than the three the issue measured, and this test exists so the
+    /// gap is a recorded fact with a failing test behind any change to it, rather
+    /// than a surprise for whoever finds it next.
+    ///
+    /// Kept rather than closed on purpose: dropping `version` from
+    /// [`POLICY_FIELDS`] would refuse a file containing only `version: 1`, a
+    /// policy the gateway starts on, and refusing a policy the gateway runs is the
+    /// worse direction. If this test ever starts failing because the ticket was
+    /// narrowed deliberately, delete it — do not weaken it.
+    #[test]
+    fn version_alone_admits_a_file_no_operator_wrote_as_a_policy() {
+        use super::mapping_names_no_policy_field;
+        use honmoon_core::Policy;
+
+        let compose = "version: 3\nservices:\n  db:\n    environment:\n      \
+                       POSTGRES_PASSWORD: throwaway-not-a-real-value\n";
+        assert!(
+            !mapping_names_no_policy_field(compose),
+            "`version` is a recognised key, so this is admitted — the residual, \
+             not a bug in the check"
+        );
+        let policy = Policy::from_yaml(compose).expect("and it loads");
+        assert_eq!(
+            (policy.rules.len(), policy.endpoints.len()),
+            (0, 0),
+            "as a policy that enforces nothing anybody wrote"
+        );
+
+        // The spelling that does not reach this rule at all, and the reason the
+        // residual is narrower than "every compose file": `version` is a `u32`,
+        // so the loader refuses the quoted form and quotes only those three
+        // characters — the author's own field value, which is the documented
+        // bound rather than a leak.
+        let quoted = "version: \"3.8\"\nservices:\n  db:\n    image: postgres\n";
+        assert!(
+            !mapping_names_no_policy_field(quoted),
+            "still admitted by name — the refusal below is the loader's"
+        );
+        let error = Policy::from_yaml(quoted)
+            .expect_err("`version` is a u32")
+            .to_string();
+        assert!(
+            error.contains("3.8") && !error.contains("postgres"),
+            "the loader quotes the offending value and not the rest of the \
+             file: {error}"
+        );
     }
 
     #[test]

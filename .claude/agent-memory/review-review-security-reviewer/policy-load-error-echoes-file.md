@@ -57,6 +57,20 @@ for #220 on exactly that ground, and the policy struct was deliberately left unt
 stays off the `crates/AGENTS.md` **Ask first** list. An explicitly empty mapping (`{}`) is refused
 and that is intended, not a bug.
 
+**The residual of the residual, measured on the #220 build (do not re-derive).** The admission
+ticket is the *name* of one of `version`, `egress`, `endpoints`, `rules`, and `version` is a generic
+name other config formats use. Measured with the built binary: `version: 3` + `services:` with a
+`POSTGRES_PASSWORD:` (an ordinary docker-compose file) still answers
+`policy is valid (0 rules, 0 endpoints)` and, under `gateway --config`, its whole text still reaches
+`AppState.policy_yaml` → `GET /api/policy`. `version: "3.8"` (quoted) does not — serde fails the
+`u32` and quotes only `"3.8"`. Also measured and *not* gaps: a k8s Secret, a `KEY: value` file, a
+service-account JSON, `{}`, a tagged mapping, a complex (non-string) key, `Version:`/`Rules:` case
+variants, a `%YAML` directive, a BOM'd file and a merge-key-only document are all refused with no
+content in the message; a `---\n---\n<PEM>` (empty first document) does not leak either — the
+loader stops at "more than one document". Multi-document files never load at all, though which guard *answers* for one moved in #239: a stream whose first document is a secrets mapping is now refused by the recognised-key rule for the path, not by the loader for being a stream.
+
+The compose case is **tracked in #240**, with the reasoning for leaving it open — dropping `version` from the admission set would refuse a file containing only `version: 1`, a policy the gateway starts on. Do not re-file it, and do not report it as an oversight in #239: it is pinned there by `version_alone_admits_a_file_no_operator_wrote_as_a_policy` and stated in `wiki/getting-started/policy-authoring.md`.
+
 **State after #201 (historical).** `honmoon policy validate` classifies the top-level shape itself
 (`not_a_policy_document` in `crates/honmoon-cli/src/main.rs`) and refuses plain text, a list or
 a single value by name, without quoting. It refuses nothing the loader would have accepted, so
