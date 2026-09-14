@@ -1,6 +1,6 @@
 ---
 name: dashboard-shell-csp
-description: 'The dashboard shell CSP after #195 — what each directive is for, why style-src carries unsafe-inline and img-src exists at all (both measured, neither a control, do not report either as a weakness), that script-src has no unsafe-* and connect-src is self, what the policy does NOT bound (outbound navigation and WebRTC are outside CSP, so exfiltration is harder not closed — a finding saying so is correct), that every HTML document including /login carries it, what a change here has to re-verify in a browser rather than by reading the header, that an external <a href> is deliberately not a finding in the build-side checker, and that the emitted bundle is guarded separately by scripts/check-dashboard-bundle.ts, which parses for eval/Function call expressions, deliberately does not flag obj.eval, deliberately does not follow an alias or a computed name, and since #227 starts at the shell tag list and walks the emitted static import graph from there, reporting rather than skipping a specifier it cannot follow, so a code-split chunk is read and a finding saying one would go unread is stale, with the declared residue now being Worker/runtime-appended-script/`require` (each measured, each tracked) and `containedIn` bounding the specifier while #233 added `realPathInside`, which realpaths both the file and the build directory before any file is opened, so a finding that a symlink in the build reads outside it is now stale; and the three traps found building it that a finding should not re-report - the Map-not-object-literal lookup, which since #226 is settled in both files rather than open on NAMED_REFS, the %2f containment check, and scriptFiles counting unclosed script tags (issue #200)'
+description: 'The dashboard shell CSP after #195 — what each directive is for, why style-src carries unsafe-inline and img-src exists at all (both measured, neither a control, do not report either as a weakness), that script-src has no unsafe-* and connect-src is self, what the policy does NOT bound (outbound navigation and WebRTC are outside CSP, so exfiltration is harder not closed — a finding saying so is correct), that every HTML document including /login carries it, what a change here has to re-verify in a browser rather than by reading the header, that an external <a href> is deliberately not a finding in the build-side checker, and that the emitted bundle is guarded separately by scripts/check-dashboard-bundle.ts, which parses for eval/Function call expressions, deliberately does not flag obj.eval, deliberately does not follow an alias or a computed name, and since #227 starts at the shell tag list and walks the emitted static import graph from there, reporting rather than skipping a specifier it cannot follow, so a code-split chunk is read and a finding saying one would go unread is stale, with the declared residue now being Worker/runtime-appended-script/`require` (each measured, each tracked) and `containedIn` bounding the specifier while #233 added `realPathInside`, which realpaths both the file and the build directory before each WALKED file is opened and also refuses a non-regular file, so a finding that a symlink in the build reads outside it, or that an in-build FIFO stalls CI, is now stale — but the shell HTML itself is still read ungated, deliberately, because it is what the boundary is derived from; and the three traps found building it that a finding should not re-report - the Map-not-object-literal lookup, which since #226 is settled in both files rather than open on NAMED_REFS, the %2f containment check, and scriptFiles counting unclosed script tags (issue #200)'
 metadata:
   type: project
 ---
@@ -201,22 +201,44 @@ the *specifier* and not what gets opened — measured before the fix: a symlink 
 chunk, was read and listed in the pass line as inspected, and aimed at `/etc/hosts` it printed a
 parse diagnostic for it. Content is not echoed by `syntaxErrors` (message + position only), but a
 refusal excerpt prints 80 characters, and a symlink to a FIFO or an endless device would have
-stalled CI. The precondition was always write access to the build output — the same access that
+stalled CI (both are closed now — see the two rules below). The precondition was always write access to the build output — the same access that
 could just emit `eval` directly — so the marginal gain to the modelled attacker was ~nil; the reason
 to fix it was that the boundary was *described* as bounding reads.
 
 The fix is `realPathInside` in `check-dashboard-csp.ts`: `realpathSync` on **both** sides, the file
 and the build directory, then the same `containedIn` on the results — applied in `inspectBundles`
-immediately before each file is opened, which is the one point both routes into the walk (a
-`<script src>` and an `import`) converge on, so neither guard was left with the hole. Resolving only
-the file is the identical mismatch pointing the other way: `TMPDIR` on macOS sits under `/var`, a
-symlink to `/private/var`, so every file in the build would fall outside an unresolved build
-directory and a walk that read nothing would pass vacuously — pinned by a test that serves the shell
-through a symlinked directory. An unresolvable path is reported, not skipped: a dangling symlink
-reports `not found`, a cycle reports `did not resolve` carrying the errno. `scriptFiles` itself
-stays path arithmetic and opens nothing, which is why it still resolves the scripts of a shell that
-was never built — so a finding asking for `realpathSync` *there* is asking for the fix to move off
-the read it bounds.
+immediately before each **walked** file is opened, which is the one point both routes into the walk
+(a `<script src>` and an `import`) converge on, so neither guard was left with the hole. Resolving
+only the file is the identical mismatch pointing the other way: `TMPDIR` on macOS sits under `/var`,
+a symlink to `/private/var`, so every file in the build would fall outside an unresolved build
+directory. That direction does **not** pass vacuously — every outcome is reported — it refuses a
+legitimate build and fails CI on it, which is the false-positive failure these scripts are shaped to
+avoid; measured, it turned 26 existing bundle tests red on macOS. Pinned by a test that serves the
+shell through a symlinked directory.
+
+Two things that wording must not be read as covering, both deliberate and both now pinned:
+
+- **Containment does not bound the file *type*, so a second rule does.** `realpathSync` succeeds on
+  a FIFO and a synchronous `readFileSync` on one blocks until a writer appears, with no timeout in
+  the script — measured, the walk hung and the CI step would have run to the job limit, and the test
+  for it *hangs* rather than fails when the rule is removed. Containment alone covers a symlink to
+  `/dev/zero` (it leaves the build) but not a pipe sitting inside it, so a resolved path must also
+  be a regular file. A finding proposing to drop that check as redundant with containment is wrong.
+- **The shell HTML is read without the gate, on purpose.** `inspectBundles` opens the shell at its
+  own `readFileSync`, and `checkShells` does the same; neither is bounded, because the shell is
+  named by argv or `DEFAULT_SHELLS` and is the path `buildDir` derives the boundary *from* — there
+  is no enclosing directory to bound it against, and whoever can point the script at a shell can
+  point it anywhere already. Measured: a symlinked `dist/index.html` is read from outside the tree
+  with `problems: []`. That is the declared edge of the boundary, not a hole in it, and a finding
+  reporting it as one is answered here.
+
+An unresolvable path is reported, not skipped, and the message says which case it is: a chunk the
+build never emitted reports `not found — run …`, a **dangling symlink** reports `is a symlink whose
+target does not exist` (a rebuild fixes the first and may leave the second exactly where it is, so
+they must not share a remedy), a cycle reports `did not resolve` carrying the errno, and a
+non-regular file reports `not a regular file`. `scriptFiles` itself stays path arithmetic and opens
+nothing, which is why it still resolves the scripts of a shell that was never built — so a finding
+asking for `realpathSync` *there* is asking for the fix to move off the read it bounds.
 
 **Three traps were found building that guard under review, and a finding re-reporting any of them is
 answered by this rather than by an edit.** All three are fixed and tested.
