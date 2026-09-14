@@ -532,22 +532,20 @@ fn no_command_that_loads_a_policy_by_path_quotes_the_file() {
     let mistyped = home.write_policy("mistyped.pem", NOT_A_POLICY_PEM);
     let path = mistyped.to_str().unwrap();
 
-    // Pushed one at a time rather than built with `vec![]` so that `mut` is used
-    // on every platform: the gateway arm below is the only conditional one, and
-    // an unused `mut` on a non-Unix host would be a warning, which is a CI error
-    // here.
-    let mut commands: Vec<(&str, Vec<&str>)> = Vec::new();
-    commands.push(("policy validate", vec!["policy", "validate", path]));
-    // `run` loads the policy as its first step — before it binds a port or
-    // spawns anything — so the command after `--` is never reached and needs to
-    // be no more than a placeholder.
-    commands.push(("run --policy", vec!["run", "--policy", path, "--", "true"]));
-    // `gateway` resolves a management token before it reads the policy, and
-    // minting one reads `/dev/urandom`; on a non-Unix host it refuses outright,
-    // so the run never reaches the loader and there is nothing here to observe.
-    // Gated for the reason the other gateway controls in this file are.
-    #[cfg(unix)]
-    commands.push(("gateway --config", vec!["gateway", "--config", path]));
+    let commands = vec![
+        ("policy validate", vec!["policy", "validate", path]),
+        // `run` loads the policy as its first step — before it binds a port or
+        // spawns anything — so the command after `--` is never reached and needs
+        // to be no more than a placeholder.
+        ("run --policy", vec!["run", "--policy", path, "--", "true"]),
+        // `gateway` resolves a management token before it reads the policy, and
+        // minting one reads `/dev/urandom`; on a non-Unix host it refuses
+        // outright, so the run never reaches the loader and there is nothing
+        // here to observe. Gated for the reason the other gateway controls in
+        // this file are.
+        #[cfg(unix)]
+        ("gateway --config", vec!["gateway", "--config", path]),
+    ];
 
     for (label, args) in commands {
         let output = run(&home, &args);
