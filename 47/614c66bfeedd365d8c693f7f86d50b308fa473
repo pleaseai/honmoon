@@ -1,0 +1,19 @@
+.claude/agent-memory/review-review-code-reviewer/project_audit_sink_macos_acl_181.md
+  s_ca019e95b789bb::t_ab3925a6654424 1-59
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "47614c66bfeedd365d8c693f7f86d50b308fa473",
+  "prompts": {},
+  "sessions": {
+    "s_ca019e95b789bb": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "9090c440-5375-483e-8517-9a2410ef5f21",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
