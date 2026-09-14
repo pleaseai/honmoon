@@ -25,6 +25,11 @@ wiki moved twice inside this same PR, so re-resolve rather than trusting any num
 - `Policy`'s fields are exactly `version, egress, endpoints, rules`, each `#[serde(default)]`,
   no `deny_unknown_fields` — matching `POLICY_FIELDS` and every "any mapping deserializes" claim.
 - `policy_fields_are_exactly_the_ones_policy_declares` exists and asserts membership *and* order.
+- `names_no_policy_field` matches keys with `Value::as_str`, and that reads a **tagged key**
+  (`!custom version: 1`) through its tag: `serde_yaml` 0.9's `as_str` calls `untag_ref` first.
+  Two review bots (cubic, codex) reported the opposite on the same line in the same minute; it
+  was settled by running it, and is pinned by `a_tagged_key_is_read_through_its_tag`. Do not
+  re-raise "unwrap `Value::Tagged` before matching `POLICY_FIELDS`" without re-running that test.
 
 **What it missed, and why.** `not_a_policy_document`'s doc said a stream whose first document is
 a mapping "still passes through, and the loader refuses it for being a stream". Every word of

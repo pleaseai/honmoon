@@ -1190,6 +1190,12 @@ fn names_no_policy_field(value: &serde_yaml::Value) -> bool {
         Value::Mapping(mapping) => !mapping.keys().any(|key| {
             // A non-string key — YAML allows a sequence or a mapping there —
             // cannot be a policy field, and `as_str` says so without a panic.
+            // A *tagged* key (`!custom version: 1`) needs no unwrapping here:
+            // `Value::as_str` reads through the tag itself (`untag_ref`), the
+            // same way serde does on the way into `Policy`. Pinned by
+            // `a_tagged_key_is_read_through_its_tag`, because that is a
+            // property of `serde_yaml` rather than of this function, and
+            // TD-002 / #159 would replace `serde_yaml`.
             key.as_str().is_some_and(|key| POLICY_FIELDS.contains(&key))
         }),
         Value::Tagged(tagged) => names_no_policy_field(&tagged.value),
@@ -1572,6 +1578,34 @@ mod tests {
                 "…and the loader goes on ignoring the unknown field: {src:?}"
             );
         }
+    }
+
+    /// A tag on a *key* is looked through the same way a tag on the document
+    /// is: `!custom version: 1` is a policy the loader accepts, and the rule
+    /// admits it. Two review bots read `as_str` as returning `None` on a
+    /// `Value::Tagged` key; it does not — `serde_yaml` 0.9 untags first — and
+    /// this pins that against a `serde_yaml` replacement (TD-002 / #159)
+    /// whose accessors might not.
+    #[test]
+    fn a_tagged_key_is_read_through_its_tag() {
+        use super::mapping_names_no_policy_field;
+        use honmoon_core::Policy;
+
+        for src in ["!custom version: 1\n", "? !custom version\n: 1\n"] {
+            assert!(
+                Policy::from_yaml(src).is_ok(),
+                "the loader takes a tagged recognised key: {src:?}"
+            );
+            assert!(
+                !mapping_names_no_policy_field(src),
+                "…and the rule reads the key through its tag: {src:?}"
+            );
+        }
+        // The tag does not make an unrecognised key recognised either.
+        assert!(
+            mapping_names_no_policy_field("!custom apiVersion: v1\nkind: Secret\n"),
+            "a tagged key that is not a policy field admits nothing"
+        );
     }
 
     /// Three mapping shapes the rule has to answer for, each measured against
