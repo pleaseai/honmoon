@@ -2185,6 +2185,12 @@ mod tests {
             cx: &mut std::task::Context<'_>,
             buf: &[u8],
         ) -> std::task::Poll<std::io::Result<usize>> {
+            // Nothing on this path writes an empty slice — `write_all` does not
+            // poll for one and every chunk has at least a byte — but the trait
+            // allows it, and the clamp below would slice one byte out of it.
+            if buf.is_empty() {
+                return std::task::Poll::Ready(Ok(0));
+            }
             let me = &mut *self;
             let Some((pause, take)) = me.script.front().copied() else {
                 me.accepted.extend_from_slice(buf);
