@@ -3,8 +3,13 @@ name: Release Please
 # Owns the version for the whole repo. On every push to `main` release-please maintains a
 # release PR that carries one version across Cargo.toml, Cargo.lock, every package.json, the
 # Claude plugin manifest, and the README install snippets — the full list is the `extra-files`
-# array in release-please-config.json. Merging that PR tags `vX.Y.Z` and publishes the GitHub
-# Release with the CHANGELOG entry as its notes.
+# array in release-please-config.json. Merging that PR pushes `refs/tags/vX.Y.Z` and creates
+# the GitHub Release with the CHANGELOG entry as its notes.
+#
+# That Release is created as a **draft** and `release.yml` publishes it once the binaries are
+# on it (#230), which is also why the tag is a push of its own: GitHub creates no tag ref for
+# a draft Release, so `force-tag-creation` in release-please-config.json is what gives
+# release.yml's `refs/tags/` checkouts something to resolve.
 #
 # release.yml is then invoked directly, by `uses:` rather than by a tag-push trigger. The tag
 # release-please creates does raise events (it acts as the org App, not GITHUB_TOKEN), so a
@@ -43,8 +48,10 @@ jobs:
           # All three are load-bearing: `createReleases()` swaps the release PR's
           # `autorelease:` label through the issues API after tagging, un-caught, so a token
           # without `issues` throws once the tag and Release already exist and before the
-          # action sets its outputs — publishing a Release that `publish-binaries` then
-          # skips, leaving it with a CHANGELOG and no binaries.
+          # action sets its outputs — leaving `publish-binaries` skipped, and with it a tag
+          # and a draft Release that no run will ever publish. Recoverable by re-running this
+          # workflow, and invisible to users meanwhile, but still a release that did not
+          # happen.
           permission-contents: write
           permission-issues: write
           permission-pull-requests: write
