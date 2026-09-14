@@ -1149,10 +1149,27 @@ where
             // it, and a warning implying the barrier had broken would be worse
             // than the silence it replaces.
             let tag = head[0];
-            // Read before the copy borrows the writer, and true for the whole of
-            // it: the injection channel is not polled from in there, so nothing
-            // can become queued while the copy runs.
-            let holding_refusal = relay.queued.is_some();
+            // Whether an answer honmoon generated is waiting on this copy. Two
+            // places can hold one, and they have to be read differently.
+            //
+            // `Relay::queued` is the one already taken off the channel. It is
+            // read here because it cannot change while the copy runs — the
+            // channel is not polled from in there — and because the writer is
+            // borrowed for the whole copy, so it could not be read later anyway.
+            //
+            // The channel is the other, and reading it here would be wrong: the
+            // message loop can refuse a pipelined statement at any point during
+            // the copy, and that refusal waits in the channel rather than in
+            // `queued`, precisely because nothing dequeues it until the copy
+            // ends. A snapshot taken now would report `false` for exactly the
+            // case the operator is looking for, so the channel is read when the
+            // line is written instead.
+            //
+            // Both are refusals on this path. The only other injection answers
+            // an `SSLRequest`, which is settled during startup, before any
+            // backend message exists to be oversized.
+            let dequeued_refusal = relay.queued.is_some();
+            let unread_injections = &*injections;
             if relay.client.write_all(&head).await.is_err()
                 || copy_exact_reporting_quiet(
                     &mut upstream,
@@ -1170,7 +1187,8 @@ where
                             tag = %std::ascii::escape_default(tag),
                             payload_len,
                             outstanding,
-                            holding_refusal,
+                            holding_refusal =
+                                dequeued_refusal || !unread_injections.is_empty(),
                             "no database bytes for a whole stall window inside a message too \
                              large to buffer; the client is mid-frame, so nothing may be \
                              written to it and the copy keeps waiting — ordering is intact and \
@@ -3554,6 +3572,53 @@ mod tests {
         assert!(
             logs.contains("holding_refusal=false"),
             "nothing was queued, so the line must not claim a refusal is held, got {logs}"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_refusal_decided_during_the_copy_is_reported_as_held() {
+        // The case a snapshot taken at the head would get backwards. Nothing
+        // dequeues an injection while the copy runs, so a statement refused
+        // part-way through it waits in the channel — which is exactly the
+        // session an operator reading this line is trying to find.
+        let payload = oversized_payload();
+        let upstream = ScriptedUpstream::new([
+            (std::time::Duration::ZERO, oversized_head()),
+            (OVERSIZED_COPY_QUIET_WARNING * 2, payload.clone()),
+            (std::time::Duration::ZERO, Vec::new()),
+        ]);
+
+        let (mut peer, honmoon_end) = socket_pair().await;
+        let (_read, client_write) = honmoon_end.into_split();
+        let forwarded = Arc::new(Forwarded::new());
+        let (injections, taken) = mpsc::channel(1);
+        let link = ClientLink {
+            forwarded: Arc::clone(&forwarded),
+            injections,
+        };
+
+        let (logs, _guard) = capture_logs();
+        let mut framed = oversized_head();
+        framed.extend_from_slice(&payload);
+        let mut seen = vec![0u8; framed.len()];
+        let (_handed, read, _sent) = tokio::join!(
+            upstream_to_client(upstream, client_write, taken, forwarded),
+            peer.read_exact(&mut seen),
+            // Half a window in: after the copy has started and before the line
+            // is written.
+            async {
+                tokio::time::sleep(OVERSIZED_COPY_QUIET_WARNING / 2).await;
+                queue_refusal(&link, "honmoon: denied by policy")
+            },
+        );
+        read.expect("the whole frame reaches the client");
+
+        assert_eq!(seen, framed, "a refusal arriving mid-copy writes nothing");
+        let logs = logs.text();
+        assert!(
+            logs.contains("holding_refusal=true"),
+            "the refusal is in the channel the copy cannot poll, which is still \
+             being held, got {logs}"
         );
     }
 

@@ -171,7 +171,11 @@ that fails to parse: it is refused rather than forwarded blind.
     ```
 
     once per copy, carrying the message tag (escaped, because the upstream chooses that byte), the
-    payload length, the bytes still to come and whether a refusal is being held. Deliberately not
+    payload length, the bytes still to come and whether a refusal is being held. That last field is
+    read **when the line is written**, not when the copy starts: a statement refused part-way
+    through the copy waits in the injection channel rather than in the relay, precisely because
+    nothing dequeues it until the copy ends, and a snapshot taken at the head would report `false`
+    for exactly the session an operator is looking for. Deliberately not
     `give_up`'s line, which says the refusal *may reach the client out of statement order*: here
     nothing was given up on and the ordering is exactly what was promised, and a warning implying
     the barrier had broken would be worse than the silence it replaces. The timer can do nothing but
