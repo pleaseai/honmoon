@@ -31,3 +31,7 @@ flate2.workspace = true
 # the proxy with a reused client SocketAddr.
 socket2 = "0.6"
 serde_json.workspace = true
+# Capture the relay's own `tracing` output: the deliverable of #218 is a log
+# line, so the test for it has to read one. Pinned centrally like every other
+# shared dep — `honmoon-cli` already ships it.
+tracing-subscriber.workspace = true
