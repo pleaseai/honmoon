@@ -149,13 +149,45 @@ that fails to parse: it is refused rather than forwarded blind.
 
     **The one place the bound is not serviced is the oversized-payload copy.** A backend message too
     large to buffer is written head-first and streamed, and between the head going out and the
-    payload finishing the relay polls neither the timer nor the injection channel. The reason is not
-    that nothing can be late there but that nothing can be *written*: the client is inside a frame
-    whose length it has been told, and an `ErrorResponse` injected into it would be read as that
-    frame's payload. A queued refusal therefore waits out the whole copy, and an upstream that goes
-    quiet mid-payload holds it for as long as it stays open — which costs the client nothing a direct
-    connection would not, since it is itself mid-frame waiting on a message only the backend can
-    finish. The copy ends by re-arming the window in full, so everything after it is bounded again.
+    payload finishing the relay does not poll the injection channel, release anything or give up on
+    anything. The reason is not that nothing can be late there but that nothing can be *written*:
+    the client is inside a frame whose length it has been told, and an `ErrorResponse` injected into
+    it would be read as that frame's payload. A queued refusal therefore waits out the whole copy,
+    and an upstream that goes quiet mid-payload holds it for as long as it stays open — which costs
+    the client nothing a direct connection would not, since it is itself mid-frame waiting on a
+    message only the backend can finish. The copy ends by re-arming the window in full, so
+    everything after it is bounded again.
+
+    **What the operator sees there is one warning, and nothing else changes.** Silence inside the
+    copy used to produce no signal at all — every other way a wait here ends logs, and a session
+    pinned open by an upstream that sent a frame head and then stopped looked exactly like an idle
+    one (#218). So the copy is raced against a timer of the same length as the stall window, and the
+    first window that passes with no byte from the database logs
+
+    ```
+    no database bytes for a whole stall window inside a message too large to buffer; the client
+    is mid-frame, so nothing may be written to it and the copy keeps waiting — ordering is
+    intact and a queued refusal keeps its place
+    ```
+
+    once per copy, carrying the message tag, the payload length, the bytes still outstanding and
+    whether a refusal is being held. Deliberately not `give_up`'s line, which says the refusal *may
+    reach the client out of statement order*: here nothing was given up on and the ordering is
+    exactly what was promised, and a warning implying the barrier had broken would be worse than the
+    silence it replaces. The timer can do nothing but log — the only write in that stretch of code
+    is the copy itself — so the bound above is still not serviced and the paragraph above still
+    holds. Quiet is measured from the last byte read rather than from the start of the copy, because
+    the messages that reach this path are the ones a slow link is slowest over: a copy that runs for
+    an hour while the database keeps sending is a working backend, and reporting it as quiet would
+    be false.
+
+    **Bounding the copy instead was rejected.** Giving it a deadline and ending the session on it
+    would leave the client holding a frame header with a truncated payload behind it — a
+    desynchronised stream it can only recover from by reconnecting, in exchange for a wait it was
+    already paying on a direct connection. It is worst for exactly the sessions it would fire on
+    most: a merely slow link carrying the largest messages in the protocol. That is trading this
+    ADR's whole ordering — latency over corruption — for a timer, so the copy stays unbounded and
+    the operator gets the warning instead.
 
     The timer is the relay's own, around its own read of the upstream, re-armed by every read that
     takes bytes off it — the streamed copy above excepted — because the relay is the task that knows

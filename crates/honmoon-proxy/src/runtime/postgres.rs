@@ -155,6 +155,22 @@ const MAX_BUFFERED_BACKEND_MESSAGE: usize = 64 * 1024;
 /// counter another task publishes.
 const REFUSAL_ORDER_STALL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 
+/// How long the oversized-payload copy may go without a byte from the database
+/// before the relay says so.
+///
+/// Not a bound, and the distinction is the whole of it: when this elapses
+/// nothing is written, nothing is given up on and the copy carries on. The
+/// client is inside a frame whose length it has been told, so saying so is the
+/// only act available (#218).
+///
+/// The same length as [`REFUSAL_ORDER_STALL_TIMEOUT`] by definition rather than
+/// by coincidence. When an upstream's silence has stopped being slowness is one
+/// judgement, already made and already tuned once; a second number would make an
+/// operator work out which of the two applied to the line in front of them. What
+/// differs between the two is what can be done about the silence, not when it is
+/// noticed.
+const OVERSIZED_COPY_QUIET_WARNING: std::time::Duration = REFUSAL_ORDER_STALL_TIMEOUT;
+
 /// Frames honmoon has forwarded that the database still owes the client an
 /// answer for, as the message loop counts them.
 ///
@@ -1098,8 +1114,10 @@ where
         if payload_len > MAX_BUFFERED_BACKEND_MESSAGE {
             // Too large to hold in memory: written head-first and streamed. No
             // injection is considered from here until the copy is done, and the
-            // stall bound is not serviced either — neither timer nor channel is
-            // polled between the head going out and the payload finishing.
+            // stall bound is not serviced either: the injection channel is not
+            // polled between the head going out and the payload finishing, and
+            // the one timer that is polled — the quiet warning below — writes
+            // nothing, releases nothing and gives up on nothing.
             //
             // Not because nothing can be late here, but because nothing can be
             // *written*. The head is already on the client's socket, so the
@@ -1119,17 +1137,50 @@ where
             // desynchronise the stream. The copy ends in `delivered` below, which
             // re-arms the window in full, so what follows the copy is bounded
             // again from there.
+            //
+            // What it does not cost the client, it costs the operator, and that
+            // is what the warning is for (#218). Every other way a wait here can
+            // end runs `Relay::give_up`, which says so; this one held a refusal,
+            // the relay task, both sockets and the session on an upstream that
+            // had stopped speaking, and said nothing at all. So the copy is raced
+            // against a timer that can do the one thing available to it. It is
+            // deliberately not `give_up`'s line: nothing was given up on, the
+            // client is receiving the frame it is owed in the order it was owed
+            // it, and a warning implying the barrier had broken would be worse
+            // than the silence it replaces.
+            let tag = head[0];
+            // Read before the copy borrows the writer, and true for the whole of
+            // it: the injection channel is not polled from in there, so nothing
+            // can become queued while the copy runs.
+            let holding_refusal = relay.queued.is_some();
             if relay.client.write_all(&head).await.is_err()
-                || copy_exact(&mut upstream, &mut relay.client, payload_len)
-                    .await
-                    .is_err()
+                || copy_exact_reporting_quiet(
+                    &mut upstream,
+                    &mut relay.client,
+                    payload_len,
+                    OVERSIZED_COPY_QUIET_WARNING,
+                    |outstanding| {
+                        tracing::warn!(
+                            tag = %(tag as char),
+                            payload_len,
+                            outstanding,
+                            holding_refusal,
+                            "no database bytes for a whole stall window inside a message too \
+                             large to buffer; the client is mid-frame, so nothing may be \
+                             written to it and the copy keeps waiting — ordering is intact and \
+                             a queued refusal keeps its place"
+                        );
+                    },
+                )
+                .await
+                .is_err()
             {
                 // The header is already on the client's socket with an
                 // incomplete payload behind it: `write_all` can fail after a
-                // partial write, and `copy_exact` reads each chunk before writing
-                // it, so an upstream that dies first leaves the header with *no*
-                // payload at all. Either way the client is mid-frame, and nothing
-                // more may be written to it.
+                // partial write, and the copy reads before it writes, so an
+                // upstream that dies before sending anything leaves the header
+                // with *no* payload at all. Either way the client is mid-frame,
+                // and nothing more may be written to it.
                 return Stop::Client;
             }
             // Oversized by construction, so never a `ReadyForQuery` (six bytes):
@@ -1839,6 +1890,72 @@ pub(crate) fn error_response(message: &str) -> Vec<u8> {
     frame.extend_from_slice(&((body.len() + 4) as u32).to_be_bytes());
     frame.extend_from_slice(&body);
     frame
+}
+
+/// Copy exactly `len` bytes from `src` to `dst`, reporting **once** if `src`
+/// goes quiet for `quiet` part-way through.
+///
+/// Calling `stalled` is the only thing the wait can do, and that is the point
+/// rather than an omission. The caller has already written the frame's head, so
+/// the client is inside a frame whose length it has been told and any byte
+/// written here that is not this payload would be read as part of it. `stalled`
+/// is handed the number of bytes still outstanding and nothing it could write
+/// with.
+///
+/// Quiet is measured from the last read that took bytes off `src`, never from
+/// the start of the copy. A payload arriving steadily over longer than `quiet`
+/// is a database working, exactly as [`Relay::progressed`] treats one, and the
+/// message this reports — that nothing has arrived — would be false of it. The
+/// sizes that reach this path are the ones a slow link is slowest over, so that
+/// is the common case and not the corner. Reported once per copy: a second
+/// window of the same silence is the same silence, and the operator has already
+/// been told.
+///
+/// Separate from [`copy_exact`] rather than folded into it. The three other
+/// copies in this file have no frame head on the wire ahead of them and no
+/// client held mid-frame behind them, so there is nothing for them to report and
+/// no reason for them to carry a timer.
+async fn copy_exact_reporting_quiet<R, W>(
+    src: &mut R,
+    dst: &mut W,
+    mut len: usize,
+    quiet: std::time::Duration,
+    stalled: impl FnOnce(usize),
+) -> std::io::Result<()>
+where
+    R: AsyncRead + Unpin,
+    W: AsyncWrite + Unpin,
+{
+    let mut buf = vec![0u8; COPY_CHUNK.min(len.max(1))];
+    let mut stalled = Some(stalled);
+    let mut deadline = tokio::time::Instant::now() + quiet;
+    while len > 0 {
+        let want = len.min(buf.len());
+        // `read` rather than `read_exact`, for the reason [`Relay::fill`] gives:
+        // it is cancel-safe, so the arm that loses the race below has taken
+        // nothing off the socket. It also makes the window byte-granular, which
+        // is what keeps the report truthful — a chunk arriving in pieces is an
+        // upstream that is sending.
+        //
+        // `biased` so bytes beat the timer whenever both are ready: an upstream
+        // that answers in the same instant the window closes was not quiet.
+        let read = loop {
+            tokio::select! {
+                biased;
+                read = src.read(&mut buf[..want]) => break read?,
+                () = until(stalled.is_some().then_some(deadline)) => {
+                    (stalled.take().expect("armed only while it is Some"))(len);
+                }
+            }
+        };
+        if read == 0 {
+            return Err(std::io::Error::from(std::io::ErrorKind::UnexpectedEof));
+        }
+        dst.write_all(&buf[..read]).await?;
+        len -= read;
+        deadline = tokio::time::Instant::now() + quiet;
+    }
+    Ok(())
 }
 
 /// Copy exactly `len` bytes from `src` to `dst` without buffering them all.
@@ -3217,6 +3334,187 @@ mod tests {
         let mut head = vec![b'd'];
         head.extend_from_slice(&(payload_len + 4).to_be_bytes());
         head
+    }
+
+    /// The payload behind [`oversized_head`], as a pattern a truncated or
+    /// reordered copy could not produce by accident.
+    fn oversized_payload() -> Vec<u8> {
+        (0..MAX_BUFFERED_BACKEND_MESSAGE + 1_000)
+            .map(|i| (i % 251) as u8)
+            .collect()
+    }
+
+    /// The `tracing` output captured while the guard from [`capture_logs`] is
+    /// alive.
+    struct CapturedLogs(Arc<std::sync::Mutex<Vec<u8>>>);
+
+    impl CapturedLogs {
+        fn text(&self) -> String {
+            String::from_utf8(
+                self.0
+                    .lock()
+                    .expect("no test panics while holding this")
+                    .clone(),
+            )
+            .expect("tracing writes UTF-8")
+        }
+    }
+
+    struct LogSink(Arc<std::sync::Mutex<Vec<u8>>>);
+
+    impl std::io::Write for LogSink {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0
+                .lock()
+                .expect("no test panics while holding this")
+                .extend_from_slice(buf);
+            Ok(buf.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    /// Capture warnings for as long as the returned guard is held.
+    ///
+    /// The only place in this workspace that asserts on a log line, because it is
+    /// the only place where the log line *is* the behaviour: the oversized copy
+    /// delivered every byte before #218 too, so a test reading the client's
+    /// stream alone would pass against the silence the warning replaces.
+    ///
+    /// Thread-local, which is enough here: `start_paused` runs the test on the
+    /// current-thread runtime, so everything the test awaits is polled on the
+    /// thread this guard covers.
+    fn capture_logs() -> (CapturedLogs, tracing::subscriber::DefaultGuard) {
+        let captured = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let sink = Arc::clone(&captured);
+        let subscriber = tracing_subscriber::fmt()
+            .with_max_level(tracing::Level::WARN)
+            .with_ansi(false)
+            .without_time()
+            .with_writer(move || LogSink(Arc::clone(&sink)))
+            .finish();
+        (
+            CapturedLogs(captured),
+            tracing::subscriber::set_default(subscriber),
+        )
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn an_upstream_quiet_inside_an_oversized_payload_is_said_once_and_copied_whole() {
+        // The client is inside a frame whose length it has been told, so the
+        // warning is the whole of what honmoon may do here — and the copy has to
+        // come out of the race byte-for-byte, because a timer that changed what
+        // was written would be writing into that frame.
+        let payload = oversized_payload();
+        let third = payload.len() / 3;
+        let mut opening = oversized_head();
+        opening.extend_from_slice(&payload[..third]);
+        // Two windows of silence, so "once" is once per copy rather than once
+        // per window.
+        let quiet = OVERSIZED_COPY_QUIET_WARNING * 2;
+        let upstream = ScriptedUpstream::new([
+            (std::time::Duration::ZERO, opening),
+            (quiet, payload[third..third * 2].to_vec()),
+            (quiet, payload[third * 2..].to_vec()),
+            (std::time::Duration::ZERO, Vec::new()),
+        ]);
+
+        let (mut peer, honmoon_end) = socket_pair().await;
+        let (_read, client_write) = honmoon_end.into_split();
+        let forwarded = Arc::new(Forwarded::new());
+        let (injections, taken) = mpsc::channel(1);
+        let link = ClientLink {
+            forwarded: Arc::clone(&forwarded),
+            injections,
+        };
+        // One answer is owed, so the refusal is held for the whole copy instead
+        // of going out before it starts.
+        link.forwarded_sync_point();
+        let mut ack = queue_refusal(&link, "honmoon: denied by policy");
+
+        let (logs, _guard) = capture_logs();
+        let mut framed = oversized_head();
+        framed.extend_from_slice(&payload);
+        let mut seen = vec![0u8; framed.len()];
+        // Read alongside the relay: the frame is larger than a socket buffer may
+        // be, and a reader that waited for the relay to finish could deadlock
+        // with it rather than fail.
+        let (handed, read) = tokio::join!(
+            upstream_to_client(upstream, client_write, taken, forwarded),
+            peer.read_exact(&mut seen),
+        );
+        read.expect("the whole frame reaches the client");
+
+        assert_eq!(seen, framed, "the copy is byte-for-byte, warning or not");
+        let logs = logs.text();
+        assert_eq!(
+            logs.matches("inside a message too large to buffer").count(),
+            1,
+            "one line per copy however long the upstream stays quiet, got {logs}"
+        );
+        assert!(
+            logs.contains("holding_refusal=true"),
+            "the line has to say a refusal is the thing being held, got {logs}"
+        );
+        assert!(
+            !logs.contains("out of statement order"),
+            "nothing was given up on here, so give_up's line would be false, got {logs}"
+        );
+
+        let handed = handed.expect("a whole copy leaves the client's stream framed");
+        assert!(
+            ack.try_recv().is_ok(),
+            "the refusal keeps its place and is written once the frame is complete"
+        );
+        drop(handed);
+        drop(link);
+        let mut after = Vec::new();
+        peer.read_to_end(&mut after).await.unwrap();
+        assert_eq!(
+            after.first(),
+            Some(&b'E'),
+            "the refusal follows the frame rather than landing inside it, got {after:?}"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_payload_that_keeps_arriving_is_never_reported_as_quiet() {
+        // The window is measured from the last byte off the upstream, not from
+        // the start of the copy. The messages that reach this path are the ones
+        // a slow link is slowest over, so a copy outlasting the window while the
+        // database keeps sending is the ordinary case here and not a stall —
+        // reporting it would be a false statement about a working backend.
+        let payload = oversized_payload();
+        let piece = payload.len() / 4;
+        let step = OVERSIZED_COPY_QUIET_WARNING - std::time::Duration::from_secs(5);
+        let mut upstream = ScriptedUpstream::new([
+            (step, payload[..piece].to_vec()),
+            (step, payload[piece..piece * 2].to_vec()),
+            (step, payload[piece * 2..piece * 3].to_vec()),
+            (step, payload[piece * 3..].to_vec()),
+        ]);
+
+        let started = tokio::time::Instant::now();
+        let mut copied = Vec::new();
+        let mut reported = 0usize;
+        copy_exact_reporting_quiet(
+            &mut upstream,
+            &mut copied,
+            payload.len(),
+            OVERSIZED_COPY_QUIET_WARNING,
+            |_| reported += 1,
+        )
+        .await
+        .expect("the payload arrives, slowly");
+
+        assert_eq!(copied, payload, "every byte, in order");
+        assert_eq!(reported, 0, "an upstream that keeps sending is not quiet");
+        assert!(
+            started.elapsed() > OVERSIZED_COPY_QUIET_WARNING,
+            "the copy has to outlast a window for the assertion above to mean anything"
+        );
     }
 
     #[tokio::test]
