@@ -39,8 +39,12 @@ only where an audit sink is configured" — **that is false for the gateway**, w
 event is visible" section. Check any future wording against `restrict_to_owner_only`'s three
 cases *and* against that section.
 
-The same PR qualified every "the key makes a placeholder unforgeable" claim on the key being
-unguessable and not merely secret, and added a **"Generate the bytes; do not choose them"** block
+The same PR qualified the unforgeability claims on the README's provisioning section and on
+`load_or_create_machine_salt`'s rustdoc — and, in the follow-up, `session_salt`'s — on the key
+being unguessable and not merely secret. **That list is the claim; do not read it as "every
+occurrence".** `session_salt`'s was missed on the first pass and found by codex on the follow-up
+PR, so a fresh grep for "unforgeable" is still worth a pass rather than trusting this note. It
+also added a **"Generate the bytes; do not choose them"** block
 generating under `umask 077` and creating `~/.honmoon` before `install` (which does not create a
 missing parent — the earlier recipe simply failed on a fresh host). Note what that block may
 **not** say, because a draft did and it was wrong: a weak key provisioned in a *loose* file is
