@@ -314,10 +314,10 @@ Say you want the SQL parser to recognize `MERGE`. The honest, test-first path:
 
 | Action | Guidance |
 |--------|----------|
-| Add I/O to `honmoon-core` | 🚫 Never — it must stay transport-agnostic ([ARCHITECTURE.md:91-93](https://github.com/pleaseai/honmoon/blob/main/ARCHITECTURE.md#L91-L93)) |
+| Add an async runtime, socket, or network client to `honmoon-core` | 🚫 Never — it must stay transport-agnostic. Transport-agnostic is not I/O-free: it opens the audit sink and nothing else, and a second file is a new decision ([crates/AGENTS.md](https://github.com/pleaseai/honmoon/blob/main/crates/AGENTS.md)) |
 | Change the decision path | ⚠️ Preserve fail-closed; add tests proving deny-by-default still holds |
 | Change policy shape | ⚠️ Update Rust + TS + JSON Schema together (TD-001) |
-| Decrypt / buffer payloads | 🚫 Extract only declared facts; no DPI surprises ([ARCHITECTURE.md:99-100](https://github.com/pleaseai/honmoon/blob/main/ARCHITECTURE.md#L99-L100)) |
+| Decrypt / buffer payloads | 🚫 Extract only declared facts; no DPI surprises ([ARCHITECTURE.md:112-113](https://github.com/pleaseai/honmoon/blob/main/ARCHITECTURE.md#L112-L113)) |
 | Overstate a feature in docs | 🚫 Mark planned vs implemented; this is a security tool ([product-guidelines.md:14-17](https://github.com/pleaseai/honmoon/blob/main/.please/docs/knowledge/product-guidelines.md#L14-L17)) |
 
 ---

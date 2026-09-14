@@ -71,12 +71,29 @@ flowchart TB
 ```
 <!-- Sources: ARCHITECTURE.md:30-49, crates/honmoon-cli/src/main.rs:9-11, crates/honmoon-mgmt/src/lib.rs:25-27 -->
 
-The critical invariant: **`honmoon-core` is transport-agnostic.** It has no `tokio` or
-networking dependency — its `Cargo.toml` pulls parsing and policy crates such as `serde`,
-`serde_yaml`, `cel`, `regex`, and `sqlparser`, and nothing that opens a socket. The proxy feeds it
-`Facts` and consumes a `Verdict`. This is
-what lets the entire policy engine be unit-tested with zero I/O
-([ARCHITECTURE.md:47-48](https://github.com/pleaseai/honmoon/blob/main/ARCHITECTURE.md#L47-L48), [tech-stack.md:18-19](https://github.com/pleaseai/honmoon/blob/main/.please/docs/knowledge/tech-stack.md#L18-L19)).
+The critical invariant: **`honmoon-core` is transport-agnostic.** It has no async runtime, no
+socket and no network client — its `Cargo.toml` pulls parsing and policy crates such as `serde`,
+`serde_yaml`, `cel`, `regex`, and `sqlparser`, and nothing that opens a connection. The proxy owns
+the wire, feeds the core `Facts`, and consumes a `Verdict`, so the decision is a function of its
+arguments and the whole policy engine is unit-tested without a runtime, a network or a container
+([ARCHITECTURE.md:49-50](https://github.com/pleaseai/honmoon/blob/main/ARCHITECTURE.md#L49-L50), [ARCHITECTURE.md:98-100](https://github.com/pleaseai/honmoon/blob/main/ARCHITECTURE.md#L98-L100), [tech-stack.md:18-19](https://github.com/pleaseai/honmoon/blob/main/.please/docs/knowledge/tech-stack.md#L18-L19)).
+
+Transport-agnostic is not the same as I/O-free, and the invariant is the first rather than the
+second ([issue #166](https://github.com/pleaseai/honmoon/issues/166)). The core opens exactly one
+file: the operator's JSONL audit sink in `audit.rs`. That open stays in the crate because the
+hardening around it on Unix — `O_NOFOLLOW`, a component-by-component `openat` walk, a
+trusted-directory rule, `O_NONBLOCK`, and a regular-file `fstat` — enforces an invariant of
+`AuditLog` itself. The guarantee is descriptor-scoped rather than absolute, and the
+[Staff Engineer Guide](/onboarding/staff-engineer-guide#the-seam-is-about-transport-not-purity)
+carries the three caveats that bound it.
+`append_jsonl` writes synchronously on the decision path, so what the descriptor turns out to be
+decides whether a record blocks the process that opened it or lands where another local user can
+read it, and the type whose correctness depends on that is the type that should establish it.
+Everything else takes what it works on as an argument: `Policy::from_yaml` parses a string, and
+whoever read the file is the caller. A second file, an environment read, a spawned process and a
+socket all remain forbidden
+([crates/AGENTS.md](https://github.com/pleaseai/honmoon/blob/main/crates/AGENTS.md), [audit.rs:551-583](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/audit.rs#L551-L583) for what the open
+refuses, [audit.rs:416-426](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/audit.rs#L416-L426) for why it lives here).
 
 ## The data-plane request lifecycle
 
@@ -174,15 +191,15 @@ Sources: [lib.rs:14-70](https://github.com/pleaseai/honmoon/blob/main/crates/hon
 ## Architectural invariants
 
 These are non-negotiable; violating them breaks the product
-([ARCHITECTURE.md:82-100](https://github.com/pleaseai/honmoon/blob/main/ARCHITECTURE.md#L82-L100), [product-guidelines.md:19-27](https://github.com/pleaseai/honmoon/blob/main/.please/docs/knowledge/product-guidelines.md#L19-L27)):
+([ARCHITECTURE.md:89-113](https://github.com/pleaseai/honmoon/blob/main/ARCHITECTURE.md#L89-L113), [product-guidelines.md:19-27](https://github.com/pleaseai/honmoon/blob/main/.please/docs/knowledge/product-guidelines.md#L19-L27)):
 
 | Invariant | What it means | Why | Source |
 |-----------|---------------|-----|--------|
 | **Fail closed** | Default egress verdict is `deny`; absence of a match never silently allows | A firewall that fails open is a no-op | [lib.rs:48-60](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/lib.rs#L48-L60) |
-| **Data plane stays open source** | Anything inspecting traffic/credentials (`crates/*`) stays Apache-2.0 | Auditability is the trust that drives adoption | [ARCHITECTURE.md:87-89](https://github.com/pleaseai/honmoon/blob/main/ARCHITECTURE.md#L87-L89) |
-| **`honmoon-core` is transport-agnostic** | No `tokio`/sockets/I/O in core | Embeddable + unit-testable | [ARCHITECTURE.md:91-93](https://github.com/pleaseai/honmoon/blob/main/ARCHITECTURE.md#L91-L93) |
-| **Dual model stays in sync** | Rust + TS policy models match (TD-001) | One drifts → silent policy divergence | [ARCHITECTURE.md:95-97](https://github.com/pleaseai/honmoon/blob/main/ARCHITECTURE.md#L95-L97) |
-| **No decryption surprises** | Extract only declared protocol facts at the wire | Trust; no DPI beyond what policy needs | [ARCHITECTURE.md:99-100](https://github.com/pleaseai/honmoon/blob/main/ARCHITECTURE.md#L99-L100) |
+| **Data plane stays open source** | Anything inspecting traffic/credentials (`crates/*`) stays Apache-2.0 | Auditability is the trust that drives adoption | [ARCHITECTURE.md:94-96](https://github.com/pleaseai/honmoon/blob/main/ARCHITECTURE.md#L94-L96) |
+| **`honmoon-core` is transport-agnostic** | No async runtime, socket, or network client; one file — the audit sink | Embeddable + unit-testable | [ARCHITECTURE.md:98-106](https://github.com/pleaseai/honmoon/blob/main/ARCHITECTURE.md#L98-L106) |
+| **Dual model stays in sync** | Rust + TS policy models match (TD-001) | One drifts → silent policy divergence | [ARCHITECTURE.md:108-110](https://github.com/pleaseai/honmoon/blob/main/ARCHITECTURE.md#L108-L110) |
+| **No decryption surprises** | Extract only declared protocol facts at the wire | Trust; no DPI beyond what policy needs | [ARCHITECTURE.md:112-113](https://github.com/pleaseai/honmoon/blob/main/ARCHITECTURE.md#L112-L113) |
 
 ## Cross-cutting concerns
 

@@ -45,3 +45,21 @@ accepted under one caller and refused under another. A future proposal to move t
 open is a decision; see [[audit-sink-open-hardening]] and [[audit-sink-residual-gaps]] for what
 that open does and does not defend. Live findings: a second file, a runtime, a socket, an env
 read, or a second path that populates the sink.
+
+**The published wiki is a further site for the same claim (PR #245, issue #207).**
+`wiki/onboarding/staff-engineer-guide.md`, `wiki/deep-dive/architecture.md`,
+`wiki/getting-started/overview.md`, `wiki/deep-dive/policy-engine.md`,
+`wiki/onboarding/contributor-guide.md` and the generated `wiki/llms-full.txt` now restate the
+hardening list (`O_NOFOLLOW`, the `openat` walk, the trusted-directory rule, `O_NONBLOCK`, the
+regular-file `fstat`). `scripts/check-wiki-io-claim.ts` guards only the *no-I/O* claim; it does
+**not** check that the restated hardening carries its caveats.
+
+As merged, the staff guide carries all three as `status-caveat` bullets and the architecture page
+qualifies the list with "on Unix" and links them — so the job here is confirming they are **still**
+there, not reporting them missing. They are the three the prose drops when someone shortens the
+paragraph: the **descriptor-scoped** limit above (for a relative path the walk's root is the
+process's own working directory, with no trust test of its own), the open **issue #215** gap (the
+Linux arm of `carries_an_extended_acl` returns `false`, so an NFSv4 ACL over NFS or ZFS reads as
+trusted), and the `cfg(not(unix))` arm of `open_sink_file`, which has neither `O_NOFOLLOW` nor
+`openat` and fires no `audit-sink-*` event. `wiki/AGENTS.md` mandates `status-caveat` marking, so
+an unqualified restatement is a real finding against that rule, not a style note.
