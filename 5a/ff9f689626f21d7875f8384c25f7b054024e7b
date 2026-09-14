@@ -1,0 +1,23 @@
+scripts/check-wiki-io-claim.test.ts
+  s_45a769ffbfcb8e::t_27ae609e834948 73
+  s_45a769ffbfcb8e::t_fd92ad6a38bd1c 1-2,4-12,56-72,74-80,152-180
+scripts/check-wiki-io-claim.ts
+  s_45a769ffbfcb8e::t_31c2e2b0f40f01 63-67
+  s_45a769ffbfcb8e::t_63499fe05c29c8 89-92,112,224-261,265-270
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "5aff9f689626f21d7875f8384c25f7b054024e7b",
+  "prompts": {},
+  "sessions": {
+    "s_45a769ffbfcb8e": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d73956ac-5f89-4244-95a3-bb2b2718ce45",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
