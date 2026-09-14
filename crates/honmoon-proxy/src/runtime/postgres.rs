@@ -447,20 +447,27 @@ struct HandBack {
 /// One side of the refusal barrier: what the client has really received, and how
 /// far a wait that gave up has written off.
 ///
-/// In its own module so the two numbers are reachable only through the methods
-/// that pair them, which is the whole of the type. The barrier is one comparison
-/// per side, and what it must never become is a comparison holding one side's
-/// received count beside the other side's write-off. As four bare `u64`s on
-/// [`Relay`], `answered.max(abandoned_flushes) >= refusal.sync_points` was a
-/// well-typed sentence that read like arithmetic; here neither number can be
-/// named outside [`Progress::covers`], which has only its own side's pair to
-/// reach for.
+/// In its own module, so the pairing belongs to the type rather than to each
+/// caller. The barrier is one comparison per side, and what it must never become
+/// is a comparison holding one side's received count beside the other side's
+/// write-off. As four bare `u64`s on [`Relay`],
+/// `answered.max(abandoned_flushes) >= refusal.sync_points` was a well-typed
+/// sentence that read like the arithmetic around it.
 ///
-/// It does not settle which *tag* reaches which side — both are `u64` — so
-/// [`Relay::releasable`] handing `refusal.sync_points` to the sync side is still
-/// read rather than checked. That crossing would name both halves of one struct
-/// on one line, where the counter crossing spelled out two of [`Relay`]'s own
-/// fields and looked like the surrounding code.
+/// Be exact about what writing that crossing now costs, because the fields being
+/// private is not the whole of it. Naming either number directly does not
+/// compile anywhere outside this module. Going through the accessors does not
+/// compile in the shipped binary either, but for a second reason: reading a
+/// side's write-off at all is [`Progress::abandoned`], which is `#[cfg(test)]`,
+/// so the crossing has no spelling in code that ships. Under `cfg(test)` it has
+/// one — `self.sync.received().max(self.flush.abandoned())` — because the
+/// assertions need both numbers separately. What is gone everywhere is the
+/// crossing that looks like arithmetic; what is left is one that names two sides
+/// on a single line, in the tests.
+///
+/// It does not settle which *tag* reaches which side either — both are `u64` —
+/// so [`Relay::releasable`] handing `refusal.sync_points` to the sync side is
+/// read rather than checked.
 mod progress {
     /// See the module documentation.
     pub(super) struct Progress {
@@ -546,9 +553,21 @@ enum Pending {
     /// A bound expired, so this is no longer being ordered: it goes out on the
     /// next check whether or not the client has received what it was owed.
     ///
-    /// Neither bound applies to it any more, which is why it carries neither.
-    /// [`Relay::write_unordered`] is the only thing that builds one, and writes
-    /// it in the same call with no await in between.
+    /// It carries no deadline of its own, and only one of the two bounds really
+    /// stops applying. The stall bound does: it is a field of
+    /// [`Pending::Waiting`], so [`Pending::stall_deadline`] is `None` here and
+    /// [`Pending::rearm`] does nothing. The caller's ordering budget does not —
+    /// [`Relay::order_deadline`] reads it through whatever is queued, so it
+    /// still fires, exactly as it did when this was a `forced` flag the lookup
+    /// ignored. Firing it forces what is already forced, which is why that costs
+    /// nothing.
+    ///
+    /// [`Relay::write_unordered`] is the only caller that builds one, and writes
+    /// it in the same call with no await in between. That is a property of this
+    /// file rather than one the type enforces — unlike [`Progress`], whose
+    /// invariant is about a comparison and so needs its fields hidden, every
+    /// variant here is valid whoever writes it, and what the enum removes is the
+    /// combination rather than the construction.
     Forced(Injected),
 }
 
@@ -1385,7 +1404,7 @@ where
             // Whether an answer honmoon generated is waiting on this copy. Two
             // places can hold one, and they have to be read differently.
             //
-            // `Relay::queued` is the one already taken off the channel. It is
+            // [`Relay::pending`] is the one already taken off the channel. It is
             // read here because it cannot change while the copy runs — the
             // channel is not polled from in there — and because the writer is
             // borrowed for the whole copy, so it could not be read later anyway.
@@ -1393,7 +1412,7 @@ where
             // The channel is the other, and reading it here would be wrong: the
             // message loop can refuse a pipelined statement at any point during
             // the copy, and that refusal waits in the channel rather than in
-            // `queued`, precisely because nothing dequeues it until the copy
+            // `pending`, precisely because nothing dequeues it until the copy
             // ends. A snapshot taken now would report `false` for exactly the
             // case the operator is looking for, so the channel is read when the
             // line is written instead.
@@ -3257,6 +3276,56 @@ mod tests {
             started.elapsed(),
             REFUSAL_ORDER_STALL_TIMEOUT,
             "one stall window for the whole session, not one per refusal"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_written_off_flush_is_still_settled_by_its_own_late_output() {
+        // The settling gate reads the delivered count alone — `flush.received() <
+        // owed` — and must not read `flush.covers(owed)`, which folds the
+        // write-off in. The two agree everywhere except right here: after a stall
+        // has written a flush off, `covers` is already satisfied, so a gate asking
+        // it would stop probing for the quiet and the flush's own output would
+        // never be settled. What that costs is not this refusal, which is already
+        // out, but the delivered count the *next* one is measured against.
+        //
+        // Nothing in the suite pinned that before: every write-off test drives
+        // `give_up`/`flush_drained` through the `Accounting` helpers, which call
+        // them directly and never reach this gate, and every test that does reach
+        // the gate has nothing written off. So the two expressions were
+        // indistinguishable to the tests, and telling them apart is this test's
+        // whole job (#210).
+        let mut acc = accounting().await;
+        acc.link.forwarded_flush();
+        let upstream = ScriptedUpstream::new([
+            // Quiet long enough for the stall to write the flush off, then the
+            // output that flush was owed all along.
+            (REFUSAL_ORDER_STALL_TIMEOUT * 2, command_complete()),
+            // A quiet after it, which is the only signal a `Flush` has that its
+            // output is all delivered.
+            (REFUSAL_ORDER_STALL_TIMEOUT / 2, Vec::new()),
+        ]);
+
+        let ack = queue_refusal(&acc.link, "honmoon: denied by policy");
+        let (stop, ()) = tokio::join!(
+            relay_backend_messages(upstream, &mut acc.relay, &mut acc.taken),
+            async {
+                ack.await
+                    .expect("the refusal is written when the stall expires");
+            },
+        );
+
+        assert!(matches!(stop, Stop::Upstream));
+        assert_eq!(
+            acc.relay.flush.abandoned(),
+            1,
+            "the stall wrote the flush off, which is what arms this case at all"
+        );
+        assert_eq!(
+            acc.relay.flush.received(),
+            1,
+            "and the output that arrived afterwards still settled it — a gate on \
+             `covers` would have stopped probing once the write-off covered `owed`"
         );
     }
 
