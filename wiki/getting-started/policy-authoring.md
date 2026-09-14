@@ -451,7 +451,7 @@ with an explicit `---` is one document and loads normally.
 
 **The second does refuse something extra, on purpose.** A mapping in which none of `version`,
 `egress`, `endpoints` or `rules` appears is refused, and the parser would have taken it
-([main.rs:1178-1201](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-cli/src/main.rs#L1178-L1201)). Every `Policy` field
+([main.rs:1178-1207](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-cli/src/main.rs#L1178-L1207)). Every `Policy` field
 carries `#[serde(default)]` and the struct has no `deny_unknown_fields`, so *any* mapping used to
 deserialize into a policy with every field at its default — which means a Kubernetes `Secret`
 manifest, a `DB_PASSWORD: …` file and a service-account JSON key (JSON is valid YAML) each loaded,
