@@ -39,6 +39,15 @@ jobs:
         with:
           client-id: ${{ vars.RELEASE_GITHUB_APP_CLIENT_ID }}
           private-key: ${{ secrets.RELEASE_GITHUB_APP_PRIVATE_KEY }}
+          # Without these the token carries every permission the App installation holds.
+          # All three are load-bearing: `createReleases()` swaps the release PR's
+          # `autorelease:` label through the issues API after tagging, un-caught, so a token
+          # without `issues` throws once the tag and Release already exist and before the
+          # action sets its outputs — publishing a Release that `publish-binaries` then
+          # skips, leaving it with a CHANGELOG and no binaries.
+          permission-contents: write
+          permission-issues: write
+          permission-pull-requests: write
 
       - name: Run release-please
         id: release

@@ -42,7 +42,10 @@
           "path": "packages/claude-plugin/.claude-plugin/plugin.json",
           "jsonpath": "$.version"
         },
-        "README.md"
+        {
+          "type": "generic",
+          "path": "README.md"
+        }
       ]
     }
   },

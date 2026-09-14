@@ -56,10 +56,25 @@ version sites are the `extra-files` list in
 
 | Job | What it does |
 | --- | --- |
-| `release-please` | Maintains the release PR. On the push that merges it, tags `vX.Y.Z` and publishes the Release, then calls `release.yml` with that tag. Runs as the org release GitHub App, not `GITHUB_TOKEN`, so its events reach other workflows — that is what gives the release PR CI. |
-| `verify-version` | Reads `[workspace.package].version` via `cargo metadata` and compares it against the tag and against every `package.json` and the Claude plugin manifest. Fails naming the file that disagrees. This is the backstop for `extra-files`: a version site release-please failed to rewrite is caught here rather than shipped. |
-| `build` (×3) | Builds `apps/dashboard` with Bun **first**, asserts the bundle is not `build.rs`'s placeholder, then `cargo build --release --locked -p honmoon-cli --target <target>` on a native runner. Smoke-tests `honmoon --version`, packages `honmoon` + `LICENSE` + `README.md` into `honmoon-<version>-<target>.tar.gz`, and uploads it with its `.sha256`. |
-| `release` | Skipped on a dry run. Downloads every artifact, folds the per-target checksums into one `SHA256SUMS`, re-verifies it, and uploads onto the Release release-please already published. This is the only job with `contents: write`. |
+| `release-please` | Maintains the release PR. On the push that merges it, tags `vX.Y.Z`, publishes the Release, then calls `release.yml` with that tag. |
+| `verify-version` | Checks out the tag, then compares `[workspace.package].version` against the tag, every `package.json`, the Claude plugin manifest, and the README install snippets. Fails naming the file that disagrees. |
+| `mark-prerelease` | Flags a tag carrying a pre-release identifier as a pre-release. Runs first and gates `build`. |
+| `build` (×3) | Builds `apps/dashboard` with Bun **first**, then `cargo build --release --locked -p honmoon-cli --target <target>` on a native runner, from the tagged commit. Smoke-tests `honmoon --version` and packages each tarball with its `.sha256`. |
+| `release` | Skipped on a dry run. Folds the per-target checksums into one `SHA256SUMS`, re-verifies it, and uploads onto the Release release-please published. |
+
+`release-please` runs as the org release GitHub App rather than as `GITHUB_TOKEN`, whose events
+never reach other workflows — that is what gives the release PR its CI.
+
+`verify-version` is the backstop for `extra-files`: a missed rewrite is only a warning on
+release-please's side, so those version sites are re-checked before anything ships. The one
+`extra-file` it does not cover is `Cargo.lock`, which `build`'s `cargo build --locked` fails on
+instead. `mark-prerelease` sits outside the chain on one side and across it on the other. It depends
+on no job, so a failing `verify-version` still cannot strand a pre-release at
+`/releases/latest`; and `build` depends on **it**, so a failed `gh release edit` cannot let
+binaries reach a Release that is still "latest". Its tag test is on the step, not the job, so
+a stable or dry run passes through a job that succeeds while doing nothing — a job skipped by
+its own condition would skip `build` with it. It and `release` are the only jobs with
+`contents: write`.
 
 The dashboard build order is not cosmetic. `crates/honmoon-mgmt/build.rs` writes a placeholder
 `index.html` when `apps/dashboard/dist` is missing so a bare `cargo build` still links, which
@@ -78,8 +93,10 @@ That builds all three targets and uploads the tarballs as workflow artifacts, bu
 Release and skips the tag comparison. Use it after changing the workflow, or to confirm the
 binaries build before cutting anything.
 
-Passing a `tag` instead re-runs the upload onto that existing Release, which is how you redo
-an upload that failed after the Release was already published.
+Passing a `tag` instead builds **that tag's commit** and uploads onto its existing Release,
+which is how you redo an upload that failed after the Release was already published. The
+checkout is pinned to the tag rather than to the ref the run was launched from, so a manual
+run cannot put binaries built from some other branch onto a published Release.
 
 ## Verifying a download
 
