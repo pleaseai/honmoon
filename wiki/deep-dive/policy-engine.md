@@ -8,7 +8,9 @@ description: The honmoon-core policy model and decide() — rule precedence, egr
 `honmoon-core` is the heart of Honmoon: a transport-agnostic crate that defines the policy
 model, extracts protocol facts, and answers one question — given a `Policy` and a set of
 `Facts`, what is the `Verdict`? This page traces `decide()` end to end. The crate has **no**
-networking dependency by design ([lib.rs:1-4](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/lib.rs#L1-L4)).
+networking dependency by design — transport-agnostic rather than I/O-free, the one file it opens
+(the audit sink) sitting off the decision path traced below
+([lib.rs:1-11](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/lib.rs#L1-L11)).
 
 ## At a glance
 

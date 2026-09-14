@@ -12,13 +12,15 @@ decision log — not a tutorial.
 ## The one architectural insight
 
 > **Honmoon's design is organized around a single seam: a transport-agnostic decision core
-> (`honmoon-core`) that takes `Facts` and returns a `Verdict`, with every byte of I/O, protocol
-> handling, and framework choice pushed to the edges around it.**
+> (`honmoon-core`) that takes `Facts` and returns a `Verdict`, with the transport, the protocol
+> handling, and the framework choice pushed to the edges around it.**
 
-Everything else falls out of protecting that seam. The core has no `tokio`, no sockets, no async —
-it is a pure function `(Policy, Facts) -> Verdict` plus the parsers that produce `Facts` from raw
-bytes ([engine.rs:19-28](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/engine.rs#L19-L28), [lib.rs:1-4](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/lib.rs#L1-L4)).
-This buys three properties that are otherwise expensive in a security product:
+Everything else falls out of protecting that seam. The core has no `tokio`, no sockets, no async
+runtime and no network client: the decision is a function `(Policy, Facts) -> Verdict`, and the
+parsers that produce `Facts` are functions over raw bytes
+([engine.rs:19-28](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/engine.rs#L19-L28), [lib.rs:1-11](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/lib.rs#L1-L11)).
+The core does not know how the bytes reached it and has no way to find out. That buys three
+properties which are otherwise expensive in a security product:
 
 1. **Testability without infrastructure.** The entire policy semantics — egress precedence, CEL
    evaluation, fail-closed behavior, every parser edge case — is unit-tested with zero network,
@@ -30,14 +32,57 @@ This buys three properties that are otherwise expensive in a security product:
    relay tomorrow, or a TLS-terminating HTTP inspector later — each is just a different `Facts`
    producer.
 
-If you internalize one thing: **protect the purity of `honmoon-core`.** A `tokio` import in that
-crate is an architectural regression, not a convenience.
+### The seam is about transport, not purity
+
+It is tempting to compress all of that to "`honmoon-core` is pure", and the compression is wrong in
+a way that costs something. The core opens exactly one file: the operator's JSONL audit sink, in
+`audit.rs`. It has done so since the sink existed, and
+[issue #166](https://github.com/pleaseai/honmoon/issues/166) settled that it should — after the
+crate's own boundary document had claimed the opposite for some time.
+
+The reasoning is worth carrying, because this is the kind of call you will be asked to re-open.
+`append_jsonl` writes synchronously on the decision path, which makes *what the descriptor turns
+out to be* a correctness property of `AuditLog` itself rather than of whoever constructed it. A
+FIFO where a regular file was expected blocks the short-lived `honmoon hook` process until the
+agent times out — after which the invocation proceeds redacted by nothing at all. A path reached
+through another user's symlink publishes every host, SQL table and PII category honmoon records.
+So the open is hardened: `O_NOFOLLOW`, a component-by-component `openat` walk from a trusted root,
+a trusted-directory rule, `O_NONBLOCK`, and a regular-file `fstat` taken on the descriptor the
+walk already holds
+([audit.rs:551-583](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/audit.rs#L551-L583)). The type whose own
+correctness depends on all of that is the type that should establish it; handing `AuditLog` an
+already-open `File` would turn a guarantee into a convention every caller has to remember
+([audit.rs:416-426](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/audit.rs#L416-L426)).
+
+That makes the real rule sharper than "no I/O", and the sharper version is the one to review
+against:
+
+- **Never** an async runtime, a socket, a network client, an environment read, a spawned process,
+  or a *second* open file. A new file the crate wants to own is a new decision; the sink's
+  precedent does not grant it.
+- **Never** a second way to populate the sink. A constructor or setter assigning `AuditLog`'s sink
+  from a descriptor that `open_sink` did not produce adds no dependency, opens no second file and
+  reads no environment — it satisfies every clause above while bypassing the entire hardening at
+  once, in a diff that reads as a layering cleanup. Watch for this one precisely because a list of
+  forbidden capabilities does not catch it
+  ([audit.rs:380-388](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/audit.rs#L380-L388)).
+
+So: a `tokio` import in that crate is an architectural regression rather than a convenience, and
+`crates/honmoon-core/tests/crate_boundary.rs` fails the build if the crate's dependency set moves.
+Know what that check reaches, though, or it will stop you looking. It covers what genuinely needs
+a new crate — an async runtime, an HTTP client such as `hyper` or `reqwest`. A socket does not:
+`std::net` is in the standard library, and the `libc` already present for the sink open exposes
+`socket`, `connect` and `bind`. Neither does an environment read, a spawned process, or a second
+file. The manifest does not move for any of them and the test stays green
+([crate_boundary.rs:1-21](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/tests/crate_boundary.rs#L1-L21)). Those halves
+of the rule are held by review, which is to say by you. `crates/AGENTS.md` states the boundary in
+full ([crates/AGENTS.md](https://github.com/pleaseai/honmoon/blob/main/crates/AGENTS.md)).
 
 ## System shape
 
 ```mermaid
 flowchart TB
-  subgraph edge["Edges — I/O, framework, async (replaceable)"]
+  subgraph edge["Edges — transport, framework, async (replaceable)"]
     connect["CONNECT proxy (tokio)<br>honmoon-proxy"]
     relay["inline TCP relay (planned, TD-006)"]
     tls["TLS-terminating HTTP (planned, Pingora)"]
@@ -116,7 +161,7 @@ policy that explicitly sets `egress.default: allow` is choosing to opt out of fa
 
 The two rows that should shape *your* judgment when extending the system are **fail closed** and
 **transport-agnostic core** — they are invariants, not preferences
-([ARCHITECTURE.md:82-100](https://github.com/pleaseai/honmoon/blob/main/ARCHITECTURE.md#L82-L100)).
+([ARCHITECTURE.md:89-113](https://github.com/pleaseai/honmoon/blob/main/ARCHITECTURE.md#L89-L113)).
 
 ## The Pingora reversal — a model decision
 

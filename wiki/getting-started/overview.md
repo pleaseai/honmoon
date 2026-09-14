@@ -113,9 +113,12 @@ flowchart TB
 ```
 <!-- Sources: ARCHITECTURE.md:30-49, crates/honmoon-mgmt/src/lib.rs:1-16, packages/policy/src/index.ts:33-92 -->
 
-**Invariant:** `honmoon-core` is transport-agnostic — it has no `tokio` or networking
-dependency. The proxy feeds it `Facts` and consumes a `Verdict`. This keeps the policy logic
-pure and unit-testable without a runtime ([ARCHITECTURE.md:47-48](https://github.com/pleaseai/honmoon/blob/main/ARCHITECTURE.md#L47-L48)).
+**Invariant:** `honmoon-core` is transport-agnostic — no async runtime, no socket, no network
+client. The proxy owns the wire, feeds the core `Facts`, and consumes a `Verdict`, which keeps the
+decision a function of its arguments and unit-testable without a runtime. Transport-agnostic is
+not I/O-free, and the distinction is deliberate: the core opens one file, the operator's JSONL
+audit sink, and nothing else ([ARCHITECTURE.md:49-50](https://github.com/pleaseai/honmoon/blob/main/ARCHITECTURE.md#L49-L50),
+[crates/AGENTS.md](https://github.com/pleaseai/honmoon/blob/main/crates/AGENTS.md)).
 
 ## Operating modes
 
