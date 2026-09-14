@@ -950,10 +950,12 @@ where
         // The list names those messages and everything else waits, which is the
         // point rather than a stylistic choice (#211). Written the other way
         // round — as the messages that *cannot* end a batch — the default for a
-        // tag nobody enumerated is "settle", and that default had leaked three
-        // times. `NoData` was the last of them: it was named in the rationale for
-        // `ParameterDescription`/`RowDescription` and then left out of the check
-        // itself. This way round, a message no one enumerated — one a later
+        // tag nobody enumerated is "settle", and three tags reached that default
+        // in turn: `NoticeResponse` and `RowDescription`, both caught in review
+        // on #147 before the list shipped, and then `NoData`, which shipped —
+        // named in the rationale for `ParameterDescription`/`RowDescription` and
+        // left out of the check itself (#211). This way round, a message no one
+        // enumerated — one a later
         // protocol version adds, or a byte from an upstream that has stopped
         // speaking the protocol — costs a stall window instead of releasing a
         // refusal into the middle of a batch. So the list does not have to be
@@ -971,8 +973,10 @@ where
         //   it, so nothing more is coming for this batch either way.
         //
         // Two messages that really can be terminal are deliberately left out. A
-        // bare `Describe` answers with `t` `ParameterDescription` and then `T`
-        // `RowDescription` or `n` `NoData`, so those two do end *that* batch —
+        // `Describe` of a prepared statement answers with `t`
+        // `ParameterDescription` and then `T` `RowDescription` or `n` `NoData`,
+        // and a `Describe` of a portal with the second of those alone — so those
+        // two do end *such* a batch —
         // but they sit in the same position inside a `Bind`/`Describe`/`Execute`
         // batch, where the rows or the `CommandComplete` are still to come, and a
         // backend that has planned the statement and not yet produced anything
@@ -3715,6 +3719,56 @@ mod tests {
         // doing its job rather than the relay having stopped settling at all.
         database.write_all(&command_complete()).await.unwrap();
         written(&mut ack, "the batch ended, so the refusal is released").await;
+    }
+
+    #[tokio::test]
+    async fn every_tag_the_settling_list_names_does_settle_a_flush() {
+        // The inverted list is a positive claim — each of these seven tags can
+        // be the last message a `Flush` pushes — and the two tests above pin
+        // only its negative half. `ParseComplete`, `BindComplete` and
+        // `CommandComplete` are driven as settling triggers by the batch tests
+        // elsewhere in this module; the other four are not, so a wrong member
+        // among them would ship with nothing to catch it.
+        //
+        // `PortalSuspended` is the one worth stating outright, because it looks
+        // like the `DataRow` case and is not: a suspended portal does have rows
+        // left, but fetching them takes another `Execute` from the client, so
+        // the backend has stopped and this flush's own output really is
+        // complete. `EmptyQueryResponse` is how an `Execute` of a portal built
+        // from an empty query string ends, `CloseComplete` is the whole of the
+        // answer to a `Close`, and after `ErrorResponse` the backend discards
+        // frames until `Sync`.
+        //
+        // This one does not fail against the exclusion list it replaced — none
+        // of the four were excluded there either. It guards the claim this
+        // change introduces, not the defect it fixes.
+        for frame in [
+            vec![b'3', 0, 0, 0, 4],
+            vec![b'I', 0, 0, 0, 4],
+            vec![b's', 0, 0, 0, 4],
+            vec![b'E', 0, 0, 0, 5, 0],
+        ] {
+            let tag = frame[0];
+            let Session {
+                link,
+                client: mut peer,
+                mut database,
+                _relay,
+            } = session().await;
+            link.forwarded_flush();
+            let mut ack = queue_refusal(&link, "honmoon: denied by policy");
+
+            database.write_all(&frame).await.unwrap();
+            assert_eq!(read_message_tag(&mut peer).await, tag);
+            written(
+                &mut ack,
+                &format!(
+                    "`{}` ends a flushed batch, so the quiet after it settles the flush",
+                    tag as char
+                ),
+            )
+            .await;
+        }
     }
 
     #[tokio::test]

@@ -220,8 +220,9 @@ that fails to parse: it is refused rather than forwarded blind.
     an upstream that has stopped speaking the protocol. The two ways of being wrong are not equal: a
     message wrongly treated as terminal releases a refusal into the middle of a statement's output,
     and one wrongly treated as non-terminal costs a stall window. Stated as a list of exclusions,
-    the unenumerated default was the ordering failure, and three tags reached it that way —
-    `RowDescription`, then `NoData` (#211), which the list's own rationale named while the check
+    the unenumerated default was the ordering failure, and three tags reached it that way in turn:
+    `NoticeResponse` and `RowDescription`, both caught in review on #147 before the list shipped,
+    and then `NoData` (#211), which shipped — the list's own rationale named it while the check
     omitted it. Stated as a list of terminals, the default is the latency failure, so the list does
     not have to be exhaustive to be safe. The two counters stay separate because they are settled by different
     observations — one counter would let a sync point's answer settle a flush, and a quiet upstream

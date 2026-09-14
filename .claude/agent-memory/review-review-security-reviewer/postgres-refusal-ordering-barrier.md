@@ -1,6 +1,6 @@
 ---
 name: postgres-refusal-ordering-barrier
-description: 'The honmoon postgres runtime''s refusal ordering barrier after issue #121 (the relay owns the client write half) — what it covers, its live gaps (per-stall bound, the swallowed COPY-Sync of #128, the per-refusal window of #148, the single coverage snapshot of #153), and the settled rules not to undo.'
+description: 'The honmoon postgres runtime''s refusal ordering barrier after issue #121 (the relay owns the client write half) — what it covers, its live gaps (per-stall bound, the swallowed COPY-Sync of #128, the per-refusal window of #148, the single coverage snapshot of #153), the #211 inversion of the flush-settling tag list into a positive list, and the settled rules not to undo.'
 metadata:
   type: project
 ---
@@ -44,8 +44,8 @@ settled decisions that look like bugs and must not be "fixed" back.
 - **One quiet settles exactly one flush.** `Flush` (`H`) produces no
   `ReadyForQuery`; a flush is drained when the relay's own `try_read_now` of the
   next head returns `WouldBlock` at a message boundary, guarded by `fresh > 0`,
-  reset on `Z`, and never armed after a tag that cannot end a batch
-  (`D d N A S t T G H W c`). Crediting *every* outstanding flush was the first
+  reset on `Z`, and armed only after a tag that can end a batch
+  (the positive list below). Crediting *every* outstanding flush was the first
   shape of PR #147 and three reviewers caught it: a client that flushes mid-batch
   (`Parse`/`Bind`/`Flush`/`Execute`/`Flush`, what `PQsendFlushRequest` is for)
   gets the first flush answered and then a quiet while the `Execute` computes, and
@@ -127,13 +127,27 @@ Verified once against the #121 shape, so do not re-derive:
   `refuse_uninspectable` pass `None`. `Injection::NoEncryption` — the only
   unordered write in `write_queued` — is constructed only in `startup`, before any
   frame reaches the database.
-- **`n` (NoData) is missing from the never-settle tag list** (`D d N A S t T G H W
-  c`), while the list's own rationale names NoData as the alternative terminal of
-  a `Describe`. A quiet after `NoData` in `Parse`/`Bind`/`Describe`/`Execute`/
-  `Flush` settles that flush while the `Execute` is still computing. Unchanged
-  from pre-#121, but a real asymmetry with `T` rather than a deliberate exclusion.
-  Tracked as #211; the list is the third leak of the enumerate-from-the-wrong-side
-  shape, so prefer inverting it to adding a twelfth byte.
+- **The flush-settling tag check is a positive list, not an exclusion list** (#211,
+  PR #212). `settling` now requires `last_tag` in `1 2 3 C I s E` — ParseComplete,
+  BindComplete, CloseComplete, CommandComplete, EmptyQueryResponse,
+  PortalSuspended, ErrorResponse. The old exclusion list (`D d N A S t T G H W c`)
+  is gone; do not look for it and do not "restore" it. The new set is a strict
+  subset of what the old one settled, so nothing settles that did not before.
+  What actually changed behaviour is `n` (NoData) plus every byte nobody had
+  enumerated — `V`, `K`, `R`, `v`, a future protocol tag, a non-protocol byte —
+  which now wait. `T` and `t` are *not* part of that delta: they were already in
+  the old exclusion list and already waited. `Z` is deliberately absent:
+  `delivered` resets `fresh` on it and it settles through `flushes_covered`.
+  The unenumerated default is now latency (one stall window), where it used to be
+  ordering — that inversion is the load-bearing part, so adding a member is a
+  safety decision and removing one is only a latency decision.
+- **The cost of the inversion is one more batch shape reaching `give_up`.** A bare
+  `Describe` plus a `Flush` is never settled by a quiet, so its refusal pays a full
+  `REFUSAL_ORDER_STALL_TIMEOUT` unless a `Sync` answers for it. That was already
+  true for the row-returning form ending on `T`; the inversion adds the no-row form
+  ending on `n`. It is the #148 self-inflicted-stall shape widened by one shape, not
+  a new one, and `give_up` stays fail-closed: it releases the refusal, never the
+  statement.
 - **`Relay::delivered`'s clamp bounds the total, not the position.** It stops a
   backend accumulating more sync-point credit than the session forwarded; it does
   not stop one that answers a single sync point twice from satisfying a refusal's
