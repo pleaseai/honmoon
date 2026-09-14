@@ -37,8 +37,8 @@ enum Command {
     /// Run a command with its egress routed through a policy-enforcing proxy.
     ///
     /// A session that stops moving explains itself only under `RUST_LOG`.
-    /// `tracing` stays at `ERROR` when `RUST_LOG` is unset — the historical
-    /// default every command keeps — so the data plane's warnings are
+    /// This command leaves `tracing` at `ERROR` when `RUST_LOG` is unset — the
+    /// historical default — so the data plane's warnings are
     /// discarded, including the PostgreSQL relay giving up on a stalled
     /// database, a refusal that may then reach the client out of statement
     /// order, an oversized copy going quiet, and the bridge into an enforced
@@ -55,8 +55,8 @@ enum Command {
     /// Run the central gateway proxy plus its management API + dashboard.
     ///
     /// A session that stops moving explains itself only under `RUST_LOG`.
-    /// `tracing` stays at `ERROR` when `RUST_LOG` is unset — the historical
-    /// default every command keeps — so the data plane's warnings are
+    /// This command leaves `tracing` at `ERROR` when `RUST_LOG` is unset — the
+    /// historical default — so the data plane's warnings are
     /// discarded, including the PostgreSQL relay giving up on a stalled
     /// database, a refusal that may then reach the client out of statement
     /// order, and an oversized copy going quiet. Restart with
@@ -857,7 +857,7 @@ fn run(policy: PathBuf, argv: Vec<String>) -> Result<()> {
     let socks_url = format!("socks5h://{socks_addr}");
     tracing::info!(%proxy_url, %socks_url, "egress proxy ready");
     // Above the isolation probe, not below it: enforced `run_confined` never
-    // returns, so a line printed after it would be one every successfully
+    // returns *on success*, so a line printed after it would be one every
     // sandboxed run never saw — and the bridge warnings this filter reaches
     // exist only on that path.
     print_stall_diagnostics_hint();

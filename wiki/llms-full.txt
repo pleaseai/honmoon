@@ -2618,9 +2618,10 @@ filter, [main.rs:413-436](https://github.com/pleaseai/honmoon/blob/main/crates/h
 RUST_LOG=honmoon_proxy=debug cargo run -p honmoon-cli -- gateway --config policies/agent.yaml
 ```
 
-With `RUST_LOG` unset every command stays at `ERROR`, the historical default — for a gateway
-stdout *is* the process's output, and the lines an operator must read are printed with
-`eprintln!` rather than logged. The cost is that the data plane's diagnostics for a session
+With `RUST_LOG` unset `gateway` and `run` stay at `ERROR`, the historical default
+(`policy validate` is the exception, and defaults to `WARN`) — for a gateway stdout *is* the
+process's output, and the lines an operator must read are printed with `eprintln!` rather
+than logged. The cost is that the data plane's diagnostics for a session
 that has stopped moving are opt-in, so `gateway` and `run` name the filter that turns them on
 in the startup banner:
 

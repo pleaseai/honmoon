@@ -1,8 +1,8 @@
 //! The startup line that says how to see the data plane's stall diagnostics
 //! (#228), and the claim it makes.
 //!
-//! `init_tracing` leaves every command at `ERROR` when `RUST_LOG` is unset, so
-//! a session that hangs prints nothing about why. The decision on #228 was to
+//! `init_tracing` leaves `gateway` and `run` at `ERROR` when `RUST_LOG` is
+//! unset, so a session that hangs prints nothing about why. The decision on #228 was to
 //! keep that default and make it *discoverable*: one line in the `eprintln!`
 //! banner `gateway` and `run` already print, naming the filter that turns the
 //! diagnostics on.
@@ -145,8 +145,8 @@ fn stderr(output: &Output) -> String {
 /// test binary is, exits immediately, and needs nothing from the host that a
 /// confined child might not have. What matters is only that the line is out
 /// before `run` reaches it — under enforced isolation `run_confined` never
-/// returns, so a banner printed any later would be one a sandboxed run never
-/// saw.
+/// returns *on success*, so a banner printed any later would be one a
+/// sandboxed run never saw.
 #[test]
 fn run_names_the_filter_that_turns_stall_diagnostics_on() {
     let home = TempHome::new("run-banner");
@@ -179,6 +179,12 @@ fn run_names_the_filter_that_turns_stall_diagnostics_on() {
 /// banner is printed between the policy load and the first bind, so the failure
 /// that stops this run is also what proves the line does not depend on a
 /// listener being up.
+///
+/// The failure is pinned to that bind rather than merely to a non-zero exit.
+/// Today it is the only thing between the banner and the exit that can fail, so
+/// the two assertions are equivalent — but that is an invariant of the current
+/// `gateway` body, not of this test, and a fallible step added in between would
+/// otherwise leave this passing for a reason it never checked.
 #[test]
 fn the_gateway_names_it_too_even_when_it_cannot_bind() {
     let home = TempHome::new("gateway-banner");
@@ -199,6 +205,11 @@ fn the_gateway_names_it_too_even_when_it_cannot_bind() {
     assert!(
         !output.status.success(),
         "the control only works if the gateway stopped at the bind"
+    );
+    assert!(
+        stderr(&output).contains(&format!("binding proxy {UNBINDABLE_ADDR}")),
+        "…and it must be the bind it stopped at, not something earlier; stderr: {}",
+        stderr(&output)
     );
     assert!(
         stderr(&output).contains(BANNER_LINE),
