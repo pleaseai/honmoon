@@ -1029,9 +1029,15 @@ fn not_a_policy_document(src: &str) -> Option<&'static str> {
     // what gets classified is the shape the loader will try to deserialize.
     let mut documents = serde_yaml::Deserializer::from_str(src);
     let Some(first) = documents.next() else {
-        // No document at all. An empty file is a valid policy — every field at
-        // its default — so this is the loader's to accept, not this function's
-        // to refuse.
+        // Defensive, and measured as unreachable rather than assumed to be the
+        // empty-file case: `serde_yaml` 0.9 yields a first document for every
+        // `&str`, an empty one included, so an empty file arrives below as
+        // `Value::Null` and is passed through there. Kept because the only
+        // correct reading of "no document" is that there is nothing to classify,
+        // and deferring is what this function does when it cannot classify — a
+        // `unreachable!()` here would turn a `serde_yaml` change into a panic in
+        // a binary whose job is to refuse things safely. It is the one line in
+        // this function no test covers, for the same reason.
         return None;
     };
 
