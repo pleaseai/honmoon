@@ -1,0 +1,21 @@
+.claude/agent-memory/review-review-documentation-analyzer/pr216_progressed_try_read_now_gap.md
+  s_57124b6a8f0475::t_2ee9bb5c4f6cf7 3,9-11,13-21,23-30,32-38
+.claude/agent-memory/review-review-security-reviewer/postgres-refusal-ordering-barrier.md
+  s_57124b6a8f0475::t_2ee9bb5c4f6cf7 158-161
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "d49b90ada379f7aeea454bdefe231453869f7b61",
+  "prompts": {},
+  "sessions": {
+    "s_57124b6a8f0475": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "2eb527eb-9e25-4c46-8ed9-c3084723c3be",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
