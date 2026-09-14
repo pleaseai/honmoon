@@ -1,0 +1,19 @@
+.github/workflows/release.yml
+  s_89bb0ff98a3782::t_ca4c10409fba43 334-341
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "3887dd3ce7c9c0a815bceb0ce7cd336850ea3356",
+  "prompts": {},
+  "sessions": {
+    "s_89bb0ff98a3782": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d8457d0b-63ba-4754-9853-e63daaf6e396",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
