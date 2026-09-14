@@ -477,8 +477,13 @@ export function scriptFiles(html: string, shell: string): {
         continue
       }
 
+      // `resolve` leaves no trailing separator — except at a filesystem root,
+      // where `dir` already *is* one. Appending another unconditionally makes
+      // the prefix `//`, which nothing starts with, so a shell served from a
+      // root would reject every script it loads.
+      const prefix = dir.endsWith(sep) ? dir : dir + sep
       const file = resolve(dir, `.${pathname}`)
-      if (file !== dir && !file.startsWith(dir + sep)) {
+      if (file !== dir && !file.startsWith(prefix)) {
         skip(raw, 'resolves outside the build directory, so no file in the build holds its code')
         continue
       }

@@ -319,6 +319,16 @@ describe('scriptFiles', () => {
     })
   })
 
+  // `scriptFiles` reads no file, so the shell path is arithmetic only — and a
+  // shell whose directory is a filesystem root is where a `dir + sep` prefix
+  // becomes `//` and refuses everything.
+  test('a shell directly under a filesystem root still resolves its scripts', () => {
+    expect(scriptFiles(BUILT_SHELL, '/index.html')).toEqual({
+      files: ['/assets/index-ChyO-qsg.js'],
+      unresolved: [],
+    })
+  })
+
   // An escaped character in a file name is why the decode is there at all, so
   // it must still resolve.
   test('a percent-escaped character in a file name still resolves', () => {
