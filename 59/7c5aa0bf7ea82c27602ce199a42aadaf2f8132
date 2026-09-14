@@ -1,0 +1,21 @@
+.claude/agent-memory/review-review-security-reviewer/postgres-refusal-ordering-barrier.md
+  s_82ae8842c4d4c1::t_22e96b7b61c1e6 3
+  s_82ae8842c4d4c1::t_42b080519fdb24 208-224
+  s_82ae8842c4d4c1::t_4f378fbcded9ca 225-228
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "597c5aa0bf7ea82c27602ce199a42aadaf2f8132",
+  "prompts": {},
+  "sessions": {
+    "s_82ae8842c4d4c1": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "377bb1f8-81ad-4d61-a5f5-ff3bfd3a3b20",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
