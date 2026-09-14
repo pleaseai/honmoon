@@ -158,8 +158,8 @@ that fails to parse: it is refused rather than forwarded blind.
     finish. The copy ends by re-arming the window in full, so everything after it is bounded again.
 
     The timer is the relay's own, around its own read of the upstream, re-armed by every read that
-    takes bytes off it, because the relay is the task that knows whether any backend traffic
-    arrived: "waiting on sync point N with nothing from the
+    takes bytes off it — the streamed copy above excepted — because the relay is the task that knows
+    whether any backend traffic arrived: "waiting on sync point N with nothing from the
     database for T" is one local decision rather than an inference from a counter another task
     publishes. What it gives up on is recorded **beside** what the client received rather than added
     to it. The relay keeps two numbers per side — how many answers it has really delivered, and how
@@ -170,6 +170,13 @@ that fails to parse: it is refused rather than forwarded blind.
     that turns up after all. The bounded quantity is the delivered `ReadyForQuery` count
     specifically; progress for the stall window is every byte of backend traffic of any kind, and runs
     far ahead of it, since one query's sync point can carry thousands of rows.
+
+    A backend that drips bytes without ever completing a message therefore holds a queued refusal for
+    as long as it keeps dripping. It gains nothing worth having by it: holding one has always needed
+    no more than a complete five-byte message per window, and while the message is unfinished the
+    client is waiting on something only the backend can finish — where a direct connection would
+    leave it too. Writing the refusal early would not free the client; it would only misattribute the
+    denial to the statement still arriving, which is what this barrier exists to prevent.
   - **An answer that arrives after the relay gave up on it is counted where it belongs, and cannot
     be counted twice.** Giving up must not be recorded as the client having received something,
     because the database can still send it. An earlier design credited the delivered count and then

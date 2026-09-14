@@ -154,7 +154,17 @@ Verified once against the #121 shape, so do not re-derive:
   tag one response early. That needs a protocol-violating upstream, which is not
   the adversary here — but do not read the clamp as per-statement robustness when
   hardening this file.
-- **The stall window is re-armed by a *complete* message.** A single message whose
-  bytes trickle in for longer than the window is given up on mid-arrival, so
-  "waiting on N with no backend traffic" is really "with nothing whole delivered".
-  Unchanged from pre-#121, tracked as #209.
+- **The stall window is re-armed by every *byte* off the upstream socket** (#209,
+  PR #216). `Relay::progressed()` is called from `Relay::delivered` *and* from the
+  `Ok(read)` arm of `Relay::fill`; it is guarded on `queued.is_some()` so
+  `stall_deadline` is never armed with nothing to release (an empty-queue fire
+  would leave `forced` latched and send the *next* refusal unordered). Do not
+  re-report the old "a message trickling in is given up on mid-arrival" behaviour
+  — it is gone. The indefinite-hold primitive is unchanged in class: a backend
+  could always hold a refusal forever with one complete 5-byte message per window;
+  #216 only lowers that to one byte per window and makes the hold invisible to the
+  client. The **oversized-payload copy** (`copy_exact`, payload >
+  `MAX_BUFFERED_BACKEND_MESSAGE`) still services neither the stall timer nor the
+  injection channel, deliberately: the head is already on the client's socket, so
+  an `ErrorResponse` written there would be eaten as that frame's payload. The
+  copy ends in `delivered`, which re-arms in full.
