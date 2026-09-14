@@ -1,0 +1,32 @@
+crates/AGENTS.md
+  s_ca019e95b789bb::t_c252bb9250adcc 109-113
+.claude/agent-memory/review-review-security-reviewer/audit-sink-residual-gaps.md
+  s_ca019e95b789bb::t_3fcaaf80336fa0 14-20
+  s_ca019e95b789bb::t_60f146e6361d66 3
+.claude/agent-memory/review-review-pr-test-analyzer/audit_macos_extended_acl_pr213.md
+  s_ca019e95b789bb::t_00d365440bd591 1-45
+crates/honmoon-core/src/audit.rs
+  s_ca019e95b789bb::t_018c93aaa9a3d3 617-622,1199,1201-1205,1209-1215,1263-1270,1279-1282,1284-1291
+  s_ca019e95b789bb::t_d7604d457de41c 2009-2125
+  s_ca019e95b789bb::t_c4c3dc193f5712 1292,1297-1313
+.claude/agent-memory/review-review-security-reviewer/audit-sink-open-hardening.md
+  s_ca019e95b789bb::t_3fcaaf80336fa0 3,25-31
+.claude/agent-memory/review-review-documentation-analyzer/pr213_macos_acl_trusted_dir.md
+  s_ca019e95b789bb::t_c0d4fde4446e65 1-36
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "e6295dcf5eb106b5bd2624544953bce4e4ed8efb",
+  "prompts": {},
+  "sessions": {
+    "s_ca019e95b789bb": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "9090c440-5375-483e-8517-9a2410ef5f21",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
