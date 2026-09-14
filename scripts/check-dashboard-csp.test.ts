@@ -211,6 +211,40 @@ describe('checkShell', () => {
     expect(details(unknown)).toEqual([expect.stringContaining('cannot decode')])
   })
 
+  // Those gaps are found by a `Map` lookup rather than an object index, and
+  // that is load-bearing: `NAMED_REFS['constructor']` resolved down the
+  // prototype chain to `Object`, so the name was never `undefined`, never
+  // reported, and `function Object() { [native code] }` was substituted into
+  // the URL instead — the table's stated stance silently not holding for the
+  // handful of names `Object.prototype` happens to carry (#226, the same trap
+  // `REFUSED` hit in `check-dashboard-bundle.ts` under #200).
+  test.each([
+    'constructor',
+    'toString',
+    'valueOf',
+    'hasOwnProperty',
+  ])('`&%s;`, a prototype member, is refused like any other name the table omits', (name) => {
+    const inherited = BUILT_SHELL.replace(
+      '<div id="root">',
+      `<link rel="stylesheet" href="/assets/&${name};.css"><div id="root">`,
+    )
+    expect(details(inherited)).toEqual([expect.stringContaining('cannot decode')])
+  })
+
+  // `&__proto__;` passes undecoded too, but not through the table: `CHAR_REF`
+  // reads a name as `[a-z][a-z0-9]*`, so the underscore ends the match and
+  // there is no reference here for the lookup or `UNKNOWN_REF` to see. The
+  // parser a browser uses reads it as literal text for the same reason, so
+  // this is the intended outcome rather than the one above — pinned because
+  // the two look alike and only one of them was ever a defect.
+  test('`&__proto__;` is literal text, not a reference this check has to decode', () => {
+    const dunder = BUILT_SHELL.replace(
+      '<div id="root">',
+      '<a href="/audit?q=&__proto__;">a</a><div id="root">',
+    )
+    expect(details(dunder)).toEqual([])
+  })
+
   // `String.fromCodePoint` throws on each of these, which in CI is a stack
   // trace where a finding belongs — and the shell goes unchecked either way.
   test.each([
@@ -343,6 +377,7 @@ describe('scriptFiles', () => {
   test.each([
     ['a javascript: URL', 'javascript:go()', 'inline code rather than a file'],
     ['an undecodable reference', '/assets/&hellip;.js', 'cannot be decoded here'],
+    ['a prototype-member name', '/assets/&constructor;.js', 'cannot be decoded here'],
     ['a malformed percent-escape', '/assets/%zz.js', 'percent-escape this check cannot decode'],
   ])('a src that names no file (%s) is reported with its own reason', (_label, src, reason) => {
     const bad = BUILT_SHELL.replace('/assets/index-ChyO-qsg.js', src)
