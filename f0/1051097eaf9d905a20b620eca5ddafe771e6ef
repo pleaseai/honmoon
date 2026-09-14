@@ -1,0 +1,19 @@
+.claude/agent-memory/review-review-documentation-analyzer/pr236_client_quiet_second_window.md
+  s_efec3e841e211e::t_05122ec171da42 28-29,31-34,38,40-41,43
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "f01051097eaf9d905a20b620eca5ddafe771e6ef",
+  "prompts": {},
+  "sessions": {
+    "s_efec3e841e211e": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "2d3a60bf-2d6b-4582-9c66-c9dcd3312e8b",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
