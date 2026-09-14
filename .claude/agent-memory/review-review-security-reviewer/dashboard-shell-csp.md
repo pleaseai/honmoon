@@ -212,13 +212,17 @@ answered by this rather than by an edit.** All three are fixed and tested.
   truthy — so a bundle calling a function named `toString`, `valueOf`, `constructor` or
   `hasOwnProperty` failed CI with `function toString() { [native code] }` printed where the finding
   belongs. **`NAMED_REFS` in `check-dashboard-csp.ts` had the identical shape and took the identical
-  fix in #226**, so a finding about *either* lookup is now settled: `&constructor;`, `&toString;`,
-  `&valueOf;` and `&hasOwnProperty;` are reported as undecodable rather than substituting that
-  `[native code]` source into the URL, and each is tested. `&__proto__;` is the near-miss to leave
-  alone — it passes undecoded, but `CHAR_REF` reads a name as `[a-z][a-z0-9]*`, so the underscore
-  ends the match and there is no reference there for either the table or `UNKNOWN_REF` to see, which
-  is how a browser reads it too. A test pins that, and a finding proposing to report it is answered
-  here.
+  fix in #226**, so a finding about *either* lookup is now settled: an `Object.prototype` member
+  whose name `CHAR_REF` can spell is reported as undecodable rather than substituting its
+  `[native code]` source into the URL. The tests cover every such name rather than a sample —
+  `constructor`, `toString`, `toLocaleString`, `valueOf`, `hasOwnProperty`, `isPrototypeOf`,
+  `propertyIsEnumerable` — so a finding naming any one of them is answered here. `&__proto__;` is
+  the near-miss to leave alone: it passes undecoded, but not through the table and not by a
+  truncated match — `CHAR_REF`'s name group is `[a-z][a-z0-9]*`, the character after the `&` is one
+  it cannot start on, so no match begins there and neither the table nor `UNKNOWN_REF` is reached,
+  which is how a browser reads it too. (An underscore *inside* a name does truncate: `&proto_x;`
+  matches `&proto`, unterminated.) A test pins that, and a finding proposing to report it is
+  answered here.
 - **`new URL` does not percent-decode a path segment, so the containment is checked, not inferred.**
   A literal `../` and `%2e%2e` are both collapsed by the parser, which reads as sufficient — but
   `%2f` survives into the `decodeURIComponent` that follows and becomes a separator again. Measured:
