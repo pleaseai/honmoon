@@ -1,6 +1,6 @@
 ---
 name: postgres-refusal-ordering-barrier
-description: 'The honmoon postgres runtime''s refusal ordering barrier after issue #121 (the relay owns the client write half) — what it covers, its live gaps (per-stall bound, the swallowed COPY-Sync of #128, the per-refusal window of #148, the single coverage snapshot of #153), the #211 inversion of the flush-settling tag list into a positive list, and the settled rules not to undo.'
+description: 'The honmoon postgres runtime''s refusal ordering barrier after issue #121 (the relay owns the client write half) — what it covers, its live gaps (per-stall bound, the swallowed COPY-Sync of #128, the per-refusal window of #148, the single coverage snapshot of #153), the #211 inversion of the flush-settling tag list into a positive list, the #218 quiet warning inside the oversized copy (escaped tag, holding_refusal read at write time), and the settled rules not to undo.'
 metadata:
   type: project
 ---
@@ -175,7 +175,17 @@ Verified once against the #121 shape, so do not re-derive:
   effect is a single `tracing::warn!` per copy; it writes nothing, releases
   nothing and gives up on nothing, so the framing/ordering story above is
   unchanged. The copy is still exact (`want = len.min(buf.len())`, 16 KiB
-  buffer, `read == 0` -> `UnexpectedEof`), and the closure cannot write to the
-  client because `dst` holds the mutable borrow. The warning renders the raw
-  upstream tag byte as `tag = %(tag as char)` — the one place in this file a
-  byte the database controls reaches a log line.
+  buffer filled before each write exactly as `copy_exact` does, `read == 0` ->
+  `UnexpectedEof`), and the closure cannot write to the client because `dst`
+  holds the mutable borrow. The line is the one place in this file a byte the
+  database controls reaches a log record, and it reaches it **escaped**:
+  `tag = %std::ascii::escape_default(tag)`. It was raw (`%(tag as char)`) in
+  #225's first commit and was fixed in that PR after review — a raw newline
+  there splits the record for any line-oriented collector (CWE-117). Do not
+  re-report it, and do not cite the raw form as current.
+  Its `holding_refusal` field is read **when the line is written**, not when the
+  copy starts: `Relay::queued` is snapshotted at the head because it cannot
+  change during the copy, but the injection channel is read in the callback,
+  because a statement refused part-way through waits there — a snapshot alone
+  reported `false` for exactly the stalled-with-a-refusal session the field
+  exists to name (also found and fixed in #225's review).
