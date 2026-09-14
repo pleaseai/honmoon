@@ -1,0 +1,27 @@
+.claude/agent-memory/review-review-code-reviewer/project_policy_read_guard_202.md
+  s_8ad88fd14fd47f::t_aa48ee0a209eac 3,46-60
+.claude/agent-memory/review-review-security-reviewer/policy-load-error-echoes-file.md
+  s_8ad88fd14fd47f::t_aa48ee0a209eac 3,41-58
+.claude/agent-memory/review-review-silent-failure-hunter/project_pr217_policy_scalar_leak.md
+  s_8ad88fd14fd47f::t_aa48ee0a209eac 46-54
+.claude/agent-memory/review-review-type-design-analyzer/honmoon_cli_load_policy_tuple.md
+  s_8ad88fd14fd47f::t_aa48ee0a209eac 26-33
+.claude/agent-memory/review-review-pr-test-analyzer/policy_guard_multidoc_scalar_escapes.md
+  s_8ad88fd14fd47f::t_aa48ee0a209eac 35-37
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "fae244e6056f53f9210ce479329b921919dd2633",
+  "prompts": {},
+  "sessions": {
+    "s_8ad88fd14fd47f": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "73a95bc3-a86e-4fa1-8e54-3d8d2fcfd8bd",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}

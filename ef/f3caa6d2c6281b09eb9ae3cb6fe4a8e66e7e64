@@ -1,0 +1,36 @@
+wiki/getting-started/policy-authoring.md
+  s_8ad88fd14fd47f::t_dfd500054f1785 432
+  s_8ad88fd14fd47f::t_8650e8c831bb86 447-450
+  s_8ad88fd14fd47f::t_b727b6eb59f833 454,477-486
+  s_8ad88fd14fd47f::t_6b7a05421fc795 487
+.claude/agent-memory/review-review-security-reviewer/policy-load-error-echoes-file.md
+  s_8ad88fd14fd47f::t_106db4893b079f 60-69,73
+  s_8ad88fd14fd47f::t_3d398fc01bfc95 70-72
+crates/honmoon-cli/src/main.rs
+  s_8ad88fd14fd47f::t_d70ea5598cab44 1160-1177,1684-1738,1740
+  s_8ad88fd14fd47f::t_d1b21e465af649 1499-1502,1505-1507,1577-1683,1739
+  s_8ad88fd14fd47f::t_8650e8c831bb86 1015-1022
+  s_8ad88fd14fd47f::t_c63d4efa25d187 1741
+wiki/llms-full.txt
+  s_8ad88fd14fd47f::t_cd159a327b7860 3124,3139-3142,3146,3169-3178
+  s_8ad88fd14fd47f::t_bccbf9b0f12e70 3179
+.claude/agent-memory/review-review-comment-analyzer/pr239_mapping_names_no_policy_field_claims.md
+  s_8ad88fd14fd47f::t_47bef16660ffb3 1-2,4-8,12,15
+  s_8ad88fd14fd47f::t_3d398fc01bfc95 3,9-11,13-14,16-45
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "eff3caa6d2c6281b09eb9ae3cb6fe4a8e66e7e64",
+  "prompts": {},
+  "sessions": {
+    "s_8ad88fd14fd47f": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "73a95bc3-a86e-4fa1-8e54-3d8d2fcfd8bd",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
