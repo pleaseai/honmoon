@@ -174,7 +174,9 @@ answered by this rather than by an edit.** All three are fixed and tested.
   `%2f` survives into the `decodeURIComponent` that follows and becomes a separator again. Measured:
   `src="/assets/..%2f..%2foutside.js"` named a file two levels above `dist/`, same-origin the whole
   way, with both guards green. `scriptFiles` now asserts the joined path stays under the shell's
-  directory.
+  directory — and that prefix has to account for `resolve` leaving no trailing separator *except* at
+  a filesystem root, where `dir` already is one and `dir + sep` becomes `//`, refusing every script
+  a root-served shell loads. Both halves are tested; a finding on either is answered here.
 - **`scriptFiles` counts `<script>` opening tags, for the same reason `checkShell` does.**
   `SCRIPT_TAG` is lazy and skips an opening tag with no `</script>`, so its `src` landed in neither
   the file list nor the unresolved list — and a shell whose remaining tags resolved then handed the
