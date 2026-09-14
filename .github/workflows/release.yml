@@ -1,8 +1,21 @@
 name: Release
 
-# Builds the `honmoon` binary for every supported target and publishes a GitHub Release.
-#   - push of a `v*` tag → build, then create the Release with the tarballs + SHA256SUMS
-#   - manual run         → dry run: build and upload the artifacts, but create no Release
+# Builds the `honmoon` binary for every supported target and attaches it to a GitHub Release.
+#   - called by release-please.yml → build, then upload the tarballs + SHA256SUMS onto the
+#     Release release-please has already tagged and published
+#   - manual run with a tag        → the same, to redo an upload that failed
+#   - manual run with no tag       → dry run: build and keep the artifacts, touch no Release
+#
+# Whenever a tag is given the checkout is pinned to that tag, in every job, so the artifacts
+# can only ever come from the tagged commit — never from whatever ref the run was launched
+# against. Without that pin, `gh release upload --clobber` would let a manual run replace a
+# published Release's binaries with a build of unrelated source.
+#
+# release-please owns the version, the tag, and the Release itself, so nothing here creates
+# any of them — this workflow only uploads into a Release that already exists. There is
+# deliberately no `push: tags` trigger: release-please tags as the org App rather than as
+# GITHUB_TOKEN, so its tag *does* raise events, and a tag trigger would run this a second
+# time alongside release-please.yml's own call and upload every asset twice.
 #
 # The dashboard MUST be built before `cargo build`. `crates/honmoon-mgmt/build.rs` drops a
 # placeholder `index.html` when `apps/dashboard/dist` is missing so a bare `cargo build`
@@ -18,16 +31,27 @@ name: Release
 # published for v0.1.0 — see docs/releasing.md.
 
 on:
-  push:
-    tags: ['v*']
+  workflow_call:
+    inputs:
+      tag:
+        description: Tag of the Release to upload the binaries onto.
+        required: true
+        type: string
   workflow_dispatch:
+    inputs:
+      tag:
+        description: >-
+          Upload onto the existing Release with this tag (e.g. v0.1.0).
+          Leave empty to dry-run: build everything and touch no Release.
+        required: false
+        type: string
 
 permissions:
   contents: read
 
 concurrency:
-  group: release-${{ github.ref }}
-  # Never cancel a tag build: a half-published Release is worse than a slow one.
+  group: release-${{ inputs.tag || github.ref }}
+  # Never cancel a release build: a half-published Release is worse than a slow one.
   cancel-in-progress: false
 
 jobs:
@@ -37,21 +61,30 @@ jobs:
     outputs:
       version: ${{ steps.check.outputs.version }}
     steps:
+      # Check out the tag itself, not the ref the run was launched against. `inputs.tag` is
+      # empty on a dry run, and an empty `ref` is checkout's own default, so only a tagged
+      # run is pinned. It is qualified to `refs/tags/` because checkout resolves a bare ref
+      # as a branch first (`getCheckoutInfo` tries `origin/<ref>` before `<ref>` as a tag),
+      # so a branch named `v0.2.0` would otherwise shadow the tag of that name. Without this a manual run could be launched from any branch whose
+      # manifests happen to read the right version and, because the upload uses --clobber,
+      # replace a published Release's binaries with artifacts built from that branch. It
+      # also pins the automated path: a push landing on main between release-please's tag
+      # and this build cannot leak into the tagged artifacts.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: ${{ inputs.tag && format('refs/tags/{0}', inputs.tag) || '' }}
           persist-credentials: false
 
       - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
 
-      # The tag is the source of truth on a tag push. A workflow_dispatch run can be
-      # launched against a `v*` tag ref too, so IS_TAG checks the event rather than the
-      # ref alone — otherwise a manual dry run would be graded against that tag. Either
-      # way every manifest has to agree, and the failure message names the one that does not.
+      # `inputs.tag` is empty only on a manual dry run, which has no tag to be graded
+      # against. Every manifest has to agree either way, and the failure message names the
+      # one that does not. This is the backstop for release-please's `extra-files` list:
+      # a version site it silently failed to rewrite is caught here, before anything ships.
       - name: Check Cargo.toml and every package.json agree
         id: check
         env:
-          REF_NAME: ${{ github.ref_name }}
-          IS_TAG: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') }}
+          TAG: ${{ inputs.tag }}
         run: |
           set -euo pipefail
 
@@ -60,7 +93,8 @@ jobs:
           echo "Cargo.toml [workspace.package].version = $cargo_version"
 
           failed=0
-          for manifest in package.json packages/*/package.json apps/*/package.json; do
+          for manifest in package.json packages/*/package.json apps/*/package.json \
+            packages/claude-plugin/.claude-plugin/plugin.json; do
             manifest_version=$(jq -er '.version' "$manifest")
             if [ "$manifest_version" != "$cargo_version" ]; then
               echo "::error file=$manifest::version is $manifest_version but Cargo.toml says $cargo_version"
@@ -68,24 +102,70 @@ jobs:
             fi
           done
 
-          if [ "$IS_TAG" = 'true' ]; then
-            tag_version="${REF_NAME#v}"
+          # release-please rewrites the README install snippets through its generic
+          # updater, whose missed rewrite is a warning rather than an error — so the
+          # version they pin is checked here too. Shipping a Release whose own README
+          # tells users to download a version that does not exist is the failure this
+          # catches.
+          readme_versions=$(grep 'x-release-please-version' README.md \
+            | grep -oE '[0-9]+\.[0-9]+\.[0-9]+[0-9A-Za-z.+-]*' || true)
+          if [ -z "$readme_versions" ]; then
+            echo "::error file=README.md::no x-release-please-version marker carries a version"
+            failed=1
+          fi
+          while IFS= read -r readme_version; do
+            [ -n "$readme_version" ] || continue
+            if [ "$readme_version" != "$cargo_version" ]; then
+              echo "::error file=README.md::install snippet pins $readme_version but Cargo.toml says $cargo_version"
+              failed=1
+            fi
+          done <<< "$readme_versions"
+
+          if [ -n "$TAG" ]; then
+            tag_version="${TAG#v}"
             if [ "$tag_version" != "$cargo_version" ]; then
-              echo "::error::tag $REF_NAME does not match Cargo.toml version $cargo_version"
-              echo "::error::run 'bun scripts/bump-version.ts $tag_version' and retag"
+              echo "::error::tag $TAG does not match Cargo.toml version $cargo_version"
+              echo "::error::the tag and the tree it was cut from disagree — re-run release-please"
               failed=1
             fi
           else
-            echo "workflow_dispatch: skipping the tag comparison (dry run)"
+            echo "no tag given: skipping the tag comparison (dry run)"
           fi
 
           [ "$failed" -eq 0 ] || exit 1
           echo "all manifests agree on $cargo_version"
           echo "version=$cargo_version" >> "$GITHUB_OUTPUT"
 
+  # A tag carrying a pre-release identifier (v0.2.0-rc.1) must never be "latest", and
+  # release-please publishes it as an ordinary Release, so something has to set the flag.
+  # It cannot be release-please: its own `prerelease` option is
+  # `prerelease && (preRelease || major === 0)`, so enabling it would also mark every 0.x
+  # release a pre-release and leave `/releases/latest` — the link the README hands users —
+  # with nothing to point at.
+  #
+  # The job graph around it is deliberate on both sides. It `needs` nothing, so a failing
+  # `verify-version` still cannot leave a pre-release sitting at /releases/latest; and
+  # `build` needs *it*, so a failed `gh release edit` cannot let binaries reach a Release
+  # that is still "latest". The tag predicate sits on the step rather than the job for that
+  # second half: a job skipped by its own `if` would skip `build` along with it, so a stable
+  # or dry run has to reach a job that succeeds while doing nothing.
+  mark-prerelease:
+    name: Mark pre-release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Flag the Release as a pre-release
+        if: inputs.tag != '' && contains(inputs.tag, '-')
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag }}
+          REPO: ${{ github.repository }}
+        run: gh release edit "$TAG" --repo "$REPO" --prerelease
+
   build:
     name: Build ${{ matrix.target }}
-    needs: verify-version
+    needs: [verify-version, mark-prerelease]
     runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
@@ -100,8 +180,10 @@ jobs:
     env:
       VERSION: ${{ needs.verify-version.outputs.version }}
     steps:
+      # The tagged commit, for the reason in verify-version.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: ${{ inputs.tag && format('refs/tags/{0}', inputs.tag) || '' }}
           persist-credentials: false
 
       - uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4.3.0
@@ -165,17 +247,17 @@ jobs:
           if-no-files-found: error
 
   release:
-    name: Publish GitHub Release
+    name: Attach binaries to the Release
     needs: [verify-version, build]
-    # Tag pushes only. A `workflow_dispatch` run selected against a `v*` tag has
-    # a matching `github.ref`, and the manual run is documented as a dry run.
-    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    # A dry run passes no tag and stops after the build.
+    if: inputs.tag != ''
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: ${{ inputs.tag && format('refs/tags/{0}', inputs.tag) || '' }}
           persist-credentials: false
 
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
@@ -193,22 +275,16 @@ jobs:
           # Re-verify locally so a corrupted upload cannot become a published asset.
           shasum -a 256 -c SHA256SUMS
 
-      - name: Create release
+      - name: Upload binaries
         env:
           GH_TOKEN: ${{ github.token }}
-          TAG: ${{ github.ref_name }}
+          TAG: ${{ inputs.tag }}
         run: |
           set -euo pipefail
-          # A tag carrying a pre-release identifier (v0.1.0-rc.1) never becomes "latest".
-          prerelease=()
-          case "$TAG" in
-            *-*) prerelease=(--prerelease) ;;
-          esac
-
-          gh release create "$TAG" \
-            --verify-tag \
-            --generate-notes \
-            --title "honmoon $TAG" \
-            "${prerelease[@]}" \
+          # The Release already exists, published by release-please with the CHANGELOG entry
+          # as its notes; only the binaries are missing. `--clobber` overwrites an asset of
+          # the same name, so redoing a partly-failed upload is safe.
+          gh release upload "$TAG" \
+            --clobber \
             artifacts/*.tar.gz \
             artifacts/SHA256SUMS
