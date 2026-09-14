@@ -120,7 +120,7 @@ pure and unit-testable without a runtime ([ARCHITECTURE.md:47-48](https://github
 ## Operating modes
 
 Honmoon is designed for three deployment shapes. Only the first two are wired today; `join` is
-a stub ([main.rs:58-60](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-cli/src/main.rs#L58-L60)).
+a stub ([main.rs:365-367](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-cli/src/main.rs#L365-L367)).
 
 | Mode | Command | Status | What it does |
 |------|---------|--------|--------------|

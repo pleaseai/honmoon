@@ -15,9 +15,9 @@ the proxy directly; `run`'s env-var exec wiring is covered by the CLI itself, no
 
 | Command | What happens | Status | Source |
 |---------|--------------|--------|--------|
-| `honmoon run --policy P -- <cmd>` | Two ephemeral listeners started (CONNECT + SOCKS5), child exec'd with the `http_proxy` family and `ALL_PROXY` set | <span class="status-done">works</span> (Linux: empty-namespace isolation; macOS: Seatbelt profile; advisory elsewhere) | [main.rs:387-470](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-cli/src/main.rs#L387-L470) |
-| `honmoon gateway --config P --addr A` | Standalone CONNECT proxy bound to `A` | <span class="status-done">works</span> | [main.rs:53-57](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-cli/src/main.rs#L53-L57) |
-| `honmoon join --gateway G` | — | <span class="status-planned">stub: `bail!`</span> | [main.rs:58-60](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-cli/src/main.rs#L58-L60) |
+| `honmoon run --policy P -- <cmd>` | Two ephemeral listeners started (CONNECT + SOCKS5), child exec'd with the `http_proxy` family and `ALL_PROXY` set | <span class="status-done">works</span> (Linux: empty-namespace isolation; macOS: Seatbelt profile; advisory elsewhere) | [main.rs:792-912](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-cli/src/main.rs#L792-L912) |
+| `honmoon gateway --config P --addr A` | Standalone CONNECT proxy bound to `A` | <span class="status-done">works</span> | [main.rs:586-788](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-cli/src/main.rs#L586-L788) |
+| `honmoon join --gateway G` | — | <span class="status-planned">stub: `bail!`</span> | [main.rs:365-367](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-cli/src/main.rs#L365-L367) |
 
 ## 1. Run a command behind a policy
 
@@ -28,7 +28,7 @@ and the SOCKS5 one — serves both from a single background thread, then execs y
 One thread, not one per listener, is deliberate: a panicking accept loop parked in its own task
 would drop its listener and hand the port back while `run` still reported `Enforced`, so all four
 loops share one `tokio::select!` and any of them failing takes the whole proxy down
-([main.rs:420-443](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-cli/src/main.rs#L420-L443)).
+([main.rs:826-849](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-cli/src/main.rs#L826-L849)).
 Only hosts your policy allows can be reached; everything else is refused — a `403` on the CONNECT
 path ([mitm.rs:303-312](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-proxy/src/mitm.rs#L303-L312)),
 a `0x02` reply on the SOCKS5 one
@@ -67,7 +67,7 @@ sequenceDiagram
   CH-->>CLI: exit code
   CLI-->>U: propagate exit code
 ```
-<!-- Sources: crates/honmoon-cli/src/main.rs:387-470, crates/honmoon-proxy/src/gateway.rs:62-112 -->
+<!-- Sources: crates/honmoon-cli/src/main.rs:792-912, crates/honmoon-proxy/src/gateway.rs:62-112 -->
 
 ::: warning Enforcing on Linux and macOS, advisory everywhere else
 On **Linux** the child is spawned into an empty user + network namespace holding nothing but
@@ -119,7 +119,7 @@ serviceable, but the deprecation is real. Every other platform is advisory, so *
 
 `honmoon gateway` runs the CONNECT proxy **and** the management API + dashboard on one runtime.
 The proxy defaults to `127.0.0.1:8443`; the management API + dashboard to `127.0.0.1:8444`
-([main.rs:34-47](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-cli/src/main.rs#L34-L47), [main.rs:78-128](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-cli/src/main.rs#L78-L128)):
+([main.rs:65-78](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-cli/src/main.rs#L65-L78), [main.rs:586-788](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-cli/src/main.rs#L586-L788)):
 
 ```bash
 # Terminal A — start the gateway (proxy :8443, dashboard :8444, durable audit log)
@@ -155,11 +155,31 @@ process. For the durable, queryable audit history over the JSONL file, run `@hon
 [Control Plane & Dashboard](/deep-dive/control-plane)).
 
 Enable structured logs with `RUST_LOG` (the binary wires `tracing-subscriber` to the env
-filter, [main.rs:46-48](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-cli/src/main.rs#L46-L48)):
+filter, [main.rs:413-436](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-cli/src/main.rs#L413-L436)):
 
 ```bash
 RUST_LOG=honmoon_proxy=debug cargo run -p honmoon-cli -- gateway --config policies/agent.yaml
 ```
+
+With `RUST_LOG` unset `gateway` and `run` stay at `ERROR`, the historical default
+(`policy validate` is the exception, and defaults to `WARN`) — for a gateway stdout *is* the
+process's output, and the lines an operator must read are printed with `eprintln!` rather
+than logged. The cost is that the data plane's diagnostics for a session
+that has stopped moving are opt-in, so `gateway` and `run` name the filter that turns them on
+in the startup banner:
+
+```
+honmoon: stall diagnostics: RUST_LOG=honmoon=warn
+```
+
+Restart under that filter when a connection hangs and the warnings arrive on stdout — among
+them the PostgreSQL relay giving up on a stalled database, a refusal that may then reach the
+client out of statement order, an oversized copy going quiet, and, under enforced isolation
+for `honmoon run`, a bridge into the sandbox that dropped a connection or stopped accepting
+altogether. `honmoon` rather than `honmoon_proxy` because those last ones are emitted by the
+CLI binary, not the proxy crate; `EnvFilter` matches a target by prefix, so the shorter
+directive reaches both
+([main.rs:438-472](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-cli/src/main.rs#L438-L472)).
 
 ## 3. What you'll see — the verdict flow
 

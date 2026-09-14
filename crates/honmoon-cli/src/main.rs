@@ -35,6 +35,16 @@ struct Cli {
 #[derive(Subcommand)]
 enum Command {
     /// Run a command with its egress routed through a policy-enforcing proxy.
+    ///
+    /// A session that stops moving explains itself only under `RUST_LOG`.
+    /// This command leaves `tracing` at `ERROR` when `RUST_LOG` is unset — the
+    /// historical default — so the data plane's warnings are
+    /// discarded, including the PostgreSQL relay giving up on a stalled
+    /// database, a refusal that may then reach the client out of statement
+    /// order, an oversized copy going quiet, and the bridge into an enforced
+    /// sandbox dropping a connection or ceasing to accept at all. Re-run with
+    /// `RUST_LOG=honmoon=warn` and they appear on stdout; the startup banner
+    /// names the same filter (#228).
     Run {
         #[arg(long, value_name = "FILE")]
         policy: PathBuf,
@@ -43,6 +53,15 @@ enum Command {
         argv: Vec<String>,
     },
     /// Run the central gateway proxy plus its management API + dashboard.
+    ///
+    /// A session that stops moving explains itself only under `RUST_LOG`.
+    /// This command leaves `tracing` at `ERROR` when `RUST_LOG` is unset — the
+    /// historical default — so the data plane's warnings are
+    /// discarded, including the PostgreSQL relay giving up on a stalled
+    /// database, a refusal that may then reach the client out of statement
+    /// order, and an oversized copy going quiet. Restart with
+    /// `RUST_LOG=honmoon=warn` and they appear on stdout; the startup banner
+    /// names the same filter (#228).
     Gateway {
         #[arg(long, value_name = "FILE")]
         config: PathBuf,
@@ -370,7 +389,10 @@ fn main() -> Result<()> {
 ///
 /// **Level.** Every command keeps the historical default of `ERROR` when
 /// `RUST_LOG` is unset, which is why `gateway` and `run` print the lines an
-/// operator must read with `eprintln!` rather than `tracing`. `policy validate`
+/// operator must read with `eprintln!` rather than `tracing`. One of those
+/// lines is now about this default itself: it filters out the data plane's
+/// entire stall-diagnostic surface, so [`print_stall_diagnostics_hint`] names
+/// the `RUST_LOG` that puts it back (#228). `policy validate`
 /// defaults to `WARN` instead: two of the loader's diagnostics — an unreachable
 /// rule, a rule naming an undeclared endpoint — are `tracing::warn!` inside
 /// `honmoon-core`, and a check that exists to report what the loader found
@@ -411,6 +433,42 @@ fn init_tracing(command: &Command) {
     } else {
         builder.init();
     }
+}
+
+/// The `RUST_LOG` filter [`print_stall_diagnostics_hint`] points an operator at.
+///
+/// `honmoon`, not the `honmoon_proxy` #228 first reached for. The warnings that
+/// explain a session that has stopped moving are not all in one crate: the
+/// relay giving up on a stalled database, the oversized-copy quiet line and the
+/// refusal-suppressed/lost pair are `honmoon_proxy::runtime::postgres`, but
+/// `isolate::bridge`'s "the sandbox has no route to the proxy" and its
+/// connection-cap lines are emitted from *this* binary, whose target root is
+/// `honmoon`. A filter naming only the proxy crate would leave an enforced
+/// `honmoon run` unable to say that its bridge is what stopped.
+///
+/// One directive covers both because `EnvFilter` matches a target by string
+/// prefix, so `honmoon` selects `honmoon_proxy::…`, `honmoon_core::…` and
+/// `honmoon_mgmt::…` as well. That is the dependency's behaviour rather than
+/// this crate's, so `tests/stall_diagnostics.rs` runs the binary under this
+/// exact filter and requires a `honmoon_core` warning to come back — the same
+/// crate-name-prefix step `honmoon_proxy` depends on — instead of leaving it to
+/// be rediscovered at the next upgrade.
+const STALL_DIAGNOSTICS_FILTER: &str = "honmoon=warn";
+
+/// Print the startup line that says how to make a stalled session talk.
+///
+/// Part of the `eprintln!` set [`init_tracing`] describes — the lines an
+/// operator must read — and there for the reason that set exists: `RUST_LOG` is
+/// unset in an ordinary run, so every `tracing::warn!` the data plane emits
+/// while a session hangs is discarded, and until #228 nothing on screen said
+/// so. The operator had to already know to go looking, at the one moment they
+/// have no reason to.
+///
+/// A pointer, not an explanation: one line naming the filter, with `--help` and
+/// the operator docs carrying what it turns on. The set's meaning is what makes
+/// it worth joining and also what a longer line would dilute.
+fn print_stall_diagnostics_hint() {
+    eprintln!("honmoon: stall diagnostics: RUST_LOG={STALL_DIAGNOSTICS_FILTER}");
 }
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
@@ -561,6 +619,12 @@ fn gateway(args: GatewayArgs) -> Result<()> {
 
     let (policy, policy_yaml) = load_policy(&config)?;
     tracing::info!(rules = policy.rules.len(), %addr, %socks_addr, %mgmt_addr, "starting gateway");
+    // Here rather than beside the dashboard lines below, which cannot be
+    // printed until the listeners are bound: nothing about this line depends on
+    // a bound port, and a gateway that dies on a taken one is exactly a run
+    // whose operator wants to know how to make it talk. Nothing prints in
+    // between under the default filter, so the two still read as one banner.
+    print_stall_diagnostics_hint();
 
     let audit = match &audit_log {
         Some(path) => Arc::new(AuditLog::with_file(1024, path).with_context(|| {
@@ -792,6 +856,11 @@ fn run(policy: PathBuf, argv: Vec<String>) -> Result<()> {
     // over a bare address and every `endpoints:` entry would stop matching.
     let socks_url = format!("socks5h://{socks_addr}");
     tracing::info!(%proxy_url, %socks_url, "egress proxy ready");
+    // Above the isolation probe, not below it: enforced `run_confined` never
+    // returns *on success*, so a line printed after it would be one every
+    // sandboxed run never saw — and the bridge warnings this filter reaches
+    // exist only on that path.
+    print_stall_diagnostics_hint();
 
     // Only Linux and macOS can actually hold the child; `mut` carries a
     // downgrade if that path turns out to be unusable at spawn time.

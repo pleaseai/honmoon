@@ -1085,8 +1085,8 @@ These are non-negotiable; violating them breaks the product
 
 | Concern | Rust | TypeScript | Source |
 |---------|------|-----------|--------|
-| Error handling | `thiserror` (libs) · `anyhow` (binary); unimplemented modes `bail!` | — | [lib.rs:128-132](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/lib.rs#L128-L132), [main.rs:58-60](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-cli/src/main.rs#L58-L60) |
-| Logging | `tracing` + `tracing-subscriber` (`RUST_LOG`) | `console` / Bun | [main.rs:46-48](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-cli/src/main.rs#L46-L48) |
+| Error handling | `thiserror` (libs) · `anyhow` (binary); unimplemented modes `bail!` | — | [lib.rs:128-132](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/lib.rs#L128-L132), [main.rs:365-367](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-cli/src/main.rs#L365-L367) |
+| Logging | `tracing` + `tracing-subscriber` (`RUST_LOG`) | `console` / Bun | [main.rs:413-436](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-cli/src/main.rs#L413-L436) |
 | Testing | inline `#[cfg(test)]` + integration (`egress.rs`) + e2e (`honmoon-mgmt/tests/e2e.rs`) | `bun test` (`@honmoon/api` audit query) | [engine.rs](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/engine.rs), [audit.test.ts](https://github.com/pleaseai/honmoon/blob/main/packages/api/src/audit.test.ts) |
 | Configuration | YAML policy, central `[workspace.dependencies]` | root `package.json` workspaces | [Cargo.toml:16-28](https://github.com/pleaseai/honmoon/blob/main/Cargo.toml#L16-L28) |
 
@@ -1746,7 +1746,7 @@ right now. SQL/K8s `pause` rules need the live inline relay + TLS termination (*
 ## CLI wiring: `run` vs `gateway`
 
 `honmoon-cli` exposes three subcommands via `clap`. Two drive the gateway; one is a stub
-([main.rs:21-43](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-cli/src/main.rs#L21-L43)).
+([main.rs:36-225](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-cli/src/main.rs#L36-L225)).
 
 ```mermaid
 flowchart TD
@@ -1772,16 +1772,16 @@ flowchart TD
   style gwstate fill:#161b22,stroke:#30363d,color:#e6edf3
   style gwboth fill:#161b22,stroke:#30363d,color:#e6edf3
 ```
-<!-- Sources: crates/honmoon-cli/src/main.rs:24-128 -->
+<!-- Sources: crates/honmoon-cli/src/main.rs:36-225 (the run, gateway and join variants of Command), main.rs:325-383 (dispatch), main.rs:586-788 (gateway), main.rs:792-912 (run) -->
 
 ### `honmoon run`
 
 `run` binds the proxy socket itself on `127.0.0.1:0`, hands the listener to a background thread,
 then execs the child with every proxy env var (`http_proxy`, `https_proxy`, `all_proxy`, and
 uppercase variants) pointed at the ephemeral proxy. The child's exit code is propagated
-([main.rs:131-165](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-cli/src/main.rs#L131-L165)).
+([main.rs:792-912](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-cli/src/main.rs#L792-L912)).
 Binding in one place closes the TOCTOU window where another process could steal the port
-([main.rs:140-148](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-cli/src/main.rs#L140-L148)).
+([main.rs:799-802](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-cli/src/main.rs#L799-L802)).
 On Linux the child no longer shares the host's loopback, so that listener is reached through a
 Unix-socket bridge into the child's namespace instead
 ([ADR-0005](https://github.com/pleaseai/honmoon/blob/main/.please/docs/decisions/0005-empty-namespace-and-bridged-proxy-sockets.md)). `run` uses an
@@ -1813,16 +1813,16 @@ and every platform other than these two still only sets env vars
 
 `gateway` builds a `GatewayState` (policy + audit + approvals) and runs **both** the egress proxy
 and the `honmoon-mgmt` management API on **one tokio runtime**, sharing that state — so a request
-held by the proxy can be approved from the dashboard ([main.rs:78-128](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-cli/src/main.rs#L78-L128)). It binds both
+held by the proxy can be approved from the dashboard ([main.rs:586-788](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-cli/src/main.rs#L586-L788)). It binds both
 listeners up front and uses `tokio::select!` so an unexpected proxy exit surfaces instead of
-silently leaving egress filtering down ([main.rs:104-127](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-cli/src/main.rs#L104-L127)).
+silently leaving egress filtering down ([main.rs:755-786](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-cli/src/main.rs#L755-L786)).
 
 | Flag | Default | Purpose | Source |
 |------|---------|---------|--------|
-| `--addr` | `127.0.0.1:8443` | Egress proxy listen address | [main.rs:39-40](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-cli/src/main.rs#L39-L40) |
-| `--mgmt-addr` | `127.0.0.1:8444` | Management API + dashboard address | [main.rs:42-43](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-cli/src/main.rs#L42-L43) |
-| `--mgmt-token` | (minted at `~/.honmoon/mgmt-token`, `0600`) | Bearer token required by **every** `/api/*` route — the audit, approval and policy reads as well as the Claude Code hook endpoint. Browsers exchange it at `GET /login?token=…` — the URL honmoon prints on startup — for a session secret they send in the `X-Honmoon-Session` header; deliberately not a cookie, whose scope would cover every other port on `127.0.0.1` (#188). `--hook-token` / `HONMOON_HOOK_TOKEN` remain accepted as deprecated aliases. Prefer the environment variable to the flag: a command line can be read by other local users via `ps` (how far that reaches is platform- and configuration-dependent), while a token file honmoon created is `0600`. An existing file that is readable beyond its owner is reported rather than tightened — replacing such a token is the operator's call, since it invalidates anything holding the old value. `@honmoon/api` reads only the variable or the file, never this flag | [main.rs:78-108](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-cli/src/main.rs#L78-L108) |
-| `--audit-log` | (in-memory only) | Append every verdict — and any recorded security degradation — to a JSONL file. Must name a **regular file**: opened with `O_NOFOLLOW`, so a symlink as the final path component is refused, as are a FIFO, socket, device and directory, and the refusal aborts startup. Created owner-only when absent; an existing file keeps its mode | [main.rs:58-67](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-cli/src/main.rs#L58-L67), [main.rs:350-359](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-cli/src/main.rs#L350-L359) |
+| `--addr` | `127.0.0.1:8443` | Egress proxy listen address | [main.rs:69-70](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-cli/src/main.rs#L69-L70) |
+| `--mgmt-addr` | `127.0.0.1:8444` | Management API + dashboard address | [main.rs:77-78](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-cli/src/main.rs#L77-L78) |
+| `--mgmt-token` | (minted at `~/.honmoon/mgmt-token`, `0600`) | Bearer token required by **every** `/api/*` route — the audit, approval and policy reads as well as the Claude Code hook endpoint. Browsers exchange it at `GET /login?token=…` — the URL honmoon prints on startup — for a session secret they send in the `X-Honmoon-Session` header; deliberately not a cookie, whose scope would cover every other port on `127.0.0.1` (#188). `--hook-token` / `HONMOON_HOOK_TOKEN` remain accepted as deprecated aliases. Prefer the environment variable to the flag: a command line can be read by other local users via `ps` (how far that reaches is platform- and configuration-dependent), while a token file honmoon created is `0600`. An existing file that is readable beyond its owner is reported rather than tightened — replacing such a token is the operator's call, since it invalidates anything holding the old value. `@honmoon/api` reads only the variable or the file, never this flag | [main.rs:99-138](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-cli/src/main.rs#L99-L138) |
+| `--audit-log` | (in-memory only) | Append every verdict — and any recorded security degradation — to a JSONL file. Must name a **regular file**: opened with `O_NOFOLLOW`, so a symlink as the final path component is refused, as are a FIFO, socket, device and directory, and the refusal aborts startup. Created owner-only when absent; an existing file keeps its mode | [main.rs:79-98](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-cli/src/main.rs#L79-L98), [main.rs:629-638](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-cli/src/main.rs#L629-L638) |
 
 ## Hermetic integration test
 
@@ -1916,7 +1916,7 @@ flowchart TB
 `honmoon-mgmt` is a small [axum](https://github.com/tokio-rs/axum) service that runs **in the same
 process as the data plane**, so it can observe decisions and resolve held requests through the
 shared `GatewayState`. `honmoon gateway` runs the proxy and this API on one tokio runtime
-([lib.rs:1-16](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-mgmt/src/lib.rs#L1-L16), [main.rs:78-128](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-cli/src/main.rs#L78-L128)).
+([lib.rs:1-16](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-mgmt/src/lib.rs#L1-L16), [main.rs:586-788](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-cli/src/main.rs#L586-L788)).
 
 | Route | Method | Returns | Source |
 |-------|--------|---------|--------|
@@ -2239,7 +2239,7 @@ pure and unit-testable without a runtime ([ARCHITECTURE.md:47-48](https://github
 ## Operating modes
 
 Honmoon is designed for three deployment shapes. Only the first two are wired today; `join` is
-a stub ([main.rs:58-60](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-cli/src/main.rs#L58-L60)).
+a stub ([main.rs:365-367](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-cli/src/main.rs#L365-L367)).
 
 | Mode | Command | Status | What it does |
 |------|---------|--------|--------------|
@@ -2472,9 +2472,9 @@ the proxy directly; `run`'s env-var exec wiring is covered by the CLI itself, no
 
 | Command | What happens | Status | Source |
 |---------|--------------|--------|--------|
-| `honmoon run --policy P -- <cmd>` | Two ephemeral listeners started (CONNECT + SOCKS5), child exec'd with the `http_proxy` family and `ALL_PROXY` set | <span class="status-done">works</span> (Linux: empty-namespace isolation; macOS: Seatbelt profile; advisory elsewhere) | [main.rs:387-470](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-cli/src/main.rs#L387-L470) |
-| `honmoon gateway --config P --addr A` | Standalone CONNECT proxy bound to `A` | <span class="status-done">works</span> | [main.rs:53-57](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-cli/src/main.rs#L53-L57) |
-| `honmoon join --gateway G` | — | <span class="status-planned">stub: `bail!`</span> | [main.rs:58-60](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-cli/src/main.rs#L58-L60) |
+| `honmoon run --policy P -- <cmd>` | Two ephemeral listeners started (CONNECT + SOCKS5), child exec'd with the `http_proxy` family and `ALL_PROXY` set | <span class="status-done">works</span> (Linux: empty-namespace isolation; macOS: Seatbelt profile; advisory elsewhere) | [main.rs:792-912](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-cli/src/main.rs#L792-L912) |
+| `honmoon gateway --config P --addr A` | Standalone CONNECT proxy bound to `A` | <span class="status-done">works</span> | [main.rs:586-788](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-cli/src/main.rs#L586-L788) |
+| `honmoon join --gateway G` | — | <span class="status-planned">stub: `bail!`</span> | [main.rs:365-367](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-cli/src/main.rs#L365-L367) |
 
 ## 1. Run a command behind a policy
 
@@ -2485,7 +2485,7 @@ and the SOCKS5 one — serves both from a single background thread, then execs y
 One thread, not one per listener, is deliberate: a panicking accept loop parked in its own task
 would drop its listener and hand the port back while `run` still reported `Enforced`, so all four
 loops share one `tokio::select!` and any of them failing takes the whole proxy down
-([main.rs:420-443](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-cli/src/main.rs#L420-L443)).
+([main.rs:826-849](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-cli/src/main.rs#L826-L849)).
 Only hosts your policy allows can be reached; everything else is refused — a `403` on the CONNECT
 path ([mitm.rs:303-312](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-proxy/src/mitm.rs#L303-L312)),
 a `0x02` reply on the SOCKS5 one
@@ -2524,7 +2524,7 @@ sequenceDiagram
   CH-->>CLI: exit code
   CLI-->>U: propagate exit code
 ```
-<!-- Sources: crates/honmoon-cli/src/main.rs:387-470, crates/honmoon-proxy/src/gateway.rs:62-112 -->
+<!-- Sources: crates/honmoon-cli/src/main.rs:792-912, crates/honmoon-proxy/src/gateway.rs:62-112 -->
 
 ::: warning Enforcing on Linux and macOS, advisory everywhere else
 On **Linux** the child is spawned into an empty user + network namespace holding nothing but
@@ -2576,7 +2576,7 @@ serviceable, but the deprecation is real. Every other platform is advisory, so *
 
 `honmoon gateway` runs the CONNECT proxy **and** the management API + dashboard on one runtime.
 The proxy defaults to `127.0.0.1:8443`; the management API + dashboard to `127.0.0.1:8444`
-([main.rs:34-47](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-cli/src/main.rs#L34-L47), [main.rs:78-128](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-cli/src/main.rs#L78-L128)):
+([main.rs:65-78](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-cli/src/main.rs#L65-L78), [main.rs:586-788](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-cli/src/main.rs#L586-L788)):
 
 ```bash
 # Terminal A — start the gateway (proxy :8443, dashboard :8444, durable audit log)
@@ -2612,11 +2612,31 @@ process. For the durable, queryable audit history over the JSONL file, run `@hon
 [Control Plane & Dashboard](/deep-dive/control-plane)).
 
 Enable structured logs with `RUST_LOG` (the binary wires `tracing-subscriber` to the env
-filter, [main.rs:46-48](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-cli/src/main.rs#L46-L48)):
+filter, [main.rs:413-436](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-cli/src/main.rs#L413-L436)):
 
 ```bash
 RUST_LOG=honmoon_proxy=debug cargo run -p honmoon-cli -- gateway --config policies/agent.yaml
 ```
+
+With `RUST_LOG` unset `gateway` and `run` stay at `ERROR`, the historical default
+(`policy validate` is the exception, and defaults to `WARN`) — for a gateway stdout *is* the
+process's output, and the lines an operator must read are printed with `eprintln!` rather
+than logged. The cost is that the data plane's diagnostics for a session
+that has stopped moving are opt-in, so `gateway` and `run` name the filter that turns them on
+in the startup banner:
+
+```
+honmoon: stall diagnostics: RUST_LOG=honmoon=warn
+```
+
+Restart under that filter when a connection hangs and the warnings arrive on stdout — among
+them the PostgreSQL relay giving up on a stalled database, a refusal that may then reach the
+client out of statement order, an oversized copy going quiet, and, under enforced isolation
+for `honmoon run`, a bridge into the sandbox that dropped a connection or stopped accepting
+altogether. `honmoon` rather than `honmoon_proxy` because those last ones are emitted by the
+CLI binary, not the proxy crate; `EnvFilter` matches a target by prefix, so the shorter
+directive reaches both
+([main.rs:438-472](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-cli/src/main.rs#L438-L472)).
 
 ## 3. What you'll see — the verdict flow
 
@@ -3107,9 +3127,9 @@ those take one run each.
 Two properties are worth stating outright, because they are what make it usable.
 
 **It is the gateway's own loader, not a second opinion.** The command calls `load_policy`
-([main.rs:973-996](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-cli/src/main.rs#L973-L996)) — the same one call
-`honmoon gateway --config` and `honmoon run --policy` make ([main.rs:562](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-cli/src/main.rs#L562),
-[main.rs:733](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-cli/src/main.rs#L733)), and the only place in the binary that reads a
+([main.rs:1042-1065](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-cli/src/main.rs#L1042-L1065)) — the same one call
+`honmoon gateway --config` and `honmoon run --policy` make ([main.rs:620](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-cli/src/main.rs#L620),
+[main.rs:797](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-cli/src/main.rs#L797)), and the only place in the binary that reads a
 policy from a path,
 compiled conditions and all ([lib.rs:215-224](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/lib.rs#L215-L224)). A check
 that could accept a policy the gateway then refused would be worse than no check, so there is no
@@ -3121,7 +3141,7 @@ both refuse, and `validate_and_the_gateway_accept_the_same_policy` on one both a
 The read says two things in its own words, and they are different kinds of check. **The first
 refuses nothing extra**: a file whose top level is not a mapping — plain text, a list, a single
 value — is named as *not a policy document* rather than handed to the parser
-([main.rs:1051-1053](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-cli/src/main.rs#L1051-L1053)). The loader refuses those
+([main.rs:1120-1122](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-cli/src/main.rs#L1120-L1122)). The loader refuses those
 too; what changes is that the parser would have quoted the file to say so, and for a document that
 is one plain scalar the quote is the whole file. Pointed at a token file, an SSH key or a `.env` by
 a mistyped path, that lands in the log.
@@ -3143,7 +3163,7 @@ with an explicit `---` is one document and loads normally.
 
 **The second does refuse something extra, on purpose.** A mapping in which none of `version`,
 `egress`, `endpoints` or `rules` appears is refused, and the parser would have taken it
-([main.rs:1178-1207](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-cli/src/main.rs#L1178-L1207)). Every `Policy` field
+([main.rs:1247-1276](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-cli/src/main.rs#L1247-L1276)). Every `Policy` field
 carries `#[serde(default)]` and the struct has no `deny_unknown_fields`, so *any* mapping used to
 deserialize into a policy with every field at its default — which means a Kubernetes `Secret`
 manifest, a `DB_PASSWORD: …` file and a service-account JSON key (JSON is valid YAML) each loaded,
@@ -3189,8 +3209,8 @@ two apart.
 **It has no side effects.** No listener is bound, no audit log is opened, no CA is read or
 generated, and — the one that is easy to miss — the management token is never resolved. All four
 live inside the `gateway` function, which this path never enters. Starting a gateway resolves that
-token at [main.rs:556](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-cli/src/main.rs#L556), *before* it reads the policy at
-[main.rs:562](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-cli/src/main.rs#L562), so `honmoon gateway --config <bad file>`
+token at [main.rs:614](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-cli/src/main.rs#L614), *before* it reads the policy at
+[main.rs:620](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-cli/src/main.rs#L620), so `honmoon gateway --config <bad file>`
 creates `~/.honmoon/mgmt-token` on its way to telling you the policy is broken. Checking a policy should
 not mint a credential, least of all on the run where the policy is what failed, so this path never
 reaches that code (`validating_a_bad_policy_creates_nothing_under_home` pins it, against a control
@@ -3200,7 +3220,7 @@ It reports the loader's **warnings** too — an unreachable rule
 ([lib.rs:388-397](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/lib.rs#L388-L397)), a rule naming an endpoint
 `endpoints` does not declare ([lib.rs:364-374](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/lib.rs#L364-L374)) —
 which `tracing` filters out of an ordinary gateway run, because this command asks for a `warn`
-default and its own stderr writer ([main.rs:391-414](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-cli/src/main.rs#L391-L414)). They do not
+default and its own stderr writer ([main.rs:413-436](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-cli/src/main.rs#L413-L436)). They do not
 change the exit code: the gateway starts on a policy carrying one, so this accepts it too.
 
 They arrive through `tracing`, and the `warn` level this command asks for is only a *default*. A
