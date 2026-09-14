@@ -176,8 +176,10 @@ jobs:
         run: bun scripts/check-dashboard-csp.ts
 
       # The other half of that policy: it carries no `'unsafe-eval'`, so the
-      # code those files hold must not construct any. Parses the files the step
-      # above resolved from the shell's own `<script src>` tags (issue #200).
+      # code those files hold must not construct any. Nothing is handed between
+      # the two steps — this re-reads the shells and resolves their
+      # `<script src>` tags with the same function the step above uses, so the
+      # two agree on what "the build" is by sharing the code (issue #200).
       - name: Dashboard CSP — the emitted bundle constructs no code
         run: bun scripts/check-dashboard-bundle.ts
 

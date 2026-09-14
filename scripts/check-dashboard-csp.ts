@@ -50,7 +50,7 @@
  *   bun scripts/check-dashboard-csp.ts <path…>         # explicit files
  */
 import { readFileSync } from 'node:fs'
-import { dirname, isAbsolute, join } from 'node:path'
+import { dirname, isAbsolute, join, resolve, sep } from 'node:path'
 import process from 'node:process'
 import { fileURLToPath } from 'node:url'
 
@@ -368,9 +368,10 @@ export function shellPath(path: string): string {
   return isAbsolute(path) ? path : join(REPO_ROOT, path)
 }
 
-/** A `<script src>` no build artifact could be named for, and why. */
+/** Script the shell loads that no build artifact could be named for, and why. */
 export interface UnresolvedScript {
-  src: string
+  /** The `src` value, or `null` when the tag's `src` could not be read at all. */
+  src: string | null
   reason: string
 }
 
@@ -388,26 +389,54 @@ export interface UnresolvedScript {
  * The shell is served from the root of its own directory (`dist/index.html` is
  * `/`), so a root-absolute `src` and a relative one both land under that
  * directory. `new URL` does the resolving — the same parser, for the same
- * reasons, as everywhere else here — which also means any `..` is collapsed
- * against the origin before the path is joined, so a shell cannot name a file
- * outside its own build.
+ * reasons, as everywhere else here.
+ *
+ * **That the result stays inside the build is then checked, not inferred from
+ * the parser.** The URL parser collapses a literal `../` against the origin,
+ * and `%2e%2e` with it, so relying on that alone reads as sufficient — but it
+ * does **not** percent-decode a path segment, so `%2f` reaches `pathname`
+ * intact and the `decodeURIComponent` below (which is there so a file name
+ * carrying an escaped character resolves at all) turns it back into a
+ * separator. Measured: `src="/assets/..%2f..%2foutside.js"` named a file two
+ * levels above `dist/`, same-origin the whole way, with both guards green. So
+ * the containment is asserted against the joined path instead.
  *
  * A `src` with no file behind it comes back in `unresolved` for the caller to
  * report in its own words, rather than being dropped: a script this cannot
  * read is code that went uninspected. {@link checkShell} fails the shell for
  * those separately, and this deliberately does not repeat its wording — the
  * two scripts run as two CI steps and each has to stand on its own.
+ *
+ * **An opening tag with no readable `</script>` is counted, for the same
+ * reason {@link SCRIPT_OPEN} exists.** {@link SCRIPT_TAG} is lazy and skips
+ * one, so its `src` would otherwise land in neither list — and a shell whose
+ * remaining tags resolved would then hand the caller a non-empty file set,
+ * pass the caller's anti-vacuity rule, and report clean over code that was
+ * never read. That asymmetry with {@link checkShell}, which has counted opening tags
+ * since #199, was the whole bug: one side of the mechanism refused a shell it
+ * could not fully read and the other silently narrowed the build to the part
+ * it could.
  */
 export function scriptFiles(html: string, shell: string): {
   files: string[]
   unresolved: UnresolvedScript[]
 } {
-  const dir = dirname(shellPath(shell))
+  const dir = resolve(dirname(shellPath(shell)))
   const files: string[] = []
   const unresolved: UnresolvedScript[] = []
-  const skip = (src: string, reason: string) => unresolved.push({ src, reason })
+  const skip = (src: string | null, reason: string) => unresolved.push({ src, reason })
 
-  for (const [, attrs] of html.matchAll(SCRIPT_TAG)) {
+  const paired = [...html.matchAll(SCRIPT_TAG)]
+  const opened = [...html.matchAll(SCRIPT_OPEN)].length
+  if (opened > paired.length) {
+    skip(
+      null,
+      `${opened - paired.length} <script> opening tag(s) have no readable \`</script>\`, so `
+      + 'whatever they load could not be named',
+    )
+  }
+
+  for (const [, attrs] of paired) {
     for (const [, name, doubleQuoted, singleQuoted, bare] of attrs.matchAll(URL_ATTR)) {
       if (name.toLowerCase() !== 'src') {
         continue
@@ -447,7 +476,13 @@ export function scriptFiles(html: string, shell: string): {
         skip(raw, 'carries a percent-escape this check cannot decode')
         continue
       }
-      files.push(join(dir, pathname))
+
+      const file = resolve(dir, `.${pathname}`)
+      if (file !== dir && !file.startsWith(dir + sep)) {
+        skip(raw, 'resolves outside the build directory, so no file in the build holds its code')
+        continue
+      }
+      files.push(file)
     }
   }
 

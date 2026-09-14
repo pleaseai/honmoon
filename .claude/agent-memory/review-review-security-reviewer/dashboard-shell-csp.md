@@ -1,6 +1,6 @@
 ---
 name: dashboard-shell-csp
-description: 'The dashboard shell CSP after #195 — what each directive is for, why style-src carries unsafe-inline and img-src exists at all (both measured, neither a control, do not report either as a weakness), that script-src has no unsafe-* and connect-src is self, what the policy does NOT bound (outbound navigation and WebRTC are outside CSP, so exfiltration is harder not closed — a finding saying so is correct), that every HTML document including /login carries it, what a change here has to re-verify in a browser rather than by reading the header, that an external <a href> is deliberately not a finding in the build-side checker, and that the emitted bundle is guarded separately by scripts/check-dashboard-bundle.ts, which parses for eval/Function call expressions, deliberately does not flag obj.eval and deliberately does not follow an alias or a computed name (issue #200)'
+description: 'The dashboard shell CSP after #195 — what each directive is for, why style-src carries unsafe-inline and img-src exists at all (both measured, neither a control, do not report either as a weakness), that script-src has no unsafe-* and connect-src is self, what the policy does NOT bound (outbound navigation and WebRTC are outside CSP, so exfiltration is harder not closed — a finding saying so is correct), that every HTML document including /login carries it, what a change here has to re-verify in a browser rather than by reading the header, that an external <a href> is deliberately not a finding in the build-side checker, and that the emitted bundle is guarded separately by scripts/check-dashboard-bundle.ts, which parses for eval/Function call expressions, deliberately does not flag obj.eval, deliberately does not follow an alias or a computed name, and reads the shell tag list rather than the reachable module graph so a code-split chunk would go unread; and the three traps found building it that a finding should not re-report - the Map-not-object-literal lookup, the %2f containment check, and scriptFiles counting unclosed script tags (issue #200)'
 metadata:
   type: project
 ---
@@ -140,3 +140,35 @@ more expensive mistake. **`obj.eval(x)` on anything that is not a named global i
 finding**: that is a method sharing the name, no directive governs it, and flagging it is exactly
 the false positive parsing is here to avoid. A file the parser cannot read fails rather than passing
 uninspected, the same stance as the unreadable-`<script>` rule above.
+
+**One more declared gap, and it is the widest: it reads the shell's `<script src>` tags, not the
+reachable module graph.** Those are the same set only while the build emits one chunk, which is what
+it does today. A lazy route or a `manualChunks` entry emits a chunk the entry module imports and the
+shell references only as `<link rel="modulepreload">` — unread, while the pass line still prints a
+green count. A `dist/assets/*.js` glob is the *wider* set; the tag list was chosen over it so the two
+guards cannot disagree about what "the build" is, and that trade is the reason the gap exists rather
+than an oversight. Tracked separately; a finding that names it is correct but already recorded.
+
+**Three traps were found building that guard under review, and a finding re-reporting any of them is
+answered by this rather than by an edit.** All three are fixed and tested.
+
+- **The refused-name lookup is a `Map`, and that is load-bearing.** As an object literal,
+  `REFUSED['toString']` resolved through the prototype chain to `Object.prototype.toString` —
+  truthy — so a bundle calling a function named `toString`, `valueOf`, `constructor` or
+  `hasOwnProperty` failed CI with `function toString() { [native code] }` printed where the finding
+  belongs. **`NAMED_REFS` in `check-dashboard-csp.ts` still has the identical shape** (`&constructor;`
+  decodes to that same string instead of being reported as an unknown reference); it is pre-existing,
+  out of that PR's scope, and tracked on its own issue — so a finding about it is correct and new,
+  while one about `REFUSED` is settled.
+- **`new URL` does not percent-decode a path segment, so the containment is checked, not inferred.**
+  A literal `../` and `%2e%2e` are both collapsed by the parser, which reads as sufficient — but
+  `%2f` survives into the `decodeURIComponent` that follows and becomes a separator again. Measured:
+  `src="/assets/..%2f..%2foutside.js"` named a file two levels above `dist/`, same-origin the whole
+  way, with both guards green. `scriptFiles` now asserts the joined path stays under the shell's
+  directory.
+- **`scriptFiles` counts `<script>` opening tags, for the same reason `checkShell` does.**
+  `SCRIPT_TAG` is lazy and skips an opening tag with no `</script>`, so its `src` landed in neither
+  the file list nor the unresolved list — and a shell whose remaining tags resolved then handed the
+  bundle guard a non-empty file set, which passed its anti-vacuity rule while that script's code was
+  never read. The tell was the asymmetry: one side of the mechanism had refused a shell it could not
+  fully read since #199 and the other silently narrowed the build to the part it could.

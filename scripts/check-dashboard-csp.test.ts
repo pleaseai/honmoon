@@ -297,10 +297,60 @@ describe('scriptFiles', () => {
     })
   })
 
-  // `new URL` collapses the `..` against the origin before the path is joined,
-  // so a shell cannot name a file outside the directory it is served from.
-  test('a traversing src cannot escape the build directory', () => {
+  // `new URL` collapses a literal `..` against the origin, so this one lands
+  // inside the build directory rather than above it.
+  test('a traversing src is collapsed by the URL parser, not followed', () => {
     const up = BUILT_SHELL.replace('/assets/index-ChyO-qsg.js', '../../../etc/passwd')
     expect(scriptFiles(up, SHELL).files).toEqual([join(DIST, 'etc/passwd')])
+  })
+
+  // The parser does not percent-decode a path segment, so `%2f` survives it and
+  // the decode that follows turns it back into a separator. Relying on the
+  // parser alone named a file two levels above `dist/`, same-origin throughout,
+  // with both guards green.
+  test.each([
+    ['an encoded separator', '/assets/..%2f..%2foutside.js'],
+    ['an encoded separator, relative', 'a%2f..%2f..%2f..%2foutside.js'],
+  ])('a src escaping the build directory (%s) is refused, not read', (_label, src) => {
+    const out = BUILT_SHELL.replace('/assets/index-ChyO-qsg.js', src)
+    expect(scriptFiles(out, SHELL)).toEqual({
+      files: [],
+      unresolved: [{ src, reason: expect.stringContaining('outside the build directory') }],
+    })
+  })
+
+  // An escaped character in a file name is why the decode is there at all, so
+  // it must still resolve.
+  test('a percent-escaped character in a file name still resolves', () => {
+    const spaced = BUILT_SHELL.replace('/assets/index-ChyO-qsg.js', '/assets/a%20b.js')
+    expect(scriptFiles(spaced, SHELL).files).toEqual([join(DIST, 'assets/a b.js')])
+  })
+
+  // Every reason a `src` can fail to name a file is a hard CI failure in the
+  // bundle guard ("the code it loads went uninspected"), so each one has to
+  // keep reporting — a refactor that turned any of them into a bare `continue`
+  // would let a script through unread with nothing failing.
+  test.each([
+    ['a javascript: URL', 'javascript:go()', 'inline code rather than a file'],
+    ['an undecodable reference', '/assets/&hellip;.js', 'cannot be decoded here'],
+    ['a malformed percent-escape', '/assets/%zz.js', 'percent-escape this check cannot decode'],
+  ])('a src that names no file (%s) is reported with its own reason', (_label, src, reason) => {
+    const bad = BUILT_SHELL.replace('/assets/index-ChyO-qsg.js', src)
+    expect(scriptFiles(bad, SHELL)).toEqual({
+      files: [],
+      unresolved: [{ src, reason: expect.stringContaining(reason) }],
+    })
+  })
+
+  // `SCRIPT_TAG` is lazy and skips an opening tag with no `</script>`, so its
+  // `src` landed in neither list — and a shell whose other tags resolved handed
+  // the bundle guard a non-empty file set that passed its anti-vacuity rule
+  // while that script's code was never read.
+  test('an unclosed <script> is counted, not silently dropped', () => {
+    const appended = `${BUILT_SHELL}<script src="/assets/appended.js">`
+    expect(scriptFiles(appended, SHELL)).toEqual({
+      files: [join(DIST, 'assets/index-ChyO-qsg.js')],
+      unresolved: [{ src: null, reason: expect.stringContaining('no readable `</script>`') }],
+    })
   })
 })

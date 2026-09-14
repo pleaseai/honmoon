@@ -37,6 +37,16 @@
  * the two guards cannot disagree about what "the build" is. A `dist/assets`
  * glob would have been a second notion of it.
  *
+ * **That set is the shell's tags, not the reachable module graph**, and the two
+ * are the same only while the build emits one chunk, which is what it does
+ * today. The first lazy route or `manualChunks` entry emits a chunk the entry
+ * module imports and the shell references only as `<link rel="modulepreload">`,
+ * and nothing here would read it — while the pass line below still printed a
+ * green count. Said here rather than left to be discovered, because a glob is
+ * the *wider* set and choosing the tag list over it trades that reach for
+ * agreement between the two guards. Closing it means following the emitted
+ * `import` specifiers; tracked separately.
+ *
  * Usage:
  *   bun scripts/check-dashboard-bundle.ts              # both built shells
  *   bun scripts/check-dashboard-bundle.ts <path…>      # explicit shells

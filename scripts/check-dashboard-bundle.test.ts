@@ -66,6 +66,34 @@ describe('checkBundle', () => {
     expect(checkBundle(code, 'chunk.js')).toEqual([])
   })
 
+  // Optional chaining is ordinary bundler output and `eval?.(src)` still calls
+  // the global `eval`. It works today only because `ts.isCallExpression` covers
+  // both forms, so pin it rather than leave it to a refactor.
+  test.each([
+    ['eval?.(x)', 'eval?.("x")'],
+    ['window?.eval(x)', 'window?.eval("x")'],
+  ])('the optional-call form %s still fails', (_label, code) => {
+    expect(details(code)).toEqual([expect.stringContaining('call to `eval`')])
+  })
+
+  // The parenthesis unwrap on its own, without the comma operator that reaches
+  // it in `(0, eval)(…)` — a different path through the same recursion.
+  test.each([
+    ['(Function)("x")', '(Function)("x")'],
+    ['new (Function)("x")', 'new (Function)("x")'],
+  ])('a bare parenthesised callee %s fails', (_label, code) => {
+    expect(details(code)).toEqual([expect.stringContaining('`Function` constructor')])
+  })
+
+  // Declared non-coverage, pinned so it stays a decision rather than becoming
+  // an accident: a computed name is not followed, and neither is an alias.
+  test.each([
+    ['a computed name', 'const k = "eval"\nwindow[k]("x")'],
+    ['an alias', 'const f = Function\nf("x")'],
+  ])('%s passes — the module doc declares this is not followed', (_label, code) => {
+    expect(checkBundle(code, 'chunk.js')).toEqual([])
+  })
+
   // The case a regex gets wrong most often: a method named `eval` on something
   // that is not the global object is not the global `eval` and is not refused
   // by any directive.
@@ -178,6 +206,38 @@ describe('checkBundles', () => {
     const path = shell('offorigin', '<script src="https://cdn.example/app.js"></script>', {})
     expect(checkBundles([path])).toEqual([
       { file: path, detail: expect.stringContaining('https://cdn.example/app.js') },
+    ])
+  })
+
+  // What CI actually runs: `DEFAULT_SHELLS` is two shells in one call, and the
+  // findings accumulate across the loop rather than per shell.
+  test('two shells in one call are both checked, and each finding names its own', () => {
+    const clean = shell(
+      'pair-clean',
+      '<script type="module" src="/assets/index-abc.js"></script>',
+      { 'assets/index-abc.js': 'export const a = 1' },
+    )
+    const dirty = shell(
+      'pair-dirty',
+      '<script type="module" src="/assets/index-def.js"></script>',
+      { 'assets/index-def.js': 'const c = eval("x")' },
+    )
+    expect(checkBundles([clean, dirty])).toEqual([
+      { file: expect.stringContaining('pair-dirty'), detail: expect.stringContaining('call to `eval`') },
+    ])
+  })
+
+  // `scriptFiles` reports an unclosed tag rather than dropping it, so the file
+  // set is non-empty and the anti-vacuity rule does not fire — the finding has
+  // to come from the unresolved entry itself or the shell passes unread.
+  test('an unclosed <script> fails even when the other tags resolved', () => {
+    const path = shell(
+      'unclosed',
+      '<script type="module" src="/assets/index-abc.js"></script><script src="/assets/late.js">',
+      { 'assets/index-abc.js': 'export const a = 1', 'assets/late.js': 'eval("x")' },
+    )
+    expect(checkBundles([path])).toEqual([
+      { file: path, detail: expect.stringContaining('no readable `</script>`') },
     ])
   })
 
