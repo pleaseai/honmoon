@@ -1,0 +1,23 @@
+crates/honmoon-cli/src/main.rs
+  s_05641692ca4795::t_7ef9627c98bb3f 1594-1595,1597,1599-1602,1604,1606-1607
+  s_05641692ca4795::t_3db14a337adeba 1193-1198,1583-1593,1596,1598,1603,1605,1608
+  s_05641692ca4795::t_10ed49ffb7c7d5 1609-1610
+.claude/agent-memory/review-review-comment-analyzer/pr239_mapping_names_no_policy_field_claims.md
+  s_05641692ca4795::t_41c6c4865e777e 28-32
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "291556ef6fd44abd010b99a5af5527f9827d67a8",
+  "prompts": {},
+  "sessions": {
+    "s_05641692ca4795": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "afbc8675-12ac-47e1-8dd0-7a724d07ddb0",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
