@@ -494,8 +494,15 @@ struct Relay {
     /// it yet, and a batch pipelined behind a slow `Q` must not be settled by
     /// that `Q`'s own answer — which is why a delivered sync point resets this.
     fresh: u64,
-    /// The tag of the most recently delivered message.
-    last_tag: u8,
+    /// The tag of the most recently delivered message, `None` until the
+    /// session has delivered one.
+    ///
+    /// An `Option` rather than a zero sentinel because the byte is the
+    /// upstream's choice and this path constrains it to nothing: `0` is a tag
+    /// a backend can really send, so a sentinel would make "nothing arrived"
+    /// and "a NUL arrived" the same state — in the settling gate below, and in
+    /// the stall warning [`Relay::give_up`] writes it into (#214).
+    last_tag: Option<u8>,
     /// The transaction status carried by the last `ReadyForQuery` delivered.
     ///
     /// A refusal echoes it instead of always claiming idle — after an allowed
@@ -520,7 +527,7 @@ impl Relay {
             drained: 0,
             abandoned_flushes: 0,
             fresh: 0,
-            last_tag: 0,
+            last_tag: None,
             tx_status: STATUS_IDLE,
         }
     }
@@ -614,13 +621,43 @@ impl Relay {
         // refusal behind a `Flush`-driven batch can time out with its sync points
         // long since satisfied, and a warning carrying only those reads as though
         // nothing was outstanding at all.
+        //
+        // Which half stalled is still not *why* it did, and the flush half has
+        // two ways to reach here that no count separates: a database that
+        // stopped answering, and one that answered with a tag the settling gate
+        // in [`relay_backend_messages`] does not name. #212 made the second an
+        // expected outcome rather than an accident — that gate is a positive
+        // list now, so a tag nobody enumerated waits by design — and this line
+        // is the only place an operator would ever see it happen. So the tag
+        // goes in the line (#214).
+        //
+        // Escaped, not rendered, for the reason the oversized-copy warnings in
+        // [`relay_backend_messages`] give and about the same kind of byte: the
+        // upstream chooses it and nothing here constrains it to the protocol's
+        // set, so a raw newline would split this record in two for any
+        // line-oriented collector. Named `last_tag` rather than their `tag`
+        // because it is not this line's own message — there is no message here,
+        // which is the point — but the last one the client received.
+        //
+        // `none` for a session that has delivered nothing at all, which a stall
+        // can expire before. It cannot collide with a tag: `escape_default`
+        // renders one byte as itself, as a two-character escape, or as `\xNN`,
+        // and none of those spells `none`.
+        let last_tag = self.last_tag.map_or_else(
+            || "none".to_owned(),
+            |tag| std::ascii::escape_default(tag).to_string(),
+        );
         tracing::warn!(
             expected = sync_points,
             delivered = self.answered,
             expected_flushes = flushes,
             drained = self.drained,
+            last_tag = %last_tag,
             "no database response for the whole stall window; the refusal may reach the \
-             client out of statement order"
+             client out of statement order. `last_tag` is the last backend message tag \
+             the client received, `none` if it received none: when `drained` is short of \
+             `expected_flushes`, a tag that cannot end a flushed batch is why that flush \
+             never settled, rather than a database that stopped answering"
         );
         self.abandoned = self.abandoned.max(sync_points);
         self.abandoned_flushes = self.abandoned_flushes.max(flushes);
@@ -679,7 +716,7 @@ impl Relay {
     /// Every message counts as progress and restarts the stall window; only a
     /// `ReadyForQuery` advances what a refusal is waiting for.
     fn delivered(&mut self, tag: u8) {
-        self.last_tag = tag;
+        self.last_tag = Some(tag);
         if tag == b'Z' {
             // Settle the flushes this answer speaks for. The client has their
             // output either way, and a `ReadyForQuery` is a stronger settlement
@@ -1062,7 +1099,7 @@ where
         let settling = relay.fresh > 0
             && matches!(
                 relay.last_tag,
-                b'1' | b'2' | b'3' | b'C' | b'I' | b's' | b'E'
+                Some(b'1' | b'2' | b'3' | b'C' | b'I' | b's' | b'E')
             )
             && relay.drained < owed;
 
@@ -3284,6 +3321,82 @@ mod tests {
         );
     }
 
+    #[tokio::test(start_paused = true)]
+    async fn a_stall_after_a_tag_that_cannot_end_a_batch_names_that_tag() {
+        // The counters say which half of the barrier ran out the window; they
+        // cannot say why the flush half did. Two upstreams produce the same
+        // `expected_flushes`/`drained` pair: one that stopped answering, and one
+        // that answered with a tag the settling gate does not name and then went
+        // quiet. Since #212 that gate is a positive list — everything it does
+        // not name waits by design — so the second is an expected outcome, and
+        // this warning is the only place an operator sees it (#214).
+        //
+        // `T` `RowDescription` is one of the two the list leaves out
+        // deliberately: a `Describe` of a portal followed by a `Flush` really
+        // does end on it, and it still waits, because the same tag sits
+        // mid-batch in a `Bind`/`Describe`/`Execute` with the rows still to come.
+        let mut acc = accounting().await;
+        acc.link.forwarded_flush();
+        let upstream = ScriptedUpstream::new([
+            (std::time::Duration::ZERO, vec![b'T', 0, 0, 0, 4]),
+            (REFUSAL_ORDER_STALL_TIMEOUT * 2, Vec::new()),
+        ]);
+
+        let ack = queue_refusal(&acc.link, "honmoon: denied by policy");
+        let (logs, _guard) = capture_logs();
+        let (_stop, ()) = tokio::join!(
+            relay_backend_messages(upstream, &mut acc.relay, &mut acc.taken),
+            async {
+                ack.await.expect("the refusal is written");
+            },
+        );
+
+        assert_eq!(
+            acc.relay.abandoned_flushes, 1,
+            "`T` settles nothing, so the flush is the side that was given up on"
+        );
+        let logs = logs.text();
+        assert!(
+            logs.contains("out of statement order"),
+            "the refusal was given up on, so give_up's line is the one written, got {logs}"
+        );
+        assert!(
+            logs.contains("last_tag=T"),
+            "the line has to name the tag that left the flush unsettled, got {logs}"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_stall_before_any_backend_message_says_there_was_no_tag() {
+        // The other end of the same field, and the reason it is not a byte. A
+        // stall can expire before the database has sent anything at all, and a
+        // sentinel tag would report that as a message: zero is a byte an
+        // upstream can really send, so `\x00` here would read as a NUL the
+        // backend chose rather than as the silence it actually is.
+        let mut acc = accounting().await;
+        acc.link.forwarded_flush();
+        let upstream = ScriptedUpstream::new([(REFUSAL_ORDER_STALL_TIMEOUT * 2, Vec::new())]);
+
+        let ack = queue_refusal(&acc.link, "honmoon: denied by policy");
+        let (logs, _guard) = capture_logs();
+        let (_stop, ()) = tokio::join!(
+            relay_backend_messages(upstream, &mut acc.relay, &mut acc.taken),
+            async {
+                ack.await.expect("the refusal is written");
+            },
+        );
+
+        assert_eq!(
+            acc.relay.abandoned_flushes, 1,
+            "the flush the database never answered is given up on"
+        );
+        let logs = logs.text();
+        assert!(
+            logs.contains("last_tag=none"),
+            "a session that delivered no message says so rather than naming a byte, got {logs}"
+        );
+    }
+
     #[tokio::test]
     async fn an_answer_written_off_and_then_delivered_late_is_not_counted_twice() {
         // Giving up on an answer must not be recorded as the client having
@@ -3605,8 +3718,10 @@ mod tests {
     ///
     /// The only place in this workspace that asserts on a log line, because it is
     /// the only place where the log line *is* the behaviour: the oversized copy
-    /// delivered every byte before #218 too, so a test reading the client's
-    /// stream alone would pass against the silence the warning replaces.
+    /// delivered every byte before #218, and the stall bound released the same
+    /// refusal on the same counts before #214, so a test reading the client's
+    /// stream alone would pass against the silence — or the missing field —
+    /// that each warning replaces.
     ///
     /// Thread-local, which is enough here: `start_paused` runs the test on the
     /// current-thread runtime, so everything the test awaits is polled on the
