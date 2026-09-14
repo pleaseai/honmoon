@@ -776,9 +776,9 @@ async fn get_policy(State(s): State<AppState>) -> Json<PolicyResponse> {
 /// can enforce, so `scripts/check-dashboard-csp.ts` re-checks both built shells
 /// in CI: a bundler change that starts inlining script into the page must break
 /// there rather than arrive as a blank dashboard. That guard reads the shell's
-/// markup only — it would not see a dependency that puts `eval`/`new Function`
-/// in the emitted bundle, which this policy also refuses, since no
-/// `'unsafe-eval'` is present.
+/// markup only; `scripts/check-dashboard-bundle.ts` is the other half, parsing
+/// the files that shell loads for the `eval`/`new Function` construction this
+/// policy also refuses, since no `'unsafe-eval'` is present.
 const DASHBOARD_CSP: &str = concat!(
     "default-src 'none'; ",
     "script-src 'self'; ",

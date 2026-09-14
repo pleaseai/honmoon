@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import process from 'node:process'
 import { describe, expect, test } from 'bun:test'
-import { checkShell, checkShells } from './check-dashboard-csp'
+import { checkShell, checkShells, REPO_ROOT, scriptFiles } from './check-dashboard-csp'
 
 /** The shape `vite build` emits today: one external module script, one stylesheet. */
 const BUILT_SHELL = `<!doctype html>
@@ -262,5 +262,105 @@ describe('checkShells', () => {
   test('a missing artifact fails rather than being skipped', () => {
     expect(checkShells(['apps/dashboard/dist/no-such-shell.html']))
       .toEqual([{ shell: 'apps/dashboard/dist/no-such-shell.html', detail: expect.stringContaining('not found') }])
+  })
+})
+
+// The file set the bundle guard (`check-dashboard-bundle.ts`, #200) reads, taken
+// from the very tags this file judges so the two cannot disagree about what
+// "the build" is.
+describe('scriptFiles', () => {
+  const SHELL = 'apps/dashboard/dist/index.html'
+  const DIST = join(REPO_ROOT, 'apps/dashboard/dist')
+
+  test('a root-absolute and a relative src both land under the shell\'s own directory', () => {
+    expect(scriptFiles(DEMO_SHELL, SHELL)).toEqual({
+      files: [join(DIST, 'demo-mode.js'), join(DIST, 'assets/index-ChyO-qsg.js')],
+      unresolved: [],
+    })
+  })
+
+  // `<link href>` is a fetch this file checks, but it is not script, and a
+  // `<script>` with no src has no file behind it — both would be a second,
+  // wrong idea of what the bundle is.
+  test('only <script src> is collected — not a stylesheet, not a srcless tag', () => {
+    const extra = BUILT_SHELL.replace('<div id="root"></div>', '<script>window.x = 1</script>')
+    expect(scriptFiles(extra, SHELL).files).toEqual([join(DIST, 'assets/index-ChyO-qsg.js')])
+  })
+
+  // Reading the file is impossible, so the code it loads goes uninspected. It
+  // comes back for the caller to fail on rather than being dropped.
+  test('a src with no file behind it is reported, not silently dropped', () => {
+    const cdn = BUILT_SHELL.replace('/assets/index-ChyO-qsg.js', 'https://cdn.example/app.js')
+    expect(scriptFiles(cdn, SHELL)).toEqual({
+      files: [],
+      unresolved: [{ src: 'https://cdn.example/app.js', reason: expect.stringContaining('off this origin') }],
+    })
+  })
+
+  // `new URL` collapses a literal `..` against the origin, so this one lands
+  // inside the build directory rather than above it.
+  test('a traversing src is collapsed by the URL parser, not followed', () => {
+    const up = BUILT_SHELL.replace('/assets/index-ChyO-qsg.js', '../../../etc/passwd')
+    expect(scriptFiles(up, SHELL).files).toEqual([join(DIST, 'etc/passwd')])
+  })
+
+  // The parser does not percent-decode a path segment, so `%2f` survives it and
+  // the decode that follows turns it back into a separator. Relying on the
+  // parser alone named a file two levels above `dist/`, same-origin throughout,
+  // with both guards green.
+  test.each([
+    ['an encoded separator', '/assets/..%2f..%2foutside.js'],
+    ['an encoded separator, relative', 'a%2f..%2f..%2f..%2foutside.js'],
+  ])('a src escaping the build directory (%s) is refused, not read', (_label, src) => {
+    const out = BUILT_SHELL.replace('/assets/index-ChyO-qsg.js', src)
+    expect(scriptFiles(out, SHELL)).toEqual({
+      files: [],
+      unresolved: [{ src, reason: expect.stringContaining('outside the build directory') }],
+    })
+  })
+
+  // `scriptFiles` reads no file, so the shell path is arithmetic only — and a
+  // shell whose directory is a filesystem root is where a `dir + sep` prefix
+  // becomes `//` and refuses everything.
+  test('a shell directly under a filesystem root still resolves its scripts', () => {
+    expect(scriptFiles(BUILT_SHELL, '/index.html')).toEqual({
+      files: ['/assets/index-ChyO-qsg.js'],
+      unresolved: [],
+    })
+  })
+
+  // An escaped character in a file name is why the decode is there at all, so
+  // it must still resolve.
+  test('a percent-escaped character in a file name still resolves', () => {
+    const spaced = BUILT_SHELL.replace('/assets/index-ChyO-qsg.js', '/assets/a%20b.js')
+    expect(scriptFiles(spaced, SHELL).files).toEqual([join(DIST, 'assets/a b.js')])
+  })
+
+  // Every reason a `src` can fail to name a file is a hard CI failure in the
+  // bundle guard ("the code it loads went uninspected"), so each one has to
+  // keep reporting — a refactor that turned any of them into a bare `continue`
+  // would let a script through unread with nothing failing.
+  test.each([
+    ['a javascript: URL', 'javascript:go()', 'inline code rather than a file'],
+    ['an undecodable reference', '/assets/&hellip;.js', 'cannot be decoded here'],
+    ['a malformed percent-escape', '/assets/%zz.js', 'percent-escape this check cannot decode'],
+  ])('a src that names no file (%s) is reported with its own reason', (_label, src, reason) => {
+    const bad = BUILT_SHELL.replace('/assets/index-ChyO-qsg.js', src)
+    expect(scriptFiles(bad, SHELL)).toEqual({
+      files: [],
+      unresolved: [{ src, reason: expect.stringContaining(reason) }],
+    })
+  })
+
+  // `SCRIPT_TAG` is lazy and skips an opening tag with no `</script>`, so its
+  // `src` landed in neither list — and a shell whose other tags resolved handed
+  // the bundle guard a non-empty file set that passed its anti-vacuity rule
+  // while that script's code was never read.
+  test('an unclosed <script> is counted, not silently dropped', () => {
+    const appended = `${BUILT_SHELL}<script src="/assets/appended.js">`
+    expect(scriptFiles(appended, SHELL)).toEqual({
+      files: [join(DIST, 'assets/index-ChyO-qsg.js')],
+      unresolved: [{ src: null, reason: expect.stringContaining('no readable `</script>`') }],
+    })
   })
 })
