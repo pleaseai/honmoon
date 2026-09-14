@@ -242,7 +242,9 @@ it. (A process with no `HOME` reads a `.honmoon` relative to its working
 directory.) Those are examples of one condition, not a list to check off: different
 key bytes, so the same `session_id` mints different placeholders. Matching
 `--hook-salt-context` values do **not** close any of them — the context is mixed
-into an HMAC the machine key keys, so mismatched keys stay mismatched.
+into an HMAC the machine key keys, so mismatched keys stay mismatched. Provisioning
+one key to both sides is what closes them, and it costs something: see "Getting one
+key onto both sides" below, which describes both.
 
 **When the salt file is unusable, the key is not secret.** The loader only fails
 when it has to mint a new salt and cannot — no readable `/dev/urandom`, or a
@@ -507,18 +509,70 @@ degradation visible to whoever is driving the session but recorded nowhere durab
 **Getting one key onto both sides.** Co-located processes sharing a `HOME` read one
 file and need nothing. Anywhere else — separate hosts, containers, different users
 — provision the *same* `hook-salt` to both: the loader adopts any existing file of
-at least 16 bytes verbatim (re-tightening it to `0600`), so identical bytes at each
-process's salt path mint identical placeholders. Cross-host parity is therefore
-achievable; it is just not automatic.
+at least 16 bytes verbatim, so identical bytes at each process's salt path mint
+identical placeholders. Cross-host parity is therefore achievable; it is just not
+automatic.
+
+What "verbatim" covers, since this is what a deployment ends up depending on: the
+file's own bytes, at the length it carries — 16 is a floor and not a size, a longer
+key is used whole, and nothing is truncated, padded or re-derived. A file *under*
+16 bytes is not adopted, and neither is one that is absent or unreadable: the loader
+mints a fresh 32-byte key for each of those, or falls back to the public constant
+under "When the salt file is unusable" above when it cannot produce one — the write
+can fail, and so can the read of `/dev/urandom` it draws the bytes from, before any
+write is attempted. On the way
+through it restricts the file it adopted to `0600`; where that leaves the file still
+readable beyond its owner, it says so rather than going quiet — the
+`hook-salt-exposed` row in the table above. Where it reaches you is the transport's
+affair, per "Where each event is visible": a gateway records it into the ring its
+dashboard polls whether or not `--audit-log` is set, while a `honmoon hook` invocation
+needs `HONMOON_AUDIT_LOG` — or `--audit-log`, when run by hand — for its record to
+outlive the process, and the dashboard never shows it. (A `chmod` that fails on a
+file already at `0600` is deliberately silent, because a correction that was not
+needed is not evidence of exposure.) None
+of this depends on the mode: a world-readable file is still adopted, and audited for
+it. These are pinned by tests in `crates/honmoon-cli/src/hook.rs` (issue #126), so
+they are an interface you can deploy against rather than loader behaviour that might
+move.
+
+**Generate the bytes; do not choose them.** The loader checks length and nothing
+else, so 16 bytes of a memorable phrase are adopted and keyed with, and every rule
+that could complain is about the file rather than the bytes: provision that phrase in
+an owner-only file and nothing fires at all, since key strength is the one property
+none of them looks at. (Provision it in a *loose* file and `hook-salt-was-exposed`
+does fire — about the mode the loader found, which is a different problem that
+happens to be present.) Produce the file the
+way honmoon produces it, owner-only from the first byte: under the usual `umask 022`
+a bare redirection creates it `0644`, and a local user who copies it in that window
+holds a key the loader's later `0600` correction cannot recall.
+
+```sh
+(umask 077; head -c 32 /dev/urandom > hook-salt)   # created 0600, not your umask's 0644
+# on each host — install does not create the parent, and umask 077 makes it 0700
+(umask 077; mkdir -p ~/.honmoon; install -m 0600 hook-salt ~/.honmoon/hook-salt)
+```
+
+A key small enough to search is worse than a shared one. Someone who sees a
+placeholder and can guess the secret behind it recovers the key offline, and a
+recovered key forges placeholders as well as confirming them — without the bytes ever
+having been handed over.
 
 Treat that as copying a secret, because it is. The machine key is what makes a
 placeholder unforgeable, so everyone who holds it can mint the placeholder a given
 session would produce for a guessed secret and check it against a redacted
-transcript — the confirmation oracle tracked in #125. Move it only over a channel
-you would use for any other credential, put it in as few places as the deployment
-needs, and rotate it there if it leaks. It also rests on the salt loader's adoption
-behaviour rather than on a supported setting; #126 tracks making the key an explicit
-input. If none of that is worth it for your deployment, keep `transport: "process"`.
+transcript — the confirmation oracle tracked in #125. That is the real cost of
+spreading this key, and it does not depend on how the key got there: it is a
+property of holding the bytes, so a first-class flag would carry it unchanged. Move
+it only over a channel you would use for any other credential, and put it in as few
+places as the deployment needs. Rotating one is not the single-host recipe above:
+deleting one host's `hook-salt` mints a key only that host holds, which breaks the
+parity this section exists to establish, while every host you did not touch carries
+on adopting the leaked bytes. Generate one new key and re-provision it everywhere in
+the same operation, between sessions where you can. What is still
+missing is a *supported input* — a flag or environment variable naming the key —
+rather than arranging for a file to be at each path; issue #126 tracks that for
+`honmoon join` (#37). If none of that is worth it for your deployment, keep
+`transport: "process"`.
 
 ### Typings
 

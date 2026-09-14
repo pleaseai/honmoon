@@ -28,8 +28,17 @@
 //! filesystem where the same path names a different file, a different user, a
 //! different `HOME` for the same user. Different keys mint different placeholders
 //! for equal contexts, and a pinned salt context cannot close that, since the key
-//! is what the context is mixed into. Supplying key material explicitly is tracked
-//! in issue #126.
+//! is what the context is mixed into.
+//!
+//! Getting one key to both sides is done by provisioning the same `hook-salt`
+//! file to each: the loader adopts any existing file of at least 16 bytes
+//! verbatim, which `honmoon-cli`'s `load_or_create_machine_salt` documents and
+//! pins. It has a price the transports cannot mitigate, because it follows from
+//! holding the key rather than from how it was delivered — whoever holds these
+//! bytes can derive the salt for a session, mint the placeholder a guessed secret
+//! would produce there, and check it against a redacted transcript (issue #125).
+//! Supplying key material through a first-class input instead is tracked in issue
+//! #126.
 
 use hmac::{Hmac, Mac};
 use serde_json::Value;
