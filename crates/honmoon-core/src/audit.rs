@@ -614,7 +614,12 @@ impl AuditLog {
 ///   root-installed `/var/log -> /mnt/log` is an ordinary Linux deployment. The
 ///   issue raised that risk explicitly. This is a trusted-path assumption, not a
 ///   proof: it says nothing about a root-owned directory reachable some other way,
-///   or about what root itself does. It does now cover ACLs, which took a second
+///   about what root itself does, or about a volume mounted so that the uid and mode
+///   it reads are not the ones being enforced — macOS mounts removable and
+///   `MNT_IGNORE_OWNERSHIP` volumes that way, and a FAT or exFAT one carries no
+///   on-disk uid to report in the first place. Read the list as instances rather than
+///   as its members: what the rule establishes is the positive claim two bullets
+///   down, and everything it does not establish cannot be enumerated. It does now cover ACLs, which took a second
 ///   test because the bits alone are the whole answer on one platform only
 ///   (issue #181). A Linux POSIX ACL granting write to a named user needs the ACL
 ///   mask to carry write, and the mask is what `st_mode`'s group bits report, so
@@ -1191,16 +1196,23 @@ fn require_link_in_a_trusted_directory(
 /// targets — checked against the 0.2 line this workspace pins, whose Apple module
 /// has `getxattr`/`fgetxattr` and nothing from `sys/acl.h`. This is not a new
 /// dependency and not a new linked library: `acl_get_fd_np` and `acl_free` live in
-/// `libSystem`, which every Rust binary on this target already links for `std`, and
-/// the declarations below are `sys/acl.h`'s own, transcribed.
+/// `libSystem`, which every Rust binary on this target already links for `std`.
 ///
-/// `acl_t` is `struct _acl *` — opaque on the C side too, never dereferenced here —
-/// so it is carried as `*mut c_void`, which is also what `acl_free` takes.
+/// The declarations are `sys/acl.h`'s, with its two named types spelled as the raw
+/// types they are rather than copied — so compare them against the header for ABI,
+/// not for text. `acl_t` is `struct _acl *`, opaque on the C side too and never
+/// dereferenced here, so it is carried as `*mut c_void`, which is also what
+/// `acl_free`'s own `void *obj_p` takes.
 #[cfg(target_os = "macos")]
 mod darwin_acl {
     /// `ACL_TYPE_EXTENDED` from `sys/acl.h`: the NFSv4-style ACL, and the only type
-    /// macOS actually stores. The `acl_type_t` enum it belongs to has no negative
-    /// value, so C gives it unsigned rank.
+    /// macOS actually stores.
+    ///
+    /// Spelled `c_uint` because `acl_type_t`, the enum it belongs to, is four bytes
+    /// wide on this target — which is what the ABI turns on. Its signedness is
+    /// implementation-defined in C rather than fixed by the absence of a negative
+    /// enumerator, and it does not matter: the argument is passed in a register at
+    /// that width either way, and every value this crate passes is positive.
     pub(super) const ACL_TYPE_EXTENDED: libc::c_uint = 0x0000_0100;
 
     unsafe extern "C" {
@@ -1248,6 +1260,14 @@ fn carries_an_extended_acl(dir: &std::fs::File) -> bool {
         // it is the only outcome that answers no. Anything else — a descriptor the
         // call will not take, a filesystem that cannot answer — leaves the question
         // open, and an open question about who can write is not a yes.
+        //
+        // `errno` is read with nothing in between: the descriptor argument is
+        // evaluated before the call, and `is_null` is a pointer comparison, so no
+        // second libc call can have overwritten it. That is the same discipline
+        // `from_raw_fd` and `is_symlink_at` keep, and it is what the read relies on
+        // — `acl_get_fd_np` setting `errno` on a null return is the documented
+        // contract, and a host that broke it would answer "no ACL" from whatever was
+        // left there.
         return std::io::Error::last_os_error().raw_os_error() != Some(libc::ENOENT);
     }
     // SAFETY: `acl` is the non-null handle the call above returned and nothing else
@@ -1256,15 +1276,39 @@ fn carries_an_extended_acl(dir: &std::fs::File) -> bool {
     true
 }
 
-/// Every other Unix: `st_mode` already carries what an ACL here can grant, so there
-/// is nothing left to read — see [`require_link_in_a_trusted_directory`] for why the
-/// Linux mask makes that true rather than merely likely.
+/// Linux: a **POSIX.1e** ACL — what ext4, xfs and btrfs carry — is already summarised
+/// in `st_mode`, so there is nothing left to read. See
+/// [`require_link_in_a_trusted_directory`] for why the mask makes that true rather
+/// than merely likely.
 ///
-/// A `cfg` split rather than a branch inside one body, matching `open_sink_file` and
-/// `describe_file_type`.
-#[cfg(all(unix, not(target_os = "macos")))]
+/// **Said no more widely than it holds.** That argument is POSIX.1e's, and Linux can
+/// present an ACL that is not one: an NFSv4 ACL reached over an NFS mount, or OpenZFS
+/// with `acltype=nfsv4`. Those have no mask, so the mode they report approximates the
+/// ACL rather than bounding it, and this arm answers `false` for them — the #181
+/// blindness, on a filesystem instead of a platform. Not closed here because reading
+/// one means a second mechanism (`getxattr` of `system.nfs4_acl`) on a filesystem
+/// neither CI job mounts, which would ship untested. Tracked as its own issue rather
+/// than left to be rediscovered from this sentence.
+#[cfg(target_os = "linux")]
 fn carries_an_extended_acl(_dir: &std::fs::File) -> bool {
     false
+}
+
+/// Any other Unix: honmoon cannot read the ACL here, so it does not claim there is
+/// none — a symlinked parent is refused rather than followed.
+///
+/// **Not a copy of the Linux arm, which is the point of the third `cfg`.** The mask
+/// argument that makes `false` correct above is POSIX.1e's and Linux's; FreeBSD and
+/// illumos carry NFSv4-style ACLs, the same family as macOS's, with the same absence
+/// from `st_mode`. Returning `false` here would leave exactly the hole issue #181
+/// closed, on the platforms nothing in this repository builds or tests: the release
+/// matrix is `x86_64`/`aarch64-unknown-linux-gnu` and `aarch64-apple-darwin`, and CI
+/// runs ubuntu and macOS. So the answer is the honest one for a host honmoon knows
+/// nothing about, and it costs an audit path whose parent is a symlink — which is
+/// the same trade the [`O_TRAVERSE`] fallback just above makes for the same reason.
+#[cfg(all(unix, not(any(target_os = "macos", target_os = "linux"))))]
+fn carries_an_extended_acl(_dir: &std::fs::File) -> bool {
+    true
 }
 
 /// Read the target of the symlink `name` inside `dir`, without a path `std::fs`
@@ -1959,6 +2003,123 @@ mod tests {
             !elsewhere.join("audit.jsonl").exists(),
             "the refused open must not have created the sink through the link"
         );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The cost `carries_an_extended_acl` documents, pinned so a later refinement is
+    /// a deliberate change rather than a silent one.
+    ///
+    /// A deny ACE grants nobody anything, so a directory whose ACL only denies is one
+    /// the mode bits still describe completely — and it is refused anyway, because the
+    /// rule tests for an ACL's presence rather than reading its entries. macOS ships
+    /// `group:everyone deny delete` on every home directory, which makes this the
+    /// common shape of the over-refusal rather than a contrived one.
+    ///
+    /// Asserting the refusal here is the point: were someone to add the allow/deny
+    /// distinction with the sense inverted, the test that matters
+    /// (`..._in_a_directory_an_acl_opens_up`) would still pass and only this one would
+    /// fail.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn with_file_refuses_a_symlinked_parent_whose_acl_only_denies() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = scratch_dir("symlink-parent-acl-deny");
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755))
+            .expect("make the directory one only its owner can write");
+        let elsewhere = dir.join("elsewhere");
+        std::fs::create_dir(&elsewhere).expect("create the link's target");
+        std::os::unix::fs::symlink(&elsewhere, dir.join("logs")).expect("plant symlink");
+
+        let chmod = std::process::Command::new("/bin/chmod")
+            .arg("+a")
+            .arg("everyone deny delete")
+            .arg(&dir)
+            .output()
+            .expect("run chmod");
+        assert!(
+            chmod.status.success(),
+            "the fixture needs an ACL-capable filesystem: {}",
+            String::from_utf8_lossy(&chmod.stderr)
+        );
+
+        let Err(err) = AuditLog::with_file(4, dir.join("logs").join("audit.jsonl")) else {
+            panic!(
+                "the rule refuses on an ACL's presence, so a deny-only one is refused too — \
+                 change this test only along with the doc comment that promises it"
+            );
+        };
+        assert!(err.to_string().contains("extended ACL"), "{err}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// `carries_an_extended_acl` is called on whatever descriptor the walk holds, and
+    /// that is not always a readable one: [`open_directory`] retries a denied
+    /// `O_RDONLY` with [`O_TRAVERSE`], which on macOS is `O_SEARCH` and needs only
+    /// search permission. Its doc says the ACL query answers such a descriptor as
+    /// readily as a readable one, and nothing else in the suite reaches that pairing —
+    /// `with_file_opens_a_sink_under_a_search_only_parent_directory` exercises the
+    /// retry, but its parent holds no symlink, so the trust rule never runs.
+    ///
+    /// Called directly rather than through a planted symlink, because the claim is
+    /// about the descriptor the function receives and a walk would only reach it after
+    /// the retry it is the point of this test not to depend on.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn an_extended_acl_is_visible_through_a_search_only_descriptor() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = scratch_dir("acl-search-only");
+        let chmod = std::process::Command::new("/bin/chmod")
+            .arg("+a")
+            .arg("everyone allow write")
+            .arg(&dir)
+            .output()
+            .expect("run chmod");
+        assert!(
+            chmod.status.success(),
+            "the fixture needs an ACL-capable filesystem: {}",
+            String::from_utf8_lossy(&chmod.stderr)
+        );
+        // Searchable by everyone, readable by nobody — the shape that sends
+        // `open_directory` down the `O_TRAVERSE` retry.
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o311))
+            .expect("make the directory searchable but not readable");
+
+        let c_path = std::ffi::CString::new(dir.as_os_str().as_encoded_bytes())
+            .expect("the scratch path has no interior NUL");
+        // SAFETY: `c_path` is a valid NUL-terminated path for the duration of the
+        // call, `AT_FDCWD` is the documented working-directory sentinel, and the
+        // descriptor is handed straight to `File`, which closes it on drop.
+        let fd = unsafe {
+            libc::openat(
+                libc::AT_FDCWD,
+                c_path.as_ptr(),
+                libc::O_SEARCH | libc::O_DIRECTORY | libc::O_CLOEXEC,
+            )
+        };
+        let searchable = from_raw_fd(fd).expect("open the directory for traversal only");
+
+        // Prove the descriptor really is the search-only one, so a pass cannot come
+        // from having opened a readable descriptor by another route. Root bypasses
+        // the permission bits, so say so instead.
+        // SAFETY: `geteuid` reads process credentials, takes no arguments and is
+        // always successful.
+        if unsafe { libc::geteuid() } == 0 {
+            eprintln!("running as root: the search-only restriction is not enforced");
+        } else {
+            assert!(
+                std::fs::File::open(&dir).is_err(),
+                "a `0o311` directory must not be openable for reading, or this test proves nothing"
+            );
+        }
+
+        assert!(
+            carries_an_extended_acl(&searchable),
+            "the ACL query must answer a traversal-only descriptor"
+        );
+
+        let _ = std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

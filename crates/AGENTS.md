@@ -106,10 +106,11 @@ objection that survives, and a future proposal should be answered on it rather t
 Moving the open to `honmoon-cli` was the alternative, and it buys less than it appears to:
 `AuditLog` would still own the descriptor and still write and flush through it, so the crate
 does file I/O either way and this section would read much as it does now. What would change is
-only which crate calls `open`. `libc` is here for that open and nothing else: the
-directory-relative syscalls `openat`, `fstatat` and `readlinkat`, `geteuid` for the trust rule,
-and the flag, errno, file-type and struct definitions those four take. Every descriptor they
-return is handed straight to `std::fs::File`, which owns and closes it.
+only which crate calls `open`. `libc` is here for that open and nothing else — four syscalls and
+the vocabulary they and the pair below are written in: the directory-relative `openat`, `fstatat`
+and `readlinkat`, `geteuid` for the trust rule, and the flag, errno, file-type, raw-integer and
+struct definitions those calls take. Every descriptor they return is handed straight to
+`std::fs::File`, which owns and closes it.
 
 One pair of calls the same open needs does **not** come through `libc`, and is named here rather
 than left to be discovered in a diff. `audit.rs` declares `acl_get_fd_np` and `acl_free` itself,
