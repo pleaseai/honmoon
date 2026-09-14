@@ -32,8 +32,9 @@ multi-document), and the missing arm has its own test,
 **How to apply:** when reviewing this guard, probe shape *families* rather than
 one fixture — single-doc scalar, multi-doc with a scalar first document, a
 leading `---` (one document, must still load), tabs / unclosed flow (syntax
-error), and JSON or k8s-Secret mappings (they load as a valid 0-rule policy; see
-[[policy-load-error-echoes-file]]). More generally: if a test's name quantifies
+error), and JSON or k8s-Secret mappings (they used to load as a valid 0-rule
+policy; #220 closed that in a *second* guard beside this one, so probe both —
+see [[policy-load-error-echoes-file]]). More generally: if a test's name quantifies
 over a property, check that its fixtures reach every branch of the function it
 certifies, and treat a branch that fits none of the existing loops as a missing
 test rather than as a branch that needs no test.

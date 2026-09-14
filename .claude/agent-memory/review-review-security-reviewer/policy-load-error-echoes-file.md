@@ -1,6 +1,6 @@
 ---
 name: policy-load-error-echoes-file
-description: "Policy::from_yaml on a file that is not a policy echoes its whole content into the error, because serde quotes the offending scalar; closed for all three commands by the shared load_policy guard (#202), with the mapping-shaped residual (a colon-style secrets file or a JSON key loads as a valid 0-rule policy and is served at GET /api/policy) still open"
+description: "Policy::from_yaml on a file that is not a policy echoes its whole content into the error, because serde quotes the offending scalar; closed for all three commands by the shared load_policy guard (#202), and the mapping-shaped residual (a secrets file or a JSON key loading as a valid 0-rule policy) is closed too, by load_policy refusing a mapping that declares no recognised policy key (#220) — do not report either as live"
 metadata:
   type: project
 ---
@@ -38,14 +38,24 @@ the stream. Probe that shape on any future change here; a `---` line is ordinary
 `.env`, a Kubernetes manifest or a helm values file. See
 [[policy-guard-multidoc-scalar-escapes]].
 
-**The residual worth remembering (pre-existing, not introduced by #202):** top-level `Policy` has NO
-`deny_unknown_fields` and every field has a default, so any *mapping*-shaped file loads as a valid
-0-rule policy. Measured: a k8s Secret manifest, a `KEY: value` secrets file and a GCP
-service-account JSON key (JSON is YAML) all print `policy is valid (0 rules, 0 endpoints)` and exit 0.
-Nothing is quoted to stderr, but under `gateway` the file's full text becomes `AppState.policy_yaml`
-and is served as the `yaml` field of authenticated `GET /api/policy`. Egress default is `deny`, so the
-mis-target is fail-closed for traffic; the exposure is the source-serving, audience = mgmt-token /
-dashboard-session holders.
+**The residual that survived #202 — closed by #220, do not re-report it as live.** Top-level `Policy`
+still has NO `deny_unknown_fields` and every field still has a default, so *the loader* goes on
+accepting any mapping; what changed is that `load_policy` no longer hands it one. It refuses a
+mapping in which none of `version`, `egress`, `endpoints`, `rules` appears
+(`mapping_names_no_policy_field`, `crates/honmoon-cli/src/main.rs`), so the k8s Secret manifest, the
+`KEY: value` secrets file and the GCP service-account JSON key that all printed
+`policy is valid (0 rules, 0 endpoints)` now exit non-zero on all three commands, and nothing reaches
+`AppState.policy_yaml` to be served at `GET /api/policy`. Historical bound, worth keeping for scale:
+egress default was `deny`, so the mis-target was fail-closed for traffic throughout, and the audience
+for the source-serving was mgmt-token / dashboard-session holders (#173).
+
+Two boundaries of that refusal are load-bearing and a review of this area should check them rather
+than the refusal alone. An empty file is `null`, not a mapping, so it is still a valid policy. A
+mapping with **at least one** recognised key is accepted whatever else it carries, so
+forward-compatibility is intact and `deny_unknown_fields` is still the wrong fix — it was rejected
+for #220 on exactly that ground, and the policy struct was deliberately left untouched so the change
+stays off the `crates/AGENTS.md` **Ask first** list. An explicitly empty mapping (`{}`) is refused
+and that is intended, not a bug.
 
 **State after #201 (historical).** `honmoon policy validate` classifies the top-level shape itself
 (`not_a_policy_document` in `crates/honmoon-cli/src/main.rs`) and refuses plain text, a list or

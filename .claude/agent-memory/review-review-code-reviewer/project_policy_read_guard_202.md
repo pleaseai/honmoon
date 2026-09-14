@@ -1,6 +1,6 @@
 ---
 name: project-policy-read-guard-202
-description: 'PR #217 (issue #202) lifted not_a_policy_document into load_policy so run/gateway/policy validate share it; load_policy now returns (Policy, String) — reviewed clean, plus the exhaustive argument for "no verdict moved"'
+description: 'PR #217 (issue #202) lifted not_a_policy_document into load_policy so run/gateway/policy validate share it; load_policy now returns (Policy, String) — reviewed clean, plus the exhaustive argument for "no verdict moved", which covers that guard only and NOT the recognised-key refusal #220 added beside it'
 metadata:
   type: project
 ---
@@ -43,4 +43,18 @@ multi-document stream instead of returning its first document, so a stream-level
 deferred every file carrying a `---` line straight into the leak. A parse failure of
 that first document still returns `None` on purpose, deferring to serde's syntax
 diagnostic — which names what it stopped on rather than reproducing the document, and
-carries a position only once the scanner is past the start.
+carries a position only once the scanner is past the start. Since #220 that document is
+read by a shared `first_document` helper, because a second guard now needs the same
+choice and two copies of it could drift.
+
+**The "no verdict moved" invariant above is about `not_a_policy_document` alone, and
+`load_policy` now runs a second guard that is not bound by it.** #220 added
+`mapping_names_no_policy_field`, which refuses a mapping declaring none of `version`,
+`egress`, `endpoints`, `rules` — a document `Policy::from_yaml` accepts, so it moves a
+verdict deliberately. Reading the invariant as a property of the *read* rather than of
+that one function would make the new guard look like a regression, and would also hide
+the risk it actually carries: `POLICY_FIELDS` mirrors the struct by hand, so a field
+added to `Policy` and not to that list refuses a policy using only the new field.
+`policy_fields_are_exactly_the_ones_policy_declares` serializes a `Policy` and compares
+its keys, which is what holds that shut — check the test still does that before
+accepting a change to either.

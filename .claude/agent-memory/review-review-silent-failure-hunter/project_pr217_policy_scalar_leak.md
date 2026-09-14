@@ -43,8 +43,13 @@ An explicit leading `---` is **one** document, not a stream — a policy file ma
 open with it and must still load. That is pinned in the same unit test; a guard
 that counted documents rather than reading the first would have broken it.
 
-Out of scope and still true: `Policy` does not deny unknown fields, so any YAML
-*mapping* loads as a valid policy with 0 rules — `policy validate` prints
-"policy is valid (0 rules, 0 endpoints)" for e.g. a `user:`/`password:` file.
-Lives in honmoon-core, unchanged by #217; see the security reviewer's
+Out of scope for #217 and **since closed by #220** — do not report it as live.
+`Policy` still does not deny unknown fields, so the *loader* still accepts any
+mapping; `load_policy` no longer gives it one, refusing a mapping in which none
+of `version`, `egress`, `endpoints`, `rules` appears. A `user:`/`password:` file
+that printed "policy is valid (0 rules, 0 endpoints)" now exits non-zero on all
+three commands. The refusal keeps two boundaries that a review here should check
+rather than assume: an empty file is `null` and still loads, and one recognised
+key admits unknown siblings, which is the forward-compatibility that ruled
+`deny_unknown_fields` out. See the security reviewer's
 [[policy-load-error-echoes-file]]. Related: [[framing-deliberate-skips]].

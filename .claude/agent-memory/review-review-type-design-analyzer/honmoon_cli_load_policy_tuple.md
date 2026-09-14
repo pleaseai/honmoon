@@ -23,9 +23,14 @@ elements have distinct types, so the pair cannot be transposed silently.
 
 **How to apply:** in a type-design review of this file, do not report the tuple
 shape, the discarded `String`, or the by-value `String` return (three
-once-at-startup call sites) as findings. The shape guard
-(`not_a_policy_document`) is enforced inside `load_policy` and `Policy::from_yaml`
-has no other production caller in the crate — enforcement is centralized, though
+once-at-startup call sites) as findings. Both guards — the shape one
+(`not_a_policy_document`) and, since #220, the recognised-key one
+(`mapping_names_no_policy_field`, which refuses a mapping declaring none of
+`version`, `egress`, `endpoints`, `rules`) — are enforced inside `load_policy`, and
+`Policy::from_yaml` has no other production caller in the crate. So the second
+refusal is reachable only through the CLI by design, which is deliberate rather
+than a layering slip: the rule is about a mistyped *path*, and honmoon-core is
+handed a string. Enforcement is centralized, though
 strictly by convention rather than by a compiler barrier, since `from_yaml` stays
 public in honmoon-core. Flag that only if a new in-crate call site actually
 bypasses `load_policy`.
