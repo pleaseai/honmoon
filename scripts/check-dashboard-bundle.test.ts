@@ -4,6 +4,37 @@ import { dirname, join } from 'node:path'
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test'
 import { checkBundle, checkBundles, inspectBundles } from './check-dashboard-bundle'
 
+let root: string
+
+/** The one `<script src>` tag Vite emits for the entry chunk. */
+const ENTRY = '<script type="module" crossorigin src="/assets/index-abc.js"></script>'
+
+/**
+ * A shell and its assets, laid out the way `vite build` lays `dist/` out.
+ *
+ * One fixture for both suites below: they lay out the same tree, and a second
+ * copy is a second thing to keep in step with what Vite actually emits.
+ */
+function shell(name: string, scripts: string, assets: Record<string, string>): string {
+  const dir = join(root, name)
+  mkdirSync(join(dir, 'assets'), { recursive: true })
+  writeFileSync(
+    join(dir, 'index.html'),
+    `<!doctype html><html><head>${scripts}</head><body><div id="root"></div></body></html>`,
+  )
+  for (const [path, code] of Object.entries(assets)) {
+    writeFileSync(join(dir, path), code)
+  }
+  return join(dir, 'index.html')
+}
+
+beforeAll(() => {
+  root = mkdtempSync(join(tmpdir(), 'honmoon-bundle-'))
+})
+afterAll(() => {
+  rmSync(root, { recursive: true, force: true })
+})
+
 function details(code: string): string[] {
   return checkBundle(code, 'chunk.js').map(problem => problem.detail)
 }
@@ -135,29 +166,6 @@ describe('checkBundle', () => {
 })
 
 describe('checkBundles', () => {
-  let root: string
-
-  /** A shell and its assets, laid out the way `vite build` lays `dist/` out. */
-  function shell(name: string, scripts: string, assets: Record<string, string>): string {
-    const dir = join(root, name)
-    mkdirSync(join(dir, 'assets'), { recursive: true })
-    writeFileSync(
-      join(dir, 'index.html'),
-      `<!doctype html><html><head>${scripts}</head><body><div id="root"></div></body></html>`,
-    )
-    for (const [path, code] of Object.entries(assets)) {
-      writeFileSync(join(dir, path), code)
-    }
-    return join(dir, 'index.html')
-  }
-
-  beforeAll(() => {
-    root = mkdtempSync(join(tmpdir(), 'honmoon-bundle-'))
-  })
-  afterAll(() => {
-    rmSync(root, { recursive: true, force: true })
-  })
-
   test('every file the shell loads is checked, not just the first', () => {
     const path = shell(
       'many',
@@ -253,32 +261,6 @@ describe('checkBundles', () => {
 // `manualChunks` entry emits a chunk the entry imports and the shell references
 // only as `<link rel="modulepreload">`, so the walk has to reach it.
 describe('the module graph beyond the shell tags', () => {
-  let root: string
-
-  /** A shell and its assets, laid out the way `vite build` lays `dist/` out. */
-  function shell(name: string, scripts: string, assets: Record<string, string>): string {
-    const dir = join(root, name)
-    mkdirSync(join(dir, 'assets'), { recursive: true })
-    writeFileSync(
-      join(dir, 'index.html'),
-      `<!doctype html><html><head>${scripts}</head><body><div id="root"></div></body></html>`,
-    )
-    for (const [path, code] of Object.entries(assets)) {
-      writeFileSync(join(dir, path), code)
-    }
-    return join(dir, 'index.html')
-  }
-
-  /** The one `<script src>` tag Vite emits for the entry chunk. */
-  const ENTRY = '<script type="module" crossorigin src="/assets/index-abc.js"></script>'
-
-  beforeAll(() => {
-    root = mkdtempSync(join(tmpdir(), 'honmoon-graph-'))
-  })
-  afterAll(() => {
-    rmSync(root, { recursive: true, force: true })
-  })
-
   test.each([
     ['a static import', 'import "./lazy-def.js"\n'],
     ['a namespace import', 'import * as lazy from "./lazy-def.js"\nexport { lazy }\n'],
@@ -407,6 +389,38 @@ describe('the module graph beyond the shell tags', () => {
         detail: expect.stringContaining('not found'),
       },
     ])
+  })
+
+  // `importSpecifier` returns the specifier for `export … from` and `null` for a
+  // bare `export { a }`, which names no file. Pinned on its own because the
+  // `?? null` is what keeps the bare form out of the not-a-string-literal
+  // branch, where it would reach `getStart` on an undefined node.
+  test('a bare `export { a }` names no file and is neither followed nor reported', () => {
+    const path = shell('bare-export', ENTRY, {
+      'assets/index-abc.js': 'const a = 1\nexport { a }\n',
+    })
+    const { files, problems } = inspectBundles([path])
+    expect(problems).toEqual([])
+    expect(files).toHaveLength(1)
+  })
+
+  // The reconciliation test below is satisfied by *any* implementation whose
+  // file set equals the emitted `.js` tree — including the `dist/assets/*.js`
+  // glob this design deliberately rejected. This is the test that tells the two
+  // apart: an emitted chunk nothing imports is not script the browser runs, so
+  // the walk must not read it, and a glob would.
+  test('an emitted chunk nothing imports is not walked — this is a graph, not a glob', () => {
+    const path = shell('orphan', ENTRY, {
+      'assets/index-abc.js': 'import "./route-a.js"\n',
+      'assets/route-a.js': 'export const a = 1\n',
+      // A stale chunk from an earlier build, still on disk, reachable from
+      // nothing. A glob would parse it and report the `eval`.
+      'assets/orphan-old.js': 'export const run = (s) => eval(s)\n',
+    })
+    const { files, problems } = inspectBundles([path])
+    expect(problems).toEqual([])
+    expect(files.some(file => file.endsWith('orphan-old.js'))).toBe(false)
+    expect(files).toHaveLength(2)
   })
 
   // The reconciliation the issue asks for, as a test rather than as a second

@@ -180,6 +180,10 @@ jobs:
       # the two steps — this re-reads the shells and resolves their
       # `<script src>` tags with the same function the step above uses, so the
       # two agree on what "the build" is by sharing the code (issue #200).
+      # Those tags are the entry points: from them it follows the emitted
+      # `import` specifiers, since a code-split chunk is script the shell names
+      # only as a `modulepreload` link, and reports any specifier it cannot
+      # follow rather than skipping it (issue #227).
       - name: Dashboard CSP — the emitted bundle constructs no code
         run: bun scripts/check-dashboard-bundle.ts
 

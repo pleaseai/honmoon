@@ -69,13 +69,27 @@
  * Silently dropping any of those is the failure the unreadable-file rule above
  * exists to prevent, arriving through the walk.
  *
- * **It is the *static* graph.** Code a chunk reaches by something that is not
- * an `import` specifier — `new Worker(new URL('./w.js', import.meta.url))`, a
- * `<script>` element appended at runtime — is not in it and is not reported,
- * for the same reason the alias and computed-name cases above are not: this
- * guards a first-party build against a dependency that starts calling `eval`,
- * not a bundle written to evade the guard. Nothing in this repository emits
- * either shape today.
+ * **It is the *static ESM* graph, and the residue is named rather than left to
+ * be found.** Not walked and not reported: code a chunk reaches by something
+ * that is not an ES module specifier — `new Worker(new URL('./w.js',
+ * import.meta.url))`, a `<script>` element appended at runtime — and a
+ * `require('./x.js')` call sitting in the emitted output.
+ *
+ * `require` is the one of those that is a static specifier in the very AST
+ * walked here, so it is worth saying why it is not read. Reporting every
+ * `require` call would fail CI on working output: what survives bundling is
+ * mostly the dead `typeof require !== 'undefined'` branch a dependency ships,
+ * and `require` is not defined in module code, so such a call is not a live
+ * edge. Following one instead would report a bare `require('fs')` in that same
+ * dead branch as a specifier naming no file. Either way the guard breaks a
+ * build that works, which is the failure it is shaped to avoid — so the gap is
+ * declared here and tracked, the way the module graph itself was. Measured on
+ * the current build: the emitted chunk contains no `require` call at all (its
+ * three `require` substrings are the React prop `required`).
+ *
+ * The residue is narrow for the same reason the alias and computed-name cases
+ * above are: this guards a first-party build against a dependency that starts
+ * calling `eval`, not a bundle written to evade the guard.
  *
  * Usage:
  *   bun scripts/check-dashboard-bundle.ts              # both built shells
@@ -336,11 +350,18 @@ export function checkBundle(code: string, file: string): Problem[] {
  * a specifier reaches the filesystem by the same route and `..` is spellable in
  * one just as it is in a `src`.
  *
- * Percent-escapes are deliberately *not* decoded, and that direction is the
- * safe one: an escape left intact can only name a file that does not exist,
- * which is reported by the caller, whereas decoding one re-opens the `%2f`
- * measured on `scriptFiles` — a separator arriving after the containment check
- * would have run.
+ * Percent-escapes are deliberately *not* decoded, and both directions were
+ * measured rather than reasoned about. A bundler emits the file name it wrote:
+ * asked for a chunk whose name carries a space, Vite emitted
+ * `import("./My Component-<hash>.js")` — the literal character, not `%20` — so
+ * decoding buys nothing on the case it looks like it is for, while a chunk
+ * genuinely named `a%20b.js` would be decoded to a name that does not exist and
+ * reported missing. And an escape left intact can only ever name a file that is
+ * absent, which the caller reports: `import "./..%2f..%2foutside.js"` from a
+ * chunk resolves to a literal `..%2f..%2foutside.js` inside the build and is
+ * reported `not found`, with the real `outside.js` never read. Decoding is what
+ * would re-open the `%2f` case measured on `scriptFiles`, where a separator
+ * arrives after the containment check has already run.
  */
 function importedFile(specifier: string, importer: string, dir: string):
   { file: string } | { reason: string } {
