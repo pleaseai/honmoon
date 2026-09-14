@@ -384,11 +384,25 @@ that fails to parse: it is refused rather than forwarded blind.
     **A flush the relay gave up on is recorded the way a given-up answer is, and for the same
     reason.** The flush side carries its own give-up floor beside its own delivered count, and the
     two sides' floors stay separate: crossing them would let a late `ReadyForQuery` answer for a
-    flush, or a quiet upstream for a statement. What makes the separate record necessary is that the
-    batch a wait gave up on can still produce its output afterwards, and by then the client may have
-    sent another flushed batch — so a delivered count inflated by the give-up would be advanced by
-    the quiet behind that late output into a slot belonging to a batch the database is still
-    computing, releasing the refusal queued behind *that* one ahead of its rows.
+    flush, or a quiet upstream for a statement.
+
+    That separation was a rule kept by hand until #210, and this paragraph is amended rather than
+    left standing because "stay separate" now describes something the compiler holds. Each side is
+    one value — a delivered count paired with its own give-up floor — whose two numbers are
+    reachable only through the method that compares them, and that method has only its own side's
+    pair to reach for. Writing the crossing needs the two sides' fields named directly, and they are
+    private to the type that owns them.
+
+    What is still kept by hand is which side a refusal's tag is handed to. Both tags are counts of
+    frames, so the pairing in the release check reads rather than checks; it is a crossing that
+    would name both halves of one struct on one line, where the one above spelled out two of the
+    relay's own fields and looked like the arithmetic around it.
+
+    What makes the separate record necessary is that the batch a wait gave up on can still produce
+    its output afterwards, and by then the client may have sent another flushed batch — so a
+    delivered count inflated by the give-up would be advanced by the quiet behind that late output
+    into a slot belonging to a batch the database is still computing, releasing the refusal queued
+    behind *that* one ahead of its rows.
 
     This inherits the sync side's recurring price too. A flush whose output never comes leaves the
     delivered count where it is while later flushes raise the tag, so every later refusal on the
