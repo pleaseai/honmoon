@@ -1,0 +1,50 @@
+{
+  "$schema": "https://raw.githubusercontent.com/googleapis/release-please/main/schemas/config.json",
+  "packages": {
+    ".": {
+      "release-type": "simple",
+      "package-name": "honmoon",
+      "changelog-path": "CHANGELOG.md",
+      "include-component-in-tag": false,
+      "initial-version": "0.1.0",
+      "bump-minor-pre-major": true,
+      "bump-patch-for-minor-pre-major": false,
+      "extra-files": [
+        {
+          "type": "toml",
+          "path": "Cargo.toml",
+          "jsonpath": "$.workspace.package.version"
+        },
+        {
+          "type": "toml",
+          "path": "Cargo.lock",
+          "jsonpath": "$.package[?(@.name.value.startsWith(\"honmoon-\"))].version"
+        },
+        {
+          "type": "json",
+          "path": "package.json",
+          "jsonpath": "$.version"
+        },
+        {
+          "type": "json",
+          "path": "packages/*/package.json",
+          "jsonpath": "$.version",
+          "glob": true
+        },
+        {
+          "type": "json",
+          "path": "apps/*/package.json",
+          "jsonpath": "$.version",
+          "glob": true
+        },
+        {
+          "type": "json",
+          "path": "packages/claude-plugin/.claude-plugin/plugin.json",
+          "jsonpath": "$.version"
+        },
+        "README.md"
+      ]
+    }
+  },
+  "pull-request-title-pattern": "chore(release): v${version}"
+}

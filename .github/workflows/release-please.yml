@@ -1,0 +1,61 @@
+name: Release Please
+
+# Owns the version for the whole repo. On every push to `main` release-please maintains a
+# release PR that carries one version across Cargo.toml, Cargo.lock, every package.json, the
+# Claude plugin manifest, and the README install snippets — the full list is the `extra-files`
+# array in release-please-config.json. Merging that PR tags `vX.Y.Z` and publishes the GitHub
+# Release with the CHANGELOG entry as its notes.
+#
+# release.yml is then invoked directly, by `uses:` rather than by a tag-push trigger. The tag
+# release-please creates does raise events (it acts as the org App, not GITHUB_TOKEN), so a
+# tag trigger would fire *in addition* to this call and upload the same assets twice.
+#
+# The App token is also why the release PR gets CI at all: events raised by GITHUB_TOKEN never
+# trigger other workflows, so a GITHUB_TOKEN release PR would sit there permanently untested.
+
+on:
+  push:
+    branches: [main]
+
+# The App token carries every write permission this needs; GITHUB_TOKEN needs none.
+permissions: {}
+
+concurrency:
+  # Never cancel: an interrupted run can leave a tag without its binaries.
+  group: release-please-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release-please:
+    name: Maintain the release PR
+    runs-on: ubuntu-latest
+    outputs:
+      releases_created: ${{ steps.release.outputs.releases_created }}
+      tag_name: ${{ steps.release.outputs.tag_name }}
+    steps:
+      - name: Create app token
+        id: app-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ vars.RELEASE_GITHUB_APP_CLIENT_ID }}
+          private-key: ${{ secrets.RELEASE_GITHUB_APP_PRIVATE_KEY }}
+
+      - name: Run release-please
+        id: release
+        uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7 # v5.0.0
+        with:
+          token: ${{ steps.app-token.outputs.token }}
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
+
+  # Only reached on the push that merges the release PR. `tag_name` is unprefixed because the
+  # released package sits at the manifest root — a nested one would be `<path>--tag_name`.
+  publish-binaries:
+    name: Publish binaries
+    needs: release-please
+    if: needs.release-please.outputs.releases_created == 'true'
+    permissions:
+      contents: write
+    uses: ./.github/workflows/release.yml
+    with:
+      tag: ${{ needs.release-please.outputs.tag_name }}
