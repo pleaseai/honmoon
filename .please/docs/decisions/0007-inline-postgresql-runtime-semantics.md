@@ -203,15 +203,27 @@ that fails to parse: it is refused rather than forwarded blind.
     `Flush` frames are counted in a second counter of their own, and settled from the relay rather
     than by any frontend-predictable marker: a flush is drained once the relay has delivered a
     message the flush could have produced and then finds the upstream socket carrying nothing more
-    at a message boundary. "Could have produced" is decided by excluding the backend messages that
-    can never be the *last* of a flush's output — rows and copy data, the asynchronous
+    at a message boundary. "Could have produced" is decided by naming the backend messages that
+    can be the *last* of a flush's output — `ParseComplete`, `BindComplete` and `CloseComplete`,
+    which are the whole of the answer to a `Parse`, a `Bind` or a `Close`; `CommandComplete`,
+    `EmptyQueryResponse` and `PortalSuspended`, which are the three ways an `Execute` ends; and
+    `ErrorResponse`, after which the backend discards frames until `Sync`. Everything else waits:
+    rows and copy data, the asynchronous
     `NoticeResponse`/`NotificationResponse`/`ParameterStatus` that a statement can emit while it is
-    still running, the `ParameterDescription`/`RowDescription` that answer a `Describe` (a backend
-    that has planned a query and not yet produced a row pauses right after `RowDescription`), and
-    the messages that open or punctuate a copy. The list
-    names what cannot end a batch rather than what always does, because the two ways of being wrong
-    are not equal: a message wrongly treated as terminal releases a refusal into the middle of a
-    statement's output, and one wrongly treated as non-terminal costs a stall window. The two counters stay separate because they are settled by different
+    still running, the `ParameterDescription`/`RowDescription`/`NoData` that answer a `Describe` (a
+    backend that has planned a query and not yet produced a row pauses right after the last of
+    them), the messages that open or punctuate a copy, and the startup-phase and function-call
+    messages that are always followed by something else.
+
+    Naming the terminals rather than the non-terminals is the load-bearing part, because it decides
+    what happens to a message nobody enumerated — one a later protocol version adds, or a byte from
+    an upstream that has stopped speaking the protocol. The two ways of being wrong are not equal: a
+    message wrongly treated as terminal releases a refusal into the middle of a statement's output,
+    and one wrongly treated as non-terminal costs a stall window. Stated as a list of exclusions,
+    the unenumerated default was the ordering failure, and three tags reached it that way —
+    `RowDescription`, then `NoData` (#211), which the list's own rationale named while the check
+    omitted it. Stated as a list of terminals, the default is the latency failure, so the list does
+    not have to be exhaustive to be safe. The two counters stay separate because they are settled by different
     observations — one counter would let a sync point's answer settle a flush, and a quiet upstream
     settle a sync point the database is still computing.
 
@@ -259,13 +271,13 @@ that fails to parse: it is refused rather than forwarded blind.
 
     **What it still does not guarantee.** A burst split across TCP segments can leave the socket
     momentarily empty part-way through one batch's output, and a quiet read there settles that
-    batch early. In the other direction, a batch whose output genuinely ends on an excluded message
-    — a bare `Describe` of a row-returning statement, ending on `RowDescription` — is never settled
-    by a quiet and costs the next refusal one stall window, or none at all when a `Sync` follows and
-    answers for it. The mirror of that is a gap rather than a cost: `NoData`, which is
-    `RowDescription`'s position for a statement returning no rows, is **not** in the exclusion list,
-    so a quiet after it settles a flush whose `Execute` may still be computing. That asymmetry is
-    tracked as #211. A `Flush` that elicits nothing at all — sent with no pending output, or ignored
+    batch early. In the other direction, a batch whose output genuinely ends on a message the list
+    does not name — a bare `Describe`, which ends on `RowDescription` for a row-returning statement
+    and on `NoData` for one that returns none — is never settled by a quiet and costs the next
+    refusal one stall window, or none at all when a `Sync` follows and answers for it. Both are held
+    that way on purpose: each sits in the same position inside a `Bind`/`Describe`/`Execute` batch,
+    where the rows or the `CommandComplete` are still to come, and the ambiguity is resolved toward
+    waiting. A `Flush` that elicits nothing at all — sent with no pending output, or ignored
     because a `COPY` is in progress — is never settled by the relay and costs the next refusal one
     `REFUSAL_ORDER_STALL_TIMEOUT` before the relay gives up on it, which a client can make itself pay
     repeatedly by sending a lone `Flush` before each denied statement. Closing the first needs the
