@@ -48,8 +48,9 @@ wiki fix that changed only the sentence containing the retired words.
 **What `scripts/check-wiki-io-claim.ts` does and does not cover.** Added in the #207 PR. It fails
 `bun test` if a published wiki document uses one of the retired phrasings, if a page states what
 `honmoon-core` lacks without naming the audit sink, or if the page scan does not reach a page
-`llms-full.txt` inlines — the third rule being what stops the other two passing vacuously when a
-rename or an extension change leaves the glob matching nothing. Do **not** cite it as enforcement
+`llms-full.txt` inlines, or if `llms-full.txt` names no page at all — the third rule being what
+stops the other two passing vacuously when a rename or an extension change leaves the glob
+matching nothing, and its empty-bundle case being what stops *it* going quiet the same way. Do **not** cite it as enforcement
 of wiki accuracy generally: rule 1 is a list of known strings, so a fresh paraphrase ("the core
 never touches the disk") passes, and rule 2 fires only on a page pairing "transport-agnostic" with
 an explicit capability-absence phrase. Nothing in it checks that a page restating the audit-sink
