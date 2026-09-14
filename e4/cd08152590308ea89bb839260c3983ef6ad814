@@ -1,0 +1,19 @@
+.claude/agent-memory/review-review-security-reviewer/dashboard-shell-csp.md
+  s_6b4eefbc03a84d::t_765879c5ab8fa9 3,204,210-241
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "e4cd08152590308ea89bb839260c3983ef6ad814",
+  "prompts": {},
+  "sessions": {
+    "s_6b4eefbc03a84d": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "81cccec5-31ae-4203-b4e4-f10e77144426",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
