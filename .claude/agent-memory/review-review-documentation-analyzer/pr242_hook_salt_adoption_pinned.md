@@ -34,6 +34,13 @@ file already at `0600` is deliberately silent. A future review should check that
 `restrict_to_owner_only`'s three cases rather than against the single "restricts to 0600" claim
 the first draft made.
 
+The same round also qualified every "the key makes a placeholder unforgeable" claim on the key
+being unguessable, not only secret, and added a **"Generate the bytes; do not choose them"** block
+to the README. The loader compares a length and nothing else, and no audit rule looks at key
+strength, so a provisioned file drawn from a small space is adopted and reported as healthy. That
+condition is now stated wherever unforgeability is; a future pass should check it is still attached
+rather than re-deriving it as a new finding.
+
 **A false positive worth remembering, because two reviewers hit it independently.** Both the
 rustdoc and the README describe the first-class key input as "issue #126's second stage,
 deferred to `honmoon join` (#37)". Reading issue #126's **body** alone makes that look invented
