@@ -1,0 +1,23 @@
+.claude/agent-memory/review-review-pr-test-analyzer/audit_macos_extended_acl_pr213.md
+  s_ca019e95b789bb::t_b6101b3f28f4eb 3,31,33-48
+.claude/agent-memory/review-review-security-reviewer/audit-sink-residual-gaps.md
+  s_ca019e95b789bb::t_b6101b3f28f4eb 3,17-23
+.claude/agent-memory/review-review-documentation-analyzer/pr213_macos_acl_trusted_dir.md
+  s_ca019e95b789bb::t_d938712c65adac 3,14-15,18-22,37-57
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "469eacd8523860c080ac9381e62210c2f0c51e56",
+  "prompts": {},
+  "sessions": {
+    "s_ca019e95b789bb": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "9090c440-5375-483e-8517-9a2410ef5f21",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
