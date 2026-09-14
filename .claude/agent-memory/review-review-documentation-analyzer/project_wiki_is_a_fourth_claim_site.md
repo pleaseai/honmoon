@@ -40,14 +40,22 @@ wiki fix that changed only the sentence containing the retired words.
   so nothing surfaces it. #206's insert into `ARCHITECTURE.md` moved its Architecture Invariants
   section and left five wiki anchors naming the wrong lines. Tracked as issue #244, which also
   records two anchors (`ARCHITECTURE.md:117-129`, `:139`) still stale at the time of writing.
+  Drift is not the only way an anchor goes wrong, and the #207 review found the other kind: a
+  range that never supported the sentence. `engine.rs:19-28` was cited for the decision function
+  and is `stdlib_env()`; `audit.rs:416-426` was cited for the sink hardening and is `with_file`'s
+  doc, which names none of it. Check what the cited range *says*, not only that it still exists.
 
 **What `scripts/check-wiki-io-claim.ts` does and does not cover.** Added in the #207 PR. It fails
-`bun test` if a published wiki document uses one of the retired phrasings, or if a page states
-what `honmoon-core` lacks without naming the audit sink. Do **not** cite it as enforcement of wiki
-accuracy generally: rule 1 is a list of known strings, so a fresh paraphrase ("the core never
-touches the disk") passes, and rule 2 fires only on a page pairing "transport-agnostic" with an
-explicit capability-absence phrase. The module doc states the split. An overstated guard is what
-stops a reviewer from looking, which is the failure #206 hit twice.
+`bun test` if a published wiki document uses one of the retired phrasings, if a page states what
+`honmoon-core` lacks without naming the audit sink, or if the page scan does not reach a page
+`llms-full.txt` inlines — the third rule being what stops the other two passing vacuously when a
+rename or an extension change leaves the glob matching nothing. Do **not** cite it as enforcement
+of wiki accuracy generally: rule 1 is a list of known strings, so a fresh paraphrase ("the core
+never touches the disk") passes, and rule 2 fires only on a page pairing "transport-agnostic" with
+an explicit capability-absence phrase. Nothing in it checks that a page restating the audit-sink
+*hardening* carries its caveats — see the security reviewer's `core-io-boundary-rule` note for
+those. The module doc states the split. An overstated guard is what stops a reviewer from looking,
+which is the failure #206 hit twice.
 
 **Why:** the wiki is the only one of the four claim sites that users read, and it is the one the
 repository's own tooling and review habits reach last — it has a separate deploy workflow, a
