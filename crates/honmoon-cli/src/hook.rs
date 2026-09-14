@@ -1063,7 +1063,8 @@ fn replaced_file_mode(_path: &Path) -> String {
 /// back out *unchanged* is the part that carries it. The other input has to agree
 /// as well, and a matching key does not make it: the context is the payload's
 /// `session_id` unless an operator pinned one, so a gateway started with
-/// `--hook-salt-context` and command hooks left unpinned still disagree (see
+/// `--hook-salt-context` and command hooks left unpinned still disagree whenever the
+/// pinned value is not the payload's `session_id` (see
 /// [`honmoon_core::hook_salt_context`]).
 /// Changing any of it changes a documented deployment, so it is pinned by
 /// `a_salt_at_exactly_the_sixteen_byte_floor_is_adopted_verbatim`,
@@ -1870,8 +1871,9 @@ mod tests {
     /// path is the whole of what *the loader* contributes. It is not the whole of
     /// parity: the salt context is the other input and must agree as well, which
     /// the shared `session` below stands in for (a gateway pinned with
-    /// `--hook-salt-context` and an unpinned hook disagree on a matching key — see
-    /// the rustdoc on `load_or_create_machine_salt`).
+    /// `--hook-salt-context` derives a different salt from these very bytes than an
+    /// unpinned hook does, whenever that pin is not the payload's own `session_id`
+    /// — see the rustdoc on `load_or_create_machine_salt`).
     ///
     /// The differing-bytes half is the control. Without it this test would pass
     /// against a loader that ignored the file and returned a constant, which is

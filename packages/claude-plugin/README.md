@@ -517,8 +517,10 @@ What "verbatim" covers, since this is what a deployment ends up depending on: th
 file's own bytes, at the length it carries — 16 is a floor and not a size, a longer
 key is used whole, and nothing is truncated, padded or re-derived. A file *under*
 16 bytes is not adopted, and neither is one that is absent or unreadable: the loader
-mints a fresh 32-byte key for each of those, or, if it cannot write one, falls back
-to the public constant under "When the salt file is unusable" above. On the way
+mints a fresh 32-byte key for each of those, or falls back to the public constant
+under "When the salt file is unusable" above when it cannot produce one — the write
+can fail, and so can the read of `/dev/urandom` it draws the bytes from, before any
+write is attempted. On the way
 through it restricts the file it adopted to `0600`; where that leaves the file still
 readable beyond its owner, it says so rather than going quiet — the
 `hook-salt-exposed` row in the table above. Where it reaches you is the transport's
@@ -534,8 +536,12 @@ they are an interface you can deploy against rather than loader behaviour that m
 move.
 
 **Generate the bytes; do not choose them.** The loader checks length and nothing
-else, so 16 bytes of a memorable phrase are adopted, re-tightened, and reported as a
-healthy `persisted` key — no audit rule looks at key strength. Produce the file the
+else, so 16 bytes of a memorable phrase are adopted and keyed with, and every rule
+that could complain is about the file rather than the bytes: provision that phrase in
+an owner-only file and nothing fires at all, since key strength is the one property
+none of them looks at. (Provision it in a *loose* file and `hook-salt-was-exposed`
+does fire — about the mode the loader found, which is a different problem that
+happens to be present.) Produce the file the
 way honmoon produces it, owner-only from the first byte: under the usual `umask 022`
 a bare redirection creates it `0644`, and a local user who copies it in that window
 holds a key the loader's later `0600` correction cannot recall.
