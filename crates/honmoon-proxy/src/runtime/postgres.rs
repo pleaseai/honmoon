@@ -3608,9 +3608,12 @@ mod tests {
             // is written.
             async {
                 tokio::time::sleep(OVERSIZED_COPY_QUIET_WARNING / 2).await;
-                // The ack is dropped rather than returned: what is asserted here
-                // is the line the copy writes, not the refusal's own delivery,
-                // and an `async` block yielding a `Receiver` yields a future.
+                // The ack is dropped rather than returned. What this test
+                // asserts on is the line the copy writes, not the refusal's own
+                // delivery — and returning it would make this block's `Output` a
+                // `oneshot::Receiver`, which is itself a future, so
+                // `clippy::async_yields_async` denies the shape as the one a
+                // forgotten `.await` leaves behind.
                 drop(queue_refusal(&link, "honmoon: denied by policy"));
             },
         );
