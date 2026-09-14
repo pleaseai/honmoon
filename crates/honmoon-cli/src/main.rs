@@ -559,9 +559,7 @@ fn gateway(args: GatewayArgs) -> Result<()> {
         anyhow::bail!("--pii-mode block requires --tls-intercept");
     }
 
-    let policy_yaml = std::fs::read_to_string(&config)
-        .with_context(|| format!("reading policy {}", config.display()))?;
-    let policy = Policy::from_yaml(&policy_yaml)?;
+    let (policy, policy_yaml) = load_policy(&config)?;
     tracing::info!(rules = policy.rules.len(), %addr, %socks_addr, %mgmt_addr, "starting gateway");
 
     let audit = match &audit_log {
@@ -732,7 +730,7 @@ fn run(policy: PathBuf, argv: Vec<String>) -> Result<()> {
         .split_first()
         .context("no command given; usage: honmoon run --policy P -- <cmd> [args]")?;
 
-    let policy = load_policy(&policy)?;
+    let (policy, _) = load_policy(&policy)?;
 
     // Bind the proxy socket here and hand it to the proxy thread. Binding in one
     // place (rather than allocating a port, dropping it, and rebinding) closes
@@ -938,10 +936,33 @@ fn hook_salt_for(context: Option<&str>, wire_salt: Vec<u8>, machine_key: Vec<u8>
     }
 }
 
-fn load_policy(path: &Path) -> Result<Policy> {
+/// Read a policy file and parse it — the one path every command that takes a
+/// policy path goes through: `honmoon run --policy`, `honmoon gateway --config`
+/// and `honmoon policy validate`.
+///
+/// The source comes back alongside the `Policy` because `gateway` needs both —
+/// the policy to run on, and the text the management API serves to the Claude
+/// Code hook endpoint. The other two callers drop it.
+///
+/// [`not_a_policy_document`] runs here rather than in any one command, which is
+/// the whole of #202: classifying the file's shape belongs to the *read*, since
+/// the file a mistyped path resolves to is the same file whichever flag named it
+/// and serde quotes it the same way. With the check in `policy validate` alone
+/// after #201, the other two printed the file whole.
+fn load_policy(path: &Path) -> Result<(Policy, String)> {
     let src = std::fs::read_to_string(path)
         .with_context(|| format!("reading policy {}", path.display()))?;
-    Ok(Policy::from_yaml(&src)?)
+
+    if let Some(shape) = not_a_policy_document(&src) {
+        anyhow::bail!(
+            "{} is not a policy document: its top level is {shape}, not a mapping of \
+             policy fields. Contents withheld — check the path.",
+            path.display()
+        );
+    }
+
+    let policy = Policy::from_yaml(&src)?;
+    Ok((policy, src))
 }
 
 /// A top-level shape a policy can never have, named without quoting what it
@@ -955,19 +976,26 @@ fn load_policy(path: &Path) -> Result<Policy> {
 ///
 /// The remaining shapes are why this exists. serde renders a top-level type
 /// mismatch as `invalid type: string "<value>"`, and when the top level is a
-/// plain scalar that value is **the whole file**. `policy validate` is
-/// documented for CI, where the path it is given comes from the repository
-/// under test — so a mistyped path, or a branch that replaces `policy.yaml`
-/// with a symlink to `~/.honmoon/mgmt-token`, an SSH key or a `.env`, would put
-/// that file in the log. Classifying the shape first says what is wrong without
-/// reading the contents out.
+/// plain scalar that value is **the whole file** — YAML folds its lines into one
+/// scalar, so a PEM key arrives entire. `policy validate` is documented for CI,
+/// where the path it is given comes from the repository under test, so a
+/// mistyped path or a branch that replaces `policy.yaml` with a symlink to
+/// `~/.honmoon/mgmt-token`, an SSH key or a `.env` would put that file in the
+/// log. `run --policy` and `gateway --config` take a path from an operator
+/// rather than a repository, which is why #201 fixed the CI-facing one first —
+/// but their stderr is not always read by the person who typed the path: a
+/// supervisor ships it to a journal or a log aggregator. Classifying the shape
+/// first says what is wrong without reading the contents out.
 ///
 /// No verdict moves: every shape named here fails [`Policy::from_yaml`] as
-/// well, so the two paths refuse the same files and only the message differs.
-/// That is a claim about this function, so it is checked rather than asserted —
-/// `a_file_that_is_not_a_policy_is_named_rather_than_quoted` runs the gateway
-/// over the same file, and it caught this over-refusing a tagged mapping once
-/// already.
+/// well, so the guard and the loader refuse the same files and only the message
+/// differs. That is a claim about this function, so it is checked rather than
+/// asserted — and since #202 lifted the guard into [`load_policy`], it cannot be
+/// checked by running one command against another, because all three now run
+/// this. The loader is the independent witness that is left, and
+/// `every_shape_the_guard_refuses_is_one_the_loader_refuses_anyway` asks it
+/// directly, in both directions. The pass-through direction is the one that
+/// caught a real bug: this over-refused a tagged mapping once already.
 ///
 /// It is a bound, not a blanket. A *mapping* carrying a long string still
 /// reaches serde's quoting (`version: "<…>"`) — but that is a file shaped like
@@ -1008,35 +1036,24 @@ fn shape_unfit_for_a_policy(value: &serde_yaml::Value) -> Option<&'static str> {
 /// `honmoon policy validate` — load a policy the way the gateway does, say what
 /// the loader found, and exit.
 ///
-/// The body is deliberately thin, and shaped like `gateway`'s own first steps:
-/// read the file, then [`Policy::from_yaml`]. Everything that decides whether a
-/// policy is acceptable lives in that one call — the same one `gateway` and
-/// `honmoon run` reach — so there is no second implementation here to drift
-/// from the one that matters. The loader's error travels up unwrapped for the
-/// same reason: `main`'s `Result` prints it, so a rejected policy reads the way
-/// the gateway would have reported it.
+/// The body is deliberately thin: [`load_policy`] — the same call `gateway` and
+/// `honmoon run` make — and then a count. Everything that decides whether a
+/// policy is acceptable lives in that one function, so there is no second
+/// implementation here to drift from the one that matters. Its error travels up
+/// unwrapped for the same reason: `main`'s `Result` prints it, so a rejected
+/// policy reads the way the gateway would have reported it.
 ///
-/// The one thing this path says in its own words is
-/// [`not_a_policy_document`], which refuses a file the loader would refuse
-/// anyway, before serde can quote it into a CI log.
+/// That now covers [`not_a_policy_document`] too. It was this path's own words
+/// when #201 added it, and the other two callers went on quoting the file;
+/// #202 moved it into the shared read, so the three commands refuse a
+/// non-policy in the same words and not merely with the same verdict.
 ///
 /// What this function *adds* is everything the gateway does around that load and
 /// this one must not: no management token is resolved (the side effect #198 is
 /// about), no audit log is opened, no CA is read or generated, no listener is
 /// bound. Not suppressing those — never reaching them.
 fn policy_validate(path: &Path) -> Result<()> {
-    let src = std::fs::read_to_string(path)
-        .with_context(|| format!("reading policy {}", path.display()))?;
-
-    if let Some(shape) = not_a_policy_document(&src) {
-        anyhow::bail!(
-            "{} is not a policy document: its top level is {shape}, not a mapping of \
-             policy fields. Contents withheld — check the path.",
-            path.display()
-        );
-    }
-
-    let policy = Policy::from_yaml(&src)?;
+    let (policy, _) = load_policy(path)?;
 
     // Counts, not contents: enough to see the file that loaded was the one
     // meant, without putting an operator's endpoint names in a CI log.
@@ -1054,6 +1071,67 @@ fn policy_validate(path: &Path) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::percent_encode_query_value;
+
+    /// The guard's central claim, checked where it cannot be circular.
+    ///
+    /// `not_a_policy_document` exists to reword serde's diagnostic, never to
+    /// change a verdict: every shape it names must be one the loader refuses
+    /// anyway, and every shape it passes through must be one the loader can
+    /// take. Before #202 that was checked by running `policy validate` and
+    /// `gateway --config` over the same file and requiring them to agree — which
+    /// stopped meaning anything the moment the guard moved into the read they
+    /// share. `Policy::from_yaml` is the independent witness that is left, so it
+    /// is asked directly.
+    ///
+    /// The second loop is the direction that matters more. A guard that refuses
+    /// a policy the gateway would have run turns a diagnostic improvement into
+    /// an outage, and it has happened once here already: an earlier version
+    /// refused every tagged node, and serde looks straight through a tag.
+    #[test]
+    fn every_shape_the_guard_refuses_is_one_the_loader_refuses_anyway() {
+        use super::not_a_policy_document;
+        use honmoon_core::Policy;
+
+        for src in [
+            // The mistyped-path shapes: a token file, a PEM, and the scalars a
+            // stray value lands as.
+            "ghp_notarealcredential\n",
+            "-----BEGIN PRIVATE KEY-----\nbm90LWEta2V5\n-----END PRIVATE KEY-----\n",
+            "- one\n- two\n",
+            "true\n",
+            "42\n",
+            // A tag over a scalar is still a scalar.
+            "!Secret ghp_notarealcredential\n",
+        ] {
+            assert!(
+                not_a_policy_document(src).is_some(),
+                "the guard must name this shape rather than quote it: {src:?}"
+            );
+            assert!(
+                Policy::from_yaml(src).is_err(),
+                "…and the loader must refuse it too, or the guard has moved a \
+                 verdict rather than reworded one: {src:?}"
+            );
+        }
+
+        for src in [
+            // Empty: a policy with every field at its default.
+            "",
+            "version: 1\n",
+            // A tagged mapping is a mapping.
+            "!Foo {version: 1}\n",
+        ] {
+            assert!(
+                not_a_policy_document(src).is_none(),
+                "the guard must hand this to the loader: {src:?}"
+            );
+            assert!(
+                Policy::from_yaml(src).is_ok(),
+                "…and the loader must accept it, so refusing it early would \
+                 refuse a policy the gateway runs: {src:?}"
+            );
+        }
+    }
 
     #[test]
     fn a_wildcard_bind_is_not_advertised_as_a_dashboard_url() {
