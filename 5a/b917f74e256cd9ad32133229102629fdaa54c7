@@ -1,0 +1,27 @@
+scripts/check-dashboard-bundle.ts
+  s_6b4eefbc03a84d::t_3e70d6b4a18c0a 80-86,122,490-495,498
+scripts/check-dashboard-bundle.test.ts
+  s_6b4eefbc03a84d::t_45abf6bc80afad 1,501-505,525-528,537-546,552-575
+  s_6b4eefbc03a84d::t_765879c5ab8fa9 547-551
+scripts/check-dashboard-csp.test.ts
+  s_6b4eefbc03a84d::t_45abf6bc80afad 6-13,444-454
+  s_6b4eefbc03a84d::t_22d20b942fc287 455-456
+scripts/check-dashboard-csp.ts
+  s_6b4eefbc03a84d::t_64994da8302722 61,428,448-454,458-469,471-478,496-510,516-526
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "5ab917f74e256cd9ad32133229102629fdaa54c7",
+  "prompts": {},
+  "sessions": {
+    "s_6b4eefbc03a84d": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "81cccec5-31ae-4203-b4e4-f10e77144426",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
