@@ -1072,11 +1072,17 @@ fn replaced_file_mode(_path: &Path) -> String {
 /// `salt_dirs_holding_the_same_bytes_derive_the_same_session_salt` (issue #126).
 ///
 /// Adoption is also how a key spreads, and the key is what makes a placeholder
-/// unforgeable: everyone holding these bytes can mint the placeholder a given
-/// session would produce for a guessed secret and check it against a redacted
-/// transcript — the confirmation oracle in issue #125. Supplying key material
-/// through a first-class input rather than through this path is issue #126's
-/// second stage, deferred to `honmoon join` (#37).
+/// unforgeable — for as long as it stays both secret and unguessable. Everyone
+/// holding these bytes can mint the placeholder a given session would produce for
+/// a guessed secret and check it against a redacted transcript: the confirmation
+/// oracle in issue #125. The condition above it is this function's own, and it is
+/// weaker than it looks: the check here is a length and nothing else, so a
+/// provisioned file that is public or drawn from a small space hands that same
+/// capability to someone who was never given the bytes at all. Nothing in the
+/// loader or the audit rules can tell — `packages/claude-plugin/README.md` is where
+/// an operator provisioning one is told to generate them. Supplying key material
+/// through a first-class input rather than through this path is issue #126's second
+/// stage, deferred to `honmoon join` (#37).
 fn load_or_create_machine_salt(
     requested_dir: &Path,
 ) -> std::result::Result<LoadedSalt, SaltLoadFailure> {
