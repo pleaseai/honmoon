@@ -155,11 +155,30 @@ process. For the durable, queryable audit history over the JSONL file, run `@hon
 [Control Plane & Dashboard](/deep-dive/control-plane)).
 
 Enable structured logs with `RUST_LOG` (the binary wires `tracing-subscriber` to the env
-filter, [main.rs:46-48](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-cli/src/main.rs#L46-L48)):
+filter, [main.rs:413-436](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-cli/src/main.rs#L413-L436)):
 
 ```bash
 RUST_LOG=honmoon_proxy=debug cargo run -p honmoon-cli -- gateway --config policies/agent.yaml
 ```
+
+With `RUST_LOG` unset every command stays at `ERROR`, the historical default — for a gateway
+stdout *is* the process's output, and the lines an operator must read are printed with
+`eprintln!` rather than logged. The cost is that the data plane's diagnostics for a session
+that has stopped moving are opt-in, so `gateway` and `run` name the filter that turns them on
+in the startup banner:
+
+```
+honmoon: stall diagnostics: RUST_LOG=honmoon=warn
+```
+
+Restart under that filter when a connection hangs and the warnings arrive on stdout — among
+them the PostgreSQL relay giving up on a stalled database, a refusal that may then reach the
+client out of statement order, an oversized copy going quiet, and, under enforced isolation
+for `honmoon run`, a bridge into the sandbox that dropped a connection or stopped accepting
+altogether. `honmoon` rather than `honmoon_proxy` because those last ones are emitted by the
+CLI binary, not the proxy crate; `EnvFilter` matches a target by prefix, so the shorter
+directive reaches both
+([main.rs:438-472](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-cli/src/main.rs#L438-L472)).
 
 ## 3. What you'll see — the verdict flow
 

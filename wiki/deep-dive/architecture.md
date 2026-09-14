@@ -189,7 +189,7 @@ These are non-negotiable; violating them breaks the product
 | Concern | Rust | TypeScript | Source |
 |---------|------|-----------|--------|
 | Error handling | `thiserror` (libs) · `anyhow` (binary); unimplemented modes `bail!` | — | [lib.rs:128-132](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/lib.rs#L128-L132), [main.rs:58-60](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-cli/src/main.rs#L58-L60) |
-| Logging | `tracing` + `tracing-subscriber` (`RUST_LOG`) | `console` / Bun | [main.rs:46-48](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-cli/src/main.rs#L46-L48) |
+| Logging | `tracing` + `tracing-subscriber` (`RUST_LOG`) | `console` / Bun | [main.rs:413-436](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-cli/src/main.rs#L413-L436) |
 | Testing | inline `#[cfg(test)]` + integration (`egress.rs`) + e2e (`honmoon-mgmt/tests/e2e.rs`) | `bun test` (`@honmoon/api` audit query) | [engine.rs](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/engine.rs), [audit.test.ts](https://github.com/pleaseai/honmoon/blob/main/packages/api/src/audit.test.ts) |
 | Configuration | YAML policy, central `[workspace.dependencies]` | root `package.json` workspaces | [Cargo.toml:16-28](https://github.com/pleaseai/honmoon/blob/main/Cargo.toml#L16-L28) |
 
