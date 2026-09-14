@@ -1,0 +1,19 @@
+.claude/agent-memory/review-review-documentation-analyzer/pr242_hook_salt_adoption_pinned.md
+  s_95d195685af58a::t_cfa9cfc7d712a3 30-40,42-49
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "1c5f3497e83789b8f12bc072c487659544dbf210",
+  "prompts": {},
+  "sessions": {
+    "s_95d195685af58a": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "af1def52-0618-4c76-a794-2ad255ac81ef",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
