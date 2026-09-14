@@ -521,8 +521,11 @@ mints a fresh 32-byte key for each of those, or, if it cannot write one, falls b
 to the public constant under "When the salt file is unusable" above. On the way
 through it restricts the file it adopted to `0600`; where that leaves the file still
 readable beyond its owner, it says so rather than going quiet — the
-`hook-salt-exposed` row in the table above, which reaches you only where an audit
-sink is configured. (A `chmod` that fails on a file already at `0600` is deliberately
+`hook-salt-exposed` row in the table above. Where it reaches you is the transport's
+affair, per "Where each event is visible": a gateway records it into the ring its
+dashboard polls whether or not `--audit-log` is set, while a `honmoon hook` invocation
+needs `HONMOON_AUDIT_LOG` for its record to outlive the process, and the dashboard
+never shows it. (A `chmod` that fails on a file already at `0600` is deliberately
 silent, because a correction that was not needed is not evidence of exposure.) None
 of this depends on the mode: a world-readable file is still adopted, and audited for
 it. These are pinned by tests in `crates/honmoon-cli/src/hook.rs` (issue #126), so
@@ -532,10 +535,13 @@ move.
 **Generate the bytes; do not choose them.** The loader checks length and nothing
 else, so 16 bytes of a memorable phrase are adopted, re-tightened, and reported as a
 healthy `persisted` key — no audit rule looks at key strength. Produce the file the
-way honmoon produces it:
+way honmoon produces it, owner-only from the first byte: under the usual `umask 022`
+a bare redirection creates it `0644`, and a local user who copies it in that window
+holds a key the loader's later `0600` correction cannot recall.
 
 ```sh
-head -c 32 /dev/urandom > hook-salt   # then copy to each host's ~/.honmoon/hook-salt
+(umask 077; head -c 32 /dev/urandom > hook-salt)   # created 0600, not your umask's 0644
+install -m 0600 hook-salt ~/.honmoon/hook-salt       # on each host, so the copy is 0600 too
 ```
 
 A key small enough to search is worse than a shared one. Someone who sees a
