@@ -81,8 +81,11 @@ arguments and the whole policy engine is unit-tested without a runtime, a networ
 Transport-agnostic is not the same as I/O-free, and the invariant is the first rather than the
 second ([issue #166](https://github.com/pleaseai/honmoon/issues/166)). The core opens exactly one
 file: the operator's JSONL audit sink in `audit.rs`. That open stays in the crate because the
-hardening around it — `O_NOFOLLOW`, a component-by-component `openat` walk, a trusted-directory
-rule, `O_NONBLOCK`, and a regular-file `fstat` — enforces an invariant of `AuditLog` itself.
+hardening around it on Unix — `O_NOFOLLOW`, a component-by-component `openat` walk, a
+trusted-directory rule, `O_NONBLOCK`, and a regular-file `fstat` — enforces an invariant of
+`AuditLog` itself. The guarantee is descriptor-scoped rather than absolute, and the
+[Staff Engineer Guide](/onboarding/staff-engineer-guide#the-seam-is-about-transport-not-purity)
+carries the three caveats that bounds it.
 `append_jsonl` writes synchronously on the decision path, so what the descriptor turns out to be
 decides whether a record blocks the process that opened it or lands where another local user can
 read it, and the type whose correctness depends on that is the type that should establish it.

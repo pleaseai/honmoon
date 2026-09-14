@@ -406,14 +406,37 @@ The reasoning is worth carrying, because this is the kind of call you will be as
 out to be* a correctness property of `AuditLog` itself rather than of whoever constructed it. A
 FIFO where a regular file was expected blocks the short-lived `honmoon hook` process until the
 agent times out — after which the invocation proceeds redacted by nothing at all. A path reached
-through another user's symlink publishes every host, SQL table and PII category honmoon records.
-So the open is hardened: `O_NOFOLLOW`, a component-by-component `openat` walk from a trusted root,
-a trusted-directory rule, `O_NONBLOCK`, and a regular-file `fstat` taken on the descriptor the
-walk already holds
+through another user's symlink sends every record written through that descriptor — host, SQL
+table, PII category — somewhere that user reads. So on Unix the open is hardened: `O_NOFOLLOW`, a
+component-by-component `openat` walk, a trusted-directory rule, `O_NONBLOCK`, and a regular-file
+`fstat` taken on the descriptor the walk already holds
 ([audit.rs:551-583](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/audit.rs#L551-L583)). The type whose own
 correctness depends on all of that is the type that should establish it; handing `AuditLog` an
 already-open `File` would turn a guarantee into a convention every caller has to remember
 ([audit.rs:416-426](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/audit.rs#L416-L426)).
+
+Stated no more strongly than it is true, because a staff engineer is who gets asked whether a given
+audit path is safe:
+
+- <span class="status-caveat">Descriptor-scoped</span> — what the `fstat` settles (regular file,
+  mode, owner, link count) is a property of the object `AuditLog` ends up holding. The walk's trust
+  decisions are not purely that. For a **relative** path the walk's root is the process's own
+  working directory, opened as `.` with no trust test of its own, and the trusted-directory rule
+  reads the process's effective uid — so one path can be accepted under one caller and refused
+  under another ([crates/AGENTS.md](https://github.com/pleaseai/honmoon/blob/main/crates/AGENTS.md)).
+- <span class="status-caveat">Open gap</span> — the trusted-directory rule's Linux arm assumes
+  POSIX.1e, so an NFSv4 ACL (an NFS mount, or OpenZFS with `acltype=nfsv4`) reports a mode that
+  approximates the ACL rather than bounding it, and the directory reads as trusted. That is the
+  blindness [#181](https://github.com/pleaseai/honmoon/issues/181) closed on macOS, still open on
+  Linux as [#215](https://github.com/pleaseai/honmoon/issues/215).
+- <span class="status-caveat">Unix only</span> — the `cfg(not(unix))` arm has neither `O_NOFOLLOW`
+  nor `openat`, so the regular-file check is all that applies there, and none of the
+  `audit-sink-*` degradation events fire
+  ([audit.rs:899-909](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/audit.rs#L899-L909)). No shipped artifact takes
+  that arm — the release matrix is Linux and macOS — but the crate compiles for it.
+
+None of that moves the decision about where the open lives; it is what a review of a *change* to
+the open has to hold against.
 
 That makes the real rule sharper than "no I/O", and the sharper version is the one to review
 against:
@@ -1023,8 +1046,11 @@ arguments and the whole policy engine is unit-tested without a runtime, a networ
 Transport-agnostic is not the same as I/O-free, and the invariant is the first rather than the
 second ([issue #166](https://github.com/pleaseai/honmoon/issues/166)). The core opens exactly one
 file: the operator's JSONL audit sink in `audit.rs`. That open stays in the crate because the
-hardening around it — `O_NOFOLLOW`, a component-by-component `openat` walk, a trusted-directory
-rule, `O_NONBLOCK`, and a regular-file `fstat` — enforces an invariant of `AuditLog` itself.
+hardening around it on Unix — `O_NOFOLLOW`, a component-by-component `openat` walk, a
+trusted-directory rule, `O_NONBLOCK`, and a regular-file `fstat` — enforces an invariant of
+`AuditLog` itself. The guarantee is descriptor-scoped rather than absolute, and the
+[Staff Engineer Guide](/onboarding/staff-engineer-guide#the-seam-is-about-transport-not-purity)
+carries the three caveats that bounds it.
 `append_jsonl` writes synchronously on the decision path, so what the descriptor turns out to be
 decides whether a record blocks the process that opened it or lands where another local user can
 read it, and the type whose correctness depends on that is the type that should establish it.
