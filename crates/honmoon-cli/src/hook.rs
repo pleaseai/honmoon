@@ -160,7 +160,11 @@ fn honmoon_dir() -> PathBuf {
 /// Derive the per-session HMAC salt. Stable across every `hook` invocation in a
 /// session (so a given secret tokenizes to the identical placeholder each turn
 /// — issue #20), distinct per session, and unforgeable while the persisted
-/// machine salt stays secret.
+/// machine salt stays secret *and* unguessable. Both conditions, because the
+/// loader adopts a provisioned file on its length alone: an owner-only key drawn
+/// from a small space is secret by every check honmoon makes and still lets
+/// anyone who can guess a redacted secret search for the key offline (see
+/// [`load_or_create_machine_salt`]).
 ///
 /// The context precedence and the derivation itself live in `honmoon-core` so
 /// the management endpoint keys the identical salt for the identical session

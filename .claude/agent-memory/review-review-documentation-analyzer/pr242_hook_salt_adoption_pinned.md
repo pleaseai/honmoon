@@ -27,19 +27,30 @@ text scopes the claim to what the loader itself contributes and names the contex
 input that must agree. Same failure shape as [[docs-completeness-claim-unbounded-review]] and
 [[pr170-hook-salt-was-exposed]]; the fix was to scope the claim, not to add a qualifier.
 
-The README sentence about the `0600` correction was narrowed in the same round: it now says the
-`hook-salt-exposed` record fires where the file is **still** readable beyond its owner
-afterwards, reaches you only where an audit sink is configured, and that a `chmod` failing on a
-file already at `0600` is deliberately silent. A future review should check that wording against
-`restrict_to_owner_only`'s three cases rather than against the single "restricts to 0600" claim
-the first draft made.
+**The README's `0600` sentence took four rounds, and each round's wording was refuted by the
+next — so read the merged text, not this note's account of any intermediate one.** It now says
+`hook-salt-exposed` fires where the file is **still** readable beyond its owner afterwards; that
+where the record *reaches* is per-transport (a gateway records into the ring its dashboard polls
+with or without `--audit-log`, while `honmoon hook` needs `HONMOON_AUDIT_LOG`, or `--audit-log`
+by hand, to outlive the process, and the dashboard never shows it); and that a `chmod` failing on
+a file already at `0600` is deliberately silent. An earlier draft said the record "reaches you
+only where an audit sink is configured" — **that is false for the gateway**, which builds an
+`AuditLog::new(1024)` ring regardless, and it also contradicted this README's own "Where each
+event is visible" section. Check any future wording against `restrict_to_owner_only`'s three
+cases *and* against that section.
 
-The same round also qualified every "the key makes a placeholder unforgeable" claim on the key
-being unguessable, not only secret, and added a **"Generate the bytes; do not choose them"** block
-to the README. The loader compares a length and nothing else, and no audit rule looks at key
-strength, so a provisioned file drawn from a small space is adopted and reported as healthy. That
-condition is now stated wherever unforgeability is; a future pass should check it is still attached
-rather than re-deriving it as a new finding.
+The same PR qualified the unforgeability claims on the README's provisioning section and on
+`load_or_create_machine_salt`'s rustdoc — and, in the follow-up, `session_salt`'s — on the key
+being unguessable and not merely secret. **That list is the claim; do not read it as "every
+occurrence".** `session_salt`'s was missed on the first pass and found by codex on the follow-up
+PR, so a fresh grep for "unforgeable" is still worth a pass rather than trusting this note. It
+also added a **"Generate the bytes; do not choose them"** block
+generating under `umask 077` and creating `~/.honmoon` before `install` (which does not create a
+missing parent — the earlier recipe simply failed on a fresh host). Note what that block may
+**not** say, because a draft did and it was wrong: a weak key provisioned in a *loose* file is
+not accepted silently — the loose mode fires `hook-salt-was-exposed`. The true claim is narrower,
+and is the one merged: every rule is about the file rather than the bytes, so a weak key in an
+owner-only file draws nothing, key strength being the one property none of them inspects.
 
 **A false positive worth remembering, because two reviewers hit it independently.** Both the
 rustdoc and the README describe the first-class key input as "issue #126's second stage,
