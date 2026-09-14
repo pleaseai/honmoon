@@ -20,12 +20,12 @@ search for them.
 The barrier is now one predicate inside the relay:
 
 ```rust
-self.answered.max(self.abandoned) >= refusal.sync_points
-    && self.drained.max(self.abandoned_flushes) >= refusal.flushes
+// since #210 (PR #252); see the #210 bullet at the end for the old spelling
+self.sync.covers(refusal.sync_points) && self.flush.covers(refusal.flushes)
 ```
 
-`answered`/`drained` are what the client really received; `abandoned`/
-`abandoned_flushes` are floors raised only when the relay gives up after
+Each side's `received` is what the client really received; each side's
+`abandoned` is a floor raised only when the relay gives up after
 `REFUSAL_ORDER_STALL_TIMEOUT` (30 s) with no backend traffic. The refusal's tags
 are snapshotted from the single-writer message loop when the refusal is decided.
 Shared state is three monotonic `AtomicU64`s (`Forwarded`) — see
@@ -158,9 +158,11 @@ Verified once against the #121 shape, so do not re-derive:
   PR #216). `Relay::progressed()` is called from every read that takes bytes off
   the upstream — the `Ok(read)` arm of `Relay::fill` and the settling
   `try_read_now` probe in `relay_backend_messages` — and from `Relay::delivered`
-  once a message is whole; it is guarded on `queued.is_some()` so
-  `stall_deadline` is never armed with nothing to release (an empty-queue fire
-  would leave `forced` latched and send the *next* refusal unordered). Do not
+  once a message is whole. Since #210 the window is a field of
+  `Pending::Waiting`, so it cannot be armed with nothing to release and
+  `Relay::progressed` needs no guard — what that guard prevented was an
+  empty-queue fire leaving `forced` latched, sending the *next* refusal
+  unordered, and that combination no longer has a spelling. Do not
   re-report the old "a message trickling in is given up on mid-arrival" behaviour
   — it is gone. The indefinite-hold primitive is unchanged in class: a backend
   could always hold a refusal forever with one complete 5-byte message per window;
@@ -184,8 +186,9 @@ Verified once against the #121 shape, so do not re-derive:
   there splits the record for any line-oriented collector (CWE-117). Do not
   re-report it, and do not cite the raw form as current.
   Its `holding_refusal` field is read **when the line is written**, not when the
-  copy starts: `Relay::queued` is snapshotted at the head because it cannot
-  change during the copy, but the injection channel is read in the callback,
+  copy starts: `Relay::pending` (`Relay::queued` before #210) is snapshotted at
+  the head because it cannot change during the copy, but the injection channel is
+  read in the callback,
   because a statement refused part-way through waits there — a snapshot alone
   reported `false` for exactly the stalled-with-a-refusal session the field
   exists to name (also found and fixed in #225's review).
@@ -226,3 +229,45 @@ Verified once against the #121 shape, so do not re-derive:
   `a_tag_that_would_split_the_record_is_escaped_into_it` drives a newline tag and
   asserts the warning stays one line carrying `last_tag=\n` — so a later diff
   that drops `escape_default` fails a test rather than needing this re-derived.
+
+- **#210 (PR #252) regrouped the barrier state into two types; behaviour is
+  unchanged and was checked field-by-field, so do not re-derive the mapping.**
+  `answered`/`abandoned` became `Relay::sync: Progress` and
+  `drained`/`abandoned_flushes` became `Relay::flush: Progress`, with
+  `Progress { received, abandoned }` private to a `mod progress` and
+  `covers(tag) == received.max(abandoned) >= tag`. `releasable` is now
+  `sync.covers(refusal.sync_points) && flush.covers(refusal.flushes)` — same
+  sides, same tags. The settling gate in `relay_backend_messages` is
+  `relay.flush.received() < owed`, i.e. delivered-only and deliberately **not**
+  `covers()`; folding the write-off in there would settle flushes early.
+  `flush_drained` -> `flush.receive_one(owed)` (clamped `+= 1`), `delivered`'s
+  `drained.max(covered)` -> `flush.receive_through(covered)`, the `Z` arm ->
+  `sync.receive_one(forwarded.sync_points)`, `give_up` -> `sync.abandon` /
+  `flush.abandon`. `abandoned()` is `#[cfg(test)]` only.
+  The `queued`/`forced`/`stall_deadline` triple became
+  `Pending::{Empty, Waiting { injected, stall_deadline }, Forced(injected)}`.
+  `write_queued` releases on `Forced(_) => true` and
+  `Waiting => NoEncryption | releasable(refusal)` — identical to
+  `forced || releasable`. `Pending::force()` on `Empty` is a no-op, which is the
+  old latched-flag bug made unrepresentable; `Forced` is **transient** (the only
+  builder is `write_unordered`, which is `force()` then `write_queued()` with no
+  await between, and `write_queued` always takes a `Forced`), so `accepting()`,
+  `progressed()`/`rearm()` (Waiting-only) and `stall_deadline()` (None on
+  `Forced`) all behave as the old fields did. `dequeued_refusal` is
+  `!relay.pending.is_empty()`, equal to the old `queued.is_some()` for every
+  reachable state. The `#209` bullet above says `guarded on queued.is_some()`;
+  read that as `Pending::rearm` now.
+
+  Two things #252's own review got wrong at first, both worth not re-deriving.
+  **`order_deadline()` is state-independent**, not `None` on `Forced`:
+  `Pending::injected()` matches `Waiting { injected, .. } | Forced(injected)`, so
+  the caller's ordering budget is read through whatever is queued and still fires
+  on a `Forced`, exactly as the pre-#210 lookup ignored the `forced` flag. Only
+  the *stall* bound stops applying, because that one is a field of `Waiting`.
+  **The `mod progress` privacy does not make the crossing unwritable everywhere**
+  — it makes it unwritable in the shipped binary, because reading a side's
+  write-off at all is the `#[cfg(test)]` `abandoned()`. Under `cfg(test)`
+  `self.sync.received().max(self.flush.abandoned())` compiles, since the
+  assertions need both numbers. Claims stronger than that were written into the
+  code comment and ADR-0007 on the first pass and corrected in review; do not
+  restore them.
