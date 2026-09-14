@@ -379,7 +379,7 @@ decision log — not a tutorial.
 Everything else falls out of protecting that seam. The core has no `tokio`, no sockets, no async
 runtime and no network client: the decision is a function `(Policy, Facts) -> Verdict`, and the
 parsers that produce `Facts` are functions over raw bytes
-([engine.rs:19-28](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/engine.rs#L19-L28), [lib.rs:1-11](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/lib.rs#L1-L11)).
+([engine.rs:37-58](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/engine.rs#L37-L58), [protocols.rs:30](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/protocols.rs#L30), [lib.rs:1-11](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/lib.rs#L1-L11)).
 The core does not know how the bytes reached it and has no way to find out. That buys three
 properties which are otherwise expensive in a security product:
 
@@ -403,11 +403,13 @@ crate's own boundary document had claimed the opposite for some time.
 
 The reasoning is worth carrying, because this is the kind of call you will be asked to re-open.
 `append_jsonl` writes synchronously on the decision path, which makes *what the descriptor turns
-out to be* a correctness property of `AuditLog` itself rather than of whoever constructed it. A
-FIFO where a regular file was expected blocks the short-lived `honmoon hook` process until the
-agent times out — after which the invocation proceeds redacted by nothing at all. A path reached
-through another user's symlink sends every record written through that descriptor — host, SQL
-table, PII category — somewhere that user reads. So on Unix the open is hardened: `O_NOFOLLOW`, a
+out to be* a correctness property of `AuditLog` itself rather than of whoever constructed it.
+Two ways an unhardened open of an operator-supplied path goes wrong, which is what the hardening
+is for rather than what happens today: a FIFO where a regular file was expected would block the
+short-lived `honmoon hook` process until the agent timed out, after which the invocation proceeds
+redacted by nothing at all; and a path reached through another user's symlink would send every
+record written through that descriptor — host, SQL table, PII category — somewhere that user
+reads. So on Unix the open is hardened: `O_NOFOLLOW`, a
 component-by-component `openat` walk, a trusted-directory rule, `O_NONBLOCK`, and a regular-file
 `fstat` taken on the descriptor the walk already holds
 ([audit.rs:551-583](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/audit.rs#L551-L583)). The type whose own
@@ -1041,7 +1043,7 @@ socket and no network client — its `Cargo.toml` pulls parsing and policy crate
 `serde_yaml`, `cel`, `regex`, and `sqlparser`, and nothing that opens a connection. The proxy owns
 the wire, feeds the core `Facts`, and consumes a `Verdict`, so the decision is a function of its
 arguments and the whole policy engine is unit-tested without a runtime, a network or a container
-([ARCHITECTURE.md:49-50](https://github.com/pleaseai/honmoon/blob/main/ARCHITECTURE.md#L49-L50), [tech-stack.md:18-19](https://github.com/pleaseai/honmoon/blob/main/.please/docs/knowledge/tech-stack.md#L18-L19)).
+([ARCHITECTURE.md:49-50](https://github.com/pleaseai/honmoon/blob/main/ARCHITECTURE.md#L49-L50), [ARCHITECTURE.md:98-100](https://github.com/pleaseai/honmoon/blob/main/ARCHITECTURE.md#L98-L100), [tech-stack.md:18-19](https://github.com/pleaseai/honmoon/blob/main/.please/docs/knowledge/tech-stack.md#L18-L19)).
 
 Transport-agnostic is not the same as I/O-free, and the invariant is the first rather than the
 second ([issue #166](https://github.com/pleaseai/honmoon/issues/166)). The core opens exactly one
@@ -1050,14 +1052,15 @@ hardening around it on Unix — `O_NOFOLLOW`, a component-by-component `openat` 
 trusted-directory rule, `O_NONBLOCK`, and a regular-file `fstat` — enforces an invariant of
 `AuditLog` itself. The guarantee is descriptor-scoped rather than absolute, and the
 [Staff Engineer Guide](/onboarding/staff-engineer-guide#the-seam-is-about-transport-not-purity)
-carries the three caveats that bounds it.
+carries the three caveats that bound it.
 `append_jsonl` writes synchronously on the decision path, so what the descriptor turns out to be
 decides whether a record blocks the process that opened it or lands where another local user can
 read it, and the type whose correctness depends on that is the type that should establish it.
 Everything else takes what it works on as an argument: `Policy::from_yaml` parses a string, and
 whoever read the file is the caller. A second file, an environment read, a spawned process and a
 socket all remain forbidden
-([crates/AGENTS.md](https://github.com/pleaseai/honmoon/blob/main/crates/AGENTS.md), [audit.rs:416-426](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/audit.rs#L416-L426)).
+([crates/AGENTS.md](https://github.com/pleaseai/honmoon/blob/main/crates/AGENTS.md), [audit.rs:551-583](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/audit.rs#L551-L583) for what the open
+refuses, [audit.rs:416-426](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/audit.rs#L416-L426) for why it lives here).
 
 ## The data-plane request lifecycle
 
@@ -2323,7 +2326,7 @@ client. The proxy owns the wire, feeds the core `Facts`, and consumes a `Verdict
 decision a function of its arguments and unit-testable without a runtime. Transport-agnostic is
 not I/O-free, and the distinction is deliberate: the core opens one file, the operator's JSONL
 audit sink, and nothing else ([ARCHITECTURE.md:49-50](https://github.com/pleaseai/honmoon/blob/main/ARCHITECTURE.md#L49-L50),
-[crates/AGENTS.md](https://github.com/pleaseai/honmoon/blob/main/crates/AGENTS.md)).
+[ARCHITECTURE.md:98-106](https://github.com/pleaseai/honmoon/blob/main/ARCHITECTURE.md#L98-L106), [crates/AGENTS.md](https://github.com/pleaseai/honmoon/blob/main/crates/AGENTS.md)).
 
 ## Operating modes
 

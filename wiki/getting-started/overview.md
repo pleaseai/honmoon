@@ -118,7 +118,7 @@ client. The proxy owns the wire, feeds the core `Facts`, and consumes a `Verdict
 decision a function of its arguments and unit-testable without a runtime. Transport-agnostic is
 not I/O-free, and the distinction is deliberate: the core opens one file, the operator's JSONL
 audit sink, and nothing else ([ARCHITECTURE.md:49-50](https://github.com/pleaseai/honmoon/blob/main/ARCHITECTURE.md#L49-L50),
-[crates/AGENTS.md](https://github.com/pleaseai/honmoon/blob/main/crates/AGENTS.md)).
+[ARCHITECTURE.md:98-106](https://github.com/pleaseai/honmoon/blob/main/ARCHITECTURE.md#L98-L106), [crates/AGENTS.md](https://github.com/pleaseai/honmoon/blob/main/crates/AGENTS.md)).
 
 ## Operating modes
 

@@ -18,7 +18,7 @@ decision log — not a tutorial.
 Everything else falls out of protecting that seam. The core has no `tokio`, no sockets, no async
 runtime and no network client: the decision is a function `(Policy, Facts) -> Verdict`, and the
 parsers that produce `Facts` are functions over raw bytes
-([engine.rs:19-28](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/engine.rs#L19-L28), [lib.rs:1-11](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/lib.rs#L1-L11)).
+([engine.rs:37-58](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/engine.rs#L37-L58), [protocols.rs:30](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/protocols.rs#L30), [lib.rs:1-11](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/lib.rs#L1-L11)).
 The core does not know how the bytes reached it and has no way to find out. That buys three
 properties which are otherwise expensive in a security product:
 
@@ -42,11 +42,13 @@ crate's own boundary document had claimed the opposite for some time.
 
 The reasoning is worth carrying, because this is the kind of call you will be asked to re-open.
 `append_jsonl` writes synchronously on the decision path, which makes *what the descriptor turns
-out to be* a correctness property of `AuditLog` itself rather than of whoever constructed it. A
-FIFO where a regular file was expected blocks the short-lived `honmoon hook` process until the
-agent times out — after which the invocation proceeds redacted by nothing at all. A path reached
-through another user's symlink sends every record written through that descriptor — host, SQL
-table, PII category — somewhere that user reads. So on Unix the open is hardened: `O_NOFOLLOW`, a
+out to be* a correctness property of `AuditLog` itself rather than of whoever constructed it.
+Two ways an unhardened open of an operator-supplied path goes wrong, which is what the hardening
+is for rather than what happens today: a FIFO where a regular file was expected would block the
+short-lived `honmoon hook` process until the agent timed out, after which the invocation proceeds
+redacted by nothing at all; and a path reached through another user's symlink would send every
+record written through that descriptor — host, SQL table, PII category — somewhere that user
+reads. So on Unix the open is hardened: `O_NOFOLLOW`, a
 component-by-component `openat` walk, a trusted-directory rule, `O_NONBLOCK`, and a regular-file
 `fstat` taken on the descriptor the walk already holds
 ([audit.rs:551-583](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/audit.rs#L551-L583)). The type whose own

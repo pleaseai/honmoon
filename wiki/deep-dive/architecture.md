@@ -76,7 +76,7 @@ socket and no network client — its `Cargo.toml` pulls parsing and policy crate
 `serde_yaml`, `cel`, `regex`, and `sqlparser`, and nothing that opens a connection. The proxy owns
 the wire, feeds the core `Facts`, and consumes a `Verdict`, so the decision is a function of its
 arguments and the whole policy engine is unit-tested without a runtime, a network or a container
-([ARCHITECTURE.md:49-50](https://github.com/pleaseai/honmoon/blob/main/ARCHITECTURE.md#L49-L50), [tech-stack.md:18-19](https://github.com/pleaseai/honmoon/blob/main/.please/docs/knowledge/tech-stack.md#L18-L19)).
+([ARCHITECTURE.md:49-50](https://github.com/pleaseai/honmoon/blob/main/ARCHITECTURE.md#L49-L50), [ARCHITECTURE.md:98-100](https://github.com/pleaseai/honmoon/blob/main/ARCHITECTURE.md#L98-L100), [tech-stack.md:18-19](https://github.com/pleaseai/honmoon/blob/main/.please/docs/knowledge/tech-stack.md#L18-L19)).
 
 Transport-agnostic is not the same as I/O-free, and the invariant is the first rather than the
 second ([issue #166](https://github.com/pleaseai/honmoon/issues/166)). The core opens exactly one
@@ -85,14 +85,15 @@ hardening around it on Unix — `O_NOFOLLOW`, a component-by-component `openat` 
 trusted-directory rule, `O_NONBLOCK`, and a regular-file `fstat` — enforces an invariant of
 `AuditLog` itself. The guarantee is descriptor-scoped rather than absolute, and the
 [Staff Engineer Guide](/onboarding/staff-engineer-guide#the-seam-is-about-transport-not-purity)
-carries the three caveats that bounds it.
+carries the three caveats that bound it.
 `append_jsonl` writes synchronously on the decision path, so what the descriptor turns out to be
 decides whether a record blocks the process that opened it or lands where another local user can
 read it, and the type whose correctness depends on that is the type that should establish it.
 Everything else takes what it works on as an argument: `Policy::from_yaml` parses a string, and
 whoever read the file is the caller. A second file, an environment read, a spawned process and a
 socket all remain forbidden
-([crates/AGENTS.md](https://github.com/pleaseai/honmoon/blob/main/crates/AGENTS.md), [audit.rs:416-426](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/audit.rs#L416-L426)).
+([crates/AGENTS.md](https://github.com/pleaseai/honmoon/blob/main/crates/AGENTS.md), [audit.rs:551-583](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/audit.rs#L551-L583) for what the open
+refuses, [audit.rs:416-426](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/audit.rs#L416-L426) for why it lives here).
 
 ## The data-plane request lifecycle
 
