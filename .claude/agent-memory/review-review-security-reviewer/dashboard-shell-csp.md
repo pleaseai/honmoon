@@ -141,6 +141,15 @@ finding**: that is a method sharing the name, no directive governs it, and flagg
 the false positive parsing is here to avoid. A file the parser cannot read fails rather than passing
 uninspected, the same stance as the unreadable-`<script>` rule above.
 
+**A name is matched by spelling, not by resolved binding — declared, and a re-report is answered
+here.** For `eval` this is free: the chunks are module code, module code is strict, and `eval` is not
+a legal binding name in strict mode, so the identifier is the global one by construction (the demo
+shim is a classic script where `var eval` is legal, and is forty hand-written lines in this repo).
+`Function` is shadowable, so `const Function = factory; Function(src)` is reported and should not be
+— accepted, because what is read is minified first-party output where a local binding is a one- or
+two-letter name, and an approximate shadow check would trade a false positive nobody has hit for a
+missed `eval`. Raised by Greptile on #224 as a P1 and answered there.
+
 **One more declared gap, and it is the widest: it reads the shell's `<script src>` tags, not the
 reachable module graph.** Those are the same set only while the build emits one chunk, which is what
 it does today. A lazy route or a `manualChunks` entry emits a chunk the entry module imports and the

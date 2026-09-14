@@ -32,6 +32,19 @@
  * calling `eval`, and a bundle written to evade the guard is not the failure it
  * is defending against. Claiming otherwise would be the more expensive mistake.
  *
+ * **A name is read by its spelling, not by resolving the binding it refers
+ * to**, which is the first thing a reader reaches for. For `eval` that costs
+ * nothing: the chunks are module code, module code is strict, and `eval` is
+ * not a legal binding name in strict mode — so the identifier is the global one
+ * by construction. (`demo-mode.js` is a classic script, where `var eval` is
+ * legal; it is forty hand-written lines in this repository.) `Function` is
+ * shadowable anywhere, so `const Function = factory; Function(src)` is reported
+ * and should not be. Accepted rather than closed: what is read is minified
+ * first-party output, where a local binding is a one- or two-letter name, and
+ * an approximate shadow check — "this file declares `Function` somewhere, so
+ * skip it" — would trade a false positive nobody has hit for a missed `eval`,
+ * which is the wrong direction for a guard.
+ *
  * The files it reads are the ones {@link scriptFiles} names from the shell's
  * own `<script src>` tags — the same set `check-dashboard-csp.ts` judges, so
  * the two guards cannot disagree about what "the build" is. A `dist/assets`
