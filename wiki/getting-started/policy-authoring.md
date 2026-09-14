@@ -415,9 +415,9 @@ those take one run each.
 Two properties are worth stating outright, because they are what make it usable.
 
 **It is the gateway's own loader, not a second opinion.** The command calls `load_policy`
-([main.rs:973-996](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-cli/src/main.rs#L973-L996)) — the same one call
-`honmoon gateway --config` and `honmoon run --policy` make ([main.rs:562](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-cli/src/main.rs#L562),
-[main.rs:733](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-cli/src/main.rs#L733)), and the only place in the binary that reads a
+([main.rs:1042-1065](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-cli/src/main.rs#L1042-L1065)) — the same one call
+`honmoon gateway --config` and `honmoon run --policy` make ([main.rs:620](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-cli/src/main.rs#L620),
+[main.rs:797](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-cli/src/main.rs#L797)), and the only place in the binary that reads a
 policy from a path,
 compiled conditions and all ([lib.rs:215-224](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/lib.rs#L215-L224)). A check
 that could accept a policy the gateway then refused would be worse than no check, so there is no
@@ -429,7 +429,7 @@ both refuse, and `validate_and_the_gateway_accept_the_same_policy` on one both a
 The read says two things in its own words, and they are different kinds of check. **The first
 refuses nothing extra**: a file whose top level is not a mapping — plain text, a list, a single
 value — is named as *not a policy document* rather than handed to the parser
-([main.rs:1051-1053](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-cli/src/main.rs#L1051-L1053)). The loader refuses those
+([main.rs:1120-1122](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-cli/src/main.rs#L1120-L1122)). The loader refuses those
 too; what changes is that the parser would have quoted the file to say so, and for a document that
 is one plain scalar the quote is the whole file. Pointed at a token file, an SSH key or a `.env` by
 a mistyped path, that lands in the log.
@@ -451,7 +451,7 @@ with an explicit `---` is one document and loads normally.
 
 **The second does refuse something extra, on purpose.** A mapping in which none of `version`,
 `egress`, `endpoints` or `rules` appears is refused, and the parser would have taken it
-([main.rs:1178-1207](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-cli/src/main.rs#L1178-L1207)). Every `Policy` field
+([main.rs:1247-1276](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-cli/src/main.rs#L1247-L1276)). Every `Policy` field
 carries `#[serde(default)]` and the struct has no `deny_unknown_fields`, so *any* mapping used to
 deserialize into a policy with every field at its default — which means a Kubernetes `Secret`
 manifest, a `DB_PASSWORD: …` file and a service-account JSON key (JSON is valid YAML) each loaded,
@@ -497,8 +497,8 @@ two apart.
 **It has no side effects.** No listener is bound, no audit log is opened, no CA is read or
 generated, and — the one that is easy to miss — the management token is never resolved. All four
 live inside the `gateway` function, which this path never enters. Starting a gateway resolves that
-token at [main.rs:556](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-cli/src/main.rs#L556), *before* it reads the policy at
-[main.rs:562](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-cli/src/main.rs#L562), so `honmoon gateway --config <bad file>`
+token at [main.rs:614](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-cli/src/main.rs#L614), *before* it reads the policy at
+[main.rs:620](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-cli/src/main.rs#L620), so `honmoon gateway --config <bad file>`
 creates `~/.honmoon/mgmt-token` on its way to telling you the policy is broken. Checking a policy should
 not mint a credential, least of all on the run where the policy is what failed, so this path never
 reaches that code (`validating_a_bad_policy_creates_nothing_under_home` pins it, against a control
@@ -508,7 +508,7 @@ It reports the loader's **warnings** too — an unreachable rule
 ([lib.rs:388-397](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/lib.rs#L388-L397)), a rule naming an endpoint
 `endpoints` does not declare ([lib.rs:364-374](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/lib.rs#L364-L374)) —
 which `tracing` filters out of an ordinary gateway run, because this command asks for a `warn`
-default and its own stderr writer ([main.rs:391-414](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-cli/src/main.rs#L391-L414)). They do not
+default and its own stderr writer ([main.rs:413-436](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-cli/src/main.rs#L413-L436)). They do not
 change the exit code: the gateway starts on a policy carrying one, so this accepts it too.
 
 They arrive through `tracing`, and the `warn` level this command asks for is only a *default*. A

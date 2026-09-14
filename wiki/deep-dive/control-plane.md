@@ -57,7 +57,7 @@ flowchart TB
 `honmoon-mgmt` is a small [axum](https://github.com/tokio-rs/axum) service that runs **in the same
 process as the data plane**, so it can observe decisions and resolve held requests through the
 shared `GatewayState`. `honmoon gateway` runs the proxy and this API on one tokio runtime
-([lib.rs:1-16](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-mgmt/src/lib.rs#L1-L16), [main.rs:78-128](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-cli/src/main.rs#L78-L128)).
+([lib.rs:1-16](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-mgmt/src/lib.rs#L1-L16), [main.rs:586-788](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-cli/src/main.rs#L586-L788)).
 
 | Route | Method | Returns | Source |
 |-------|--------|---------|--------|

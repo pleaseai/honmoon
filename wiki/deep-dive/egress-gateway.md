@@ -155,7 +155,7 @@ right now. SQL/K8s `pause` rules need the live inline relay + TLS termination (*
 ## CLI wiring: `run` vs `gateway`
 
 `honmoon-cli` exposes three subcommands via `clap`. Two drive the gateway; one is a stub
-([main.rs:21-43](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-cli/src/main.rs#L21-L43)).
+([main.rs:35-48](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-cli/src/main.rs#L35-L48)).
 
 ```mermaid
 flowchart TD
@@ -181,16 +181,16 @@ flowchart TD
   style gwstate fill:#161b22,stroke:#30363d,color:#e6edf3
   style gwboth fill:#161b22,stroke:#30363d,color:#e6edf3
 ```
-<!-- Sources: crates/honmoon-cli/src/main.rs:24-128 -->
+<!-- Sources: crates/honmoon-cli/src/main.rs:24-147 -->
 
 ### `honmoon run`
 
 `run` binds the proxy socket itself on `127.0.0.1:0`, hands the listener to a background thread,
 then execs the child with every proxy env var (`http_proxy`, `https_proxy`, `all_proxy`, and
 uppercase variants) pointed at the ephemeral proxy. The child's exit code is propagated
-([main.rs:131-165](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-cli/src/main.rs#L131-L165)).
+([main.rs:792-912](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-cli/src/main.rs#L792-L912)).
 Binding in one place closes the TOCTOU window where another process could steal the port
-([main.rs:140-148](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-cli/src/main.rs#L140-L148)).
+([main.rs:799-802](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-cli/src/main.rs#L799-L802)).
 On Linux the child no longer shares the host's loopback, so that listener is reached through a
 Unix-socket bridge into the child's namespace instead
 ([ADR-0005](https://github.com/pleaseai/honmoon/blob/main/.please/docs/decisions/0005-empty-namespace-and-bridged-proxy-sockets.md)). `run` uses an
@@ -222,16 +222,16 @@ and every platform other than these two still only sets env vars
 
 `gateway` builds a `GatewayState` (policy + audit + approvals) and runs **both** the egress proxy
 and the `honmoon-mgmt` management API on **one tokio runtime**, sharing that state — so a request
-held by the proxy can be approved from the dashboard ([main.rs:78-128](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-cli/src/main.rs#L78-L128)). It binds both
+held by the proxy can be approved from the dashboard ([main.rs:586-788](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-cli/src/main.rs#L586-L788)). It binds both
 listeners up front and uses `tokio::select!` so an unexpected proxy exit surfaces instead of
-silently leaving egress filtering down ([main.rs:104-127](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-cli/src/main.rs#L104-L127)).
+silently leaving egress filtering down ([main.rs:755-786](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-cli/src/main.rs#L755-L786)).
 
 | Flag | Default | Purpose | Source |
 |------|---------|---------|--------|
-| `--addr` | `127.0.0.1:8443` | Egress proxy listen address | [main.rs:39-40](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-cli/src/main.rs#L39-L40) |
-| `--mgmt-addr` | `127.0.0.1:8444` | Management API + dashboard address | [main.rs:42-43](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-cli/src/main.rs#L42-L43) |
-| `--mgmt-token` | (minted at `~/.honmoon/mgmt-token`, `0600`) | Bearer token required by **every** `/api/*` route — the audit, approval and policy reads as well as the Claude Code hook endpoint. Browsers exchange it at `GET /login?token=…` — the URL honmoon prints on startup — for a session secret they send in the `X-Honmoon-Session` header; deliberately not a cookie, whose scope would cover every other port on `127.0.0.1` (#188). `--hook-token` / `HONMOON_HOOK_TOKEN` remain accepted as deprecated aliases. Prefer the environment variable to the flag: a command line can be read by other local users via `ps` (how far that reaches is platform- and configuration-dependent), while a token file honmoon created is `0600`. An existing file that is readable beyond its owner is reported rather than tightened — replacing such a token is the operator's call, since it invalidates anything holding the old value. `@honmoon/api` reads only the variable or the file, never this flag | [main.rs:78-108](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-cli/src/main.rs#L78-L108) |
-| `--audit-log` | (in-memory only) | Append every verdict — and any recorded security degradation — to a JSONL file. Must name a **regular file**: opened with `O_NOFOLLOW`, so a symlink as the final path component is refused, as are a FIFO, socket, device and directory, and the refusal aborts startup. Created owner-only when absent; an existing file keeps its mode | [main.rs:58-67](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-cli/src/main.rs#L58-L67), [main.rs:350-359](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-cli/src/main.rs#L350-L359) |
+| `--addr` | `127.0.0.1:8443` | Egress proxy listen address | [main.rs:69-70](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-cli/src/main.rs#L69-L70) |
+| `--mgmt-addr` | `127.0.0.1:8444` | Management API + dashboard address | [main.rs:77-78](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-cli/src/main.rs#L77-L78) |
+| `--mgmt-token` | (minted at `~/.honmoon/mgmt-token`, `0600`) | Bearer token required by **every** `/api/*` route — the audit, approval and policy reads as well as the Claude Code hook endpoint. Browsers exchange it at `GET /login?token=…` — the URL honmoon prints on startup — for a session secret they send in the `X-Honmoon-Session` header; deliberately not a cookie, whose scope would cover every other port on `127.0.0.1` (#188). `--hook-token` / `HONMOON_HOOK_TOKEN` remain accepted as deprecated aliases. Prefer the environment variable to the flag: a command line can be read by other local users via `ps` (how far that reaches is platform- and configuration-dependent), while a token file honmoon created is `0600`. An existing file that is readable beyond its owner is reported rather than tightened — replacing such a token is the operator's call, since it invalidates anything holding the old value. `@honmoon/api` reads only the variable or the file, never this flag | [main.rs:99-138](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-cli/src/main.rs#L99-L138) |
+| `--audit-log` | (in-memory only) | Append every verdict — and any recorded security degradation — to a JSONL file. Must name a **regular file**: opened with `O_NOFOLLOW`, so a symlink as the final path component is refused, as are a FIFO, socket, device and directory, and the refusal aborts startup. Created owner-only when absent; an existing file keeps its mode | [main.rs:79-98](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-cli/src/main.rs#L79-L98), [main.rs:629-638](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-cli/src/main.rs#L629-L638) |
 
 ## Hermetic integration test
 
