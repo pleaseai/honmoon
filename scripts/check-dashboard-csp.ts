@@ -41,9 +41,11 @@
  * tags rather than on everything `script-src 'self'` implies. The emitted code
  * is the other half, and it is checked by a sibling script rather than here:
  * `scripts/check-dashboard-bundle.ts` looks for the `eval`/`Function`
- * construction the policy also refuses (there is no `'unsafe-eval'`), over the
- * files {@link scriptFiles} names from the very `<script src>` tags this file
- * judges — so the two guards cannot disagree about what "the build" is.
+ * construction the policy also refuses (there is no `'unsafe-eval'`), starting
+ * from the files {@link scriptFiles} names from the very `<script src>` tags
+ * this file judges — so the two guards cannot disagree about what "the build"
+ * is — and following the `import` specifiers in those files from there, since
+ * a code-split chunk is script the shell never names (#227).
  *
  * Usage:
  *   bun scripts/check-dashboard-csp.ts                 # both built shells
@@ -368,6 +370,37 @@ export function shellPath(path: string): string {
   return isAbsolute(path) ? path : join(REPO_ROOT, path)
 }
 
+/**
+ * The directory a built shell is served from, which is its own document root.
+ *
+ * `dist/index.html` is served as `/`, so this is what a root-absolute `src`
+ * resolves against, and it is the boundary every file named below it has to
+ * stay inside. Exported because the guard over the emitted code asserts the
+ * same boundary about the files an `import` specifier names (#227), and
+ * deriving it there a second time is how the two drift.
+ */
+export function buildDir(shell: string): string {
+  return resolve(dirname(shellPath(shell)))
+}
+
+/**
+ * Whether `file` is `dir` itself or lies under it.
+ *
+ * `resolve` leaves no trailing separator — except at a filesystem root, where
+ * `dir` already *is* one. Appending another unconditionally makes the prefix
+ * `//`, which nothing starts with, so a shell served from a root would refuse
+ * every file it names (found by cubic on #224, fixed in `aa7a464`).
+ *
+ * One predicate rather than two copies of that reasoning: the module-graph
+ * walk in `check-dashboard-bundle.ts` has to make this same assertion about
+ * every `import` specifier it follows, and a second hand-rolled prefix is
+ * exactly how the root case comes back.
+ */
+export function containedIn(dir: string, file: string): boolean {
+  const prefix = dir.endsWith(sep) ? dir : dir + sep
+  return file === dir || file.startsWith(prefix)
+}
+
 /** Script the shell loads that no build artifact could be named for, and why. */
 export interface UnresolvedScript {
   /** The `src` value, or `null` when the tag's `src` could not be read at all. */
@@ -380,11 +413,12 @@ export interface UnresolvedScript {
  *
  * {@link checkShell} decides *whether* each of those URLs stays on the serving
  * origin. This names the file each one resolves to, so the guard over the
- * emitted code (`scripts/check-dashboard-bundle.ts`, issue #200) reads exactly
- * the set this file already judged. A `dist/assets/*.js` glob would have been
- * a second, independent notion of "the build" — one that drifts the first time
- * Vite emits a chunk the shell does not load, or the demo shim lands somewhere
- * other than `assets/`.
+ * emitted code (`scripts/check-dashboard-bundle.ts`, issue #200) starts from
+ * exactly the set this file already judged, and reaches the rest of the build
+ * by following those files' own `import` specifiers (#227). A
+ * `dist/assets/*.js` glob would have been a second, independent notion of "the
+ * build" — one that drifts the first time Vite emits a chunk the shell does not
+ * load, or the demo shim lands somewhere other than `assets/`.
  *
  * The shell is served from the root of its own directory (`dist/index.html` is
  * `/`), so a root-absolute `src` and a relative one both land under that
@@ -421,7 +455,7 @@ export function scriptFiles(html: string, shell: string): {
   files: string[]
   unresolved: UnresolvedScript[]
 } {
-  const dir = resolve(dirname(shellPath(shell)))
+  const dir = buildDir(shell)
   const files: string[] = []
   const unresolved: UnresolvedScript[] = []
   const skip = (src: string | null, reason: string) => unresolved.push({ src, reason })
@@ -477,13 +511,8 @@ export function scriptFiles(html: string, shell: string): {
         continue
       }
 
-      // `resolve` leaves no trailing separator — except at a filesystem root,
-      // where `dir` already *is* one. Appending another unconditionally makes
-      // the prefix `//`, which nothing starts with, so a shell served from a
-      // root would reject every script it loads.
-      const prefix = dir.endsWith(sep) ? dir : dir + sep
       const file = resolve(dir, `.${pathname}`)
-      if (file !== dir && !file.startsWith(prefix)) {
+      if (!containedIn(dir, file)) {
         skip(raw, 'resolves outside the build directory, so no file in the build holds its code')
         continue
       }

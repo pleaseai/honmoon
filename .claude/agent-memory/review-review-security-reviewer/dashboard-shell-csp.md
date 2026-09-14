@@ -1,6 +1,6 @@
 ---
 name: dashboard-shell-csp
-description: 'The dashboard shell CSP after #195 — what each directive is for, why style-src carries unsafe-inline and img-src exists at all (both measured, neither a control, do not report either as a weakness), that script-src has no unsafe-* and connect-src is self, what the policy does NOT bound (outbound navigation and WebRTC are outside CSP, so exfiltration is harder not closed — a finding saying so is correct), that every HTML document including /login carries it, what a change here has to re-verify in a browser rather than by reading the header, that an external <a href> is deliberately not a finding in the build-side checker, and that the emitted bundle is guarded separately by scripts/check-dashboard-bundle.ts, which parses for eval/Function call expressions, deliberately does not flag obj.eval, deliberately does not follow an alias or a computed name, and reads the shell tag list rather than the reachable module graph so a code-split chunk would go unread; and the three traps found building it that a finding should not re-report - the Map-not-object-literal lookup, the %2f containment check, and scriptFiles counting unclosed script tags (issue #200)'
+description: 'The dashboard shell CSP after #195 — what each directive is for, why style-src carries unsafe-inline and img-src exists at all (both measured, neither a control, do not report either as a weakness), that script-src has no unsafe-* and connect-src is self, what the policy does NOT bound (outbound navigation and WebRTC are outside CSP, so exfiltration is harder not closed — a finding saying so is correct), that every HTML document including /login carries it, what a change here has to re-verify in a browser rather than by reading the header, that an external <a href> is deliberately not a finding in the build-side checker, and that the emitted bundle is guarded separately by scripts/check-dashboard-bundle.ts, which parses for eval/Function call expressions, deliberately does not flag obj.eval, deliberately does not follow an alias or a computed name, and since #227 starts at the shell tag list and walks the emitted static import graph from there, reporting rather than skipping a specifier it cannot follow, so a code-split chunk is read and a finding saying one would go unread is stale, with the declared residue now being Worker/runtime-appended-script/`require` (each measured, each tracked) and `containedIn` bounding the specifier lexically rather than realpath-ing the read; and the three traps found building it that a finding should not re-report - the Map-not-object-literal lookup, the %2f containment check, and scriptFiles counting unclosed script tags (issue #200)'
 metadata:
   type: project
 ---
@@ -124,10 +124,10 @@ string literals, in comments, and as a method name, so a pattern over minified o
 on an unrelated dependency bump — this checker's own "worse than no CSP". Verified clean on the
 build at the time it was added.
 
-It reads the files `scriptFiles` names from the shell's own `<script src>` tags, deliberately not a
-`dist/assets/*.js` glob: a glob would be a second idea of what "the build" is, and would drift from
-the shell the first time Vite emitted a chunk the shell does not load, or the demo shim landed
-outside `assets/`.
+It starts from the files `scriptFiles` names from the shell's own `<script src>` tags, deliberately
+not a `dist/assets/*.js` glob: a glob would be a second idea of what "the build" is, and would drift
+from the shell the first time Vite emitted a chunk the shell does not load, or the demo shim landed
+outside `assets/`. Where it goes from there is the import graph — see below.
 
 **Its coverage is narrow on purpose, and a finding that it misses an evasion is answered by that
 rather than by an edit.** It reads `eval`/`Function` reached directly, through the parenthesised
@@ -150,13 +150,57 @@ shim is a classic script where `var eval` is legal, and is forty hand-written li
 two-letter name, and an approximate shadow check would trade a false positive nobody has hit for a
 missed `eval`. Raised by Greptile on #224 as a P1 and answered there.
 
-**One more declared gap, and it is the widest: it reads the shell's `<script src>` tags, not the
-reachable module graph.** Those are the same set only while the build emits one chunk, which is what
-it does today. A lazy route or a `manualChunks` entry emits a chunk the entry module imports and the
-shell references only as `<link rel="modulepreload">` — unread, while the pass line still prints a
-green count. A `dist/assets/*.js` glob is the *wider* set; the tag list was chosen over it so the two
-guards cannot disagree about what "the build" is, and that trade is the reason the gap exists rather
-than an oversight. Tracked separately; a finding that names it is correct but already recorded.
+**It starts at the shell's `<script src>` tags and walks the emitted import graph from there, so
+the gap #227 named is closed and a finding saying a code-split chunk goes unread is now wrong.**
+The tags alone are the executed set only while the build emits one chunk, which is still true today
+(verified on the build at the time: three `.js` files across both shells, and the walked set equals
+them exactly). A lazy route or a `manualChunks` entry emits a chunk the entry imports and the shell
+references only as `<link rel="modulepreload">`, and that chunk is now parsed. The graph is walked
+rather than globbed for the reason the tag list was chosen over a glob in the first place: one
+notion of "the build", derived from the same shells, so the two guards still cannot disagree.
+
+**What keeps that set closed is that an unfollowable specifier is a finding, not a skip.** Followed:
+a string literal on an `import`, an `export … from`, or an `import(…)`, naming a relative path that
+stays inside the shell's own directory — the containment asserted with the *same* predicate
+`scriptFiles` uses (`containedIn` in `check-dashboard-csp.ts`), which is how the filesystem-root
+prefix bug below cannot come back on the new path. Reported: a specifier that is not a string
+literal (`import(route)`), one that is not relative (bare, root-absolute, off-origin), one resolving
+outside the build, and one naming a file the build did not emit. Percent-escapes in a specifier are
+deliberately not decoded — an undecoded escape can only name a file that does not exist, which is
+reported, while decoding one would re-open the `%2f` case measured below.
+
+**It is the *static ESM* graph, and the residue is declared rather than closed.** Not walked and not
+reported: a module reached by something that is not an ES module specifier —
+`new Worker(new URL('./w.js', import.meta.url))`, a `<script>` element appended at runtime — and a
+`require('./x.js')` call in the emitted output. Same ground as the alias and computed-name cases:
+this guards a first-party build against a dependency that starts calling `eval`, not a bundle
+written to evade it. Nothing in this repository emits any of the three. A finding naming *that*
+residue is correct and new; one naming the module graph itself is stale.
+
+**`require` is the residue shape worth knowing about, because it is the one that is *static* —
+measured, not inferred.** `importSpecifier` reads only `ImportDeclaration`, `ExportDeclaration` and
+an `ImportKeyword` call, so a `require` call is neither followed nor reported: a `dist/assets/` chunk
+reached only that way and containing `eval("pwned")` produced `exit=0` and a green
+"no `eval`/`Function` construction in the 1 file(s)" pass line. **The module doc names it explicitly
+and gives the reason**, so it is declared residue rather than an unstated hole in the
+unfollowable-specifier-is-a-finding invariant — which is scoped to ESM specifiers: `require` is not
+defined in module code, so such a call is not a live edge, and *reporting* every one would fail CI on
+the dead `typeof require !== 'undefined'` branch a dependency ships, while *following* one would
+report a bare `require('fs')` in that same branch as naming no file. Either way the guard breaks a
+working build. Measured on the current build: the emitted chunk has no `require` call at all — its
+three `require` substrings are the React prop `required`. Tracked on its own issue; a finding
+proposing to simply report or follow `require` is answered by the two false positives above.
+
+**`containedIn` is a lexical prefix test, not a `realpath` one, so it bounds the *specifier*, not
+what gets read — measured.** A symlink at `dist/assets/link.js` pointing at `/tmp/…/secret.txt`, with
+`dist/assets/index.js` doing `import './link.js'`, was followed and read: the pass line listed it as
+inspected. Content is not echoed by `syntaxErrors` (message + position only), but a refusal excerpt
+prints 80 characters, and a symlink to a FIFO or an endless device would stall CI. The precondition
+is write access to the build output, which is the same access that could just emit `eval` directly,
+so the marginal gain to the modelled attacker is ~nil — but the boundary should not be described as
+if it bounded reads. `scriptFiles` has had the identical property since
+before #227, so a fix belongs to both call sites at once rather than to the import path alone;
+tracked on its own issue.
 
 **Three traps were found building that guard under review, and a finding re-reporting any of them is
 answered by this rather than by an edit.** All three are fixed and tested.
@@ -176,7 +220,9 @@ answered by this rather than by an edit.** All three are fixed and tested.
   way, with both guards green. `scriptFiles` now asserts the joined path stays under the shell's
   directory — and that prefix has to account for `resolve` leaving no trailing separator *except* at
   a filesystem root, where `dir` already is one and `dir + sep` becomes `//`, refusing every script
-  a root-served shell loads. Both halves are tested; a finding on either is answered here.
+  a root-served shell loads. Both halves are tested; a finding on either is answered here. Since
+  #227 that assertion lives in one exported predicate, `containedIn`, which the import-graph walk
+  calls too — so a finding proposing a hand-rolled prefix on either side is going backwards.
 - **`scriptFiles` counts `<script>` opening tags, for the same reason `checkShell` does.**
   `SCRIPT_TAG` is lazy and skips an opening tag with no `</script>`, so its `src` landed in neither
   the file list nor the unresolved list — and a shell whose remaining tags resolved then handed the
