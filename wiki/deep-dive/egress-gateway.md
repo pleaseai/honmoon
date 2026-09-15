@@ -26,13 +26,16 @@ flood the bounded audit ring and cycle out the refusals that matter
 
 ::: tip This is not the only egress path
 A `CONNECT` proxy carries HTTP and TLS. A PostgreSQL or Redis client speaks neither, so a **SOCKS5
-listener** runs beside this one and puts every connection through the same allow / deny / pause
-gate ([socks.rs:1-29](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-proxy/src/socks.rs#L1-L29)). Two differences are worth carrying
+listener** runs beside this one and puts an ordinary destination through the same allow / deny /
+pause gate ([socks.rs:1-29](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-proxy/src/socks.rs#L1-L29)). Two differences are worth carrying
 across. It gates on `Facts{domain, endpoint}` and no `http.host`, because a SOCKS5 handshake
 states a host and a port and nothing else ([socks.rs:351-358](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-proxy/src/socks.rs#L351-L358)) — so an
 `http.host` rule that holds over a raw tunnel here does not fire there. And the
-uninspectable-endpoint refusal is the mirror of this listener's: a `kubernetes` endpoint is
-refused there, a `postgres` one here ([socks.rs:18-21](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-proxy/src/socks.rs#L18-L21)).
+uninspectable-endpoint refusal is the mirror of this listener's: a `kubernetes` endpoint is refused
+there, a `postgres` one here. That refusal runs *before* the gate on both, so such a destination
+never reaches allow / deny / pause at all — a `pause` on it is recorded as a refusal keeping the
+rule that matched, and is never held for an approval nobody could act on
+([socks.rs:175-178](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-proxy/src/socks.rs#L175-L178), [socks.rs:419-456](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-proxy/src/socks.rs#L419-L456)).
 `honmoon run` always starts it; `honmoon gateway` does too unless `--socks-addr off` declines it.
 See [Quick Start](/getting-started/quick-start).
 :::
@@ -115,6 +118,11 @@ proxy; the accept loop and the task-per-connection are hudsucker's
    bypassed by skipping `CONNECT`. Bodies are scanned as well.
 3. **Decrypted inner requests** over a terminated tunnel — already authorized at the `CONNECT`, so
    only the body is inspected.
+
+Body scanning on shapes 2 and 3 stops at `MAX_INSPECT_BODY` — 2 MiB, whether declared by
+`Content-Length`, discovered while reading, or reached by decompression. A body past it is forwarded
+unscanned rather than buffered, so a `pii.*` rule does not fire on it and the host-level verdict is
+all that applied ([body.rs:56-61](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-proxy/src/body.rs#L56-L61)).
 
 Which shape a request is in is decided by the `AuthorizedTunnel` the handler clone carries — the
 connection it arrived on must have made an authorized `CONNECT` to exactly that `host:port` — and
@@ -233,7 +241,7 @@ dispatches
 |---------|------------------|--------|--------|
 | `Allow` | `Allowed` (on the `CONNECT` only) | `Proceed` | [mitm.rs:306-318](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-proxy/src/mitm.rs#L306-L318) |
 | `Deny` | `Denied` | `Block` → `403 Forbidden` | [mitm.rs:319-329](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-proxy/src/mitm.rs#L319-L329) |
-| `Pause` | `Paused` → `Approved`/`Rejected` | held for the whole wait, then `Proceed` on approval, `Block` → `403` on a rejection or timeout, `Block` → `503` when the queue was full | [mitm.rs:330-334](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-proxy/src/mitm.rs#L330-L334), [mitm.rs:338-363](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-proxy/src/mitm.rs#L338-L363) |
+| `Pause` | `Paused` → `Approved`/`Rejected` — except on a full queue, which records `Rejected` alone and never opens a hold | held for the whole wait, then `Proceed` on approval, `Block` → `403` on a rejection or timeout, `Block` → `503` when the queue was full | [mitm.rs:330-334](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-proxy/src/mitm.rs#L330-L334), [mitm.rs:338-363](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-proxy/src/mitm.rs#L338-L363) |
 
 **The gate returns a `Gate`, not a status** ([mitm.rs:151-158](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-proxy/src/mitm.rs#L151-L158)) — so what a *proceeding*
 request gets depends on its shape, and only a refusal is a status the gate itself chose. A
@@ -426,9 +434,15 @@ HTTP as well, so a `GET http://denied/` is answered with the stronger `403` rath
 refusal ([egress.rs:114-118](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-proxy/tests/egress.rs#L114-L118)).
 
 Two more suites cover the phases above it. `crates/honmoon-proxy/tests/mitm.rs` runs a real
-`tokio-rustls` client against an in-process CA and proves TLS termination, body scanning in both
-PII modes, compressed and chunked bodies, Kubernetes endpoint rules, and the uninspectable-endpoint
-refusal ([mitm.rs:1-8](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-proxy/tests/mitm.rs#L1-L8)).
+`tokio-rustls` client against an in-process CA, so each claim below is a test rather than a
+milestone: TLS termination and PII detection in the body
+([mitm.rs:231-236](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-proxy/tests/mitm.rs#L231-L236)), both PII modes
+([mitm.rs:239-262](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-proxy/tests/mitm.rs#L239-L262), [mitm.rs:267-289](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-proxy/tests/mitm.rs#L267-L289)), a content
+`pause` held to approval ([mitm.rs:292-337](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-proxy/tests/mitm.rs#L292-L337)), chunked and gzip bodies
+([mitm.rs:342-353](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-proxy/tests/mitm.rs#L342-L353), [mitm.rs:358-377](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-proxy/tests/mitm.rs#L358-L377)), Kubernetes
+endpoint rules ([mitm.rs:656-680](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-proxy/tests/mitm.rs#L656-L680)), the uninspectable-endpoint refusal
+([mitm.rs:504-541](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-proxy/tests/mitm.rs#L504-L541)), and the tunnel-not-scheme recognition of #100
+([mitm.rs:897-965](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-proxy/tests/mitm.rs#L897-L965)).
 `crates/honmoon-mgmt/tests/e2e.rs` holds a live `CONNECT` on a `pause` rule, finds it on the
 management API's approval queue, and shows approving it lets the tunnel through (`200`) while
 rejecting blocks it (`403`), asserting the `Paused`/`Approved` and `Rejected` audit entries for
