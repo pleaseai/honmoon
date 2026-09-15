@@ -1,0 +1,29 @@
+scripts/check-wiki-source-anchors.ts
+  s_179ae213b8fbe5::t_e3fcf4f303d58b 183,500-505,510-548
+  s_179ae213b8fbe5::t_4c54a393e81049 666,669-671
+  s_179ae213b8fbe5::t_a580a39b6ad1a5 184-192
+  s_179ae213b8fbe5::t_f02ee1b3432c7c 257-261
+  s_179ae213b8fbe5::t_4ca7eb2877f0f0 269-276
+  s_179ae213b8fbe5::t_87f0fb3805de79 580-585,600-603,607,617-622,625-628,630-634,636,644,647,653-655
+  s_179ae213b8fbe5::t_a2686bab75952f 99-100,110-111
+scripts/check-wiki-source-anchors.test.ts
+  s_179ae213b8fbe5::t_c9728099e3a08b 7-8
+  s_179ae213b8fbe5::t_3ebeccd492d2d6 268-319
+  s_179ae213b8fbe5::t_2c8660bbfa874b 226-227,354-359
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "02a1d8a458d385ff4b2f86f8bb83a54204f3a4e6",
+  "prompts": {},
+  "sessions": {
+    "s_179ae213b8fbe5": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "854ad83a-3f97-4fff-ac96-977da3e2476b",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
