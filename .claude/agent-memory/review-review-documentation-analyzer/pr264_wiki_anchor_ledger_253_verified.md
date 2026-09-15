@@ -36,7 +36,8 @@ genuinely off), not something that could have been repointed honestly instead.
 
 `wiki/llms-full.txt` was regenerated correctly — every changed anchor's new form appears in the
 bundle in sync with the page. The `TRACKED` ledger's own doc comment and the new "nothing is
-still deferred to #253" test both match the ledger as this PR leaves it (5 entries, 3 issues).
+still deferred to #253" test both match the ledger as this PR leaves it: 10 entries over six
+issues, of which the 5 this PR re-attributed are the #260/#261/#263 ones.
 
 Zero findings from this pass, and that is the part worth keeping. greptile found one this
 pass did not: the `Test coverage` row for `parse_sql_extracts_verb_and_table` on
