@@ -1,11 +1,13 @@
-import type { Anchor } from './check-wiki-source-anchors'
+import type { Anchor, Tracked } from './check-wiki-source-anchors'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { describe, expect, test } from 'bun:test'
 import { wikiDocuments } from './check-wiki-io-claim'
 import {
   checkAnchor,
+  checkLinksRead,
   checkRepository,
+  defers,
   parseAnchors,
   readCited,
   REPO_ROOT,
@@ -63,6 +65,18 @@ describe('parseAnchors', () => {
   test('a non-main ref is captured rather than dropped, so it can be reported', () => {
     const source = `[lib.rs:1](https://github.com/pleaseai/honmoon/blob/99cdd86/crates/honmoon-core/src/lib.rs#L1)`
     expect(parseAnchors(source, 'wiki/p.md')[0]!.ref).toBe('99cdd86')
+  })
+
+  test('a `?plain=1` permalink is read, and the query is not part of the path', () => {
+    const [found] = parseAnchors(`[lib.rs:12-34](${BLOB}/crates/honmoon-core/src/lib.rs?plain=1#L12-L34)`, 'wiki/p.md')
+    expect(found).toMatchObject({ path: 'crates/honmoon-core/src/lib.rs', start: 12, end: 34 })
+  })
+
+  // GitHub emits this for a partial multi-line selection. The columns narrow
+  // which characters are highlighted, not which lines are cited.
+  test('a column-qualified permalink resolves to its lines', () => {
+    const [found] = parseAnchors(`[lib.rs:12-34](${BLOB}/crates/honmoon-core/src/lib.rs#L12C3-L34C10)`, 'wiki/p.md')
+    expect(found).toMatchObject({ path: 'crates/honmoon-core/src/lib.rs', start: 12, end: 34 })
   })
 
   test('a link to another repository is not a citation into this tree', () => {
@@ -141,6 +155,21 @@ describe('checkAnchor', () => {
   test('a whole-file citation whose file is there has no range to judge', () => {
     expect(checkAnchor(anchor({ text: 'lib.rs', start: null, end: null }), { lines: LINES })).toBeNull()
   })
+
+  // The worst form of a text/URL disagreement: the reader is given precise
+  // lines and the link lands on none of them.
+  test('text promising a range the link does not carry is reported', () => {
+    const problem = checkAnchor(anchor({ text: 'lib.rs:100-120', start: null, end: null }), { lines: LINES })
+    expect(problem?.kind).toBe('text')
+    expect(problem?.detail).toContain('links no line range at all')
+  })
+
+  // Both rules fire on this anchor; rule 4 is the one reported, because the
+  // remedy differs and `TRACKED` keys on which rule fired.
+  test('disagreeing text is reported ahead of a blank first line', () => {
+    expect(checkAnchor(anchor({ text: 'lib.rs:7-8', start: 3, end: 3 }), { lines: LINES })?.kind)
+      .toBe('text')
+  })
 })
 
 describe('readCited', () => {
@@ -179,16 +208,84 @@ describe('TRACKED', () => {
     expect(new Set(keys).size).toBe(keys.length)
   })
 
-  test('every entry names an issue and the pages it is on', () => {
+  test('every entry names an issue and at least one page, which the match reads', () => {
     for (const entry of TRACKED) {
       expect(entry.issue).toBeGreaterThan(0)
-      expect(entry.pages).not.toBe('')
+      expect(entry.pages.length).toBeGreaterThan(0)
     }
   })
 
   test('nothing on the page #204 repointed is tracked, apart from the row #169 owns', () => {
     const here = TRACKED.filter(e => e.pages.includes('getting-started/policy-authoring.md'))
     expect(here.map(e => e.issue)).toEqual([169])
+  })
+
+  // The bundle is generated from the pages, so no entry may name it — its
+  // occurrence is deferred by the entry still matching a page, not by a
+  // listing of its own.
+  test('no entry defers the generated bundle directly', () => {
+    expect(TRACKED.flatMap(e => e.pages).filter(page => page.endsWith('.txt'))).toEqual([])
+  })
+})
+
+// The three properties the ledger's own doc comment promises. Each is a way the
+// suppression leaked before review: by rule, by anchor, and by page.
+describe('defers', () => {
+  const entry: Tracked = {
+    path: 'crates/honmoon-core/src/engine.rs',
+    start: 59,
+    end: 60,
+    kind: 'blank',
+    issue: 169,
+    pages: ['getting-started/policy-authoring.md'],
+  }
+  const cited = anchor({
+    where: 'wiki/getting-started/policy-authoring.md',
+    path: 'crates/honmoon-core/src/engine.rs',
+    start: 59,
+    end: 60,
+  })
+
+  test('defers its own anchor, rule and page', () => {
+    expect(defers(entry, cited, 'blank')).toBe(true)
+  })
+
+  // `kind` is in the key so an entry recorded for a blank-line start cannot
+  // absorb the range failure a shrinking file would produce on the same anchor.
+  test('does not defer a different rule on the same anchor', () => {
+    expect(defers(entry, cited, 'range')).toBe(false)
+  })
+
+  test('does not defer the same anchor copied onto another page', () => {
+    expect(defers(entry, { ...cited, where: 'wiki/deep-dive/policy-engine.md' }, 'blank')).toBe(false)
+  })
+
+  test('does not defer a different range in the same file', () => {
+    expect(defers(entry, { ...cited, start: 61, end: 62 }, 'blank')).toBe(false)
+  })
+})
+
+describe('checkLinksRead', () => {
+  test('a document whose every blob link parsed reports nothing', () => {
+    expect(checkLinksRead(`[lib.rs:1](${BLOB}/crates/honmoon-core/src/lib.rs#L1)`, 'wiki/p.md')).toEqual([])
+  })
+
+  // A link text carrying `]` defeats `ANCHOR` entirely: the citation is not
+  // misparsed, it is absent. This rule is what makes that loud, and it is the
+  // reason `ANCHOR` does not have to grow a case per unparseable shape.
+  test('a blob link the anchor pattern cannot read is reported by count', () => {
+    const source = `[lib.rs [old]:1-2](${BLOB}/crates/honmoon-core/src/lib.rs#L1-L2)`
+    expect(parseAnchors(source, 'wiki/p.md')).toEqual([])
+    const [problem] = checkLinksRead(source, 'wiki/p.md')
+    expect(problem?.kind).toBe('coverage')
+    expect(problem?.line).toBeNull()
+    expect(problem?.detail).toContain('1 went unresolved')
+  })
+
+  test('the count is per document, so one unread link among several is still reported', () => {
+    const source = `[a:1](${BLOB}/README.md#L1) and [b [x]:1](${BLOB}/README.md#L1)`
+    expect(parseAnchors(source, 'wiki/p.md')).toHaveLength(1)
+    expect(checkLinksRead(source, 'wiki/p.md')).toHaveLength(1)
   })
 })
 
@@ -207,16 +304,20 @@ describe('checkRepository', () => {
     expect(checkRepository().stale).toEqual([])
   })
 
-  // Without this the failure mode is a vacuous pass: a regression in the link
-  // pattern would leave nothing parsed, `problems` empty, and every assertion
-  // above green while no citation in the wiki had been resolved at all. The
-  // check needs no floor count to rot — it asks each document that *contains* a
-  // citation whether any was read out of it.
-  test('every document carrying a citation yields one', () => {
-    const silent = wikiDocuments().filter((where) => {
-      const source = readFileSync(join(REPO_ROOT, where), 'utf8')
-      return source.includes(`](${BLOB}`) && parseAnchors(source, where).length === 0
-    })
-    expect(silent).toEqual([])
+  // Rules 6 and 7, over the real corpus. Without them the failure mode is a
+  // vacuous pass: a regression in the link pattern or in `wikiDocuments()`
+  // leaves nothing parsed, `problems` empty, and every assertion above green
+  // while no citation in the wiki was resolved at all. Neither needs a floor
+  // count to rot — one asks each document whether its own links were read, the
+  // other asks the generated bundle whether the scan reached the pages it
+  // inlines.
+  test('every blob link in every wiki document parsed as a citation', () => {
+    const unread = wikiDocuments().flatMap(where =>
+      checkLinksRead(readFileSync(join(REPO_ROOT, where), 'utf8'), where))
+    expect(unread).toEqual([])
+  })
+
+  test('nothing the scan missed is reported as a coverage gap', () => {
+    expect(checkRepository().problems.filter(p => p.kind === 'coverage')).toEqual([])
   })
 })
