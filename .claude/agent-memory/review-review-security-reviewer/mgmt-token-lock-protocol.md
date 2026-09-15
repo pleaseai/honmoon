@@ -54,9 +54,13 @@ poll.
 
 **The residual, documented by design — report only a change in it:** a waiter observes an
 abandoned lock and, between its staleness check and its rename, another waiter breaks the
-same lock and takes a fresh one that the first then renames away; both would mint. It is
-stated in the `mint_or_adopt_under_lock` doc comment along with the reason `flock` is not
-used (Bun does not expose it, so the two runtimes could not spell the same protocol).
+same lock and takes a fresh one that the first then renames away; both would mint. The
+release side carries the same window under the same precondition — it checks the inode and
+then unlinks, and POSIX has no compare-and-unlink — which is one residual seen from two
+ends, not two. Both ends are stated in the `mint_or_adopt_under_lock` doc comment along
+with the reason `flock` is not used (Bun does not expose it, so the two runtimes could not
+spell the same protocol). Proposing an "atomic ownership release" here is proposing
+`renameat2(RENAME_EXCHANGE)`, which is Linux-only and unreachable from Bun.
 
 **Related:** [[mgmt-api-auth-model]] for what the token gates and the Rust/Bun agreement on
 what counts as a token.
