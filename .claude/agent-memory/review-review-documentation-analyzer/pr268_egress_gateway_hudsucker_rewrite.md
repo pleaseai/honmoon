@@ -5,10 +5,10 @@ description: >-
   repointing it — so the Phase 1 names (handle, authorize, hold_for_approval, read_head) are
   deliberately absent and must not be flagged as missing; the page's slowloris claim is verified
   true through a four-hop dependency chain recorded here, so do not re-derive it and do not
-  "correct" the page to say hudsucker owns that guard; most of the eleven defects review found on it
-  were a quantifier or a count that no single code path keeps, and the rest were a diagram whose
-  shape does not match the code — a branch that cannot carry the control flow, or a rendering of one
-  transport standing in for a mechanism shared by two. Check those shapes first
+  "correct" the page to say hudsucker owns that guard; nearly every defect review found on it was a
+  quantifier or count no single code path keeps, a diagram whose shape does not match the code, or a
+  citation that does not support its sentence — sweep for those three shapes rather than waiting for
+  the round that names them
 metadata:
   type: project
 ---
@@ -48,26 +48,33 @@ So `set_http1_header_read_timeout` is never called. Filed as issue #267 (fix:
 incomplete message — but it is hyper's, not honmoon's, and it does not mitigate slowloris, because
 a client that never fills the buffer never trips it. The page states both at exactly that strength.
 
-**What this review pass missed, which is the part worth keeping.** Eleven defects reached the PR
-and were caught by others across five review rounds. They fall into three shapes, and the first two
-are worth going looking for by hand:
+**What this review pass missed, which is the part worth keeping.** Review kept finding defects on
+this page round after round, and they fall into three shapes. No running tally here on purpose — a
+count is exactly the kind of claim that goes stale on the next round. The shapes are the durable
+part:
 
-1. **A quantifier or a count** — seven of the eleven. A claim scoped more widely (or, twice, more
-   narrowly) than any single code path keeps. Grep the page for `every|all|only|always|never` and
-   each bare number, then check every hit against the branch that has to hold it.
-2. **A diagram whose shape does not match the code** — three times, each one a round after the
-   last was fixed. Two were control flow: `opt` has no early-return semantics, and a two-way `alt`
+1. **A quantifier or a count** — the most common by far. A claim scoped more widely (and
+   occasionally more narrowly) than any single code path keeps. Grep the page for
+   `every|all|only|always|never` and each bare number, then check every hit against the branch that
+   has to hold it.
+2. **A diagram whose shape does not match the code** — recurring, each time a round after the last
+   was fixed. Two were control flow: `opt` has no early-return semantics, and a two-way `alt`
    cannot carry three verdicts. The third is the one to internalize, because a sweep for quantifiers
    will not find it: **a mechanism shared by two transports has two renderings, and a diagram of one
    is a claim about both unless it says otherwise.** `approval::hold` is shared with the SOCKS5 data
    path — the prose said so two paragraphs above the diagram — while the diagram's terminal states
    were HTTP statuses with nothing marking them as such.
-3. **A citation range that opens correctly and covers too little** — once, and invisible to
-   `check-wiki-source-anchors.ts`, which only checks where a range *opens*.
+3. **A citation that does not support its sentence** — and every variant of this is invisible to
+   `check-wiki-source-anchors.ts`, which validates only where a range *opens*. Seen here in all
+   three directions: a range covering too little (`inspect_body` cited at doc-plus-signature), a
+   range running past its subject (test ranges ended on the *next* test's `#[test]` attribute), and
+   a range pointing at a module doc comment while the sentence enumerated eight behaviours the
+   comment does not mention. **A sentence that enumerates cases needs one citation per case, or
+   fewer cases.**
 
-**Sweeping for a shape beats waiting for the round that finds it.** Once each shape was named, one
-pass over the whole page looking for *that* shape found seven more defects before the next review
-round reached them: four quantifiers (`f7cba25` — `status_response` as "the refusal every gate
+**Sweeping for a shape beats waiting for the round that finds it — but sweep for the shape, not
+for the sentence.** Once each shape was named, one pass over the whole page looking for *that*
+shape caught several more before the next round reached them: four quantifiers (`f7cba25` — `status_response` as "the refusal every gate
 returns" when three refusals carry a reason body instead; two mermaid nodes still unqualified a
 screen below prose already corrected; `--audit-log`'s "every verdict"), two diagram branches
 (`afcc4c2`, `90aef36` — the hold diagram carrying the verdict table's own CONNECT-only defect one
@@ -76,7 +83,15 @@ the intro tip's "gates every connection the same way", which after the `http.hos
 contradicted it, since `connection_gate` builds `Facts { domain, endpoint, ..Default::default() }`).
 The sweep is cheap and mechanical; the review round costs a CI cycle and a bot pass.
 
-The eleven, in the order they were found:
+**The trap inside that method, hit once here.** `96c7281` fixed a shared-mechanism claim on the
+SOCKS5 tip by writing "puts **every** connection through the same allow / deny / pause gate" — and
+the next round flagged that quantifier, correctly: the `kubernetes` refusal runs *before*
+`connection_gate` (`socks.rs:175-178`), so such a destination never reaches the gate, and a `pause`
+on it is audited as a refusal with its rule attribution intact rather than held for an approval
+nobody could act on (`socks.rs:419-456`). **Widening a claim to fix a neighbouring one re-creates
+the first shape.** After editing a sentence for one shape, re-read it for the other two.
+
+The ones worth keeping as worked examples, in the order they were found:
 
 - The verdict table's "Client response" column said `tunnel (200)`. `host_gate` is not
   CONNECT-only: `handle_request` runs it for every cleartext and absolute-form request no
@@ -133,6 +148,15 @@ The eleven, in the order they were found:
   and an abandonment are **the same byte on the wire**. The diagram did not merely read as
   HTTP-flavoured; it told an operator they could tell four outcomes apart where they cannot. RFC
   1928 has no code for "a human declined" as against a policy refusal, and none for a full queue.
+- "Bodies are scanned as well" on the cleartext and inner shapes, unconditionally.
+  `MAX_INSPECT_BODY` is 2 MiB — declared, discovered while reading, or reached by decompression
+  (`body.rs:56-61`) — and a body past it is forwarded unscanned. The guards table five sections
+  down did say so; the shape list, which is where a reader learns what each shape gets, did not.
+  **A cap stated once, far from the claim it bounds, reads as not applying there.**
+- The `Pause` row gave `Paused → Approved/Rejected` as its audit lifecycle while its `Gate` cell
+  covered the queue-full case, which records `Rejected` alone and returns before any `Paused` entry
+  or hold exists (`approval.rs:286-295`). **Two cells of one row disagreeing is the same asymmetry
+  tell as two sides of one mechanism.**
 
 **Two drift classes that script cannot see**, both hit on this PR:
 
