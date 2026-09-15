@@ -134,8 +134,15 @@ always binds `pii` with its empty default, so `pii.count == 0 -> allow` reads an
 clean — the stated contract, not an oversight
 ([engine.rs:422-425](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/engine.rs#L422-L425), [mitm.rs:624-629](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-proxy/src/mitm.rs#L624-L629)). The rest of
 the policy is untouched either way: `decide_explained` still runs on the request's other facts, and
-a `domain`, `endpoint`, `k8s.*` or `http.*` rule (method, path, `body_size`) denies or pauses it
-exactly as it would on a scanned body ([mitm.rs:773-793](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-proxy/src/mitm.rs#L773-L793)).
+a `domain`, `endpoint`, `k8s.*` or `http.*` rule (method, path, `body_size`) still denies or pauses
+it ([mitm.rs:773-793](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-proxy/src/mitm.rs#L773-L793)).
+
+One of those facts is weaker than it looks, and a size threshold is the rule most likely to be
+written against an unscanned body. `http.body_size` is the declared `Content-Length` when an
+over-cap body declared one — so `http.body_size > 2097152` does deny there — but a body that
+overflowed the cap *while being read* never had its size learned, and carries the sentinel `-1`
+instead, which no `>` threshold matches ([mitm.rs:693-729](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-proxy/src/mitm.rs#L693-L729)). A client that
+omits `Content-Length` and streams is therefore outside a size rule, not caught by it.
 
 Which shape a request is in is decided by the `AuthorizedTunnel` the handler clone carries — the
 connection it arrived on must have made an authorized `CONNECT` to exactly that `host:port` — and
@@ -309,8 +316,11 @@ keeps being polled while it waits supplies, through `hold_until`
 SOCKS5 client that leaves mid-hold drops the connection task instead, and the drop guard frees the
 slot and audits the rejection with nothing left to write a reply to.
 
-Three fail-closed properties hold here. A **full pending queue** rejects new pauses with `503`
-rather than growing unbounded ([approval.rs:96-132](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-proxy/src/approval.rs#L96-L132), [approval.rs:64-74](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-proxy/src/approval.rs#L64-L74)); a
+Three fail-closed properties hold here, and the first is the shared mechanism rendered twice, so it
+is stated as the refusal rather than as a status. A **full pending queue** refuses new pauses rather
+than growing unbounded ([approval.rs:96-132](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-proxy/src/approval.rs#L96-L132), [approval.rs:64-74](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-proxy/src/approval.rs#L64-L74)); HTTP renders that
+refusal `503` ([mitm.rs:359-360](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-proxy/src/mitm.rs#L359-L360)) and SOCKS5 renders it the same `0x02` as
+every other non-approval, exactly as above; a
 **timeout auto-rejects** a held request so it never hangs forever
 ([approval.rs:318-347](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-proxy/src/approval.rs#L318-L347)); and a **hold that ends without a
 decision** — the HTTP client disconnecting drops the caller's future — frees its slot and audits
