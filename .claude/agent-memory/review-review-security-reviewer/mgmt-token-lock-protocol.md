@@ -42,7 +42,13 @@ link to a future mtime never looks abandoned while `O_EXCL` can never win agains
 every start would refuse, permanently); a lock path that is not a regular file is therefore
 broken rather than waited on. `LockGuard`/`releaseLock` compare the lock's inode and release
 only that inode, so a holder whose lock was broken and then resumed cannot unlink its
-successor's live lock. `break_abandoned_lock` reports whether it made progress and the
+successor's live lock — and they keep the lock's descriptor **open** for the guard's
+lifetime, which is what makes that comparison mean anything: an inode number identifies a
+file only while the inode is allocated, and ext4 and tmpfs reissue a freed number
+immediately, so without the open descriptor the successor lands on the same number and the
+check passes on the wrong file. This was not theoretical — the test caught it on Linux CI
+while passing on APFS, which never reuses a number. Do not propose closing the descriptor
+early. `break_abandoned_lock` reports whether it made progress and the
 waiter sleeps when it did not, bounding a persistently-failing rename to one attempt per
 poll.
 
