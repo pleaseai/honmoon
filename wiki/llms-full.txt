@@ -1901,7 +1901,8 @@ the inner request's method, path, body size and PII findings all reach the engin
 ## Pause, approval & audit
 
 `host_gate` is where the verdict becomes an outcome. It builds the facts, calls `decide_explained`
-(verdict + the rule that fired), records the decision to the shared `AuditLog`, and dispatches
+(verdict + the rule that fired), audits the outcome where the table below says it does, and
+dispatches
 ([mitm.rs:296-336](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-proxy/src/mitm.rs#L296-L336)):
 
 | Verdict | Audit `Decision` | `Gate` | Source |
