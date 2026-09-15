@@ -1,0 +1,26 @@
+scripts/check-wiki-source-anchors.test.ts
+  s_179ae213b8fbe5::t_fde211e2c28ab1 97-104
+  s_179ae213b8fbe5::t_ae3165777eed3f 395-403
+scripts/check-wiki-source-anchors.ts
+  s_179ae213b8fbe5::t_e4fd629d169862 173-176,181
+  s_179ae213b8fbe5::t_575765da7c42e8 199
+  s_179ae213b8fbe5::t_2c3b90541dc348 177-180
+  s_179ae213b8fbe5::t_e02d4ccdebe9d8 205-210,215
+  s_179ae213b8fbe5::t_5e25400494f253 88-96
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "e29db0ec81619e9efadd9cc27b6c2cbfcc4fb67a",
+  "prompts": {},
+  "sessions": {
+    "s_179ae213b8fbe5": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "854ad83a-3f97-4fff-ac96-977da3e2476b",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
