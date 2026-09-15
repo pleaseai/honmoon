@@ -81,6 +81,19 @@
  * published page does that today; if one comes to, the example has to be
  * spelled so it resolves, or this has to learn about fences.
  *
+ * The same line bounds rules 1-6 in the other direction: **a destination is
+ * read as it is written.** Markdown resolves a character reference or a
+ * percent-encoding in the URL — `https://github&#46;com/…` links to the same
+ * page — and neither {@link ANCHOR} nor {@link BLOB_LINK} sees through one, so
+ * such a citation is neither counted nor resolved. Two shapes are read because
+ * ordinary writing produces them: the angle-bracketed destination CommonMark
+ * allows, and the permalinks GitHub's own copy button emits. An encoded host is
+ * not one of those; nobody types it by accident, and seeing through the general
+ * case means decoding destinations with a markdown parser. This is a floor
+ * under review of documentation written in good faith, not a gate against a
+ * citation spelled to evade it — which a page could do far more simply by
+ * carrying no link at all, since nothing here can require one.
+ *
  * So this is a floor under review, not a replacement for it — the same split
  * `check-wiki-io-claim.ts` draws for the I/O claim. What it buys is that the
  * half of #204 a machine *can* decide cannot come back silently, including from
@@ -180,10 +193,12 @@ const ANCHOR
  *
  * Deliberately just the `](` and the prefix: it is what {@link ANCHOR} has to
  * account for, so the two disagreeing is the signal rule 6 reports. It counts a
- * link written as markdown, in either destination form CommonMark allows — the
- * angle-bracketed one included, because a shape neither pattern sees is a
- * citation rule 6 cannot report. A bare URL in prose is not a citation either
- * pattern reads, and is not counted as one.
+ * link written as markdown with a literal host, bare or angle-bracketed — the
+ * bracketed form included, because a shape neither pattern sees is a citation
+ * rule 6 cannot report. What it does not see through is an encoded destination
+ * (`github&#46;com`, a percent-encoding); the module doc says why that bound is
+ * where it is. A bare URL in prose is not a citation either pattern reads, and
+ * is not counted as one.
  */
 const BLOB_LINK = /\]\(<?https:\/\/github\.com\/pleaseai\/honmoon\/blob\//g
 
