@@ -96,7 +96,8 @@
  * It is a ledger of open work, not an exemption, and the bound on that is
  * exact: an entry suppresses the anchor it names **on the pages it names**, so
  * the same anchor written onto a page the entry does not list is reported like
- * any other. What it cannot tell apart is a *new* citation that coincides with
+ * any other, and a page that stops producing the finding is reported as a page
+ * to drop. What it cannot tell apart is a *new* citation that coincides with
  * a tracked one on the same page — same file, same range, same rule — which
  * reads as the tracked occurrence. Read the guarantee as "the rules above,
  * applied to every citation outside the ledger's own pages", and not as
@@ -106,7 +107,8 @@
  * `check-wiki-io-claim.ts` scans it: it is generated
  * (`wiki/.vitepress/gen-llms-full.mjs`) and inlines every page, so a page
  * repointed without regenerating it leaves the stale anchor in the file LLM
- * readers actually consume.
+ * readers actually consume. Its occurrences are judged against the page each
+ * was generated from, which the bundle's own `<doc path="…">` markers name.
  *
  * It is enforced by its own test rather than by a `ci.yml` step, the way
  * `check-wiki-io-claim.ts` is: it reads the working tree and needs no build, so
@@ -179,6 +181,16 @@ const BARE_DELIMITER = /^[)\]}]+[,;]?$/
 const TEXT_LINES = /:(\d+)(?:-(\d+))?$/
 
 /**
+ * The marker `gen-llms-full.mjs` writes ahead of each inlined page.
+ *
+ * Anchored at column 1, because the generator emits it there and a `<doc …>`
+ * quoted inside a page's prose would otherwise re-attribute everything under
+ * it. `path` is repo-relative and already carries the `wiki/` prefix, so it
+ * compares directly against an {@link Anchor}'s `where`.
+ */
+const BUNDLE_DOC = /^<doc\s[^>]*\bpath="([^"]+)"/
+
+/**
  * Which rule a finding came from — {@link TRACKED} matches on it.
  *
  * `coverage` is the pair of rules about the scan (6 and 7). It is never a
@@ -242,9 +254,11 @@ export interface Tracked {
    * dropped it. An entry defers the pages it names and nothing else.
    *
    * The `llms-full.txt` bundle is not listed. It is generated from these pages,
-   * so its copy is deferred only while the entry still matches one of them —
-   * which makes a page repointed without regenerating the bundle two findings
-   * (a stale entry and an unread bundle citation) rather than none.
+   * so each of its occurrences is attributed to the page whose `<doc path="…">`
+   * section holds it and deferred only while the entry still matches *that*
+   * page — which makes a page repointed without regenerating the bundle two
+   * findings (a stale page on the entry and an unread bundle citation) rather
+   * than none, even when a sibling page here still carries the old anchor.
    */
   pages: string[]
 }
@@ -252,8 +266,14 @@ export interface Tracked {
 export interface Report {
   problems: Problem[]
   tracked: { entry: Tracked, where: string, line: number }[]
-  /** Entries that matched nothing — the anchor was fixed or removed. */
-  stale: Tracked[]
+  /**
+   * Pages an entry names on which no citation produces its finding any more.
+   *
+   * Per page rather than per entry: an entry listing three pages where one was
+   * repointed is two-thirds live, and dropping only the dead page is the edit
+   * a reader has to make.
+   */
+  stale: { entry: Tracked, page: string }[]
   /** How many anchors were resolved, so a vacuous pass is visible. */
   resolved: number
 }
@@ -477,12 +497,55 @@ const LLMS_FULL = 'wiki/llms-full.txt'
  * every other test in the suite while letting a stale anchor copied to a new
  * page through (greptile and codex both reported it on #254).
  */
-export function defers(entry: Tracked, anchor: Anchor, kind: Kind): boolean {
+export function defers(
+  entry: Tracked,
+  anchor: Anchor,
+  kind: Kind,
+  page: string = anchor.where,
+): boolean {
   return entry.path === anchor.path
     && entry.start === anchor.start
     && entry.end === anchor.end
     && entry.kind === kind
-    && entry.pages.some(page => `wiki/${page}` === anchor.where)
+    && entry.pages.some(listed => `wiki/${listed}` === page)
+}
+
+/**
+ * Index `llms-full.txt` by the page each of its lines was generated from.
+ *
+ * One entry per `<doc path="…">` marker, in file order, so a citation on line
+ * N belongs to the last entry at or before N. The bundle is a concatenation of
+ * pages and a deferral is per page ({@link defers}), so without the attribution
+ * a bundle occurrence can only be matched by anchor — and review found what
+ * that costs: for an entry naming several pages, one page repointed without
+ * regenerating the bundle leaves its stale copy hiding behind another listed
+ * page that still carries the same anchor.
+ */
+export function bundleSections(source: string): { line: number, page: string }[] {
+  const sections: { line: number, page: string }[] = []
+  source.split('\n').forEach((text, index) => {
+    const match = BUNDLE_DOC.exec(text)
+    if (match !== null) {
+      sections.push({ line: index + 1, page: match[1]! })
+    }
+  })
+  return sections
+}
+
+/**
+ * The page a bundle line was generated from, or `null` ahead of the first
+ * marker — the generator's own preamble, which carries no citation today and
+ * is attributed to no page if it comes to.
+ */
+export function bundleOwner(sections: { line: number, page: string }[], line: number): string | null {
+  let owner: string | null = null
+  for (const section of sections) {
+    if (section.line > line) {
+      break
+    }
+    owner = section.page
+  }
+  return owner
 }
 
 /**
@@ -514,10 +577,12 @@ export function checkLinksRead(source: string, where: string): Problem[] {
  * Read every wiki document and resolve every citation in it.
  *
  * Two passes, because {@link Tracked} defers a citation on the pages it names
- * and the bundle is not one of them. A bundle occurrence is deferred only while
- * its entry still matches a page — so a page repointed without regenerating
- * `llms-full.txt` reports twice (the entry went stale, and the bundle carries a
- * citation nothing defers) rather than going quiet.
+ * and the bundle is not one of them. A bundle occurrence is attributed to the
+ * page its `<doc path="…">` section names and deferred only while that page
+ * still produces the finding — so a page repointed without regenerating
+ * `llms-full.txt` reports twice (the entry went stale for that page, and the
+ * bundle carries a citation nothing defers) rather than going quiet, including
+ * when a sibling page listed by the same entry still carries the old anchor.
  */
 export function checkRepository(): Report {
   const documents = wikiDocuments()
@@ -532,11 +597,14 @@ export function checkRepository(): Report {
     ...documents.flatMap(where => checkLinksRead(sources.get(where)!, where)),
   ]
   const tracked: Report['tracked'] = []
-  const matched = new Set<Tracked>()
+  // Pairs, not a flag: an entry naming several pages is matched by each of them
+  // separately, so one page's bundle copy is not kept alive by a sibling page
+  // that still carries the same anchor (codex reported exactly that on #254).
+  const matched = new Map<Tracked, Set<string>>()
   const files = new Map<string, { lines: string[] } | { detail: string }>()
   let resolved = 0
 
-  const resolve = (where: string, deferrable: boolean): void => {
+  const resolve = (where: string, sections: { line: number, page: string }[] | null): void => {
     for (const anchor of parseAnchors(sources.get(where)!, where)) {
       resolved += 1
       if (!files.has(anchor.path)) {
@@ -546,25 +614,26 @@ export function checkRepository(): Report {
       if (problem === null) {
         continue
       }
-      const entry = deferrable
-        ? TRACKED.find(known => defers(known, anchor, problem.kind))
-        // In the bundle an occurrence carries the page's own `where`, so
-        // `defers` can never match it. What defers it is that its entry is
-        // still deferring the page this text was generated from.
-        : [...matched].find(known =>
-            known.path === anchor.path
-            && known.start === anchor.start
-            && known.end === anchor.end
-            && known.kind === problem.kind)
+      // In the bundle an occurrence carries the bundle's own `where`, so the
+      // page it has to be judged against is the one it was generated from.
+      const page = sections === null ? anchor.where : bundleOwner(sections, anchor.line)
+      const entry = page === null
+        ? undefined
+        : TRACKED.find(known => defers(known, anchor, problem.kind, page))
       if (entry === undefined) {
         problems.push(problem)
+        continue
       }
-      else {
-        if (deferrable) {
-          matched.add(entry)
-        }
-        tracked.push({ entry, where, line: problem.line })
+      if (sections === null) {
+        matched.set(entry, (matched.get(entry) ?? new Set()).add(page!))
       }
+      else if (!(matched.get(entry)?.has(page!) ?? false)) {
+        // The page this text was generated from no longer produces the finding,
+        // so the bundle was not regenerated after that page was repointed.
+        problems.push(problem)
+        continue
+      }
+      tracked.push({ entry, where, line: problem.line })
     }
   }
 
@@ -572,16 +641,18 @@ export function checkRepository(): Report {
   // occurrence may write to it. An entry kept alive by the bundle alone would
   // outlive the page citation the issue is actually about.
   for (const where of documents.filter(where => where !== LLMS_FULL)) {
-    resolve(where, true)
+    resolve(where, null)
   }
   if (sources.has(LLMS_FULL)) {
-    resolve(LLMS_FULL, false)
+    resolve(LLMS_FULL, bundleSections(sources.get(LLMS_FULL)!))
   }
 
   return {
     problems,
     tracked,
-    stale: TRACKED.filter(entry => !matched.has(entry)),
+    stale: TRACKED.flatMap(entry => entry.pages
+      .filter(page => !(matched.get(entry)?.has(`wiki/${page}`) ?? false))
+      .map(page => ({ entry, page: `wiki/${page}` }))),
     resolved,
   }
 }
@@ -592,11 +663,12 @@ export function main(): number {
   for (const { where, line, detail } of problems) {
     console.error(line === null ? `${where}: ${detail}` : `${where}:${line}: ${detail}`)
   }
-  for (const entry of stale) {
+  for (const { entry, page } of stale) {
     console.error(
       `scripts/check-wiki-source-anchors.ts: TRACKED names \`${entry.path}#L${entry.start}-L${entry.end}\` `
-      + `(${entry.kind}, #${entry.issue}), which no citation in the wiki produces any more — `
-      + 'the anchor was repointed or removed, so drop the entry',
+      + `(${entry.kind}, #${entry.issue}) on \`${page}\`, which produces no such finding any more — `
+      + 'the anchor was repointed or removed, so drop that page from the entry, and the entry with '
+      + 'its last page',
     )
   }
 

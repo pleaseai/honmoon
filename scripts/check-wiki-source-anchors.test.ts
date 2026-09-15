@@ -4,6 +4,8 @@ import { join } from 'node:path'
 import { describe, expect, test } from 'bun:test'
 import { wikiDocuments } from './check-wiki-io-claim'
 import {
+  bundleOwner,
+  bundleSections,
   checkAnchor,
   checkLinksRead,
   checkRepository,
@@ -221,8 +223,8 @@ describe('TRACKED', () => {
   })
 
   // The bundle is generated from the pages, so no entry may name it — its
-  // occurrence is deferred by the entry still matching a page, not by a
-  // listing of its own.
+  // occurrence is deferred by the entry still matching the page that occurrence
+  // was generated from, not by a listing of its own.
   test('no entry defers the generated bundle directly', () => {
     expect(TRACKED.flatMap(e => e.pages).filter(page => page.endsWith('.txt'))).toEqual([])
   })
@@ -263,6 +265,58 @@ describe('defers', () => {
   test('does not defer a different range in the same file', () => {
     expect(defers(entry, { ...cited, start: 61, end: 62 }, 'blank')).toBe(false)
   })
+
+  // How the bundle pass asks the question: the occurrence's own `where` is
+  // `wiki/llms-full.txt`, which no entry lists, so the page it was generated
+  // from is passed explicitly.
+  test('judges an explicit page instead of the anchor’s own document', () => {
+    const inBundle = { ...cited, where: 'wiki/llms-full.txt' }
+    expect(defers(entry, inBundle, 'blank')).toBe(false)
+    expect(defers(entry, inBundle, 'blank', 'wiki/getting-started/policy-authoring.md')).toBe(true)
+    expect(defers(entry, inBundle, 'blank', 'wiki/deep-dive/policy-engine.md')).toBe(false)
+  })
+})
+
+// The attribution that makes a bundle occurrence answerable per page. Without
+// it, an entry naming several pages had one page's stale bundle copy hidden by
+// a sibling page that still carried the anchor.
+describe('bundleSections', () => {
+  const bundle = [
+    'preamble',
+    '<doc title="A" path="wiki/a.md">',
+    'body of a',
+    '</doc>',
+    '',
+    '<doc title="B" path="wiki/b.md">',
+    'body of b',
+    '</doc>',
+  ].join('\n')
+
+  test('names every inlined page with the line its section opens on', () => {
+    expect(bundleSections(bundle)).toEqual([
+      { line: 2, page: 'wiki/a.md' },
+      { line: 6, page: 'wiki/b.md' },
+    ])
+  })
+
+  test('a marker quoted inside a page does not re-attribute what follows', () => {
+    expect(bundleSections('  <doc title="X" path="wiki/x.md">')).toEqual([])
+  })
+
+  test('attributes each line to the section it falls in', () => {
+    const sections = bundleSections(bundle)
+    expect(bundleOwner(sections, 1)).toBeNull()
+    expect(bundleOwner(sections, 2)).toBe('wiki/a.md')
+    expect(bundleOwner(sections, 4)).toBe('wiki/a.md')
+    expect(bundleOwner(sections, 7)).toBe('wiki/b.md')
+  })
+
+  test('the real bundle is indexed by the pages the scan opened', () => {
+    const pages = bundleSections(readFileSync(join(REPO_ROOT, 'wiki/llms-full.txt'), 'utf8'))
+      .map(({ page }) => page)
+    expect(pages.length).toBeGreaterThan(0)
+    expect(pages.filter(page => !wikiDocuments().includes(page))).toEqual([])
+  })
 })
 
 describe('checkLinksRead', () => {
@@ -297,10 +351,12 @@ describe('checkRepository', () => {
     expect(checkRepository().problems).toEqual([])
   })
 
-  // A `TRACKED` entry that matches nothing has outlived its drift: either the
-  // anchor was repointed or the page dropped it. Left in, it would be a note
-  // telling a future reader that work is outstanding when it is not.
-  test('no TRACKED entry has outlived the anchor it describes', () => {
+  // A page a `TRACKED` entry names that no longer produces its finding has
+  // outlived the drift: either the anchor was repointed or the page dropped it.
+  // Left in, it would be a note telling a future reader that work is
+  // outstanding when it is not — and, until review, a page that kept a sibling
+  // page's stale bundle copy deferred.
+  test('no TRACKED page has outlived the anchor it describes', () => {
     expect(checkRepository().stale).toEqual([])
   })
 
