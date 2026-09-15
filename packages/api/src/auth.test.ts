@@ -290,31 +290,10 @@ describe('resolveToken', () => {
    * and returned *its own* token. The file then authenticated exactly one of
    * them — a dashboard that works and an API that 401s, or the reverse.
    */
-  test('concurrent starts over an empty token file all hold the token on disk', async () => {
-    writeFileSync(join(dir, 'mgmt-token'), '\n')
-
-    const { tokens, onDisk } = await concurrentResolutions(8)
-
-    expect(onDisk).toMatch(/^[0-9a-f]{64}$/)
-    for (const token of tokens) {
-      expect(token).toBe(onDisk)
-    }
-    expect(existsSync(join(dir, 'mgmt-token.lock'))).toBe(false)
-  }, 30_000)
-
-  /**
-   * The create race had no test either. `wx` creates the file and the write
-   * that follows fills it, so a loser re-reading on EEXIST could land between
-   * the two syscalls and read zero bytes — which the old code turned into
-   * "empty after a lost create race" and threw.
-   */
-  test('concurrent first starts all hold the token on disk', async () => {
-    // Repeated: this window is a two-syscall gap rather than the whole
-    // read-mint-write span the empty-file race opens, so one batch caught the
-    // old behaviour on only some runs.
-    for (let round = 0; round < 3; round++) {
-      rmSync(dir, { recursive: true, force: true })
-      mkdirSync(dir, { recursive: true, mode: 0o700 })
+  test.skipIf(process.platform === 'win32')(
+    'concurrent starts over an empty token file all hold the token on disk',
+    async () => {
+      writeFileSync(join(dir, 'mgmt-token'), '\n')
 
       const { tokens, onDisk } = await concurrentResolutions(8)
 
@@ -322,82 +301,121 @@ describe('resolveToken', () => {
       for (const token of tokens) {
         expect(token).toBe(onDisk)
       }
-    }
-  }, 60_000)
+      expect(existsSync(join(dir, 'mgmt-token.lock'))).toBe(false)
+    },
+    30_000,
+  )
+
+  /**
+   * The create race had no test either. `wx` creates the file and the write
+   * that follows fills it, so a loser re-reading on EEXIST could land between
+   * the two syscalls and read zero bytes — which the old code turned into
+   * "empty after a lost create race" and threw.
+   */
+  test.skipIf(process.platform === 'win32')(
+    'concurrent first starts all hold the token on disk',
+    async () => {
+      // Repeated: this window is a two-syscall gap rather than the whole
+      // read-mint-write span the empty-file race opens, so one batch caught the
+      // old behaviour on only some runs.
+      for (let round = 0; round < 3; round++) {
+        rmSync(dir, { recursive: true, force: true })
+        mkdirSync(dir, { recursive: true, mode: 0o700 })
+
+        const { tokens, onDisk } = await concurrentResolutions(8)
+
+        expect(onDisk).toMatch(/^[0-9a-f]{64}$/)
+        for (const token of tokens) {
+          expect(token).toBe(onDisk)
+        }
+      }
+    },
+    60_000,
+  )
 
   /**
    * A waiter adopts what the holder publishes. It must never mint: a second
    * token is the divergence, and waiting is the only safe thing to do with an
    * empty file somebody else has claimed.
    */
-  test('a waiter adopts the token the lock holder publishes', async () => {
-    const path = join(dir, 'mgmt-token')
-    const lock = join(dir, 'mgmt-token.lock')
-    writeFileSync(path, '\n')
-    // Stand in for a concurrent start that has taken the lock and not yet
-    // published.
-    writeFileSync(lock, '1\n')
+  test.skipIf(process.platform === 'win32')(
+    'a waiter adopts the token the lock holder publishes',
+    async () => {
+      const path = join(dir, 'mgmt-token')
+      const lock = join(dir, 'mgmt-token.lock')
+      writeFileSync(path, '\n')
+      // Stand in for a concurrent start that has taken the lock and not yet
+      // published.
+      writeFileSync(lock, '1\n')
 
-    const waiter = startResolution(dir)
-    await Bun.sleep(300)
-    // Published by rename, the way publishToken does it. A plain writeFileSync
-    // truncates and then fills, and the waiter — which polls the file on every
-    // iteration by design — reads the prefix.
-    const staging = join(dir, 'holder-staging')
-    writeFileSync(staging, 'the-holders-token\n')
-    renameSync(staging, path)
-    rmSync(lock)
+      const waiter = startResolution(dir)
+      await Bun.sleep(300)
+      // Published by rename, the way publishToken does it. A plain writeFileSync
+      // truncates and then fills, and the waiter — which polls the file on every
+      // iteration by design — reads the prefix.
+      const staging = join(dir, 'holder-staging')
+      writeFileSync(staging, 'the-holders-token\n')
+      renameSync(staging, path)
+      rmSync(lock)
 
-    const adopted = await resolutionOf(waiter)
-    expect(adopted.token).toBe('the-holders-token')
-    // An adopted token is not this start's to print.
-    expect(adopted.source).toBe('persisted')
-  }, 30_000)
+      const adopted = await resolutionOf(waiter)
+      expect(adopted.token).toBe('the-holders-token')
+      // An adopted token is not this start's to print.
+      expect(adopted.source).toBe('persisted')
+    },
+    30_000,
+  )
 
   /**
    * A lock nobody releases must not become a mint. Refusing names the lock and
    * leaves the file untouched, so the operator can see what to delete; minting
    * would hand this service a credential nothing else holds.
    */
-  test('a waiter refuses rather than minting when the lock is never released', () => {
-    writeFileSync(join(dir, 'mgmt-token'), '\n')
-    writeFileSync(join(dir, 'mgmt-token.lock'), '1\n')
+  test.skipIf(process.platform === 'win32')(
+    'a waiter refuses rather than minting when the lock is never released',
+    () => {
+      writeFileSync(join(dir, 'mgmt-token'), '\n')
+      writeFileSync(join(dir, 'mgmt-token.lock'), '1\n')
 
-    expect(() => resolveToken(dir, { ...DEFAULT_LOCK_TIMING, budgetMs: 100, pollIntervalMs: 5 }))
-      .toThrow(/mgmt-token\.lock/)
-    expect(readFileSync(join(dir, 'mgmt-token'), 'utf8')).toBe('\n')
-  })
+      expect(() => resolveToken(dir, { ...DEFAULT_LOCK_TIMING, budgetMs: 100, pollIntervalMs: 5 }))
+        .toThrow(/mgmt-token\.lock/)
+      expect(readFileSync(join(dir, 'mgmt-token'), 'utf8')).toBe('\n')
+    },
+  )
 
   /**
    * A holder that crashes between taking the lock and releasing it leaves the
    * sentinel behind. Waiting for it forever would turn a rare divergence into a
    * service that never starts again, so an aged lock is broken.
    */
-  test('an abandoned lock is broken rather than wedging the next start', () => {
-    const lock = join(dir, 'mgmt-token.lock')
-    writeFileSync(join(dir, 'mgmt-token'), '\n')
-    writeFileSync(lock, '999999\n')
+  test.skipIf(process.platform === 'win32')(
+    'an abandoned lock is broken rather than wedging the next start',
+    () => {
+      const lock = join(dir, 'mgmt-token.lock')
+      writeFileSync(join(dir, 'mgmt-token'), '\n')
+      writeFileSync(lock, '999999\n')
 
-    // `staleAfterMs: 0` makes the lock just written look like one a crashed
-    // start left behind, without the test waiting out a real staleness bound.
-    const warnings: string[] = []
-    const original = console.warn
-    console.warn = (...args: unknown[]) => warnings.push(args.join(' '))
-    let resolved: ReturnType<typeof resolveToken>
-    try {
-      resolved = resolveToken(dir, { ...DEFAULT_LOCK_TIMING, staleAfterMs: 0, pollIntervalMs: 5 })
-    }
-    finally {
-      console.warn = original
-    }
+      // `staleAfterMs: 0` makes the lock just written look like one a crashed
+      // start left behind, without the test waiting out a real staleness bound.
+      const warnings: string[] = []
+      const original = console.warn
+      console.warn = (...args: unknown[]) => warnings.push(args.join(' '))
+      let resolved: ReturnType<typeof resolveToken>
+      try {
+        resolved = resolveToken(dir, { ...DEFAULT_LOCK_TIMING, staleAfterMs: 0, pollIntervalMs: 5 })
+      }
+      finally {
+        console.warn = original
+      }
 
-    expect(resolved.source).toBe('generated')
-    expect(resolved.token).toMatch(/^[0-9a-f]{64}$/)
-    expect(existsSync(lock)).toBe(false)
-    // Never silently: an operator whose gateway crashed mid-mint should see why
-    // the lock they may have noticed is gone.
-    expect(warnings.join(' ')).toContain('treating it as abandoned')
-  })
+      expect(resolved.source).toBe('generated')
+      expect(resolved.token).toMatch(/^[0-9a-f]{64}$/)
+      expect(existsSync(lock)).toBe(false)
+      // Never silently: an operator whose gateway crashed mid-mint should see why
+      // the lock they may have noticed is gone.
+      expect(warnings.join(' ')).toContain('treating it as abandoned')
+    },
+  )
 
   /**
    * A symlink planted at the token path must not receive the token.
