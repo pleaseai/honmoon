@@ -1,0 +1,26 @@
+.claude/agent-memory/review-review-documentation-analyzer/pr264_wiki_anchor_ledger_253_verified.md
+  s_4cda2cdfdbc842::t_83cd00b8dae6ea 7-9,41-44,48-53,60-63
+  s_4cda2cdfdbc842::t_abcc4d13ee79d4 15-19
+  s_4cda2cdfdbc842::t_adf439c6f90684 45-47,54-59
+  s_4cda2cdfdbc842::t_0e0e546fb59fb4 1-6,10-14,20-40
+wiki/deep-dive/protocol-parsing.md
+  s_4cda2cdfdbc842::t_5b02ddc5506380 192
+wiki/llms-full.txt
+  s_4cda2cdfdbc842::t_5b02ddc5506380 1669
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "c29db7869fc928bc60ef7e21b8ae39d79dbe6fd3",
+  "prompts": {},
+  "sessions": {
+    "s_4cda2cdfdbc842": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "29396608-082e-4e8f-bac0-720ae2da96b1",
+        "model": "claude-opus-5"
+      },
+      "human_author": null
+    }
+  }
+}
