@@ -30,16 +30,18 @@ CI output is a line matching `BARE_DELIMITER` (`^[)\]}]+[,;]?$`).
 The backtracking residue this note originally pointed a future reviewer at **was closed inside the
 same PR**, so do not report it either. `ANCHOR`'s link-text group was `[^\]]*`, which retried every
 `[` in the document and scanned to end-of-input before failing — 200 KB of bare `[` measured 47.9 s.
-It is `[^\]\n]{0,200}` now, and the same input measures 99 ms. What is left, named in that regex's
+It is `[^\]\n]{0,200}` now, and the same input measures 99 ms — 91 ms against the final head, whose
+`ANCHOR` also takes the angle brackets and the horizontal whitespace CommonMark permits around a
+destination, neither of which moved the bound. What is left, named in that regex's
 own doc comment: 200 KB of a *partial* prefix (`[x](https://github.com/pleaseai/`…) still measures
 1.7 s, because each attempt fails inside the URL literal rather than inside the text group. That is
 superlinear, small, bounded by the CI job limit, and the text bound is not what would fix it.
 
-`BUNDLE_DOC` (`/^<doc\s[^>]*\bpath="([^"]+)"/`, added after review to attribute an `llms-full.txt`
-citation to the page it was generated from) is the one regex added beside `ANCHOR`, and it was
-measured too: it is `^`-anchored behind a literal `<doc` + whitespace, applied per line, and 200 KB
+Two regexes were added beside `ANCHOR`, both to attribute an `llms-full.txt` citation to the page it
+was generated from, and both measured: `BUNDLE_DOC` (`/^<doc\s[^>]*\bpath="([^"]+)"/`) and
+`BUNDLE_DOC_END` (`/^<\/doc>/`). Each is `^`-anchored behind a literal and applied per line; 200 KB
 single-line inputs shaped as `path=` bait, an unterminated run, and an unterminated quote all
-measure under 1 ms. It opens no path of its own — the page name it yields is compared against
+measure under 1 ms. Neither opens a path — the page name `BUNDLE_DOC` yields is compared against
 `Tracked.pages`, never joined onto the filesystem.
 
 **Why:** #233 filed exactly this class (CWE-59/CWE-22) against the dashboard guards, so every new
