@@ -17,8 +17,12 @@ upstream leg. **Honmoon owns the decisions**, supplied as an `HttpHandler`
 So `gateway.rs` holds the shared state and the four entry points, and every per-request decision —
 the host gate, the body scan, the approval hold — lives in `mitm.rs`.
 
-The gateway records every decision to the audit log and, for a `pause` verdict, holds the request
-pending human approval ([mitm.rs:296-336](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-proxy/src/mitm.rs#L296-L336), [approval.rs:235-260](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-proxy/src/approval.rs#L235-L260)).
+The gateway records its refusals and its holds to the audit log, and a `pause` verdict holds the
+request pending human approval ([mitm.rs:296-336](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-proxy/src/mitm.rs#L296-L336), [approval.rs:235-260](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-proxy/src/approval.rs#L235-L260)). It does **not**
+record every allow. The `CONNECT` that opens a connection is logged, and so is a request whose body
+scan found PII, but an ordinary forwarded request is deliberately quiet: recording each one would
+flood the bounded audit ring and cycle out the refusals that matter
+([mitm.rs:853-867](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-proxy/src/mitm.rs#L853-L867)).
 
 ::: tip This is not the only egress path
 A `CONNECT` proxy carries HTTP and TLS. A PostgreSQL or Redis client speaks neither, so a **SOCKS5
@@ -307,17 +311,23 @@ flowchart TD
 ### `honmoon run`
 
 `run` binds its own sockets — **two loopback pairs**, a v4/v6 pair for the `CONNECT` proxy and
-another for the SOCKS5 listener — then hands all four to one background thread and execs the child
+another for the SOCKS5 listener — then hands them to one background thread and execs the child
 with every proxy env var (`http_proxy`, `https_proxy`, `all_proxy`, `ALL_PROXY` and the uppercase
 variants) pointed at them. The child's exit code is propagated
 ([main.rs:790-912](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-cli/src/main.rs#L790-L912)). Binding in one place closes the TOCTOU
 window where another process could steal the port
-([main.rs:799-810](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-cli/src/main.rs#L799-L810)).
+([main.rs:799-810](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-cli/src/main.rs#L799-L810)). A pair downgrades to IPv4 alone only where `::1` is
+*proven absent* — the one case where no squatter can take a half honmoon did not bind. Every other
+bind failure aborts startup rather than leaving `::1:<port>` unowned
+([main.rs:953-988](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-cli/src/main.rs#L953-L988)).
 
-The four accept loops are polled in a single `tokio::select!` rather than spawned, deliberately: a
+The accept loops — four of them wherever `::1` is bindable — are polled in a single
+`tokio::select!` rather than spawned, deliberately: a
 panic in a spawned task is parked in a `JoinHandle` nobody joins, so an accept loop could die,
 drop its listener and hand that address to the first process that asked for it while `run` carried
-on reporting enforced isolation ([main.rs:828-847](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-cli/src/main.rs#L828-L847)). One
+on reporting enforced isolation ([main.rs:828-847](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-cli/src/main.rs#L828-L847)). A loop with no listener
+behind it waits forever instead of returning and taking the other three down with it
+([main.rs:920-933](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-cli/src/main.rs#L920-L933)). One
 `GatewayState` sits behind every listener, so a verdict's visibility never depends on which
 address family — or which protocol — the client used.
 
@@ -351,12 +361,14 @@ and every platform other than these two still only sets env vars
 ### `honmoon gateway`
 
 `gateway` builds a `GatewayState` (policy + audit + approvals + CA + intercept/PII/redaction
-settings) and runs the egress proxy, the SOCKS5 listener and the `honmoon-mgmt` management API on
-**one tokio runtime**, sharing that state — so a request held by the proxy can be approved from the
+settings) and runs the egress proxy, the `honmoon-mgmt` management API and — unless
+`--socks-addr off` declines it — the SOCKS5 listener on **one tokio runtime**, sharing that state — so a request held by the proxy can be approved from the
 dashboard ([main.rs:586-788](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-cli/src/main.rs#L586-L788)). Every listener is bound up
 front so a bind error is reported before anything is spawned, and a `tokio::select!` surfaces an
 unexpected proxy or SOCKS5 exit instead of silently leaving egress filtering down
-([main.rs:755-786](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-cli/src/main.rs#L755-L786)).
+([main.rs:755-786](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-cli/src/main.rs#L755-L786)). With SOCKS5 declined there is nothing to join on, so that
+arm waits forever rather than firing at once and killing the gateway
+([main.rs:767-774](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-cli/src/main.rs#L767-L774)).
 
 | Flag | Default | Purpose | Source |
 |------|---------|---------|--------|
