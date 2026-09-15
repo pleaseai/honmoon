@@ -16,6 +16,7 @@
  * #188's session-credential change (cookie → origin-scoped header) left this
  * service alone: it never had a browser credential to harvest.
  */
+import { Buffer } from 'node:buffer'
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto'
 import { closeSync, fstatSync, lstatSync, mkdirSync, openSync, readFileSync, renameSync, unlinkSync, writeSync } from 'node:fs'
 import { join } from 'node:path'
@@ -391,8 +392,10 @@ function acquireLock(lockPath: string): { ino: number | null, fd: number } | nul
     // Diagnostic only — for an operator reading a lock the budget message
     // named. Staleness is decided by the file's age and never by this pid: pids
     // are reused, and one from another container names a different process here
-    // or no process at all.
-    writeSync(fd, `${process.pid}\n`)
+    // or no process at all. Written through {@link writeAll} anyway: a truncated
+    // pid is harmless where a truncated token is not, but one write path is
+    // easier to keep right than two.
+    writeAll(fd, `${process.pid}\n`)
   }
   catch (error) {
     console.warn(
@@ -456,6 +459,34 @@ function releaseHeldLock(lockPath: string, ino: number | null): void {
 }
 
 /**
+ * Write every byte of `text` to `fd`, or throw.
+ *
+ * `writeSync` may write fewer bytes than it was given and report the count
+ * rather than throwing — a short write when the filesystem runs out of room is
+ * the ordinary case, not an exotic one — so a single call can leave a prefix
+ * behind and report success. For the token that is not a cosmetic truncation:
+ * the publish below renames whatever the staging file holds into place, and a
+ * waiter polling the token file adopts any non-empty read, so a prefix becomes a
+ * live management credential with a fraction of the entropy it is supposed to
+ * have. Rust publishes through `write_all`, which loops for exactly this reason;
+ * this is its counterpart, and the two have to agree because they write the same
+ * file.
+ */
+function writeAll(fd: number, text: string): void {
+  const bytes = Buffer.from(text, 'utf8')
+  let written = 0
+  while (written < bytes.length) {
+    const n = writeSync(fd, bytes, written, bytes.length - written)
+    if (n <= 0) {
+      throw new Error(
+        `wrote ${written} of ${bytes.length} bytes and then stopped making progress`,
+      )
+    }
+    written += n
+  }
+}
+
+/**
  * Publish the minted token atomically, under the lock.
  *
  * Write-then-`rename`, not a write in place, because the lock does not keep
@@ -500,7 +531,7 @@ function publishToken(dir: string, path: string, token: string): void {
   }
   const fd = openSync(staging, 'wx', 0o600)
   try {
-    writeSync(fd, token)
+    writeAll(fd, token)
   }
   finally {
     closeSync(fd)
