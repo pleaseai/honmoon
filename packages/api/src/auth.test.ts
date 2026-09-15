@@ -491,6 +491,61 @@ describe('resolveToken', () => {
     },
   )
 
+  /**
+   * The release-side identity check, on the path that exists for it: a start
+   * whose lock was broken out from under it must leave the successor's lock
+   * alone. Unlinking unconditionally would take a live lock with it, and a
+   * third start could then acquire while the successor still believed it held
+   * exclusivity.
+   *
+   * `console.warn` is the seam that makes this deterministic in one process.
+   * The empty-file warning is emitted under the lock and before the identity
+   * check, so swapping the lock file there is exactly the state a break leaves
+   * behind — without two interpreters having to interleave on it.
+   */
+  test.skipIf(process.platform === 'win32')(
+    'leaves a successor\'s lock alone when its own was broken, and adopts its token',
+    () => {
+      const path = join(dir, 'mgmt-token')
+      const lock = join(dir, 'mgmt-token.lock')
+      writeFileSync(path, '\n')
+
+      const warnings: string[] = []
+      const original = console.warn
+      console.warn = (...args: unknown[]) => {
+        const line = args.join(' ')
+        warnings.push(line)
+        if (!line.includes('is empty')) {
+          return
+        }
+        // Stand in for another start that aged this lock out, took its own, and
+        // published under it. `rmSync` then `writeFileSync` rather than a write
+        // in place, so the successor's lock is a different inode — which is the
+        // only thing the identity check can see.
+        rmSync(lock)
+        writeFileSync(lock, '424242\n', { mode: 0o600 })
+        const staging = join(dir, 'successor-staging')
+        writeFileSync(staging, 'the-successors-token\n', { mode: 0o600 })
+        renameSync(staging, path)
+      }
+      let resolved: ReturnType<typeof resolveToken>
+      try {
+        resolved = resolveToken(dir, { ...DEFAULT_LOCK_TIMING, pollIntervalMs: 5 })
+      }
+      finally {
+        console.warn = original
+      }
+
+      // The successor's lock survived this start's release.
+      expect(readFileSync(lock, 'utf8')).toBe('424242\n')
+      // And this start adopted rather than publishing over the successor.
+      expect(resolved).toEqual({ token: 'the-successors-token', source: 'persisted', path })
+      const said = warnings.join(' ')
+      expect(said).toContain('was taken by another start')
+      expect(said).toContain('no longer the one this start took')
+    },
+  )
+
   test('refuses a token file that is not valid UTF-8 instead of serving U+FFFD', () => {
     // Bun substitutes U+FFFD for malformed bytes rather than throwing, so a
     // corrupt file would otherwise become the ordinary-looking token "\uFFFD"
