@@ -1666,7 +1666,7 @@ end-to-end tests in `engine.rs`:
 | `parses_postgres_drop` | `'Q'` → `DROP` + table | [protocols.rs:192-197](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/protocols.rs#L192-L197) |
 | `rejects_non_query_packet` | non-`Q` / too-short → `None` | [protocols.rs:213-217](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/protocols.rs#L213-L217) |
 | `rejects_malformed_query_frames` | framing edge cases | [protocols.rs:219-237](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/protocols.rs#L219-L237) |
-| `parse_sql_extracts_verb_and_table` | quoting, schema, case | [protocols.rs:1728-1734](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/protocols.rs#L1728-L1734) |
+| `parse_sql_extracts_verb_and_table` | quoting, case | [protocols.rs:1728-1734](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/protocols.rs#L1728-L1734) |
 | `parses_k8s_list_vs_get` | collection vs named GET | [protocols.rs:1764-1772](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/protocols.rs#L1764-L1772) |
 
 ## Related Pages
