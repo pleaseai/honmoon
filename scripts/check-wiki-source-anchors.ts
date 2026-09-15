@@ -24,8 +24,11 @@
  *    regular file inside the repository. Checked with or without a fragment —
  *    a page citing a file that was deleted or renamed is the same defect with
  *    a coarser anchor. Rule 5 is decided ahead of it, so a pinned-SHA link is
- *    reported as that and its path is never opened; it is a finding either way,
- *    and one finding per citation is the rule throughout.
+ *    reported as *that* and never as a missing file; one finding per citation
+ *    is the rule throughout. Its path is still read — {@link checkRepository}
+ *    reads before it decides, memoized per path — so the ordering is about
+ *    which finding is reported, not about what is opened. Opening it is bounded
+ *    either way, by `realPathInside` in {@link readCited}.
  * 2. **The range is inside the file.** `1 ≤ start ≤ end ≤ last line`. This is
  *    what catches a file that *shrank*: `quick-start.md` cited
  *    `gateway.rs#L206-L271` against a 265-line file.
@@ -48,7 +51,7 @@
  *    resolved, because this reads the working tree: answering a question about
  *    one revision with another revision's lines is the failure it exists to
  *    stop. Decided from the URL alone, unlike the four above, and decided
- *    first for that reason — there is nothing to read.
+ *    first for that reason — there is nothing in the file it needs.
  *
  * And two rules about the scan rather than about any one citation, because
  * without them the failure mode is a vacuous pass — a run that reports nothing
