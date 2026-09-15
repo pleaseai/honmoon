@@ -4,7 +4,8 @@ description: >-
   scripts/check-wiki-source-anchors.ts takes its file path out of a markdown link but bounds the
   read correctly via realPathInside — traversal, leading slash, %2e%2e, backslash, NUL, symlink-out
   and in-repo FIFO were all measured as refused, so do not re-report the #233 class here; the
-  ANCHOR backtracking that was the one live residue was bounded before PR #254 merged
+  ANCHOR backtracking that was the one live residue was bounded, and BUNDLE_DOC measured, before PR
+  #254 merged
 metadata:
   type: project
 ---
@@ -33,6 +34,13 @@ It is `[^\]\n]{0,200}` now, and the same input measures 99 ms. What is left, nam
 own doc comment: 200 KB of a *partial* prefix (`[x](https://github.com/pleaseai/`…) still measures
 1.7 s, because each attempt fails inside the URL literal rather than inside the text group. That is
 superlinear, small, bounded by the CI job limit, and the text bound is not what would fix it.
+
+`BUNDLE_DOC` (`/^<doc\s[^>]*\bpath="([^"]+)"/`, added after review to attribute an `llms-full.txt`
+citation to the page it was generated from) is the one regex added beside `ANCHOR`, and it was
+measured too: it is `^`-anchored behind a literal `<doc` + whitespace, applied per line, and 200 KB
+single-line inputs shaped as `path=` bait, an unterminated run, and an unterminated quote all
+measure under 1 ms. It opens no path of its own — the page name it yields is compared against
+`Tracked.pages`, never joined onto the filesystem.
 
 **Why:** #233 filed exactly this class (CWE-59/CWE-22) against the dashboard guards, so every new
 build-time script that opens a path it did not write draws the same review.
