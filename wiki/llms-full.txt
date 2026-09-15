@@ -1865,18 +1865,19 @@ sequenceDiagram
       H-->>C: 403, or 503 from a full approval queue
     else tunnel authorizes it, or Gate::Proceed
       H->>H: inspect_body — buffer, decode, scan, decide
-      alt content verdict == Allow
+      H->>H: pii_mode — detect (the default) holds a PII-caused verdict back
+      alt enforced verdict == Allow
         H->>U: forward (redacted when --redact-secrets)
-      else content verdict == Deny
+      else enforced verdict == Deny
         H->>Audit: record(Denied)
         H-->>C: 403 Forbidden
-      else content verdict == Pause
+      else enforced verdict == Pause
         Note over H,C: held — forwarded on approve, 403 on reject or timeout
       end
     end
   end
 ```
-<!-- Sources: crates/honmoon-proxy/src/mitm.rs:928-973 (handle_request), mitm.rs:296-336 (host_gate), mitm.rs:217-294 (the uninspectable-endpoint refusal), mitm.rs:614-924 (inspect_body), mitm.rs:1036-1045 (should_intercept), crates/honmoon-proxy/src/gateway.rs:177-203 (serve) -->
+<!-- Sources: crates/honmoon-proxy/src/mitm.rs:928-973 (handle_request), mitm.rs:296-336 (host_gate), mitm.rs:217-294 (the uninspectable-endpoint refusal), mitm.rs:614-924 (inspect_body), mitm.rs:796-815 (the pii_mode filter), mitm.rs:1036-1045 (should_intercept), crates/honmoon-proxy/src/gateway.rs:177-203 (serve) -->
 
 ## What the proxy still guards itself
 
