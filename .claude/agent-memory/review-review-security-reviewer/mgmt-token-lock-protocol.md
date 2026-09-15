@@ -61,6 +61,29 @@ early. `break_abandoned_lock` reports whether it made progress and the
 waiter sleeps when it did not, bounding a persistently-failing rename to one attempt per
 poll.
 
+**Release shape on the TS side (PR #262, issue #256).** `acquireLock` now returns a
+`LockGuard extends Disposable` closure pair — `stillOurs()` and `[Symbol.dispose]` — and
+`attemptUnderLock` (the extracted critical section) binds it with `using`, replacing the old
+`try`/`finally`. Verified behaviour-identical: dispose still routes through `releaseLock` →
+`releaseHeldLock`, so the inode check still gates the unlink; `fd` is closed exactly once in
+`releaseLock`'s `finally`, after the check and the unlink; the guard never escapes
+`attemptUnderLock`'s scope, and `using` on the `null` (held-by-another) return records no
+disposal. The minted token appears in no warning and in no `LockAttempt` variant at all —
+`adopted` carries the token read off disk and `published` carries nothing, the caller re-forming
+`{ token: minted }` itself. Do not re-report the `using` refactor as widening residual (1) or (2).
+
+Three tests pin the release, and all three go red if the `using` is downgraded to a `const`:
+`releases the lock when the publish fails`, `releases the lock when the re-read under it fails`,
+and `leaves a successor's lock alone when its own was broken, and adopts its token`. The last also
+pins the inode check specifically — deleting the comparison in `releaseHeldLock` turns it red on its
+own. `releaseLock` now documents why none of its three fallible steps throws — and what each does
+instead, which is not uniform: the identity check maps a failed `lstat` to `false` and warns when
+the path is no longer this start's, the `unlink` warns, and the `closeSync` is swallowed by an
+empty `catch` with no warning at all. Only the first two are operator-visible. The reason none
+throws: a `finally` that threw *replaced* the critical section's error, where a disposal that
+throws wraps both in a `SuppressedError`, so rewriting the release to throw would change the error
+`resolveToken` hands its caller on an unrelated path. Treat that as a stated contract, not an accident.
+
 **The residual, documented by design — report only a change in it.** Every residual comes
 from breaking an abandoned lock, and all three share one precondition: a holder frozen past
 `stale_after` inside a one-read-one-short-write critical section. (1) The broken holder

@@ -491,6 +491,109 @@ describe('resolveToken', () => {
     },
   )
 
+  /**
+   * The release-side identity check, on the path that exists for it: a start
+   * whose lock was broken out from under it must leave the successor's lock
+   * alone. Unlinking unconditionally would take a live lock with it, and a
+   * third start could then acquire while the successor still believed it held
+   * exclusivity.
+   *
+   * `console.warn` is the seam that makes this deterministic in one process.
+   * The empty-file warning is emitted under the lock and before the identity
+   * check, so swapping the lock file there is exactly the state a break leaves
+   * behind — without two interpreters having to interleave on it.
+   */
+  test.skipIf(process.platform === 'win32')(
+    'leaves a successor\'s lock alone when its own was broken, and adopts its token',
+    () => {
+      const path = join(dir, 'mgmt-token')
+      const lock = join(dir, 'mgmt-token.lock')
+      writeFileSync(path, '\n')
+
+      const warnings: string[] = []
+      const original = console.warn
+      console.warn = (...args: unknown[]) => {
+        const line = args.join(' ')
+        warnings.push(line)
+        if (!line.includes('is empty')) {
+          return
+        }
+        // Stand in for another start that aged this lock out, took its own, and
+        // published under it. `rmSync` then `writeFileSync` rather than a write
+        // in place, so the successor's lock is a different inode — which is the
+        // only thing the identity check can see.
+        rmSync(lock)
+        writeFileSync(lock, '424242\n', { mode: 0o600 })
+        const staging = join(dir, 'successor-staging')
+        writeFileSync(staging, 'the-successors-token\n', { mode: 0o600 })
+        renameSync(staging, path)
+      }
+      let resolved: ReturnType<typeof resolveToken>
+      try {
+        resolved = resolveToken(dir, { ...DEFAULT_LOCK_TIMING, pollIntervalMs: 5 })
+      }
+      finally {
+        console.warn = original
+      }
+
+      // The successor's lock survived this start's release.
+      expect(readFileSync(lock, 'utf8')).toBe('424242\n')
+      // And this start adopted rather than publishing over the successor.
+      expect(resolved).toEqual({ token: 'the-successors-token', source: 'persisted', path })
+      const said = warnings.join(' ')
+      expect(said).toContain('was taken by another start')
+      expect(said).toContain('no longer the one this start took')
+    },
+  )
+
+  /**
+   * The other throw out of the critical section. `releases the lock when the
+   * publish fails` covers the publish; nothing covered the re-read, because both
+   * unreadable-token tests below fail at the *pre-lock* read and so never reach a
+   * lock at all — the shape PR #255 had to restructure two tests for.
+   *
+   * The seam here is the directory-mode warning, which runs after the pre-lock
+   * read and before the lock is taken. Corrupting the token file there leaves the
+   * re-read under the lock as the first read that can fail, and the assertions
+   * below are what distinguish the two reads: the file does not exist when the
+   * pre-lock read runs, so a `not valid UTF-8` refusal can only have come from
+   * the re-read, and the warning having fired is what says execution got that
+   * far.
+   */
+  test.skipIf(process.platform === 'win32')(
+    'releases the lock when the re-read under it fails',
+    () => {
+      const path = join(dir, 'mgmt-token')
+      const lock = join(dir, 'mgmt-token.lock')
+      // Group- and other-writable, so the directory check warns. No token file:
+      // the pre-lock read has to succeed, or the lock is never taken.
+      chmodSync(dir, 0o777)
+
+      let corrupted = false
+      const original = console.warn
+      console.warn = (...args: unknown[]) => {
+        if (corrupted || !args.join(' ').includes('writable beyond its owner')) {
+          return
+        }
+        corrupted = true
+        writeFileSync(path, new Uint8Array([0xFF, 0xFE, 0x41]), { mode: 0o600 })
+      }
+      try {
+        expect(() => resolveToken(dir, { ...DEFAULT_LOCK_TIMING, pollIntervalMs: 5 }))
+          .toThrow(/not valid UTF-8/)
+      }
+      finally {
+        console.warn = original
+        chmodSync(dir, 0o700)
+      }
+
+      // The seam fired, so the pre-lock read returned and the lock was reached.
+      expect(corrupted).toBe(true)
+      // And the guard released it on the way out of the throw.
+      expect(existsSync(lock)).toBe(false)
+    },
+  )
+
   test('refuses a token file that is not valid UTF-8 instead of serving U+FFFD', () => {
     // Bun substitutes U+FFFD for malformed bytes rather than throwing, so a
     // corrupt file would otherwise become the ordinary-looking token "\uFFFD"
