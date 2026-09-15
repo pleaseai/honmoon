@@ -615,19 +615,21 @@ export function checkRepository(): Report {
         continue
       }
       // In the bundle an occurrence carries the bundle's own `where`, so the
-      // page it has to be judged against is the one it was generated from.
+      // page it has to be judged against is the one it was generated from. A
+      // bundle line ahead of the first `<doc>` marker belongs to no page, and
+      // is reported rather than deferred by whichever entry the anchor matches.
       const page = sections === null ? anchor.where : bundleOwner(sections, anchor.line)
       const entry = page === null
         ? undefined
         : TRACKED.find(known => defers(known, anchor, problem.kind, page))
-      if (entry === undefined) {
+      if (entry === undefined || page === null) {
         problems.push(problem)
         continue
       }
       if (sections === null) {
-        matched.set(entry, (matched.get(entry) ?? new Set()).add(page!))
+        matched.set(entry, (matched.get(entry) ?? new Set()).add(page))
       }
-      else if (!(matched.get(entry)?.has(page!) ?? false)) {
+      else if (!(matched.get(entry)?.has(page) ?? false)) {
         // The page this text was generated from no longer produces the finding,
         // so the bundle was not regenerated after that page was repointed.
         problems.push(problem)
