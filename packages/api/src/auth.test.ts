@@ -618,9 +618,10 @@ describe('resolveToken', () => {
     'adopts a token published under the lock it won, and publishes nothing of its own',
     () => {
       const path = join(dir, 'mgmt-token')
-      // Group- and other-writable, so the directory check warns. No token file:
-      // the pre-lock read has to return `absent`, or this start returns before
-      // it ever reaches a lock.
+      // Group- and other-writable, so the directory check warns. No token file,
+      // so the pre-lock read returns `absent` and this start goes on to take the
+      // lock. What it must not return is `token`: `resolveToken` answers from
+      // that read and never reaches a lock at all.
       chmodSync(dir, 0o777)
 
       let published = false

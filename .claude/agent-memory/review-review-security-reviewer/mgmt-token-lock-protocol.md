@@ -104,3 +104,15 @@ and unreachable from Bun.
 
 **Related:** [[mgmt-api-auth-model]] for what the token gates and the Rust/Bun agreement on
 what counts as a token.
+
+**The test surface stayed off the credential module (#265, PR #269).** The in-lock adopt
+branch (`case 'token'` in `attemptUnderLock`) was pinned without a test-only export of
+`auth.ts` and without `mock.module` on `openSync` — the test drives it through the existing
+`warnIfDirectoryWritableBeyondOwner` seam, which runs between the pre-lock `readOnDisk` and
+`acquireLock`, i.e. exactly the window a rival needs to publish in. So a future review here
+should expect `packages/api/src/auth.ts` to export only `LockTiming`, `DEFAULT_LOCK_TIMING`,
+`TokenSource`, `ResolvedToken`, `defaultDir`, `isAuthorized`, `trimToken`, `resolveToken`,
+`unauthorized` — a new export or a `mock.module` in `auth.test.ts` is the thing to flag, not
+the `chmodSync(dir, 0o777)` the seam needs, which is a pre-existing arming pattern (three
+tests now), scoped to a `mkdtemp` dir, restored to `0o700` in a `finally` and `rmSync`'d in
+`afterEach`.

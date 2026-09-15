@@ -23,7 +23,8 @@ The seams, in the order `resolveToken` reaches them (PR #262 / issue #256):
    - **Publish** a valid token here (rename, `0600`) and this start still wins the `wx`
      race but finds a token under its own lock: `adopts a token published under the lock
      it won, and publishes nothing of its own` — the in-lock adopt branch (issue #265).
-     Leave no lock file, since the rival released before this start acquired.
+     The stub writes only the token: the rival is modelled as having already
+     released, so leaving the lock path free is what lets this start win it.
 2. **The empty-file warning**, matched on `is empty`. Fires under the lock and before the
    identity check, so swapping the lock file for a different inode here is exactly what a
    break leaves behind. That is `leaves a successor's lock alone when its own was broken, and adopts its token`.
