@@ -250,15 +250,15 @@ stateDiagram-v2
   [*] --> Register: pause verdict
   Register --> QueueFull: registry at capacity (1024)
   Register --> Held: slot acquired, audit Paused
-  QueueFull --> [*]: 503 + audit Rejected (fail closed)
+  QueueFull --> [*]: 503, audit Rejected (fail closed)
   Held --> Approved: human POST /approve
   Held --> Rejected: human POST /reject
   Held --> Timeout: pause_timeout (300s)
   Held --> Abandoned: caller's future dropped (client gone)
-  Approved --> [*]: 200 + tunnel
-  Rejected --> [*]: 403
-  Timeout --> [*]: 403 (auto-reject)
-  Abandoned --> [*]: CancelOnDrop frees the slot + audits Rejected
+  Approved --> [*]: Proceed, audit Approved — a CONNECT gets its 200, a request its own upstream response
+  Rejected --> [*]: 403, audit Rejected
+  Timeout --> [*]: 403, audit Rejected (auto-reject)
+  Abandoned --> [*]: CancelOnDrop frees the slot, audit Rejected
 ```
 <!-- Sources: crates/honmoon-proxy/src/approval.rs:262-372 (hold_until), approval.rs:184-218 (CancelOnDrop), approval.rs:96-132 (register), crates/honmoon-proxy/src/mitm.rs:338-363 (the HTTP rendering) -->
 
