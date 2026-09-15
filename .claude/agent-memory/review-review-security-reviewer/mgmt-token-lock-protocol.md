@@ -61,15 +61,23 @@ early. `break_abandoned_lock` reports whether it made progress and the
 waiter sleeps when it did not, bounding a persistently-failing rename to one attempt per
 poll.
 
-**The residual, documented by design — report only a change in it:** a waiter observes an
-abandoned lock and, between its staleness check and its rename, another waiter breaks the
-same lock and takes a fresh one that the first then renames away; both would mint. The
-release side carries the same window under the same precondition — it checks the inode and
-then unlinks, and POSIX has no compare-and-unlink — which is one residual seen from two
-ends, not two. Both ends are stated in the `mint_or_adopt_under_lock` doc comment along
-with the reason `flock` is not used (Bun does not expose it, so the two runtimes could not
-spell the same protocol). Proposing an "atomic ownership release" here is proposing
-`renameat2(RENAME_EXCHANGE)`, which is Linux-only and unreachable from Bun.
+**The residual, documented by design — report only a change in it.** Every residual comes
+from breaking an abandoned lock, and all three share one precondition: a holder frozen past
+`stale_after` inside a one-read-one-short-write critical section. (1) The broken holder
+resumes and *publishes* over the successor's token — one waiter is enough, and this is the
+widest of the three; gated by `LockGuard::still_ours`/`lockStillOurs` before the publish,
+which makes the holder wait for the successor's token instead. (2) The broken holder
+resumes and *releases*, unlinking the successor's live lock; gated by the same comparison in
+`Drop`/`releaseLock`. (3) Two waiters break the same lock and one renames the other's fresh
+lock away; narrowest, ungated. Each gate leaves two adjacent syscalls rather than a
+ten-second window, because POSIX has no compare-and-unlink and no compare-and-rename.
+
+The `mint_or_adopt_under_lock` doc comment enumerates all three. Earlier revisions named
+only (3) — a real understatement that codex caught on PR #255, and the reason to distrust a
+residual paragraph that describes the *narrow* case: check whether the wide one has the same
+consequence. `flock` is the only real fix and is tracked as issue #257; proposing an "atomic
+ownership release" instead is proposing `renameat2(RENAME_EXCHANGE)`, which is Linux-only
+and unreachable from Bun.
 
 **Related:** [[mgmt-api-auth-model]] for what the token gates and the Rust/Bun agreement on
 what counts as a token.
