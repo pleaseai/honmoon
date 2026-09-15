@@ -52,11 +52,9 @@ a client that never fills the buffer never trips it. The page states both at exa
 and were caught by others across five review rounds. They fall into three shapes, and the first two
 are worth going looking for by hand:
 
-1. **A quantifier or a count** — seven of the ten. A claim scoped more widely (or, twice, more
-   narrowly) than any single code path keeps. Grepping the page for `every|all|only|always|never`
-   and each bare number, then checking every hit against the branch that has to hold it, found
-   **four more before the next review round did** — so this one is real, mechanical, and cheap.
-   Do that sweep rather than waiting to be told.
+1. **A quantifier or a count** — seven of the eleven. A claim scoped more widely (or, twice, more
+   narrowly) than any single code path keeps. Grep the page for `every|all|only|always|never` and
+   each bare number, then check every hit against the branch that has to hold it.
 2. **A diagram whose shape does not match the code** — three times, each one a round after the
    last was fixed. Two were control flow: `opt` has no early-return semantics, and a two-way `alt`
    cannot carry three verdicts. The third is the one to internalize, because a sweep for quantifiers
@@ -66,6 +64,17 @@ are worth going looking for by hand:
    were HTTP statuses with nothing marking them as such.
 3. **A citation range that opens correctly and covers too little** — once, and invisible to
    `check-wiki-source-anchors.ts`, which only checks where a range *opens*.
+
+**Sweeping for a shape beats waiting for the round that finds it.** Once each shape was named, one
+pass over the whole page looking for *that* shape found seven more defects before the next review
+round reached them: four quantifiers (`f7cba25` — `status_response` as "the refusal every gate
+returns" when three refusals carry a reason body instead; two mermaid nodes still unqualified a
+screen below prose already corrected; `--audit-log`'s "every verdict"), two diagram branches
+(`afcc4c2`, `90aef36` — the hold diagram carrying the verdict table's own CONNECT-only defect one
+section below it, and a third site of the audit claim), and one shared-mechanism claim (`96c7281` —
+the intro tip's "gates every connection the same way", which after the `http.host` fix actively
+contradicted it, since `connection_gate` builds `Facts { domain, endpoint, ..Default::default() }`).
+The sweep is cheap and mechanical; the review round costs a CI cycle and a bot pass.
 
 The eleven, in the order they were found:
 
