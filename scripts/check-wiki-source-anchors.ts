@@ -145,6 +145,17 @@ export { REPO_ROOT }
  * rather than disappearing, so widening this is a convenience and not the
  * safety net.
  *
+ * A third shape is accepted for a different reason. CommonMark lets a
+ * destination be wrapped in angle brackets — `[text](<https://…#L1>)` — and
+ * VitePress renders it as an ordinary link. Unwidened, that citation matched
+ * neither this pattern *nor* {@link BLOB_LINK}, so it was not merely
+ * unparseable, it was uncounted: rule 6 saw zero links and zero anchors and
+ * reported nothing. That is the one way a citation can be invisible to both
+ * halves at once, which is why it is read here rather than left to the net.
+ * Angle brackets are also why the ref, path and query stop at `>`. A
+ * destination with a space inside the brackets — legal there and nowhere else —
+ * still does not parse, and that one is caught by rule 6, having been counted.
+ *
  * The link text stops at a newline and at 200 characters. Both bound the
  * backtracking: without them the engine retries every `[` in the document and
  * scans to end-of-input before failing. Measured on 200KB of bare `[`, that was
@@ -162,17 +173,19 @@ export { REPO_ROOT }
  * not what would fix it.
  */
 const ANCHOR
-  = /\[([^\]\n]{0,200})\]\(https:\/\/github\.com\/pleaseai\/honmoon\/blob\/([^/)]+)\/([^)?#\s]+)(?:\?[^)#\s]*)?(?:#L(\d+)(?:C\d+)?(?:-L(\d+)(?:C\d+)?)?)?\)/g
+  = /\[([^\]\n]{0,200})\]\(<?https:\/\/github\.com\/pleaseai\/honmoon\/blob\/([^/)>]+)\/([^)?#\s>]+)(?:\?[^)#\s>]*)?(?:#L(\d+)(?:C\d+)?(?:-L(\d+)(?:C\d+)?)?)?>?\)/g
 
 /**
  * A markdown link into this repository's blob tree, counted but not parsed.
  *
  * Deliberately just the `](` and the prefix: it is what {@link ANCHOR} has to
  * account for, so the two disagreeing is the signal rule 6 reports. It counts a
- * link written as markdown; a bare URL in prose is not a citation either
+ * link written as markdown, in either destination form CommonMark allows — the
+ * angle-bracketed one included, because a shape neither pattern sees is a
+ * citation rule 6 cannot report. A bare URL in prose is not a citation either
  * pattern reads, and is not counted as one.
  */
-const BLOB_LINK = /\]\(https:\/\/github\.com\/pleaseai\/honmoon\/blob\//g
+const BLOB_LINK = /\]\(<?https:\/\/github\.com\/pleaseai\/honmoon\/blob\//g
 
 /** A line holding nothing but the end of the item above it. */
 const BARE_DELIMITER = /^[)\]}]+[,;]?$/

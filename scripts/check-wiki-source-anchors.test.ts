@@ -81,6 +81,19 @@ describe('parseAnchors', () => {
     expect(found).toMatchObject({ path: 'crates/honmoon-core/src/lib.rs', start: 12, end: 34 })
   })
 
+  // CommonMark's angle-bracketed destination. Unwidened it matched neither
+  // `ANCHOR` nor `BLOB_LINK`, so the citation was uncounted as well as
+  // unparsed — the one shape rule 6 could not report.
+  test('an angle-bracketed destination is read like a bare one', () => {
+    const [found] = parseAnchors(`[lib.rs:12-34](<${BLOB}/crates/honmoon-core/src/lib.rs#L12-L34>)`, 'wiki/p.md')
+    expect(found).toMatchObject({ path: 'crates/honmoon-core/src/lib.rs', start: 12, end: 34 })
+  })
+
+  test('an angle-bracketed whole-file citation keeps its path off the bracket', () => {
+    const [found] = parseAnchors(`[agent.yaml](<${BLOB}/policies/agent.yaml>)`, 'wiki/p.md')
+    expect(found).toMatchObject({ path: 'policies/agent.yaml', start: null, end: null })
+  })
+
   test('a link to another repository is not a citation into this tree', () => {
     expect(parseAnchors('[cel](https://github.com/google/cel-spec/blob/main/README.md#L1)', 'wiki/p.md'))
       .toEqual([])
@@ -340,6 +353,15 @@ describe('checkLinksRead', () => {
     const source = `[a:1](${BLOB}/README.md#L1) and [b [x]:1](${BLOB}/README.md#L1)`
     expect(parseAnchors(source, 'wiki/p.md')).toHaveLength(1)
     expect(checkLinksRead(source, 'wiki/p.md')).toHaveLength(1)
+  })
+
+  // The residue of accepting the angle-bracketed form: a space is legal inside
+  // the brackets and nowhere else, so such a destination still does not parse.
+  // It is counted now, which is the difference between reported and invisible.
+  test('an angle-bracketed destination carrying a space is counted, then reported', () => {
+    const source = `[lib.rs:1](<${BLOB}/crates/honmoon-core/src lib.rs#L1>)`
+    expect(parseAnchors(source, 'wiki/p.md')).toEqual([])
+    expect(checkLinksRead(source, 'wiki/p.md')[0]?.kind).toBe('coverage')
   })
 })
 
