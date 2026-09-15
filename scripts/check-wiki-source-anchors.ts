@@ -557,7 +557,7 @@ export function checkAnchor(
  * any more. The same rewrite dropped its copy of #119's `gateway.rs#L206-L271`,
  * which now defers on `quick-start.md` alone — the page #119 is actually about.
  *
- * Every remaining entry was resolved against `main` at `41507dd` and each one
+ * Every remaining entry was resolved against `main` at `ed53fb4` and each one
  * is printed with its issue number on every passing run. None is on the page
  * #204 repointed: its own anchors are fixed, not tracked, apart from the one
  * `engine.rs` row #169 tabulates.
