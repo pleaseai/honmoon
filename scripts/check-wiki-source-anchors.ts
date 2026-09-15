@@ -21,9 +21,11 @@
  * Five rules about a citation, and they are narrow on purpose:
  *
  * 1. **The cited file is there.** The path in the URL has to resolve to a
- *    regular file inside the repository. Checked for every blob link, with or
- *    without a fragment — a page citing a file that was deleted or renamed is
- *    the same defect with a coarser anchor.
+ *    regular file inside the repository. Checked with or without a fragment —
+ *    a page citing a file that was deleted or renamed is the same defect with
+ *    a coarser anchor. Rule 5 is decided ahead of it, so a pinned-SHA link is
+ *    reported as that and its path is never opened; it is a finding either way,
+ *    and one finding per citation is the rule throughout.
  * 2. **The range is inside the file.** `1 ≤ start ≤ end ≤ last line`. This is
  *    what catches a file that *shrank*: `quick-start.md` cited
  *    `gateway.rs#L206-L271` against a 265-line file.
@@ -39,7 +41,8 @@
  * 5. **The link is to `main`.** A pinned-SHA permalink is reported rather than
  *    resolved, because this reads the working tree: answering a question about
  *    one revision with another revision's lines is the failure it exists to
- *    stop. Decided from the URL alone, unlike the four above.
+ *    stop. Decided from the URL alone, unlike the four above, and decided
+ *    first for that reason — there is nothing to read.
  *
  * And two rules about the scan rather than about any one citation, because
  * without them the failure mode is a vacuous pass — a run that reports nothing
@@ -107,8 +110,9 @@
  *
  * {@link TRACKED} carries the ones already filed elsewhere. They are listed,
  * counted and attributed on every run rather than skipped — an entry names the
- * issue that owns re-anchoring it — and an entry that stops matching anything
- * fails, so the list cannot outlive the drift it describes.
+ * issue that owns re-anchoring it — and an entry stops deferring a page the
+ * moment that page stops producing the finding, which is reported, so the list
+ * cannot outlive the drift it describes.
  *
  * It is a ledger of open work, not an exemption, and the bound on that is
  * exact: an entry suppresses the anchor it names **on the pages it names**, so
