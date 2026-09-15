@@ -1,0 +1,19 @@
+.claude/agent-memory/review-review-security-reviewer/mgmt-token-lock-protocol.md
+  s_328cc15f8a9753::t_2358b47cabc745 64-80
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "bde366434f7cab116172e1bbdeb1a4143ea226f3",
+  "prompts": {},
+  "sessions": {
+    "s_328cc15f8a9753": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "68e0c0a2-6cdf-4ff1-94e0-79887096bc89",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
