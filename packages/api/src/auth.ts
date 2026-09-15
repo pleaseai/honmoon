@@ -45,8 +45,9 @@ const LOCK_FILE_NAME = 'mgmt-token.lock'
 export interface LockTiming {
   /**
    * Age past which a waiter treats the lock as left behind by a crashed holder.
-   * The critical section it guards is one read and one short write, so this is
-   * about five orders of magnitude of headroom.
+   * The critical section it guards is one read and one write of ~65 bytes, with
+   * no `fsync`, so ten seconds is four to five orders of magnitude of headroom
+   * depending on what the filesystem charges for those two opens.
    */
   staleAfterMs: number
   /**

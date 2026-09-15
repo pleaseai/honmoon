@@ -32,8 +32,9 @@ symlink, and a plain `O_WRONLY|O_CREAT|O_TRUNC` open follows that same link and 
 target at mode `0600`. During review this made an `EEXIST`-keyed truncating fallback an
 arbitrary create/truncate primitive for a directory-writable local user. It is gone:
 `rename` resolves no symlink on its destination, so a planted link is *replaced* by the real
-file, and `write_secret_file` has no callers left and was deleted. A finding that the token
-can be written through a symlink no longer applies to either language.
+file, and `mgmt_token.rs`'s own `write_secret_file` — not `hook.rs`'s same-named function,
+which is unrelated and still live — lost its last caller and was deleted. A finding that the
+token can be written through a symlink no longer applies to either language.
 
 **Three hardenings that exist for stated reasons — do not propose reverting them.**
 `lock_is_abandoned`/`lockIsAbandoned` stat with `symlink_metadata`/`lstatSync`, because

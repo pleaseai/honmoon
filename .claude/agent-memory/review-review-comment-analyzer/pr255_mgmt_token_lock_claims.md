@@ -54,6 +54,21 @@ them against the merged code.
    with [[hook_rs_salt_exposure_pr170]] and
    [[docs-completeness-claim-unbounded-review]].
 
+6. **A comment on a *test* is a contract too, and a false one hides a test that
+   proves nothing.** `a_failed_publish_still_releases_the_lock` and its TS twin
+   said "the lock is taken while the directory is still writable, and the publish
+   then fails on the staging create" — but the `0500` chmod came *before* the
+   resolver ran, so `acquire_lock`'s own exclusive create failed first and the
+   publish was never reached. The lock was therefore never created, and the
+   assertion `!lock_path.exists()` passed on its absence rather than on its
+   release: stubbing `Drop` out left the test green. Both were restructured to
+   leave the directory writable and put a directory where the staging file has to
+   be created, and re-checked by stubbing the release out (red) and restoring it
+   (green). Read a test's setup against the order the production code runs its
+   steps in; a comment describing an ordering the setup does not produce is the
+   same #150 pattern as a false doc contract, with a vacuous test behind it
+   instead of a bug.
+
 Claims that held on cross-checking: lock file name, directory and protocol identical
 across Rust and TS; `break_abandoned_lock`'s rename-makes-removal-a-claim argument;
 the wiki flag-table numbers matching `LockTiming::DEFAULT` / `DEFAULT_LOCK_TIMING`.
