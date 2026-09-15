@@ -1707,8 +1707,13 @@ flood the bounded audit ring and cycle out the refusals that matter
 
 ::: tip This is not the only egress path
 A `CONNECT` proxy carries HTTP and TLS. A PostgreSQL or Redis client speaks neither, so a **SOCKS5
-listener** runs beside this one and gates every connection the same way
-([socks.rs:1-29](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-proxy/src/socks.rs#L1-L29)).
+listener** runs beside this one and puts every connection through the same allow / deny / pause
+gate ([socks.rs:1-29](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-proxy/src/socks.rs#L1-L29)). Two differences are worth carrying
+across. It gates on `Facts{domain, endpoint}` and no `http.host`, because a SOCKS5 handshake
+states a host and a port and nothing else ([socks.rs:351-358](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-proxy/src/socks.rs#L351-L358)) — so an
+`http.host` rule that holds over a raw tunnel here does not fire there. And the
+uninspectable-endpoint refusal is the mirror of this listener's: a `kubernetes` endpoint is
+refused there, a `postgres` one here ([socks.rs:18-21](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-proxy/src/socks.rs#L18-L21)).
 `honmoon run` always starts it; `honmoon gateway` does too unless `--socks-addr off` declines it.
 See [Quick Start](/getting-started/quick-start).
 :::
