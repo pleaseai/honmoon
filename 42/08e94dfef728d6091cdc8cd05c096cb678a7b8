@@ -1,0 +1,21 @@
+wiki/llms-full.txt
+  s_179ae213b8fbe5::t_6d5b93fe04e931 2817-2818,2829-2833,2835,2892,2931,2971,2975,2986,2991-2994,3025,3063,3100,3214,3216-3217,3227,3295,3313-3314
+wiki/getting-started/policy-authoring.md
+  s_179ae213b8fbe5::t_03c3cc2de0a7a2 12-13,24-28,30,87,126,166,170,181,186-189,220,258,295,409,411-412,422,490,508-509
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "4208e94dfef728d6091cdc8cd05c096cb678a7b8",
+  "prompts": {},
+  "sessions": {
+    "s_179ae213b8fbe5": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "854ad83a-3f97-4fff-ac96-977da3e2476b",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
