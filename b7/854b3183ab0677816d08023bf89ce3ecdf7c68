@@ -1,0 +1,19 @@
+.claude/agent-memory/review-review-documentation-analyzer/pr264_wiki_anchor_ledger_253_verified.md
+  s_4cda2cdfdbc842::t_ab65e16ad698a5 39-40
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "b7854b3183ab0677816d08023bf89ce3ecdf7c68",
+  "prompts": {},
+  "sessions": {
+    "s_4cda2cdfdbc842": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "29396608-082e-4e8f-bac0-720ae2da96b1",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
