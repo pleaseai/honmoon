@@ -5,7 +5,8 @@ description: >-
   repointing it — so the Phase 1 names (handle, authorize, hold_for_approval, read_head) are
   deliberately absent and must not be flagged as missing; the page's slowloris claim is verified
   true through a four-hop dependency chain recorded here, so do not re-derive it and do not
-  "correct" the page to say hudsucker owns that guard
+  "correct" the page to say hudsucker owns that guard; every one of the eight distinct defects it
+  drew was a quantifier or a count that no single code path keeps, so check those first
 metadata:
   type: project
 ---
@@ -45,9 +46,11 @@ So `set_http1_header_read_timeout` is never called. Filed as issue #267 (fix:
 incomplete message — but it is hyper's, not honmoon's, and it does not mitigate slowloris, because
 a client that never fills the buffer never trips it. The page states both at exactly that strength.
 
-**What this review pass missed, which is the part worth keeping.** Three defects reached the PR
-and were caught by others, all of them the same shape — a claim stated more widely than the code
-supports:
+**What this review pass missed, which is the part worth keeping.** Eight defects reached the PR
+and were caught by others across three rounds. Every one was a **quantifier or a count** — a claim
+scoped more widely (or, once, more narrowly) than any single code path keeps. On a page whose whole
+purpose is verifiability, that is where the remaining defects live, so read every "every", "all",
+"only" and bare number against the branch that has to hold it:
 
 - The verdict table's "Client response" column said `tunnel (200)`. `host_gate` is not
   CONNECT-only: `handle_request` runs it for every cleartext and absolute-form request no
@@ -62,6 +65,32 @@ supports:
 - `inspect_body` was cited `614-640` — doc comment plus signature, none of the ~285-line body —
   while every sibling row cited doc-through-end. An under-cited range is invisible to
   `check-wiki-source-anchors.ts`, which only checks where a range *opens*.
+- The `audit_allow` asymmetry. "The gateway records every decision to the audit log" is false for
+  an ordinary forwarded request: `handle_request` passes `audit_allow = true` on the CONNECT
+  (`mitm.rs:943`) and `false` on the inner/cleartext request (`mitm.rs:967`), and `host_gate`
+  records the `Allow` only under that flag (`mitm.rs:308`). `inspect_body` is quiet the same way —
+  it records an `Allow` only when the scan found PII (`mitm.rs:853-867`) — and says so, citing
+  `host_gate`'s `audit_allow` as its precedent. Both are deliberate: the audit ring is bounded, and
+  recording every clean allow would cycle out the refusals. **Narrow such a claim to the positive
+  set rather than hedging it**; a hedge on a universal claim draws the same finding next round.
+- "hands all four to one background thread". `bind_loopback_pair` returns `(v4, None)` when `::1`
+  is *proven absent* — `AddrNotAvailable | Unsupported` only (`main.rs:953-988`) — and the loop
+  behind the missing half takes `std::future::pending()` (`main.rs:920-933`). `AddrInUse` retries
+  and every other error fails closed, deliberately.
+- "runs the egress proxy, the SOCKS5 listener and the management API". `--socks-addr off | none |
+  disabled` sets `socks_listener` to `None` (`main.rs:691-697`) and the select arm pends
+  (`main.rs:767-774`). The flag table one screen below already documented `off`, so the overview
+  contradicted its own page — **an internal contradiction between prose and a table is the cheapest
+  of these to catch, and it still shipped.**
+- "only `http.host`-based rules see facts" over a raw tunnel — too **narrow**. `host_facts` sets
+  `domain`, `endpoint` (via `resolve_endpoint`) and `http.host` (`mitm.rs:205-215`), so a `pause`
+  on any of the three holds there. On this page understating the gate is the same defect as
+  overstating it; the check is "what does the code populate", not "is the claim safe".
+- "dispatches six `clap` subcommands". `Command::SuperviseSandbox` carries
+  `#[cfg(target_os = "linux")]` **on the variant** (`main.rs:270`), so a macOS build has five and
+  `clap` never sees the sixth. **A `cfg`-gated enum variant makes a CLI surface count
+  target-specific** — and this page documents macOS Seatbelt behavior two screens later, which is
+  exactly the reader who would go hunting for it.
 
 **Two drift classes that script cannot see**, both hit on this PR:
 
