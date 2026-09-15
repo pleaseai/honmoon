@@ -311,7 +311,7 @@ function mintOrAdoptUnderLock(dir: string, path: string, timing: LockTiming): Re
         publishToken(dir, path, minted)
       }
       finally {
-        releaseLock(lockPath, held.ino)
+        releaseLock(lockPath, held)
       }
       return { token: minted, source: 'generated', path }
     }
@@ -345,8 +345,18 @@ function mintOrAdoptUnderLock(dir: string, path: string, timing: LockTiming): Re
  * the successor still believed it held exclusivity. `null` where the inode could
  * not be read, which falls back to the unconditional unlink rather than leaking
  * the lock.
+ *
+ * `fd` is returned still open, and that is what makes the `ino` comparison mean
+ * anything: an inode number identifies a file only while the inode is
+ * allocated, and ext4 and tmpfs hand a freed number straight back out, so a
+ * successor created after a break routinely lands on the number recorded here.
+ * An open descriptor keeps the inode allocated even after the break unlinks its
+ * last name, so the successor cannot be given that number. {@link releaseLock}
+ * closes it, which is why the two are always called as a pair. (APFS never
+ * reuses a number, which is why the Rust counterpart of this was green on macOS
+ * and red on Linux CI.)
  */
-function acquireLock(lockPath: string): { ino: number | null } | null {
+function acquireLock(lockPath: string): { ino: number | null, fd: number } | null {
   let fd: number
   try {
     fd = openSync(lockPath, 'wx', 0o600)
@@ -381,17 +391,33 @@ function acquireLock(lockPath: string): { ino: number | null } | null {
       `honmoon api: warning: could not record the holder of the management token lock ${lockPath}: ${String(error)}`,
     )
   }
-  finally {
-    closeSync(fd)
-  }
-  return { ino }
+  return { ino, fd }
 }
 
 /**
  * Release the lock. Called from a `finally`, so a failed publish does not leave
  * every other start waiting out the full budget.
+ *
+ * `fd` is {@link acquireLock}'s still-open descriptor. It is closed last, after
+ * the identity check and the unlink, because it is what keeps this lock's inode
+ * from being handed to a successor while the check is deciding.
  */
-function releaseLock(lockPath: string, ino: number | null): void {
+function releaseLock(lockPath: string, held: { ino: number | null, fd: number }): void {
+  const { ino, fd } = held
+  try {
+    releaseHeldLock(lockPath, ino)
+  }
+  finally {
+    try {
+      closeSync(fd)
+    }
+    catch {
+      // Nothing left to do with it: the lock is already released or reported.
+    }
+  }
+}
+
+function releaseHeldLock(lockPath: string, ino: number | null): void {
   if (ino !== null) {
     // `lstatSync`, so a symlink dropped at the path is compared as itself rather
     // than as whatever it points at.

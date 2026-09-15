@@ -411,10 +411,22 @@ fn publish_token(dir: &Path, path: &Path, token: &str) -> std::io::Result<()> {
 /// acquire while the successor still believed it held exclusivity. `None` where
 /// the inode could not be read, which falls back to the unconditional unlink
 /// rather than leaking the lock.
+///
+/// `_pin` is what makes that comparison mean anything, and it is not decoration:
+/// an inode number identifies a file only while the inode is allocated, and
+/// ext4 and tmpfs hand a freed number straight back out, so a successor created
+/// after the break routinely lands on the number this guard recorded. Holding
+/// the descriptor open keeps the inode allocated even after the break unlinks
+/// its last name, so the successor cannot be given that number and the
+/// comparison is exact. (APFS never reuses one, which is why this was green on
+/// macOS and red on Linux CI.) The field is dropped after
+/// [`Drop::drop`] returns, so the descriptor outlives the check and the unlink.
 struct LockGuard {
     path: PathBuf,
     #[cfg(unix)]
     inode: Option<u64>,
+    #[cfg(unix)]
+    _pin: std::fs::File,
 }
 
 impl Drop for LockGuard {
@@ -430,7 +442,9 @@ impl Drop for LockGuard {
             );
             if !ours {
                 eprintln!(
-                    "honmoon: warning: the management token lock {} is no longer the one this start took                      — another start treated it as abandoned, so this start's exclusivity did not hold",
+                    "honmoon: warning: the management token lock {} is no longer the one this \
+                     start took — another start treated it as abandoned, so this start's \
+                     exclusivity did not hold",
                     self.path.display()
                 );
                 return;
@@ -458,6 +472,16 @@ fn acquire_lock(lock_path: &Path) -> std::io::Result<LockGuard> {
         opts.mode(0o600);
     }
     let mut file = opts.open(lock_path)?;
+    // Diagnostic only — for an operator reading a lock the budget message named.
+    // Staleness is decided by the file's age and never by this pid: pids are
+    // reused, and one from another mount namespace names a different process
+    // here or no process at all.
+    if let Err(e) = writeln!(file, "{}", std::process::id()) {
+        eprintln!(
+            "honmoon: warning: could not record the holder of the management token lock {}: {e}",
+            lock_path.display()
+        );
+    }
     #[cfg(unix)]
     let inode = {
         use std::os::unix::fs::MetadataExt as _;
@@ -475,23 +499,15 @@ fn acquire_lock(lock_path: &Path) -> std::io::Result<LockGuard> {
             }
         }
     };
-    // Held from here on, so a failure below still releases it.
-    let guard = LockGuard {
+    // Nothing between the create above and here exits with `?`, so the lock is
+    // never taken without a guard to release it.
+    Ok(LockGuard {
         path: lock_path.to_path_buf(),
         #[cfg(unix)]
         inode,
-    };
-    // Diagnostic only — for an operator reading a lock the budget message named.
-    // Staleness is decided by the file's age and never by this pid: pids are
-    // reused, and one from another mount namespace names a different process
-    // here or no process at all.
-    if let Err(e) = writeln!(file, "{}", std::process::id()) {
-        eprintln!(
-            "honmoon: warning: could not record the holder of the management token lock {}: {e}",
-            lock_path.display()
-        );
-    }
-    Ok(guard)
+        #[cfg(unix)]
+        _pin: file,
+    })
 }
 
 /// Whether the lock has been held past `stale_after` — the signature of a
