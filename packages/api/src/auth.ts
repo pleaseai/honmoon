@@ -521,9 +521,10 @@ function acquireLock(lockPath: string): LockGuard | null {
  * the identity check and the unlink, because it is what keeps this lock's inode
  * from being handed to a successor while the check is deciding.
  *
- * The three steps that can fail are each written to warn rather than throw: the
- * identity check maps a failed `lstat` to `false` ({@link lockStillOurs}), and
- * the `unlink` and the `closeSync` warn. That was already worth doing under the
+ * None of the three steps that can fail throws: the identity check maps a
+ * failed `lstat` to `false` ({@link lockStillOurs}) and warns when the path is
+ * no longer ours, the `unlink` warns, and the `closeSync` failure is swallowed
+ * silently below. Not throwing was already worth doing under the
  * `finally` this replaces, and it is worth more here, because the two disagree
  * about what a throwing release does. A `finally` that threw *replaced* the
  * critical section's error; a disposal that throws wraps both in a

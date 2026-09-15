@@ -20,7 +20,7 @@ The seams, in the order `resolveToken` reaches them (PR #262 / issue #256):
    0o777)` to arm, and no token file — a token returns before the lock is taken.
 2. **The empty-file warning**, matched on `is empty`. Fires under the lock and before the
    identity check, so swapping the lock file for a different inode here is exactly what a
-   break leaves behind. That is `leaves a successor's lock alone when its own was broken`.
+   break leaves behind. That is `leaves a successor's lock alone when its own was broken, and adopts its token`.
    Use `rmSync` then `writeFileSync`, not a write in place: the identity check compares
    inodes and only a new file gives it something to see.
 3. **The abandoned-lock warning**, matched on `treating it as abandoned`, which the

@@ -74,12 +74,15 @@ disposal. The minted token appears in no warning and in no `LockAttempt` variant
 
 Three tests pin the release, and all three go red if the `using` is downgraded to a `const`:
 `releases the lock when the publish fails`, `releases the lock when the re-read under it fails`,
-and `leaves a successor's lock alone when its own was broken`. The last also pins the inode check
-specifically — deleting the comparison in `releaseHeldLock` turns it red on its own. `releaseLock`
-now documents why its three fallible steps warn instead of throwing: a `finally` that threw
-*replaced* the critical section's error, where a disposal that throws wraps both in a
-`SuppressedError`, so rewriting the release to throw would change the error `resolveToken` hands
-its caller on an unrelated path. Treat that as a stated contract, not an accident.
+and `leaves a successor's lock alone when its own was broken, and adopts its token`. The last also
+pins the inode check specifically — deleting the comparison in `releaseHeldLock` turns it red on its
+own. `releaseLock` now documents why none of its three fallible steps throws — and what each does
+instead, which is not uniform: the identity check maps a failed `lstat` to `false` and warns when
+the path is no longer this start's, the `unlink` warns, and the `closeSync` is swallowed by an
+empty `catch` with no warning at all. Only the first two are operator-visible. The reason none
+throws: a `finally` that threw *replaced* the critical section's error, where a disposal that
+throws wraps both in a `SuppressedError`, so rewriting the release to throw would change the error
+`resolveToken` hands its caller on an unrelated path. Treat that as a stated contract, not an accident.
 
 **The residual, documented by design — report only a change in it.** Every residual comes
 from breaking an abandoned lock, and all three share one precondition: a holder frozen past
