@@ -1,4 +1,4 @@
-import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
@@ -591,6 +591,90 @@ describe('resolveToken', () => {
       expect(corrupted).toBe(true)
       // And the guard released it on the way out of the throw.
       expect(existsSync(lock)).toBe(false)
+    },
+  )
+
+  /**
+   * The in-lock adopt branch (#265): a start that *wins* the `wx` race and then
+   * finds a token already on disk under the lock. It won the lock but lost the
+   * mint, because a rival published and released between this start's pre-lock
+   * read and its acquisition. Minting there instead of adopting is #189 exactly
+   * — two services, two credentials.
+   *
+   * Nothing pinned it. `a waiter adopts the token the lock holder publishes`
+   * covers the *outer* fallback adopt, the re-read after a `held-by-another`
+   * result, which is a different branch; the concurrent tests above reach this
+   * one only by luck of real process timing and assert nothing about which path
+   * any start took, so a regression to a mint here passed the suite.
+   *
+   * The seam is the directory-mode warning, the same one the test above uses,
+   * for the same structural reason: it runs after the pre-lock read and before
+   * the lock is taken, which is precisely the window this rival has to publish
+   * in. Publishing there rather than corrupting leaves the lock free for this
+   * start to win and a token under it to adopt — one process, no timing, and no
+   * test-only surface on a module whose subject is a credential.
+   */
+  test.skipIf(process.platform === 'win32')(
+    'adopts a token published under the lock it won, and publishes nothing of its own',
+    () => {
+      const path = join(dir, 'mgmt-token')
+      // Group- and other-writable, so the directory check warns. No token file,
+      // so the pre-lock read returns `absent` and this start goes on to take the
+      // lock. What it must not return is `token`: `resolveToken` answers from
+      // that read and never reaches a lock at all.
+      chmodSync(dir, 0o777)
+
+      let published = false
+      // A sentinel rather than `undefined`, so the comparison below stays a real
+      // inode check rather than one TypeScript has to be talked out of; the
+      // `published` assertion is what rules out its ever reaching that check.
+      let rivalIno = -1
+      const warnings: string[] = []
+      const original = console.warn
+      console.warn = (...args: unknown[]) => {
+        const line = args.join(' ')
+        warnings.push(line)
+        if (published || !line.includes('writable beyond its owner')) {
+          return
+        }
+        published = true
+        // Stand in for the rival: it took the lock, published, and released,
+        // all between this start's pre-lock read and its acquisition. By rename
+        // and at 0600, the way `publishToken` does it, so the mode check under
+        // the lock stays quiet and the inode recorded here is the rival's own.
+        const staging = join(dir, 'rival-staging')
+        writeFileSync(staging, 'the-rivals-token\n', { mode: 0o600 })
+        renameSync(staging, path)
+        rivalIno = statSync(path).ino
+      }
+      let resolved: ReturnType<typeof resolveToken>
+      try {
+        resolved = resolveToken(dir, { ...DEFAULT_LOCK_TIMING, pollIntervalMs: 5 })
+      }
+      finally {
+        console.warn = original
+        chmodSync(dir, 0o700)
+      }
+
+      // The seam fired, so the pre-lock read returned `absent` and this start
+      // went on to take the lock itself rather than waiting on a rival's.
+      expect(published).toBe(true)
+      // It adopted: the rival's token, labelled as somebody else's.
+      expect(resolved).toEqual({ token: 'the-rivals-token', source: 'persisted', path })
+      // And published nothing of its own. The return value alone would not say
+      // that — a start that adopted *and* also wrote its mint would satisfy it
+      // while leaving the rival, and the gateway, on a token this file no longer
+      // holds. The bytes rule that out; the inode additionally rules out a
+      // republish of what was adopted, since `publishToken` renames and so
+      // cannot leave the rival's file in place.
+      expect(readFileSync(path, 'utf8')).toBe('the-rivals-token\n')
+      expect(statSync(path).ino).toBe(rivalIno)
+      // Nothing else in the directory either: no staging file, and no lock —
+      // the guard released the one this start took.
+      expect(readdirSync(dir)).toEqual(['mgmt-token'])
+      // And nothing else had anything to say. In particular no empty-file
+      // warning, which is the other way into the mint below the adopt branch.
+      expect(warnings).toEqual([expect.stringContaining('writable beyond its owner')])
     },
   )
 
