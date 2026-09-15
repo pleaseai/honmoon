@@ -1,0 +1,19 @@
+wiki/deep-dive/egress-gateway.md
+  s_328cc15f8a9753::t_eca3fc97b8ddff 233
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "42ff75c28e4b4527b1e2b1dcaf494f6a82d2c4e0",
+  "prompts": {},
+  "sessions": {
+    "s_328cc15f8a9753": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "68e0c0a2-6cdf-4ff1-94e0-79887096bc89",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
