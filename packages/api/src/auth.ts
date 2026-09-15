@@ -275,9 +275,16 @@ function readOnDisk(path: string): OnDisk {
  * needs the holder to have been frozen inside a one-read-one-write critical
  * section for `staleAfterMs` *and* two waiters to interleave inside a rename —
  * against the original race, which needs only two starts in the same
- * millisecond. Narrowed by orders of magnitude, not eliminated; closing it fully
- * needs a real advisory lock (`flock`), which Bun does not expose and so cannot
- * be spelled the same way as the Rust side.
+ * millisecond. Narrowed by orders of magnitude, not eliminated.
+ *
+ * {@link releaseLock} carries the same window on its own side, and for the same
+ * reason: it checks that the path still holds the inode it took and then
+ * unlinks, and POSIX has no compare-and-unlink to make those one step, so a
+ * waiter that breaks the lock in between has its fresh lock removed by this
+ * start's release. The precondition is identical — this holder frozen past
+ * `staleAfterMs` — so it is the same residual seen from the other end, not a
+ * second one. Closing either fully needs a real advisory lock (`flock`), which
+ * Bun does not expose and so cannot be spelled the same way as the Rust side.
  */
 function mintOrAdoptUnderLock(dir: string, path: string, timing: LockTiming): ResolvedToken {
   const lockPath = join(dir, LOCK_FILE_NAME)

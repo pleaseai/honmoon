@@ -478,15 +478,15 @@ describe('resolveToken', () => {
       const locked = join(dir, 'locked-down')
       mkdirSync(locked, { mode: 0o700 })
       writeFileSync(join(locked, 'mgmt-token'), '\n')
-      // The lock is taken while the directory is still writable; the publish
-      // then fails on the staging create.
-      chmodSync(locked, 0o500)
-      try {
-        expect(() => resolveToken(locked, { ...DEFAULT_LOCK_TIMING, pollIntervalMs: 5 })).toThrow()
-      }
-      finally {
-        chmodSync(locked, 0o700)
-      }
+      // A directory sitting where the staging file has to be created, so the
+      // publish fails *after* the lock is taken. Making the whole directory
+      // read-only instead — which this test used to do — fails `acquireLock`
+      // first, so the release it is named for is never reached and the
+      // assertion below passes on a lock that was never created.
+      mkdirSync(join(locked, `mgmt-token.new.${process.pid}`))
+
+      expect(() => resolveToken(locked, { ...DEFAULT_LOCK_TIMING, pollIntervalMs: 5 })).toThrow()
+
       expect(existsSync(join(locked, 'mgmt-token.lock'))).toBe(false)
     },
   )

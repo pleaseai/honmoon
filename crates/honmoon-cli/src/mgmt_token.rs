@@ -266,9 +266,17 @@ fn read_on_disk(path: &Path) -> std::io::Result<OnDisk> {
 /// frozen inside a one-read-one-write critical section for
 /// [`LockTiming::stale_after`] *and* two waiters to interleave inside a rename —
 /// against the original race, which needs only two starts in the same
-/// millisecond. Narrowed by orders of magnitude, not eliminated; closing it
-/// fully needs a real advisory lock (`flock`), which Bun does not expose and so
-/// cannot be spelled the same way on both sides.
+/// millisecond. Narrowed by orders of magnitude, not eliminated.
+///
+/// [`LockGuard`]'s release carries the same window on its own side, and for the
+/// same reason: it checks that the path still holds the inode it took and then
+/// unlinks, and POSIX has no compare-and-unlink to make those one step, so a
+/// waiter that breaks the lock in between has its fresh lock removed by this
+/// start's release. The precondition is identical — this holder frozen past
+/// [`LockTiming::stale_after`] — so it is the same residual seen from the other
+/// end, not a second one. Closing either fully needs a real advisory lock
+/// (`flock`), which Bun does not expose and so cannot be spelled the same way on
+/// both sides.
 ///
 /// Two consequences of breaking that *are* handled, named here because they are
 /// not obvious from the break itself: a resumed holder whose lock was broken
@@ -1150,22 +1158,21 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn a_failed_publish_still_releases_the_lock() {
-        use std::os::unix::fs::PermissionsExt as _;
-
         let tmp = TempDir::new("failed-publish");
-        let dir = tmp.path().join("locked-down");
-        std::fs::create_dir(&dir).unwrap();
-        // The lock is taken while the directory is still writable, and the
-        // publish then fails on the staging create.
+        let dir = tmp.path();
         let lock_path = dir.join(LOCK_FILE_NAME);
         std::fs::write(dir.join(FILE_NAME), "\n").unwrap();
-        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o500)).unwrap();
+        // A directory sitting where the staging file has to be created, so the
+        // publish fails *after* the lock is taken. Making the whole directory
+        // read-only instead — which this test used to do — fails `acquire_lock`
+        // first, so the release it is named for is never reached and the
+        // assertion below passes on a lock that was never created.
+        std::fs::create_dir(dir.join(format!("{FILE_NAME}.new.{}", std::process::id()))).unwrap();
 
-        let outcome = load_or_create_with(&dir, TEST_TIMING);
+        let outcome = load_or_create_with(dir, TEST_TIMING);
 
-        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).unwrap();
         let Err(_) = outcome else {
-            panic!("a publish into a read-only directory must not resolve a token");
+            panic!("a publish that cannot create its staging file must not resolve a token");
         };
         assert!(
             !lock_path.exists(),
