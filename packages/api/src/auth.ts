@@ -314,53 +314,17 @@ function mintOrAdoptUnderLock(dir: string, path: string, timing: LockTiming): Re
   const started = Date.now()
 
   for (;;) {
-    const held = acquireLock(lockPath)
-    if (held !== null) {
-      let lostTheLock = false
-      try {
-        // Re-read under the lock. A start that held it before us published
-        // before it released, so anything here now is the winner's, and minting
-        // over it would be the divergence itself.
-        const underLock = readOnDisk(path)
-        switch (underLock.kind) {
-          case 'token':
-            return underLock.resolved
-          case 'empty':
-            console.warn(`honmoon api: management token ${path} is empty — minting a new one`)
-            break
-          case 'absent':
-            break
-          default:
-            // Rust's `match` on `OnDisk` is exhaustive by construction; this is
-            // what makes the TypeScript side fail the build rather than treat a
-            // later variant as 'absent' and mint over it.
-            return assertNever(underLock)
-        }
-        // Check the lock is still this start's before publishing. A holder
-        // suspended between the read above and the publish below can be aged out
-        // by {@link breakAbandonedLock}, after which another start mints and
-        // publishes; publishing anyway would rename this token over that one and
-        // hand the two services different credentials, which is #189 exactly.
-        // Not a fence — the window moves to between this check and the rename,
-        // where the other start now has to complete a whole break, mint and
-        // publish — but that is orders of magnitude narrower than the whole
-        // critical section. Looping rather than failing, because the lock's new
-        // holder will publish a token to adopt.
-        if (!lockStillOurs(lockPath, held.ino)) {
-          console.warn(
-            `honmoon api: warning: the management token lock ${lockPath} was taken by another start `
-            + 'while this one held it — waiting for that start\'s token rather than publishing over it',
-          )
-          lostTheLock = true
-        }
-        else {
-          publishToken(dir, path, minted)
-        }
-      }
-      finally {
-        releaseLock(lockPath, held)
-      }
-      if (lostTheLock) {
+    const attempt = attemptUnderLock(dir, path, lockPath, minted)
+    switch (attempt.kind) {
+      case 'adopted':
+        return attempt.resolved
+      case 'published':
+        return { token: minted, source: 'generated', path }
+      case 'broken':
+        // The lock's new holder will publish a token to adopt, so wait for it
+        // rather than failing. The sleep happens here and not inside
+        // {@link attemptUnderLock} because this start no longer holds the lock
+        // once that function has returned.
         if (Date.now() - started >= timing.budgetMs) {
           throw new Error(
             `no management token in ${path} after waiting ${Math.round(timing.budgetMs / 1000)}s `
@@ -369,11 +333,15 @@ function mintOrAdoptUnderLock(dir: string, path: string, timing: LockTiming): Re
         }
         sleepSync(timing.pollIntervalMs)
         continue
-      }
-      return { token: minted, source: 'generated', path }
+      case 'held-by-another':
+        break
+      default:
+        // Same reason as the `OnDisk` arm below: a later outcome has to fail
+        // the build rather than fall through to the waiter path.
+        return assertNever(attempt)
     }
 
-    // Lost the lock: wait for the winner rather than minting.
+    // Lost the race to acquire: wait for the winner rather than minting.
     const published = readOnDisk(path)
     if (published.kind === 'token') {
       return published.resolved
@@ -393,6 +361,92 @@ function mintOrAdoptUnderLock(dir: string, path: string, timing: LockTiming): Re
 }
 
 /**
+ * How one pass at the critical section ended. `held-by-another` is the one
+ * outcome where this start never had the lock at all.
+ */
+type LockAttempt
+  = | { kind: 'held-by-another' }
+    | { kind: 'adopted', resolved: ResolvedToken }
+    | { kind: 'published' }
+    | { kind: 'broken' }
+
+/**
+ * Take the lock, re-read the token file under it, and publish `minted` only if
+ * there is still nothing to adopt.
+ *
+ * This is a function rather than the loop body it was written as so that the
+ * `using` below has a scope that ends where the lock should be released. Leaving
+ * that scope releases the lock because that is what a `using` declaration means
+ * — the `return`s below, and a throw out of {@link readOnDisk} or
+ * {@link publishToken}, need nothing written for them — where the `finally` this
+ * replaces had to be positioned to cover each of them. The waiter's `sleepSync`
+ * stays in the caller, because the lock is gone by the time it runs.
+ *
+ * `Symbol.dispose` changes when and how the release is invoked and not what it
+ * does: {@link releaseLock} still compares the path's inode against the one this
+ * start took before unlinking, so a lock broken out from under this start is
+ * left to its new holder. The Rust CLI spells the same pair as `LockGuard` and
+ * its `Drop`.
+ */
+function attemptUnderLock(dir: string, path: string, lockPath: string, minted: string): LockAttempt {
+  using held = acquireLock(lockPath)
+  if (held === null) {
+    return { kind: 'held-by-another' }
+  }
+  // Re-read under the lock. A start that held it before us published before it
+  // released, so anything here now is the winner's, and minting over it would
+  // be the divergence itself.
+  const underLock = readOnDisk(path)
+  switch (underLock.kind) {
+    case 'token':
+      return { kind: 'adopted', resolved: underLock.resolved }
+    case 'empty':
+      console.warn(`honmoon api: management token ${path} is empty — minting a new one`)
+      break
+    case 'absent':
+      break
+    default:
+      // Rust's `match` on `OnDisk` is exhaustive by construction; this is what
+      // makes the TypeScript side fail the build rather than treat a later
+      // variant as 'absent' and mint over it.
+      return assertNever(underLock)
+  }
+  // Check the lock is still this start's before publishing. A holder suspended
+  // between the read above and the publish below can be aged out by
+  // {@link breakAbandonedLock}, after which another start mints and publishes;
+  // publishing anyway would rename this token over that one and hand the two
+  // services different credentials, which is #189 exactly. Not a fence — the
+  // window moves to between this check and the rename, where the other start
+  // now has to complete a whole break, mint and publish — but that is orders of
+  // magnitude narrower than the whole critical section. Reported rather than
+  // thrown, because the lock's new holder will publish a token to adopt.
+  if (!held.stillOurs()) {
+    console.warn(
+      `honmoon api: warning: the management token lock ${lockPath} was taken by another start `
+      + 'while this one held it — waiting for that start\'s token rather than publishing over it',
+    )
+    return { kind: 'broken' }
+  }
+  publishToken(dir, path, minted)
+  return { kind: 'published' }
+}
+
+/**
+ * The lock, held.
+ *
+ * The counterpart of the Rust CLI's `LockGuard`: `Symbol.dispose` here is what
+ * `Drop` is there, so the release is the scope's to make in both languages
+ * rather than the author's to remember. A guard is process-local, so this is
+ * not part of what the two processes interlock on — that is still the lock
+ * file's name, location and protocol — but it is one fewer way for the two
+ * implementations to drift.
+ */
+interface LockGuard extends Disposable {
+  /** Whether the lock path still holds the file {@link acquireLock} created. */
+  stillOurs: () => boolean
+}
+
+/**
  * Take the lock, or report `null` if another start holds it.
  *
  * `ino` identifies the file this call created, so {@link releaseLock} only ever
@@ -403,17 +457,17 @@ function mintOrAdoptUnderLock(dir: string, path: string, timing: LockTiming): Re
  * not be read, which falls back to the unconditional unlink rather than leaking
  * the lock.
  *
- * `fd` is returned still open, and that is what makes the `ino` comparison mean
- * anything: an inode number identifies a file only while the inode is
- * allocated, and ext4 and tmpfs hand a freed number straight back out, so a
- * successor created after a break routinely lands on the number recorded here.
- * An open descriptor keeps the inode allocated even after the break unlinks its
- * last name, so the successor cannot be given that number. {@link releaseLock}
- * closes it, which is why the two are always called as a pair. (APFS never
- * reuses a number, which is why the Rust counterpart of this was green on macOS
- * and red on Linux CI.)
+ * `fd` stays open in the guard's closure, and that is what makes the `ino`
+ * comparison mean anything: an inode number identifies a file only while the
+ * inode is allocated, and ext4 and tmpfs hand a freed number straight back out,
+ * so a successor created after a break routinely lands on the number recorded
+ * here. An open descriptor keeps the inode allocated even after the break
+ * unlinks its last name, so the successor cannot be given that number.
+ * {@link releaseLock} closes it, which is why the acquire and the disposal are
+ * halves of one thing. (APFS never reuses a number, which is why the Rust
+ * counterpart of this was green on macOS and red on Linux CI.)
  */
-function acquireLock(lockPath: string): { ino: number | null, fd: number } | null {
+function acquireLock(lockPath: string): LockGuard | null {
   let fd: number
   try {
     fd = openSync(lockPath, 'wx', 0o600)
@@ -450,19 +504,23 @@ function acquireLock(lockPath: string): { ino: number | null, fd: number } | nul
       `honmoon api: warning: could not record the holder of the management token lock ${lockPath}: ${String(error)}`,
     )
   }
-  return { ino, fd }
+  return {
+    stillOurs: () => lockStillOurs(lockPath, ino),
+    [Symbol.dispose]: () => releaseLock(lockPath, ino, fd),
+  }
 }
 
 /**
- * Release the lock. Called from a `finally`, so a failed publish does not leave
- * every other start waiting out the full budget.
+ * Release the lock. Reached through the guard's `Symbol.dispose` rather than a
+ * `finally`, so it runs wherever {@link attemptUnderLock}'s scope ends,
+ * including on the throws out of it — a failed publish does not leave every
+ * other start waiting out the full budget.
  *
  * `fd` is {@link acquireLock}'s still-open descriptor. It is closed last, after
  * the identity check and the unlink, because it is what keeps this lock's inode
  * from being handed to a successor while the check is deciding.
  */
-function releaseLock(lockPath: string, held: { ino: number | null, fd: number }): void {
-  const { ino, fd } = held
+function releaseLock(lockPath: string, ino: number | null, fd: number): void {
   try {
     releaseHeldLock(lockPath, ino)
   }
