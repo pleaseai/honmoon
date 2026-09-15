@@ -27,6 +27,14 @@ exactly one start *decide* to mint; the rename makes what it publishes visible a
 Neither substitutes for the other, which is also why issue #189's "atomic publish alone does
 not fix it" is true without implying the lock alone does.
 
+A prefix is the failure mode to watch on *every* write in this path, not only the in-place
+one: publishing goes through `write_all` in Rust and a looping `writeAll` in TypeScript,
+because `writeSync` may write fewer bytes than it was given and report the count rather than
+throwing, and `rename` then faithfully publishes the prefix. A proposal to call `writeSync`
+once should be refused. The asymmetry — Rust looping, TypeScript not — survived two review
+rounds before codex found it; on a mirrored pair, check the *other* side of anything you
+confirm on one.
+
 **Verified empirically (do not re-derive):** `O_CREAT|O_EXCL` fails `EEXIST` on a *dangling*
 symlink, and a plain `O_WRONLY|O_CREAT|O_TRUNC` open follows that same link and creates the
 target at mode `0600`. During review this made an `EEXIST`-keyed truncating fallback an
