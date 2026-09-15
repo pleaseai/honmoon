@@ -1,0 +1,31 @@
+.claude/agent-memory/review-review-comment-analyzer/pr262_lock_dispose_claims.md
+  s_1d6b98bf467e8b::t_266da0a7f79e83 1-2,4-31
+  s_1d6b98bf467e8b::t_f8240ac5c4b6e3 3,32-49
+packages/api/src/auth.ts
+  s_1d6b98bf467e8b::t_a5683ee796ae5e 285-289
+  s_1d6b98bf467e8b::t_3b267101f87ccb 283-284
+  s_1d6b98bf467e8b::t_27238a5123ba93 523-532
+.claude/agent-memory/review-review-pr-test-analyzer/mgmt_token_lock_warn_seams.md
+  s_1d6b98bf467e8b::t_df0543b1c37dfd 1-44
+.claude/agent-memory/review-review-security-reviewer/mgmt-token-lock-protocol.md
+  s_1d6b98bf467e8b::t_db91dc769bf05a 64-70,83
+  s_1d6b98bf467e8b::t_bdaef726cbd4bc 71-82
+packages/api/src/auth.test.ts
+  s_1d6b98bf467e8b::t_3212e231225220 549-596
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "838168dcb89195cc00657c2c8e82dd6b6ec19e5a",
+  "prompts": {},
+  "sessions": {
+    "s_1d6b98bf467e8b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "46274e49-eec1-42d6-b5b6-1b44f1eb8fbc",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
