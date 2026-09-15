@@ -269,7 +269,7 @@ pass. The existing tests are your templates:
 
 ### 3.3 The quality gate
 
-Before you commit, run what CI runs ([workflow.md:76-81](https://github.com/pleaseai/honmoon/blob/main/.please/docs/knowledge/workflow.md#L76-L81)):
+Before you commit, run what CI runs ([workflow.md:77-81](https://github.com/pleaseai/honmoon/blob/main/.please/docs/knowledge/workflow.md#L77-L81)):
 
 ```bash
 cargo fmt --all && cargo clippy --workspace --all-targets -- -D warnings
@@ -300,7 +300,7 @@ Types: `feat`, `fix`, `docs`, `style`, `refactor`, `perf`, `test`, `build`, `ci`
 Say you want the SQL parser to recognize `MERGE`. The honest, test-first path:
 
 1. **Red** — add to `parse_sql_extracts_verb_and_table` in
-   [protocols.rs](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/protocols.rs#L275-L281):
+   [protocols.rs](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/protocols.rs#L1728-L1734):
    `assert_eq!(parse_sql("MERGE INTO accounts …").table, "accounts");`. Run `cargo test` — it fails.
 2. **Green** — extend the `match verb` arms in `parse_sql`
    ([protocols.rs:46-87](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/protocols.rs#L46-L87)) so `MERGE`

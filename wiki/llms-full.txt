@@ -271,7 +271,7 @@ pass. The existing tests are your templates:
 
 ### 3.3 The quality gate
 
-Before you commit, run what CI runs ([workflow.md:76-81](https://github.com/pleaseai/honmoon/blob/main/.please/docs/knowledge/workflow.md#L76-L81)):
+Before you commit, run what CI runs ([workflow.md:77-81](https://github.com/pleaseai/honmoon/blob/main/.please/docs/knowledge/workflow.md#L77-L81)):
 
 ```bash
 cargo fmt --all && cargo clippy --workspace --all-targets -- -D warnings
@@ -302,7 +302,7 @@ Types: `feat`, `fix`, `docs`, `style`, `refactor`, `perf`, `test`, `build`, `ci`
 Say you want the SQL parser to recognize `MERGE`. The honest, test-first path:
 
 1. **Red** — add to `parse_sql_extracts_verb_and_table` in
-   [protocols.rs](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/protocols.rs#L275-L281):
+   [protocols.rs](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/protocols.rs#L1728-L1734):
    `assert_eq!(parse_sql("MERGE INTO accounts …").table, "accounts");`. Run `cargo test` — it fails.
 2. **Green** — extend the `match verb` arms in `parse_sql`
    ([protocols.rs:46-87](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/protocols.rs#L46-L87)) so `MERGE`
@@ -556,7 +556,7 @@ ADR-0001 adopted Pingora on a documentation-derived premise. During Phase 1, tha
 tested against the real Pingora 0.8.1 source and a prototype, and **disproven**: `HttpProxy` is
 reverse-proxy oriented and `allow_connect_method_proxying` does proxy *chaining*, not terminating
 tunnels. ADR-0002 reversed course to ~130 LOC of tokio and deferred the framework to the phase
-that actually terminates TLS ([.please/docs/decisions/0002-phase1-connect-proxy-on-tokio.md:10-44](https://github.com/pleaseai/honmoon/blob/main/.please/docs/decisions/0002-phase1-connect-proxy-on-tokio.md#L10-L44)).
+that actually terminates TLS ([.please/docs/decisions/0002-phase1-connect-proxy-on-tokio.md:11-45](https://github.com/pleaseai/honmoon/blob/main/.please/docs/decisions/0002-phase1-connect-proxy-on-tokio.md#L11-L45)).
 
 ```mermaid
 sequenceDiagram
@@ -569,7 +569,7 @@ sequenceDiagram
   P-->>B: InvalidHTTPHeader — premise false
   B->>B: ship tokio CONNECT; defer Pingora to TLS phase (YAGNI)
 ```
-<!-- Sources: .please/docs/decisions/0001-adopt-pingora-http-data-plane.md:1-12, .please/docs/decisions/0002-phase1-connect-proxy-on-tokio.md:10-44 -->
+<!-- Sources: .please/docs/decisions/0001-adopt-pingora-http-data-plane.md:1-12, .please/docs/decisions/0002-phase1-connect-proxy-on-tokio.md:11-45 -->
 
 The transferable lesson: the transport-agnostic seam made a load-bearing framework decision
 **cheaply reversible.** Architectures that make their biggest bets reversible age well.
@@ -590,7 +590,7 @@ Be precise about maturity when you plan work ([tech-debt-tracker.md:9-14](https:
 
 The data plane is single-binary, single-node by design today. The open-core thesis is that this
 stays free and powerful, and monetization begins at the **fleet** boundary — central policy,
-RBAC/SSO, approval routing, compliance retention ([business-model.md:32-44](https://github.com/pleaseai/honmoon/blob/main/docs/business-model.md#L32-L44)).
+RBAC/SSO, approval routing, compliance retention ([business-model.md:33-44](https://github.com/pleaseai/honmoon/blob/main/docs/business-model.md#L33-L44)).
 A hard platform constraint shapes scope: the wire-level core needs OS networking, so it cannot run
 on serverless isolates (Cloudflare Workers can host the egress filter + control plane only)
 ([roadmap.md:137-144](https://github.com/pleaseai/honmoon/blob/main/docs/roadmap.md#L137-L144)). Treat "must own a host/container"
@@ -649,7 +649,7 @@ every outbound connection — allow it, block it, or hold it for human approval.
 is **protocol awareness**: beyond a domain allowlist, it inspects SQL, Kubernetes, and HTTP at the
 wire level, so policy can say "never `DROP` the prod database" or "never delete a Kubernetes
 secret," not merely "block this domain"
-([product.md:6-29](https://github.com/pleaseai/honmoon/blob/main/.please/docs/knowledge/product.md#L6-L29)).
+([product.md:7-28](https://github.com/pleaseai/honmoon/blob/main/.please/docs/knowledge/product.md#L7-L28)).
 
 ## The problem it addresses
 
@@ -657,7 +657,7 @@ AI agents now run shell commands, call APIs, and touch databases autonomously. A
 inference can exfiltrate data, run a destructive query, or delete production resources. Existing
 controls are either too coarse (block all network) or too narrow (HTTP domain allowlists). Honmoon
 targets the gap: fine-grained, protocol-aware enforcement at the network boundary
-([product.md:13-18](https://github.com/pleaseai/honmoon/blob/main/.please/docs/knowledge/product.md#L13-L18)).
+([product.md:14-17](https://github.com/pleaseai/honmoon/blob/main/.please/docs/knowledge/product.md#L14-L17)).
 
 ## Capability map
 
@@ -766,7 +766,7 @@ The architecture reflects a deliberate, defensible set of bets:
 The open-core boundary is explicit and well-reasoned: the data plane stays 100% open source to
 build trust; monetization begins where a customer moves from one node to operating a fleet —
 central policy, compliance retention, approval routing, RBAC/SSO
-([business-model.md:32-44](https://github.com/pleaseai/honmoon/blob/main/docs/business-model.md#L32-L44)).
+([business-model.md:33-44](https://github.com/pleaseai/honmoon/blob/main/docs/business-model.md#L33-L44)).
 
 ## Cost & scaling model
 
@@ -787,7 +787,7 @@ flowchart LR
   ([roadmap.md:137-144](https://github.com/pleaseai/honmoon/blob/main/docs/roadmap.md#L137-L144)). Budget for host/container infrastructure.
 - **Monetization timing:** individual developers don't pay for security tools; the buyer is the
   platform/security team operating many agents. Revenue should follow team operation, not precede
-  it ([business-model.md:94-98](https://github.com/pleaseai/honmoon/blob/main/docs/business-model.md#L94-L98)).
+  it ([business-model.md:95-98](https://github.com/pleaseai/honmoon/blob/main/docs/business-model.md#L95-L98)).
 
 ## Recommendations
 
@@ -796,7 +796,7 @@ flowchart LR
 | **Now** | Pilot **gateway mode** for HTTPS egress control of agent fleets. It is tested and enforcing. The process-wrapper is hard isolation too, on Linux and macOS, for an unprivileged child — but not on other platforms, and not where a container blocks the namespace. |
 | **Now** | Author protocol policies (SQL/K8s) against the engine to validate fit, knowing live-traffic enforcement is the next data-plane milestone (TD-006). |
 | **Near-term** | If protocol-level enforcement is your driver, **fund/track TD-006 (live relay)** — it converts this from "promising engine" to "deployable control" for database and cloud traffic. |
-| **Strategic** | The open-core thesis only works if the free core is generous. Resist pressure to gate the data plane; the moat and the trust both live there ([business-model.md:24-28](https://github.com/pleaseai/honmoon/blob/main/docs/business-model.md#L24-L28)). |
+| **Strategic** | The open-core thesis only works if the free core is generous. Resist pressure to gate the data plane; the moat and the trust both live there ([business-model.md:25-27](https://github.com/pleaseai/honmoon/blob/main/docs/business-model.md#L25-L27)). |
 
 ## Related Pages
 
@@ -837,7 +837,7 @@ trying to delete the production database?" ([Overview](/getting-started/overview
 
 | Audience | What they get | Source |
 |----------|---------------|--------|
-| **Platform / security teams** (the buyer) | Central control, audit, and approval over a fleet of AI agents | [product.md:31-37](https://github.com/pleaseai/honmoon/blob/main/.please/docs/knowledge/product.md#L31-L37) |
+| **Platform / security teams** (the buyer) | Central control, audit, and approval over a fleet of AI agents | [product.md:32-36](https://github.com/pleaseai/honmoon/blob/main/.please/docs/knowledge/product.md#L32-L36) |
 | **Individual developers / small teams** (the adopter) | A free, self-hosted guard for a single machine | [product.md:33-36](https://github.com/pleaseai/honmoon/blob/main/.please/docs/knowledge/product.md#L33-L36) |
 
 The team that *pays* is the one that needs to manage many agents, prove compliance, and route
@@ -925,7 +925,7 @@ This matters for positioning a security product:
 | Question | Answer | Source |
 |----------|--------|--------|
 | Does it read the *content* of traffic? | No. It looks only at the minimum needed to make a decision (e.g. "this is a 'delete' on 'secrets'"), never the full message contents | [protocols.rs:7-8](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/protocols.rs#L7-L8), [product-guidelines.md:25-27](https://github.com/pleaseai/honmoon/blob/main/.please/docs/knowledge/product-guidelines.md#L25-L27) |
-| Is the core open for inspection? | Yes — the part that inspects traffic is 100% open source, on purpose, so security teams can audit it | [business-model.md:12-18](https://github.com/pleaseai/honmoon/blob/main/docs/business-model.md#L12-L18) |
+| Is the core open for inspection? | Yes — the part that inspects traffic is 100% open source, on purpose, so security teams can audit it | [business-model.md:13-18](https://github.com/pleaseai/honmoon/blob/main/docs/business-model.md#L13-L18) |
 | Where does data live? | On your own machine/server (self-hosted). A hosted option is a future paid offering | [business-model.md:41-43](https://github.com/pleaseai/honmoon/blob/main/docs/business-model.md#L41-L43) |
 | What happens if a rule is broken or missing? | It falls back to your configured default — which is **block (deny)** out of the box, the safe choice. Keep that default for fail-safe behavior | [product-guidelines.md:23-24](https://github.com/pleaseai/honmoon/blob/main/.please/docs/knowledge/product-guidelines.md#L23-L24) |
 
@@ -939,7 +939,7 @@ and understands the *actions* they take (which query, which cloud operation), no
 The part that inspects your traffic is open source so you can trust it — security teams won't
 adopt a "black box." The company plans to charge later for *team-scale* features (managing many
 agents, compliance reports, approvals across an organization), not for the core
-([business-model.md:24-28](https://github.com/pleaseai/honmoon/blob/main/docs/business-model.md#L24-L28)).
+([business-model.md:25-27](https://github.com/pleaseai/honmoon/blob/main/docs/business-model.md#L25-L27)).
 
 **Can I use it in production today?**
 You can use the gateway mode now — website control, the audit log, and the approve/deny dashboard
@@ -1173,10 +1173,10 @@ These are non-negotiable; violating them breaks the product
 
 | Concern | Rust | TypeScript | Source |
 |---------|------|-----------|--------|
-| Error handling | `thiserror` (libs) · `anyhow` (binary); unimplemented modes `bail!` | — | [lib.rs:128-132](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/lib.rs#L128-L132), [main.rs:365-367](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-cli/src/main.rs#L365-L367) |
+| Error handling | `thiserror` (libs) · `anyhow` (binary); unimplemented modes `bail!` | — | [lib.rs:532-559](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/lib.rs#L532-L559), [main.rs:365-367](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-cli/src/main.rs#L365-L367) |
 | Logging | `tracing` + `tracing-subscriber` (`RUST_LOG`) | `console` / Bun | [main.rs:413-436](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-cli/src/main.rs#L413-L436) |
 | Testing | inline `#[cfg(test)]` + integration (`egress.rs`) + e2e (`honmoon-mgmt/tests/e2e.rs`) | `bun test` (`@honmoon/api` audit query) | [engine.rs](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/engine.rs), [audit.test.ts](https://github.com/pleaseai/honmoon/blob/main/packages/api/src/audit.test.ts) |
-| Configuration | YAML policy, central `[workspace.dependencies]` | root `package.json` workspaces | [Cargo.toml:16-28](https://github.com/pleaseai/honmoon/blob/main/Cargo.toml#L16-L28) |
+| Configuration | YAML policy, central `[workspace.dependencies]` | root `package.json` workspaces | [Cargo.toml:17-53](https://github.com/pleaseai/honmoon/blob/main/Cargo.toml#L17-L53) |
 
 ## Quality map
 
@@ -1588,7 +1588,7 @@ table per the verb's syntax ([protocols.rs:37-93](https://github.com/pleaseai/ho
 
 Extracted identifiers are normalized by `clean_identifier`: strip quotes/backticks/semicolons,
 drop the schema qualifier (`public.users;` → `users`), and lowercase
-([protocols.rs:95-104](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/protocols.rs#L95-L104)).
+([protocols.rs:700-709](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/protocols.rs#L700-L709)).
 
 The modifier-skipping logic matters for correctness: `DROP MATERIALIZED VIEW mv` must yield `mv`,
 not `materialized` — proven by `drop_if_exists_extracts_real_table`
@@ -1631,7 +1631,7 @@ flowchart TD
 
 `k8s_verb` maps the HTTP method to a Kubernetes verb, with one nuance: a `GET` on a **collection**
 is `list`, a `GET` on a **named resource** is `get`
-([protocols.rs:158-176](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/protocols.rs#L158-L176)):
+([protocols.rs:1000-1018](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/protocols.rs#L1000-L1018)):
 
 | HTTP method | Has resource name? | K8s verb |
 |-------------|--------------------|----------|
@@ -1648,8 +1648,8 @@ is `list`, a `GET` on a **named resource** is `get`
 |------|----------|-----------|---------------|--------|
 | `/api/v1/namespaces/prod/secrets/db` | `secrets` | `prod` | `delete` | [protocols.rs:284-289](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/protocols.rs#L284-L289) |
 | `/apis/apps/v1/deployments/api` | `deployments` | `` | `delete` | [protocols.rs:239-246](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/protocols.rs#L239-L246) |
-| `/api/v1/namespaces` | `namespaces` | `` | — (`list`/`get`) | [protocols.rs:256-273](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/protocols.rs#L256-L273) |
-| `/api/v1/nodes` | `nodes` | `` | `list` | [protocols.rs:308-311](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/protocols.rs#L308-L311) |
+| `/api/v1/namespaces` | `namespaces` | `` | — (`list`/`get`) | [protocols.rs:1101-1118](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/protocols.rs#L1101-L1118) |
+| `/api/v1/nodes` | `nodes` | `` | `list` | [protocols.rs:1781-1784](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/protocols.rs#L1781-L1784) |
 
 Two regression tests guard the trickiest cases: `k8s_grouped_cluster_scoped_resource_not_version`
 ensures `v1` is never captured as a resource, and `k8s_namespace_resource_itself` ensures
@@ -1666,8 +1666,8 @@ end-to-end tests in `engine.rs`:
 | `parses_postgres_drop` | `'Q'` → `DROP` + table | [protocols.rs:192-197](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/protocols.rs#L192-L197) |
 | `rejects_non_query_packet` | non-`Q` / too-short → `None` | [protocols.rs:213-217](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/protocols.rs#L213-L217) |
 | `rejects_malformed_query_frames` | framing edge cases | [protocols.rs:219-237](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/protocols.rs#L219-L237) |
-| `parse_sql_extracts_verb_and_table` | quoting, schema, case | [protocols.rs:275-281](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/protocols.rs#L275-L281) |
-| `parses_k8s_list_vs_get` | collection vs named GET | [protocols.rs:291-299](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/protocols.rs#L291-L299) |
+| `parse_sql_extracts_verb_and_table` | quoting, case | [protocols.rs:1728-1734](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/protocols.rs#L1728-L1734) |
+| `parses_k8s_list_vs_get` | collection vs named GET | [protocols.rs:1764-1772](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/protocols.rs#L1764-L1772) |
 
 ## Related Pages
 
@@ -1698,7 +1698,7 @@ to the audit log** and, for a `pause` verdict, **holds the connection pending hu
 | Element | Role | Source |
 |---------|------|--------|
 | `GatewayState` | Shared `Arc`s: policy + `AuditLog` + `ApprovalRegistry` + pause timeout | [gateway.rs:34-59](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-proxy/src/gateway.rs#L34-L59) |
-| `run(policy, addr)` | Bind `addr`, serve forever | [gateway.rs:62-65](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-proxy/src/gateway.rs#L62-L65) |
+| `run(policy, addr)` | Bind `addr`, serve forever | [gateway.rs:155-159](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-proxy/src/gateway.rs#L155-L159) |
 | `serve_listener(policy, listener)` | Serve a pre-bound listener (no TOCTOU) | [gateway.rs:71-74](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-proxy/src/gateway.rs#L71-L74) |
 | `serve_listener_with_state` / `serve` | Serve with caller-provided shared state (used by `honmoon gateway`) | [gateway.rs:78-109](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-proxy/src/gateway.rs#L78-L109) |
 | `handle(client, state)` | One connection: parse → authorize → tunnel | [gateway.rs:112-162](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-proxy/src/gateway.rs#L112-L162) |
@@ -1721,7 +1721,7 @@ was tested against Pingora 0.8.1 and **disproven** for this use case
 
 Decision: ship Phase 1 on raw tokio; **defer** Pingora (and its heavy dependency) to the phase
 that terminates TLS and inspects HTTP requests, where its hooks actually pay off (YAGNI)
-([ADR-0002:32-44](https://github.com/pleaseai/honmoon/blob/main/.please/docs/decisions/0002-phase1-connect-proxy-on-tokio.md#L32-L44)).
+([ADR-0002:33-45](https://github.com/pleaseai/honmoon/blob/main/.please/docs/decisions/0002-phase1-connect-proxy-on-tokio.md#L33-L45)).
 
 ## Connection handling
 
@@ -2011,9 +2011,9 @@ shared `GatewayState`. `honmoon gateway` runs the proxy and this API on one toki
 | Route | Method | Returns | Source |
 |-------|--------|---------|--------|
 | `/api/audit?limit=N` | GET | Recent audit events, newest first (default 200, cap 1000) | [lib.rs:86-93](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-mgmt/src/lib.rs#L86-L93) |
-| `/api/approvals` | GET | Requests held pending approval | [lib.rs:95-97](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-mgmt/src/lib.rs#L95-L97) |
-| `/api/approvals/{id}/approve` | POST | Resolve → wakes the held connection | [lib.rs:104-106](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-mgmt/src/lib.rs#L104-L106) |
-| `/api/approvals/{id}/reject` | POST | Resolve → blocks the held connection | [lib.rs:108-110](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-mgmt/src/lib.rs#L108-L110) |
+| `/api/approvals` | GET | Requests held pending approval | [lib.rs:642-644](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-mgmt/src/lib.rs#L642-L644) |
+| `/api/approvals/{id}/approve` | POST | Resolve → wakes the held connection | [lib.rs:651-653](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-mgmt/src/lib.rs#L651-L653) |
+| `/api/approvals/{id}/reject` | POST | Resolve → blocks the held connection | [lib.rs:655-657](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-mgmt/src/lib.rs#L655-L657) |
 | `/api/policy` | GET | Active policy (raw YAML + parsed) | [lib.rs:129-134](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-mgmt/src/lib.rs#L129-L134) |
 | `/healthz` | GET | `{status:"ok"}` | [lib.rs:77-79](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-mgmt/src/lib.rs#L77-L79) |
 | anything else | — | Embedded dashboard (SPA fallback) | [lib.rs:138-168](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-mgmt/src/lib.rs#L138-L168) |
@@ -2028,7 +2028,7 @@ construction rather than by remembering to check
 are the two deliberate exceptions and stay open. The token itself is resolved — and generated
 `0600` on first use — by the CLI loader
 ([mgmt_token.rs:1-30](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-cli/src/mgmt_token.rs#L1-L30)), and `@honmoon/api` reads
-the same file ([auth.ts:102-201](https://github.com/pleaseai/honmoon/blob/main/packages/api/src/auth.ts#L102-L201)).
+the same file ([auth.ts:142-198](https://github.com/pleaseai/honmoon/blob/main/packages/api/src/auth.ts#L142-L198)).
 
 The browser's credential is **not a cookie**, and that is what keeps a sibling loopback listener
 out (issue [#188](https://github.com/pleaseai/honmoon/issues/188)). A cookie's scope has no port
@@ -2079,7 +2079,7 @@ One careful detail: the SPA fallback **refuses to mask an unmatched `/api/...` p
 
 The dashboard is built by Vite into `apps/dashboard/dist`, then compiled **into the Rust binary**
 with `rust-embed` so a single binary serves both policy enforcement and its UI
-([lib.rs:30-36](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-mgmt/src/lib.rs#L30-L36)). A `build.rs` drops a
+([lib.rs:49-55](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-mgmt/src/lib.rs#L49-L55)). A `build.rs` drops a
 placeholder `index.html` when `dist/` is absent so a bare `cargo build` always succeeds before the
 dashboard is built ([build.rs:1-36](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-mgmt/build.rs#L1-L36)).
 
@@ -2094,7 +2094,7 @@ flowchart LR
   style bin fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
   style serve fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
 ```
-<!-- Sources: crates/honmoon-mgmt/build.rs:1-36, apps/dashboard/vite.config.ts:1-21, crates/honmoon-mgmt/src/lib.rs:30-36 -->
+<!-- Sources: crates/honmoon-mgmt/build.rs:1-36, apps/dashboard/vite.config.ts:1-21, crates/honmoon-mgmt/src/lib.rs:49-55 -->
 
 Every `/api` route requires the management token (#173), so the dashboard's own credential is the
 session secret `GET /login?token=…` hands it in the redirect fragment — the URL the gateway prints
@@ -2157,7 +2157,7 @@ durable, historical queries `@honmoon/api` reads the **JSONL file** the gateway 
 |-------|---------|--------|
 | `GET /api/audit` | `limit`, `decision`, `since`, `domain` | [audit.ts:43-72](https://github.com/pleaseai/honmoon/blob/main/packages/api/src/audit.ts#L43-L72), [index.ts:45-48](https://github.com/pleaseai/honmoon/blob/main/packages/api/src/index.ts#L45-L48) |
 | `GET /api/audit/stats` | counts by decision | [audit.ts:74-83](https://github.com/pleaseai/honmoon/blob/main/packages/api/src/audit.ts#L74-L83) |
-| `GET /healthz` | — | [index.ts:41-43](https://github.com/pleaseai/honmoon/blob/main/packages/api/src/index.ts#L41-L43) |
+| `GET /healthz` | — | [routes.ts:40-42](https://github.com/pleaseai/honmoon/blob/main/packages/api/src/routes.ts#L40-L42) |
 
 Both `/api/audit` routes require the management token as `Authorization: Bearer <token>` (issue
 [#173](https://github.com/pleaseai/honmoon/issues/173)) — the same token the Rust gateway
@@ -2225,9 +2225,9 @@ against a declarative policy, and returns one of three verdicts — `allow`, `de
 
 | Concern | Honmoon's answer | Source |
 |---------|------------------|--------|
-| What does it protect? | The boundary between AI agents and production systems (APIs, databases, K8s) | [product.md:6-11](https://github.com/pleaseai/honmoon/blob/main/.please/docs/knowledge/product.md#L6-L11) |
+| What does it protect? | The boundary between AI agents and production systems (APIs, databases, K8s) | [product.md:7-10](https://github.com/pleaseai/honmoon/blob/main/.please/docs/knowledge/product.md#L7-L10) |
 | How does it decide? | A YAML policy: egress allow/deny lists + CEL rules over protocol facts | [policies/agent.yaml](https://github.com/pleaseai/honmoon/blob/main/policies/agent.yaml) |
-| What can it decide? | `allow` · `deny` · `pause` (held for human approval) | [lib.rs:15-25](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/lib.rs#L15-L25) |
+| What can it decide? | `allow` · `deny` · `pause` (held for human approval) | [lib.rs:45-55](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/lib.rs#L45-L55) |
 | Default posture | **Fail closed** — default egress verdict is `deny` | [lib.rs:50-62](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/lib.rs#L50-L62) |
 | What runs today? | Phase 1–4: egress proxy + CEL engine + SQL/K8s parsers + `pause` approval + audit + dashboard | [roadmap.md:32-101](https://github.com/pleaseai/honmoon/blob/main/docs/roadmap.md#L32-L101) |
 
@@ -2237,7 +2237,7 @@ AI agents run shell commands, call APIs, and access databases. That capability i
 risk: a single bad inference can trigger data exfiltration, a destructive query (`DROP TABLE`),
 unauthorized Kubernetes resource deletion, or tokens leaked to a private endpoint. Existing
 controls are either **too coarse** (block all network) or **too narrow** (HTTP domain allowlist
-only) ([product.md:13-18](https://github.com/pleaseai/honmoon/blob/main/.please/docs/knowledge/product.md#L13-L18)).
+only) ([product.md:14-17](https://github.com/pleaseai/honmoon/blob/main/.please/docs/knowledge/product.md#L14-L17)).
 
 Honmoon's thesis is that the right control point is the **wire**: intercept the agent's
 connections, parse just enough of each protocol to make a policy decision, and enforce it.
@@ -2270,7 +2270,7 @@ flowchart TD
 ## Two layers of protection
 
 Honmoon deliberately combines two approaches that the industry has so far kept separate
-([README.md:11-17](https://github.com/pleaseai/honmoon/blob/main/README.md#L11-L17)):
+([README.md:12-17](https://github.com/pleaseai/honmoon/blob/main/README.md#L12-L17)):
 
 | Layer | What it does | Inspired by |
 |-------|--------------|-------------|
@@ -2395,7 +2395,7 @@ single set of tasks; Rust is driven by the Cargo-canonical `rust-toolchain.toml`
 
 | Tool | Version | Managed by | Source |
 |------|---------|-----------|--------|
-| Rust | stable, edition 2024, `rust-version = 1.86` | `rust-toolchain.toml` (rustup) | [Cargo.toml:9-14](https://github.com/pleaseai/honmoon/blob/main/Cargo.toml#L9-L14) |
+| Rust | stable, edition 2024, `rust-version = 1.86` | `rust-toolchain.toml` (rustup) | [Cargo.toml:10-15](https://github.com/pleaseai/honmoon/blob/main/Cargo.toml#L10-L15) |
 | Node | 24 | mise | [mise.toml:8-10](https://github.com/pleaseai/honmoon/blob/main/mise.toml#L8-L10) |
 | Bun | latest (1.3.x) | mise | [mise.toml:8-10](https://github.com/pleaseai/honmoon/blob/main/mise.toml#L8-L10) |
 | Docker (optional) | 20.10+ / Compose v2 | — (only for the Squid backend) | [README.md:166-169](https://github.com/pleaseai/honmoon/blob/main/README.md#L166-L169) |
@@ -2448,7 +2448,7 @@ flowchart LR
   style ctest fill:#161b22,stroke:#30363d,color:#e6edf3
   style btest fill:#161b22,stroke:#30363d,color:#e6edf3
 ```
-<!-- Sources: mise.toml:34-54, .please/docs/knowledge/workflow.md:76-81 -->
+<!-- Sources: mise.toml:34-54, .please/docs/knowledge/workflow.md:77-81 -->
 
 ## Building without mise
 
@@ -2535,7 +2535,7 @@ cargo test --workspace && bun test
 ```
 
 The full quality gate and definition of done are in
-[workflow.md](https://github.com/pleaseai/honmoon/blob/main/.please/docs/knowledge/workflow.md#L41-L96).
+[workflow.md](https://github.com/pleaseai/honmoon/blob/main/.please/docs/knowledge/workflow.md#L42-L96).
 
 ## Related Pages
 
@@ -3412,7 +3412,7 @@ line between Phase 5 and Phase 6 is the open-core boundary.
 The monetization boundary is *the moment a user moves from a single node to operating a
 team/fleet*. The firewall must be powerful for free on one node; the problems of running many
 agents, nodes, and people are the paid surface
-([business-model.md:32-44](https://github.com/pleaseai/honmoon/blob/main/docs/business-model.md#L32-L44)).
+([business-model.md:33-44](https://github.com/pleaseai/honmoon/blob/main/docs/business-model.md#L33-L44)).
 
 | Area | Open source (adoption & trust) | Paid (team & enterprise) |
 |------|--------------------------------|--------------------------|
@@ -3450,7 +3450,7 @@ flowchart TB
 *"Security teams will not trust a black-box proxy that inspects their traffic and credentials.
 Auditability is itself a feature."* Locking the traffic-inspecting components behind a paywall
 breaks trust and prevents adoption from happening at all
-([business-model.md:12-18](https://github.com/pleaseai/honmoon/blob/main/docs/business-model.md#L12-L18)). This is encoded as
+([business-model.md:13-18](https://github.com/pleaseai/honmoon/blob/main/docs/business-model.md#L13-L18)). This is encoded as
 the "data plane stays open source" architectural invariant.
 :::
 
@@ -3463,7 +3463,7 @@ the "data plane stays open source" architectural invariant.
 
 ⚠️ The current scaffold still pins `MIT` in `Cargo.toml`
 ([Cargo.toml:12](https://github.com/pleaseai/honmoon/blob/main/Cargo.toml#L12)); moving the core to Apache-2.0 is a tracked
-next action ([business-model.md:68-74](https://github.com/pleaseai/honmoon/blob/main/docs/business-model.md#L68-L74)).
+next action ([business-model.md:69-73](https://github.com/pleaseai/honmoon/blob/main/docs/business-model.md#L69-L73)).
 
 ## The moat
 
@@ -3487,7 +3487,7 @@ Two ADRs record the most consequential technical pivot — the data-plane framew
 The lesson recorded in ADR-0002: a documented premise (Pingora's `allow_connect_method_proxying`
 gives terminating forward-proxy behavior) was **disproven by a prototype**, so the team shipped
 ~130 LOC of tokio instead and deferred the heavy dependency until a phase actually needs it
-([0002:10-44](https://github.com/pleaseai/honmoon/blob/main/.please/docs/decisions/0002-phase1-connect-proxy-on-tokio.md#L10-L44)). See
+([0002:11-45](https://github.com/pleaseai/honmoon/blob/main/.please/docs/decisions/0002-phase1-connect-proxy-on-tokio.md#L11-L45)). See
 [Egress Gateway](/deep-dive/egress-gateway#why-a-hand-rolled-tokio-proxy-and-not-pingora) for the detail.
 
 ## Platform reality check

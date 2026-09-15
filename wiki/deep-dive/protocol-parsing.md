@@ -111,7 +111,7 @@ table per the verb's syntax ([protocols.rs:37-93](https://github.com/pleaseai/ho
 
 Extracted identifiers are normalized by `clean_identifier`: strip quotes/backticks/semicolons,
 drop the schema qualifier (`public.users;` → `users`), and lowercase
-([protocols.rs:95-104](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/protocols.rs#L95-L104)).
+([protocols.rs:700-709](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/protocols.rs#L700-L709)).
 
 The modifier-skipping logic matters for correctness: `DROP MATERIALIZED VIEW mv` must yield `mv`,
 not `materialized` — proven by `drop_if_exists_extracts_real_table`
@@ -154,7 +154,7 @@ flowchart TD
 
 `k8s_verb` maps the HTTP method to a Kubernetes verb, with one nuance: a `GET` on a **collection**
 is `list`, a `GET` on a **named resource** is `get`
-([protocols.rs:158-176](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/protocols.rs#L158-L176)):
+([protocols.rs:1000-1018](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/protocols.rs#L1000-L1018)):
 
 | HTTP method | Has resource name? | K8s verb |
 |-------------|--------------------|----------|
@@ -171,8 +171,8 @@ is `list`, a `GET` on a **named resource** is `get`
 |------|----------|-----------|---------------|--------|
 | `/api/v1/namespaces/prod/secrets/db` | `secrets` | `prod` | `delete` | [protocols.rs:284-289](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/protocols.rs#L284-L289) |
 | `/apis/apps/v1/deployments/api` | `deployments` | `` | `delete` | [protocols.rs:239-246](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/protocols.rs#L239-L246) |
-| `/api/v1/namespaces` | `namespaces` | `` | — (`list`/`get`) | [protocols.rs:256-273](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/protocols.rs#L256-L273) |
-| `/api/v1/nodes` | `nodes` | `` | `list` | [protocols.rs:308-311](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/protocols.rs#L308-L311) |
+| `/api/v1/namespaces` | `namespaces` | `` | — (`list`/`get`) | [protocols.rs:1101-1118](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/protocols.rs#L1101-L1118) |
+| `/api/v1/nodes` | `nodes` | `` | `list` | [protocols.rs:1781-1784](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/protocols.rs#L1781-L1784) |
 
 Two regression tests guard the trickiest cases: `k8s_grouped_cluster_scoped_resource_not_version`
 ensures `v1` is never captured as a resource, and `k8s_namespace_resource_itself` ensures
@@ -189,8 +189,8 @@ end-to-end tests in `engine.rs`:
 | `parses_postgres_drop` | `'Q'` → `DROP` + table | [protocols.rs:192-197](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/protocols.rs#L192-L197) |
 | `rejects_non_query_packet` | non-`Q` / too-short → `None` | [protocols.rs:213-217](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/protocols.rs#L213-L217) |
 | `rejects_malformed_query_frames` | framing edge cases | [protocols.rs:219-237](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/protocols.rs#L219-L237) |
-| `parse_sql_extracts_verb_and_table` | quoting, schema, case | [protocols.rs:275-281](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/protocols.rs#L275-L281) |
-| `parses_k8s_list_vs_get` | collection vs named GET | [protocols.rs:291-299](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/protocols.rs#L291-L299) |
+| `parse_sql_extracts_verb_and_table` | quoting, case | [protocols.rs:1728-1734](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/protocols.rs#L1728-L1734) |
+| `parses_k8s_list_vs_get` | collection vs named GET | [protocols.rs:1764-1772](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/protocols.rs#L1764-L1772) |
 
 ## Related Pages
 

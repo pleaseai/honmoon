@@ -16,9 +16,9 @@ against a declarative policy, and returns one of three verdicts — `allow`, `de
 
 | Concern | Honmoon's answer | Source |
 |---------|------------------|--------|
-| What does it protect? | The boundary between AI agents and production systems (APIs, databases, K8s) | [product.md:6-11](https://github.com/pleaseai/honmoon/blob/main/.please/docs/knowledge/product.md#L6-L11) |
+| What does it protect? | The boundary between AI agents and production systems (APIs, databases, K8s) | [product.md:7-10](https://github.com/pleaseai/honmoon/blob/main/.please/docs/knowledge/product.md#L7-L10) |
 | How does it decide? | A YAML policy: egress allow/deny lists + CEL rules over protocol facts | [policies/agent.yaml](https://github.com/pleaseai/honmoon/blob/main/policies/agent.yaml) |
-| What can it decide? | `allow` · `deny` · `pause` (held for human approval) | [lib.rs:15-25](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/lib.rs#L15-L25) |
+| What can it decide? | `allow` · `deny` · `pause` (held for human approval) | [lib.rs:45-55](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/lib.rs#L45-L55) |
 | Default posture | **Fail closed** — default egress verdict is `deny` | [lib.rs:50-62](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/lib.rs#L50-L62) |
 | What runs today? | Phase 1–4: egress proxy + CEL engine + SQL/K8s parsers + `pause` approval + audit + dashboard | [roadmap.md:32-101](https://github.com/pleaseai/honmoon/blob/main/docs/roadmap.md#L32-L101) |
 
@@ -28,7 +28,7 @@ AI agents run shell commands, call APIs, and access databases. That capability i
 risk: a single bad inference can trigger data exfiltration, a destructive query (`DROP TABLE`),
 unauthorized Kubernetes resource deletion, or tokens leaked to a private endpoint. Existing
 controls are either **too coarse** (block all network) or **too narrow** (HTTP domain allowlist
-only) ([product.md:13-18](https://github.com/pleaseai/honmoon/blob/main/.please/docs/knowledge/product.md#L13-L18)).
+only) ([product.md:14-17](https://github.com/pleaseai/honmoon/blob/main/.please/docs/knowledge/product.md#L14-L17)).
 
 Honmoon's thesis is that the right control point is the **wire**: intercept the agent's
 connections, parse just enough of each protocol to make a policy decision, and enforce it.
@@ -61,7 +61,7 @@ flowchart TD
 ## Two layers of protection
 
 Honmoon deliberately combines two approaches that the industry has so far kept separate
-([README.md:11-17](https://github.com/pleaseai/honmoon/blob/main/README.md#L11-L17)):
+([README.md:12-17](https://github.com/pleaseai/honmoon/blob/main/README.md#L12-L17)):
 
 | Layer | What it does | Inspired by |
 |-------|--------------|-------------|

@@ -282,6 +282,17 @@ describe('TRACKED', () => {
   test('no entry defers the generated bundle directly', () => {
     expect(TRACKED.flatMap(e => e.pages).filter(page => page.endsWith('.txt'))).toEqual([])
   })
+
+  // #253 enumerated thirty-five anchors and is closed. An entry still naming it
+  // would print work as outstanding against an issue nobody can read the state
+  // of, and the ledger is an instruction to whoever runs this next. The five
+  // that outlived it were re-attributed to the page issues that own them
+  // (#260, #261, #263), not deleted — deleting one would show up in
+  // `checkRepository().problems`, which is what makes this pair a proof that
+  // the other thirty were repointed rather than delisted.
+  test('nothing is still deferred to #253, which those thirty repoints closed', () => {
+    expect(TRACKED.filter(entry => entry.issue === 253)).toEqual([])
+  })
 })
 
 // The three properties the ledger's own doc comment promises. Each is a way the

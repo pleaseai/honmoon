@@ -541,16 +541,21 @@ export function checkAnchor(
  * Anchors already known stale, whose re-anchoring is filed somewhere else.
  *
  * #119, #169 and #192 were open against specific pages before this check
- * existed. #253 is the rest, which nothing owned until the check enumerated
- * them: it splits them into the seventeen that merely open on the blank line
- * after a heading in a prose or config file and the eighteen where the range
- * has genuinely slid off the item in a source file.
+ * existed. #253 was the rest — thirty-five the check enumerated and nothing
+ * owned — and thirty of those are repointed, so what is left here is the five
+ * that resolving the other thirty proved were not the off-by-ones #253 filed
+ * them as. Each is a page describing code that was replaced, where no line
+ * range supports the sentence carrying it, so each moved to the issue for the
+ * page rather than being deleted: #260 (`egress-gateway.md` still names the
+ * hand-rolled proxy ADR-0003 replaced), #261 (`protocol-parsing.md`'s SQL
+ * section predates `sqlparser`, and the test it cites now asserts the opposite
+ * of the sentence), #263 (`roadmap-open-core.md`'s phase table is a phase
+ * behind `docs/roadmap.md`).
  *
- * Every entry was resolved against `main` at `4208e94` — the commit that
- * repointed `getting-started/policy-authoring.md` — and each one is printed
- * with its issue number on every passing run. None of them is on that page:
- * #204's own anchors are fixed, not tracked, apart from the one `engine.rs`
- * row #169 tabulates.
+ * Every entry was resolved against `main` at `bf9b057` and each one is printed
+ * with its issue number on every passing run. None is on the page #204
+ * repointed: its own anchors are fixed, not tracked, apart from the one
+ * `engine.rs` row #169 tabulates.
  */
 export const TRACKED: Tracked[] = [
   // #119
@@ -564,42 +569,16 @@ export const TRACKED: Tracked[] = [
   { path: 'crates/honmoon-core/src/engine.rs', start: 23, end: 69, kind: 'delimiter', issue: 192, pages: ['deep-dive/policy-engine.md'] },
   { path: 'crates/honmoon-core/src/engine.rs', start: 444, end: 467, kind: 'delimiter', issue: 192, pages: ['deep-dive/policy-engine.md'] },
 
-  // #253
-  { path: '.please/docs/decisions/0002-phase1-connect-proxy-on-tokio.md', start: 10, end: 44, kind: 'blank', issue: 253, pages: ['deep-dive/roadmap-open-core.md', 'onboarding/staff-engineer-guide.md'] },
-  { path: '.please/docs/decisions/0002-phase1-connect-proxy-on-tokio.md', start: 32, end: 44, kind: 'blank', issue: 253, pages: ['deep-dive/egress-gateway.md'] },
-  { path: '.please/docs/knowledge/product.md', start: 6, end: 11, kind: 'blank', issue: 253, pages: ['getting-started/overview.md'] },
-  { path: '.please/docs/knowledge/product.md', start: 6, end: 29, kind: 'blank', issue: 253, pages: ['onboarding/executive-guide.md'] },
-  { path: '.please/docs/knowledge/product.md', start: 13, end: 18, kind: 'blank', issue: 253, pages: ['getting-started/overview.md', 'onboarding/executive-guide.md'] },
-  { path: '.please/docs/knowledge/product.md', start: 31, end: 37, kind: 'blank', issue: 253, pages: ['onboarding/product-manager-guide.md'] },
-  { path: '.please/docs/knowledge/workflow.md', start: 41, end: 96, kind: 'blank', issue: 253, pages: ['getting-started/installation.md'] },
-  { path: '.please/docs/knowledge/workflow.md', start: 76, end: 81, kind: 'blank', issue: 253, pages: ['onboarding/contributor-guide.md'] },
-  { path: 'Cargo.toml', start: 9, end: 14, kind: 'blank', issue: 253, pages: ['getting-started/installation.md'] },
-  { path: 'Cargo.toml', start: 16, end: 28, kind: 'blank', issue: 253, pages: ['deep-dive/architecture.md'] },
-  { path: 'README.md', start: 11, end: 17, kind: 'blank', issue: 253, pages: ['getting-started/overview.md'] },
-  { path: 'crates/honmoon-core/src/lib.rs', start: 15, end: 25, kind: 'blank', issue: 253, pages: ['getting-started/overview.md'] },
-  { path: 'crates/honmoon-core/src/lib.rs', start: 128, end: 132, kind: 'delimiter', issue: 253, pages: ['deep-dive/architecture.md'] },
-  { path: 'crates/honmoon-core/src/protocols.rs', start: 95, end: 104, kind: 'delimiter', issue: 253, pages: ['deep-dive/protocol-parsing.md'] },
-  { path: 'crates/honmoon-core/src/protocols.rs', start: 158, end: 176, kind: 'blank', issue: 253, pages: ['deep-dive/protocol-parsing.md'] },
-  { path: 'crates/honmoon-core/src/protocols.rs', start: 248, end: 254, kind: 'blank', issue: 253, pages: ['deep-dive/protocol-parsing.md'] },
-  { path: 'crates/honmoon-core/src/protocols.rs', start: 256, end: 273, kind: 'blank', issue: 253, pages: ['deep-dive/protocol-parsing.md'] },
-  { path: 'crates/honmoon-core/src/protocols.rs', start: 275, end: 281, kind: 'delimiter', issue: 253, pages: ['deep-dive/protocol-parsing.md', 'onboarding/contributor-guide.md'] },
-  { path: 'crates/honmoon-core/src/protocols.rs', start: 291, end: 299, kind: 'delimiter', issue: 253, pages: ['deep-dive/protocol-parsing.md'] },
-  { path: 'crates/honmoon-core/src/protocols.rs', start: 308, end: 311, kind: 'blank', issue: 253, pages: ['deep-dive/protocol-parsing.md'] },
-  { path: 'crates/honmoon-mgmt/src/lib.rs', start: 30, end: 36, kind: 'blank', issue: 253, pages: ['deep-dive/control-plane.md'] },
-  { path: 'crates/honmoon-mgmt/src/lib.rs', start: 95, end: 97, kind: 'blank', issue: 253, pages: ['deep-dive/control-plane.md'] },
-  { path: 'crates/honmoon-mgmt/src/lib.rs', start: 108, end: 110, kind: 'blank', issue: 253, pages: ['deep-dive/control-plane.md'] },
-  { path: 'crates/honmoon-proxy/src/gateway.rs', start: 62, end: 65, kind: 'blank', issue: 253, pages: ['deep-dive/egress-gateway.md'] },
-  { path: 'crates/honmoon-proxy/src/gateway.rs', start: 112, end: 162, kind: 'delimiter', issue: 253, pages: ['deep-dive/egress-gateway.md'] },
-  { path: 'crates/honmoon-proxy/src/gateway.rs', start: 114, end: 161, kind: 'blank', issue: 253, pages: ['deep-dive/egress-gateway.md'] },
-  { path: 'crates/honmoon-proxy/src/gateway.rs', start: 169, end: 201, kind: 'blank', issue: 253, pages: ['deep-dive/egress-gateway.md'] },
-  { path: 'docs/business-model.md', start: 12, end: 18, kind: 'blank', issue: 253, pages: ['deep-dive/roadmap-open-core.md', 'onboarding/product-manager-guide.md'] },
-  { path: 'docs/business-model.md', start: 24, end: 28, kind: 'blank', issue: 253, pages: ['onboarding/executive-guide.md', 'onboarding/product-manager-guide.md'] },
-  { path: 'docs/business-model.md', start: 32, end: 44, kind: 'blank', issue: 253, pages: ['deep-dive/roadmap-open-core.md', 'onboarding/executive-guide.md', 'onboarding/staff-engineer-guide.md'] },
-  { path: 'docs/business-model.md', start: 68, end: 74, kind: 'blank', issue: 253, pages: ['deep-dive/roadmap-open-core.md'] },
-  { path: 'docs/business-model.md', start: 94, end: 98, kind: 'blank', issue: 253, pages: ['onboarding/executive-guide.md'] },
-  { path: 'docs/roadmap.md', start: 93, end: 100, kind: 'blank', issue: 253, pages: ['deep-dive/roadmap-open-core.md'] },
-  { path: 'packages/api/src/auth.ts', start: 102, end: 201, kind: 'delimiter', issue: 253, pages: ['deep-dive/control-plane.md'] },
-  { path: 'packages/api/src/index.ts', start: 41, end: 43, kind: 'delimiter', issue: 253, pages: ['deep-dive/control-plane.md'] },
+  // #260
+  { path: 'crates/honmoon-proxy/src/gateway.rs', start: 112, end: 162, kind: 'delimiter', issue: 260, pages: ['deep-dive/egress-gateway.md'] },
+  { path: 'crates/honmoon-proxy/src/gateway.rs', start: 114, end: 161, kind: 'blank', issue: 260, pages: ['deep-dive/egress-gateway.md'] },
+  { path: 'crates/honmoon-proxy/src/gateway.rs', start: 169, end: 201, kind: 'blank', issue: 260, pages: ['deep-dive/egress-gateway.md'] },
+
+  // #261
+  { path: 'crates/honmoon-core/src/protocols.rs', start: 248, end: 254, kind: 'blank', issue: 261, pages: ['deep-dive/protocol-parsing.md'] },
+
+  // #263
+  { path: 'docs/roadmap.md', start: 93, end: 100, kind: 'blank', issue: 263, pages: ['deep-dive/roadmap-open-core.md'] },
 ]
 
 /** The generated bundle that inlines every published page. */

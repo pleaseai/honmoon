@@ -62,9 +62,9 @@ shared `GatewayState`. `honmoon gateway` runs the proxy and this API on one toki
 | Route | Method | Returns | Source |
 |-------|--------|---------|--------|
 | `/api/audit?limit=N` | GET | Recent audit events, newest first (default 200, cap 1000) | [lib.rs:86-93](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-mgmt/src/lib.rs#L86-L93) |
-| `/api/approvals` | GET | Requests held pending approval | [lib.rs:95-97](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-mgmt/src/lib.rs#L95-L97) |
-| `/api/approvals/{id}/approve` | POST | Resolve → wakes the held connection | [lib.rs:104-106](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-mgmt/src/lib.rs#L104-L106) |
-| `/api/approvals/{id}/reject` | POST | Resolve → blocks the held connection | [lib.rs:108-110](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-mgmt/src/lib.rs#L108-L110) |
+| `/api/approvals` | GET | Requests held pending approval | [lib.rs:642-644](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-mgmt/src/lib.rs#L642-L644) |
+| `/api/approvals/{id}/approve` | POST | Resolve → wakes the held connection | [lib.rs:651-653](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-mgmt/src/lib.rs#L651-L653) |
+| `/api/approvals/{id}/reject` | POST | Resolve → blocks the held connection | [lib.rs:655-657](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-mgmt/src/lib.rs#L655-L657) |
 | `/api/policy` | GET | Active policy (raw YAML + parsed) | [lib.rs:129-134](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-mgmt/src/lib.rs#L129-L134) |
 | `/healthz` | GET | `{status:"ok"}` | [lib.rs:77-79](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-mgmt/src/lib.rs#L77-L79) |
 | anything else | — | Embedded dashboard (SPA fallback) | [lib.rs:138-168](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-mgmt/src/lib.rs#L138-L168) |
@@ -79,7 +79,7 @@ construction rather than by remembering to check
 are the two deliberate exceptions and stay open. The token itself is resolved — and generated
 `0600` on first use — by the CLI loader
 ([mgmt_token.rs:1-30](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-cli/src/mgmt_token.rs#L1-L30)), and `@honmoon/api` reads
-the same file ([auth.ts:102-201](https://github.com/pleaseai/honmoon/blob/main/packages/api/src/auth.ts#L102-L201)).
+the same file ([auth.ts:142-198](https://github.com/pleaseai/honmoon/blob/main/packages/api/src/auth.ts#L142-L198)).
 
 The browser's credential is **not a cookie**, and that is what keeps a sibling loopback listener
 out (issue [#188](https://github.com/pleaseai/honmoon/issues/188)). A cookie's scope has no port
@@ -130,7 +130,7 @@ One careful detail: the SPA fallback **refuses to mask an unmatched `/api/...` p
 
 The dashboard is built by Vite into `apps/dashboard/dist`, then compiled **into the Rust binary**
 with `rust-embed` so a single binary serves both policy enforcement and its UI
-([lib.rs:30-36](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-mgmt/src/lib.rs#L30-L36)). A `build.rs` drops a
+([lib.rs:49-55](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-mgmt/src/lib.rs#L49-L55)). A `build.rs` drops a
 placeholder `index.html` when `dist/` is absent so a bare `cargo build` always succeeds before the
 dashboard is built ([build.rs:1-36](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-mgmt/build.rs#L1-L36)).
 
@@ -145,7 +145,7 @@ flowchart LR
   style bin fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
   style serve fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
 ```
-<!-- Sources: crates/honmoon-mgmt/build.rs:1-36, apps/dashboard/vite.config.ts:1-21, crates/honmoon-mgmt/src/lib.rs:30-36 -->
+<!-- Sources: crates/honmoon-mgmt/build.rs:1-36, apps/dashboard/vite.config.ts:1-21, crates/honmoon-mgmt/src/lib.rs:49-55 -->
 
 Every `/api` route requires the management token (#173), so the dashboard's own credential is the
 session secret `GET /login?token=…` hands it in the redirect fragment — the URL the gateway prints
@@ -208,7 +208,7 @@ durable, historical queries `@honmoon/api` reads the **JSONL file** the gateway 
 |-------|---------|--------|
 | `GET /api/audit` | `limit`, `decision`, `since`, `domain` | [audit.ts:43-72](https://github.com/pleaseai/honmoon/blob/main/packages/api/src/audit.ts#L43-L72), [index.ts:45-48](https://github.com/pleaseai/honmoon/blob/main/packages/api/src/index.ts#L45-L48) |
 | `GET /api/audit/stats` | counts by decision | [audit.ts:74-83](https://github.com/pleaseai/honmoon/blob/main/packages/api/src/audit.ts#L74-L83) |
-| `GET /healthz` | — | [index.ts:41-43](https://github.com/pleaseai/honmoon/blob/main/packages/api/src/index.ts#L41-L43) |
+| `GET /healthz` | — | [routes.ts:40-42](https://github.com/pleaseai/honmoon/blob/main/packages/api/src/routes.ts#L40-L42) |
 
 Both `/api/audit` routes require the management token as `Authorization: Bearer <token>` (issue
 [#173](https://github.com/pleaseai/honmoon/issues/173)) — the same token the Rust gateway
