@@ -156,6 +156,39 @@ describe('checkAnchor', () => {
     expect(checkAnchor(anchor({ text: 'the rule struct', start: 1, end: 2 }), { lines: LINES })).toBeNull()
   })
 
+  // The file half of rule 4. Numbers that happen to line up are what makes it
+  // invisible: the citation reads as verified and sends the reader elsewhere.
+  test('text naming a different file from the link is reported', () => {
+    const problem = checkAnchor(anchor({ text: 'engine.rs:1-2', start: 1, end: 2 }), { lines: LINES })
+    expect(problem?.kind).toBe('text')
+    expect(problem?.detail).toContain('the text names one file and the link opens another')
+  })
+
+  // Link text abbreviates its path routinely, so only the last segment counts.
+  test('a label that abbreviates the cited path agrees with it', () => {
+    expect(checkAnchor(
+      anchor({ text: 'cli/index.ts:1-2', path: 'packages/cli/src/index.ts', start: 1, end: 2 }),
+      { lines: LINES },
+    )).toBeNull()
+  })
+
+  // Eleven published citations name their source this way.
+  test('a label that is not filename-shaped is not judged as one', () => {
+    for (const text of ['ADR-0002:1-2', '0002:1-2', 'tracker:1-2']) {
+      expect(checkAnchor(
+        anchor({ text, path: '.please/docs/decisions/0002-phase1-connect-proxy-on-tokio.md', start: 1, end: 2 }),
+        { lines: LINES },
+      )).toBeNull()
+    }
+  })
+
+  // Both halves wrong: the file is the one reported, because it is the one a
+  // reader acts on first.
+  test('a wrong file is reported ahead of wrong numbers', () => {
+    const problem = checkAnchor(anchor({ text: 'engine.rs:7-8', start: 1, end: 2 }), { lines: LINES })
+    expect(problem?.detail).toContain('names one file')
+  })
+
   // The range check runs first, so an out-of-range anchor is reported as such
   // rather than as a text mismatch it also happens to have — one finding per
   // citation, and the one a reader has to act on.

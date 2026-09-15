@@ -34,10 +34,16 @@
  *    of code moving down out from under a link: the range slides off the item
  *    it was written for and onto the end of the one above.
  * 4. **The link text agrees with the URL.** Text spelled `name:12-34` has to
- *    carry the same numbers as the `#L12-L34` it links to, and a link with no
- *    `#L` fragment at all must not have text promising one. A reader reads the
- *    text and rarely the href, so the two drifting apart is a citation that
- *    misleads without being followed.
+ *    carry the same numbers as the `#L12-L34` it links to *and* name the same
+ *    file, and a link with no `#L` fragment at all must not have text promising
+ *    one. A reader reads the text and rarely the href, so the two drifting
+ *    apart is a citation that misleads without being followed — and the file
+ *    half is the worse of the two, since `[engine.rs:102-138]` pointed at
+ *    `lib.rs` sends the reader to the wrong source entirely. Only the last
+ *    segment is compared, and only when it looks like a filename: link text
+ *    abbreviates its path routinely (`cli/index.ts` for
+ *    `packages/cli/src/index.ts`) and eleven published citations name their
+ *    source `ADR-0002`, `0002` or `tracker`.
  * 5. **The link is to `main`.** A pinned-SHA permalink is reported rather than
  *    resolved, because this reads the working tree: answering a question about
  *    one revision with another revision's lines is the failure it exists to
@@ -79,7 +85,13 @@
  * far *end* has slid onto the next item is not flagged, and one that starts on
  * a doc comment belonging to the previous item reads as fine. Rule 4 fires only
  * on text that spells its own line numbers; `[gateway.rs]` linked to `#L1-L9`
- * carries no numbers to disagree with.
+ * carries no numbers to disagree with. Its file half is narrower still: it
+ * compares the last segment of a label that looks like a filename, so
+ * `[cli/index.ts:19]` citing `packages/cli/src/index.ts` passes — as it should,
+ * the label is an abbreviation — while a label that is dotted but not a
+ * filename (`[v1.2:10-20]` on a changelog) would be reported. None exists
+ * today; the remedy if one is written is to drop the numbers from the text or
+ * name the file.
  *
  * Nothing here is markdown-aware. A citation inside a fenced code block — an
  * example of the convention rather than a claim under it — is resolved like any
@@ -229,6 +241,19 @@ const BARE_DELIMITER = /^[)\]}]+[,;]?$/
 
 /** Link text that spells its own line numbers, e.g. `lib.rs:57-152`. */
 const TEXT_LINES = /:(\d+)(?:-(\d+))?$/
+
+/**
+ * The last segment of a slash-separated label or path.
+ *
+ * Link text abbreviates the path it cites and always has: `cli/index.ts` for
+ * `packages/cli/src/index.ts`, `api/index.ts` for `packages/api/src/index.ts`.
+ * Comparing whole strings would report all 22 of those; comparing the last
+ * segment is what makes the filename check above a check on the *file* rather
+ * than on how much of its path the sentence chose to spell.
+ */
+function basename(pathOrLabel: string): string {
+  return pathOrLabel.slice(pathOrLabel.lastIndexOf('/') + 1)
+}
 
 /**
  * The marker `gen-llms-full.mjs` writes ahead of each inlined page.
@@ -452,6 +477,22 @@ export function checkAnchor(
   }
 
   if (declared !== null) {
+    // The file half of rule 4, checked before the numbers: a text naming
+    // another source file is the worse error and the one a reader acts on
+    // first, and the two can be wrong together. Only a label whose last
+    // segment looks like a filename is judged, because a citation is free to
+    // call its source `ADR-0002`, `0002` or `tracker` and eleven on the
+    // published wiki do.
+    const label = basename(anchor.text.slice(0, declared.index))
+    if (label.includes('.') && label !== basename(path)) {
+      return {
+        ...at,
+        kind: 'text',
+        detail: `reads \`${anchor.text}\` but links \`${path}\` — the text names one file and the `
+          + 'link opens another, so a reader who trusts the text is reading the wrong source',
+      }
+    }
+
     const textStart = Number(declared[1])
     const textEnd = declared[2] === undefined ? textStart : Number(declared[2])
     if (textStart !== start || textEnd !== end) {
