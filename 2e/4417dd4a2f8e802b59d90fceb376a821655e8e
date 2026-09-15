@@ -1,0 +1,23 @@
+.claude/agent-memory/review-review-security-reviewer/mgmt-token-lock-protocol.md
+  s_988ab74319be92::t_1fce1f9d54d4a9 107-118
+.claude/agent-memory/review-review-pr-test-analyzer/mgmt_token_lock_warn_seams.md
+  s_988ab74319be92::t_64a57433d3d261 26-27
+packages/api/src/auth.test.ts
+  s_988ab74319be92::t_64a57433d3d261 621-624
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "2e4417dd4a2f8e802b59d90fceb376a821655e8e",
+  "prompts": {},
+  "sessions": {
+    "s_988ab74319be92": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "7b36ff2d-8417-4035-a091-c7250b911c5f",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
