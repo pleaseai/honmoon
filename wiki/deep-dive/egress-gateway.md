@@ -119,7 +119,7 @@ proxy; the accept loop and the task-per-connection are hudsucker's
 3. **Decrypted inner requests** over a terminated tunnel — already authorized at the `CONNECT`, so
    only the body is inspected.
 
-Two bounds decide what the PII scanner on shapes 2 and 3 is given. **Size**: buffering stops at
+The PII scanner on shapes 2 and 3 is not given every body. **Size**: buffering stops at
 `MAX_INSPECT_BODY` — 2 MiB, whether declared by `Content-Length`, discovered while reading, or
 reached by decompression — and a body past it is forwarded unscanned rather than buffered
 ([body.rs:56-61](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-proxy/src/body.rs#L56-L61)). **Text**: `detect_spans` is given only what decodes as UTF-8,
@@ -127,11 +127,15 @@ so a body carrying an interior non-UTF-8 byte is left unscanned as well; only a 
 sequence is tolerated, and there it is the valid prefix that gets scanned
 ([mitm.rs:761-763](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-proxy/src/mitm.rs#L761-L763), [body.rs:163-169](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-proxy/src/body.rs#L163-L169)).
 
-An unscanned body is not an ungoverned request. A `pii.*` condition cannot fire on one — the summary
-stays empty, so `pii.count > 0` is never satisfied — but the policy engine still runs on the
-request's other facts, and a `domain`, `endpoint`, `k8s.*` or `http.*` rule (method, path,
-`body_size`) denies or pauses it exactly as it would on a scanned body
-([mitm.rs:773-793](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-proxy/src/mitm.rs#L773-L793)).
+An unscanned body is not an ungoverned request — and it is not a *clean* one either. A
+**positive-finding** condition cannot be satisfied on it: the summary is absent, so `pii.count > 0`
+and a `pii.types` match never hold. An **absence** condition still matches, because the engine
+always binds `pii` with its empty default, so `pii.count == 0 -> allow` reads an unscanned body as
+clean — the stated contract, not an oversight
+([engine.rs:422-425](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/engine.rs#L422-L425), [mitm.rs:624-629](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-proxy/src/mitm.rs#L624-L629)). The rest of
+the policy is untouched either way: `decide_explained` still runs on the request's other facts, and
+a `domain`, `endpoint`, `k8s.*` or `http.*` rule (method, path, `body_size`) denies or pauses it
+exactly as it would on a scanned body ([mitm.rs:773-793](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-proxy/src/mitm.rs#L773-L793)).
 
 Which shape a request is in is decided by the `AuthorizedTunnel` the handler clone carries — the
 connection it arrived on must have made an authorized `CONNECT` to exactly that `host:port` — and
