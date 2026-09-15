@@ -330,9 +330,12 @@ Three fail-closed properties hold here, and the first is the shared mechanism re
 is stated as the refusal rather than as a status. A **full pending queue** refuses new pauses rather
 than growing unbounded ([approval.rs:96-132](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-proxy/src/approval.rs#L96-L132), [approval.rs:64-74](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-proxy/src/approval.rs#L64-L74)); HTTP renders that
 refusal `503` ([mitm.rs:359-360](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-proxy/src/mitm.rs#L359-L360)) and SOCKS5 renders it `0x02`, exactly as
-above. `0x02` is SOCKS5's code for a *policy* refusal, not for every failed connection: a malformed
-or unsupported request is answered `0x01`/`0x07`/`0x08` and a failed upstream connect `0x05`
-([socks.rs:60-67](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-proxy/src/socks.rs#L60-L67), [socks.rs:499-517](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-proxy/src/socks.rs#L499-L517)). A
+above. `0x02` is SOCKS5's code for a *policy* refusal, not honmoon's generic failure reply: a failed
+or timed-out upstream connect is answered `0x05` ([socks.rs:499-517](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-proxy/src/socks.rs#L499-L517)), and a
+connection that never completes a greeting or a request is dropped with no reply at all — those
+reads propagate their I/O error instead of choosing a code
+([socks.rs:205-301](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-proxy/src/socks.rs#L205-L301)). Read it in the one direction that holds: `0x02` on the
+wire means policy said no, not that every refused connection shows `0x02`. A
 **timeout auto-rejects** a held request so it never hangs forever
 ([approval.rs:318-347](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-proxy/src/approval.rs#L318-L347)); and a **hold that ends without a
 decision** — the HTTP client disconnecting drops the caller's future — frees its slot and audits
