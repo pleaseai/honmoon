@@ -1914,10 +1914,20 @@ tests.
 
 That is worth naming rather than glossing, because one of those defaults does not arm:
 
-- **Slowloris.** hyper's `header_read_timeout` has a 30s default, but it only takes effect when a
-  `Timer` is installed, and nothing in this chain installs one. A connection whose request head
-  never completes is held indefinitely. <span class="status-caveat">regression</span>, tracked in
-  [#267](https://github.com/pleaseai/honmoon/issues/267).
+- **Slowloris.** hyper's `header_read_timeout` has a 30s default, but it arms only when a `Timer`
+  is installed, and nothing in this chain installs one. That crosses two dependencies, so each link
+  is cited at the version this workspace builds (`Cargo.lock`: hudsucker 0.24.1, hyper-util 0.1.20,
+  hyper 1.10.1) rather than left to the reader. Given no server builder, hudsucker makes its own and
+  sets only `title_case_headers` and `preserve_header_case` — the crate calls `.timer(…)` nowhere
+  ([hudsucker mod.rs:117-124](https://github.com/omjadas/hudsucker/blob/v0.24.1/src/proxy/mod.rs#L117-L124)); that builder's `http1` half starts
+  from `http1::Builder::new()`
+  ([hyper-util auto/mod.rs:90-95](https://github.com/hyperium/hyper-util/blob/v0.1.20/src/server/conn/auto/mod.rs#L90-L95)), whose
+  `h1_header_read_timeout` is `Dur::Default(Some(30s))`
+  ([hyper http1.rs:249](https://github.com/hyperium/hyper/blob/v1.10.1/src/server/conn/http1.rs#L249)); and a `Dur::Default` checked against
+  `Time::Empty` warns and returns `None` instead of arming
+  ([hyper time.rs:70-78](https://github.com/hyperium/hyper/blob/v1.10.1/src/common/time.rs#L70-L78)). A connection whose request head never
+  completes is therefore held indefinitely. <span class="status-caveat">regression</span>, tracked
+  in [#267](https://github.com/pleaseai/honmoon/issues/267).
 - **Oversized head.** hyper bounds its own header buffer, so this is not unbounded — but the bound
   is hyper's and honmoon neither chooses nor asserts it. The page no longer claims an 8 KB cap.
 - **Tunnel bytes.** honmoon never reads from the client socket, so it cannot consume tunnel bytes;
