@@ -259,30 +259,45 @@ fn read_on_disk(path: &Path) -> std::io::Result<OnDisk> {
 /// deliberately breaks that agreement for a lock left behind by a crashed
 /// holder, because a gateway that will not start until an operator deletes a
 /// file is worse than the divergence being closed. Breaking is therefore where
-/// the residual risk lives, and the window that remains is this: a waiter
-/// observes an abandoned lock, and between its `stale_after` check and its
-/// rename another waiter breaks the same lock and takes a fresh one, which the
-/// first then renames away. Both would mint. It needs the holder to have been
-/// frozen inside a one-read-one-write critical section for
-/// [`LockTiming::stale_after`] *and* two waiters to interleave inside a rename —
-/// against the original race, which needs only two starts in the same
-/// millisecond. Narrowed by orders of magnitude, not eliminated.
+/// every residual lives, and the precondition for all of them is the same: a
+/// holder frozen past [`LockTiming::stale_after`] inside a critical section that
+/// is one read and one ~65-byte write. What a break costs, in the order the code
+/// answers it:
 ///
-/// [`LockGuard`]'s release carries the same window on its own side, and for the
-/// same reason: it checks that the path still holds the inode it took and then
-/// unlinks, and POSIX has no compare-and-unlink to make those one step, so a
-/// waiter that breaks the lock in between has its fresh lock removed by this
-/// start's release. The precondition is identical — this holder frozen past
-/// [`LockTiming::stale_after`] — so it is the same residual seen from the other
-/// end, not a second one. Closing either fully needs a real advisory lock
-/// (`flock`), which Bun does not expose and so cannot be spelled the same way on
-/// both sides.
+/// 1. **The broken holder resumes and publishes.** One waiter is enough — it
+///    ages the lock out, mints, publishes, and returns; the first holder then
+///    wakes with a token of its own and renames it over the successor's. Two
+///    services, two credentials, which is #189 itself. Gated: the publish below
+///    runs only if [`LockGuard::still_ours`] says the path still holds this
+///    start's lock, and the holder otherwise waits for the successor's token
+///    rather than overwriting it. The window is no longer the whole critical
+///    section, only the gap between that check and the `rename` inside
+///    [`publish_token`] — during which another start has to complete an entire
+///    break, mint and publish.
+/// 2. **The broken holder resumes and releases.** Its unlink would remove the
+///    successor's live lock, and a third start could then acquire while the
+///    successor still believed it held exclusivity. Gated by the same
+///    comparison in [`LockGuard`]'s [`Drop`], with the same residue: POSIX has
+///    no compare-and-unlink, so the check and the unlink are two steps.
+/// 3. **Two waiters break the same lock.** Between one waiter's `stale_after`
+///    check and its rename, another breaks the lock and takes a fresh one, which
+///    the first then renames away. Both would mint. This needs the two waiters
+///    to interleave inside a rename on top of the frozen holder, so it is the
+///    narrowest of the three.
 ///
-/// Two consequences of breaking that *are* handled, named here because they are
-/// not obvious from the break itself: a resumed holder whose lock was broken
-/// does not unlink its successor's ([`LockGuard`] compares the inode), and a
-/// lock path another local user planted as a symlink cannot hold every start off
-/// forever ([`lock_is_abandoned`] stats the link, not its target).
+/// None of the three is eliminated, and saying so is the point of this
+/// paragraph: what the gates buy is that each window is now two adjacent
+/// syscalls rather than a ten-second one, against an original race that needed
+/// only two starts in the same millisecond. Closing them properly needs a real
+/// advisory lock (`flock`), where the lock lives on the open file description
+/// and there is nothing to check and nothing to unlink; Bun does not expose one,
+/// so it cannot be spelled the same way on both sides, and a protocol that
+/// differs between the two languages is the failure this exists to remove.
+/// Tracked as issue #257.
+///
+/// One more consequence of breaking that *is* fully handled: a lock path another
+/// local user planted as a symlink cannot hold every start off forever
+/// ([`lock_is_abandoned`] stats the link, not its target).
 fn mint_or_adopt_under_lock(dir: &Path, path: &Path, timing: LockTiming) -> Result<Resolved> {
     let lock_path = dir.join(LOCK_FILE_NAME);
     // Minted before the lock is taken, so the critical section is only the
@@ -310,6 +325,37 @@ fn mint_or_adopt_under_lock(dir: &Path, path: &Path, timing: LockTiming) -> Resu
                         path.display()
                     ),
                     OnDisk::Absent => {}
+                }
+                // Check the lock is still this start's before publishing. A
+                // holder suspended between the read above and the publish below
+                // can be aged out by [`break_abandoned_lock`], after which
+                // another start mints and publishes; publishing anyway would
+                // rename this token over that one and hand the two services
+                // different credentials, which is #189 exactly. Not a fence —
+                // the window moves to between this check and the rename, where
+                // the other start now has to complete a whole break, mint and
+                // publish — but that is orders of magnitude narrower than the
+                // whole critical section. Looping rather than failing, because
+                // the lock's new holder will publish a token to adopt.
+                if !guard.still_ours() {
+                    eprintln!(
+                        "honmoon: warning: the management token lock {} was taken by another \
+                         start while this one held it — waiting for that start's token rather \
+                         than publishing over it",
+                        lock_path.display()
+                    );
+                    drop(guard);
+                    if started.elapsed() >= timing.budget {
+                        bail!(
+                            "no management token in {} after waiting {}s for the start holding {} \
+                             — delete the lock if no other honmoon is running",
+                            path.display(),
+                            timing.budget.as_secs(),
+                            lock_path.display()
+                        );
+                    }
+                    std::thread::sleep(timing.poll_interval);
+                    continue;
                 }
                 publish_token(dir, path, &minted)
                     .with_context(|| format!("writing {}", path.display()))?;
@@ -437,26 +483,39 @@ struct LockGuard {
     _pin: std::fs::File,
 }
 
-impl Drop for LockGuard {
-    fn drop(&mut self) {
+impl LockGuard {
+    /// Whether the lock path still holds the file this guard created.
+    ///
+    /// `true` where the guard has no inode to compare (the stat at acquisition
+    /// failed, or a non-unix target), because the alternative — reading "cannot
+    /// tell" as "lost" — would refuse to publish and leak the lock on every
+    /// start.
+    fn still_ours(&self) -> bool {
         #[cfg(unix)]
         if let Some(inode) = self.inode {
             use std::os::unix::fs::MetadataExt as _;
             // `symlink_metadata`, so a symlink dropped at the path is compared
             // as itself rather than as whatever it points at.
-            let ours = matches!(
+            return matches!(
                 std::fs::symlink_metadata(&self.path),
                 Ok(metadata) if metadata.ino() == inode
             );
-            if !ours {
-                eprintln!(
-                    "honmoon: warning: the management token lock {} is no longer the one this \
-                     start took — another start treated it as abandoned, so this start's \
-                     exclusivity did not hold",
-                    self.path.display()
-                );
-                return;
-            }
+        }
+        true
+    }
+}
+
+impl Drop for LockGuard {
+    fn drop(&mut self) {
+        #[cfg(unix)]
+        if self.inode.is_some() && !self.still_ours() {
+            eprintln!(
+                "honmoon: warning: the management token lock {} is no longer the one this \
+                 start took — another start treated it as abandoned, so this start's \
+                 exclusivity did not hold",
+                self.path.display()
+            );
+            return;
         }
         if let Err(e) = std::fs::remove_file(&self.path) {
             eprintln!(
@@ -1206,6 +1265,36 @@ mod tests {
         let resolved = load_or_create_with(tmp.path(), TEST_TIMING).unwrap();
         assert!(matches!(resolved.source, Source::Generated(_)));
         assert_eq!(resolved.token.len(), TOKEN_BYTES * 2);
+    }
+
+    /// A guard whose lock was broken must know it before it publishes.
+    ///
+    /// Otherwise a holder suspended between its under-lock read and its publish
+    /// is aged out, another start mints and publishes, and the first resumes and
+    /// renames its own token over that one — two services, two credentials,
+    /// which is #189 itself. The guard's own view of the lock is what the
+    /// publish is gated on, so that is what this checks.
+    #[cfg(unix)]
+    #[test]
+    fn a_guard_knows_its_lock_was_broken_before_it_publishes() {
+        let tmp = TempDir::new("guard-still-ours");
+        let lock_path = tmp.path().join(LOCK_FILE_NAME);
+
+        let guard = acquire_lock(&lock_path).unwrap();
+        assert!(
+            guard.still_ours(),
+            "a lock nobody touched is still this start's"
+        );
+
+        // Stand in for a waiter that aged this lock out and took one of its own.
+        break_abandoned_lock(&lock_path, Duration::ZERO);
+        let successor = acquire_lock(&lock_path).unwrap();
+
+        assert!(
+            !guard.still_ours(),
+            "a broken lock still looked like this start's, so it would publish over the successor"
+        );
+        assert!(successor.still_ours(), "the successor holds its own lock");
     }
 
     /// A guard whose lock was broken must not unlink the successor's.

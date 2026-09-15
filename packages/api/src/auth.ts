@@ -270,23 +270,41 @@ function readOnDisk(path: string): OnDisk {
  * advisory, so the exclusion is only as good as the agreement to use it — and
  * {@link breakAbandonedLock} deliberately breaks that agreement for a lock left
  * behind by a crashed holder, because a service that will not start until an
- * operator deletes a file is worse than the divergence being closed. That leaves
- * one window: a waiter observes an abandoned lock, and between its
- * `staleAfterMs` check and its rename another waiter breaks the same lock and
- * takes a fresh one, which the first then renames away. Both would mint. It
- * needs the holder to have been frozen inside a one-read-one-write critical
- * section for `staleAfterMs` *and* two waiters to interleave inside a rename —
- * against the original race, which needs only two starts in the same
- * millisecond. Narrowed by orders of magnitude, not eliminated.
+ * operator deletes a file is worse than the divergence being closed. Breaking is
+ * therefore where every residual lives, and the precondition for all of them is
+ * the same: a holder frozen past `staleAfterMs` inside a critical section that
+ * is one read and one ~65-byte write. What a break costs, in the order the code
+ * answers it:
  *
- * {@link releaseLock} carries the same window on its own side, and for the same
- * reason: it checks that the path still holds the inode it took and then
- * unlinks, and POSIX has no compare-and-unlink to make those one step, so a
- * waiter that breaks the lock in between has its fresh lock removed by this
- * start's release. The precondition is identical — this holder frozen past
- * `staleAfterMs` — so it is the same residual seen from the other end, not a
- * second one. Closing either fully needs a real advisory lock (`flock`), which
- * Bun does not expose and so cannot be spelled the same way as the Rust side.
+ * 1. **The broken holder resumes and publishes.** One waiter is enough — it ages
+ *    the lock out, mints, publishes, and returns; the first holder then wakes
+ *    with a token of its own and renames it over the successor's. Two services,
+ *    two credentials, which is the bug this exists to close. Gated: the publish
+ *    below runs only if {@link lockStillOurs} says the path still holds this
+ *    start's lock, and the holder otherwise waits for the successor's token
+ *    rather than overwriting it. The window is no longer the whole critical
+ *    section, only the gap between that check and the `renameSync` inside
+ *    {@link publishToken} — during which another start has to complete an entire
+ *    break, mint and publish.
+ * 2. **The broken holder resumes and releases.** Its unlink would remove the
+ *    successor's live lock, and a third start could then acquire while the
+ *    successor still believed it held exclusivity. Gated by the same comparison
+ *    in {@link releaseLock}, with the same residue: POSIX has no
+ *    compare-and-unlink, so the check and the unlink are two steps.
+ * 3. **Two waiters break the same lock.** Between one waiter's `staleAfterMs`
+ *    check and its rename, another breaks the lock and takes a fresh one, which
+ *    the first then renames away. Both would mint. This needs the two waiters to
+ *    interleave inside a rename on top of the frozen holder, so it is the
+ *    narrowest of the three.
+ *
+ * None of the three is eliminated, and saying so is the point of this paragraph:
+ * what the gates buy is that each window is now two adjacent syscalls rather
+ * than a ten-second one, against an original race that needed only two starts in
+ * the same millisecond. Closing them properly needs a real advisory lock
+ * (`flock`), where the lock lives on the open file description and there is
+ * nothing to check and nothing to unlink; Bun does not expose one, so it cannot
+ * be spelled the same way as the Rust side, and a protocol that differs between
+ * the two languages is the failure this exists to remove. Tracked as issue #257.
  */
 function mintOrAdoptUnderLock(dir: string, path: string, timing: LockTiming): ResolvedToken {
   const lockPath = join(dir, LOCK_FILE_NAME)
@@ -298,6 +316,7 @@ function mintOrAdoptUnderLock(dir: string, path: string, timing: LockTiming): Re
   for (;;) {
     const held = acquireLock(lockPath)
     if (held !== null) {
+      let lostTheLock = false
       try {
         // Re-read under the lock. A start that held it before us published
         // before it released, so anything here now is the winner's, and minting
@@ -317,10 +336,39 @@ function mintOrAdoptUnderLock(dir: string, path: string, timing: LockTiming): Re
             // later variant as 'absent' and mint over it.
             return assertNever(underLock)
         }
-        publishToken(dir, path, minted)
+        // Check the lock is still this start's before publishing. A holder
+        // suspended between the read above and the publish below can be aged out
+        // by {@link breakAbandonedLock}, after which another start mints and
+        // publishes; publishing anyway would rename this token over that one and
+        // hand the two services different credentials, which is #189 exactly.
+        // Not a fence — the window moves to between this check and the rename,
+        // where the other start now has to complete a whole break, mint and
+        // publish — but that is orders of magnitude narrower than the whole
+        // critical section. Looping rather than failing, because the lock's new
+        // holder will publish a token to adopt.
+        if (!lockStillOurs(lockPath, held.ino)) {
+          console.warn(
+            `honmoon api: warning: the management token lock ${lockPath} was taken by another start `
+            + 'while this one held it — waiting for that start\'s token rather than publishing over it',
+          )
+          lostTheLock = true
+        }
+        else {
+          publishToken(dir, path, minted)
+        }
       }
       finally {
         releaseLock(lockPath, held)
+      }
+      if (lostTheLock) {
+        if (Date.now() - started >= timing.budgetMs) {
+          throw new Error(
+            `no management token in ${path} after waiting ${Math.round(timing.budgetMs / 1000)}s `
+            + `for the start holding ${lockPath} — delete the lock if no other honmoon is running`,
+          )
+        }
+        sleepSync(timing.pollIntervalMs)
+        continue
       }
       return { token: minted, source: 'generated', path }
     }
@@ -428,24 +476,34 @@ function releaseLock(lockPath: string, held: { ino: number | null, fd: number })
   }
 }
 
-function releaseHeldLock(lockPath: string, ino: number | null): void {
-  if (ino !== null) {
+/**
+ * Whether the lock path still holds the file {@link acquireLock} created.
+ *
+ * `true` where there is no inode to compare (the `fstatSync` at acquisition
+ * failed), because the alternative — reading "cannot tell" as "lost" — would
+ * refuse to publish and leak the lock on every start.
+ */
+function lockStillOurs(lockPath: string, ino: number | null): boolean {
+  if (ino === null) {
+    return true
+  }
+  try {
     // `lstatSync`, so a symlink dropped at the path is compared as itself rather
     // than as whatever it points at.
-    let ours = false
-    try {
-      ours = lstatSync(lockPath).ino === ino
-    }
-    catch {
-      ours = false
-    }
-    if (!ours) {
-      console.warn(
-        `honmoon api: warning: the management token lock ${lockPath} is no longer the one this start took `
-        + '— another start treated it as abandoned, so this start\'s exclusivity did not hold',
-      )
-      return
-    }
+    return lstatSync(lockPath).ino === ino
+  }
+  catch {
+    return false
+  }
+}
+
+function releaseHeldLock(lockPath: string, ino: number | null): void {
+  if (ino !== null && !lockStillOurs(lockPath, ino)) {
+    console.warn(
+      `honmoon api: warning: the management token lock ${lockPath} is no longer the one this start took `
+      + '— another start treated it as abandoned, so this start\'s exclusivity did not hold',
+    )
+    return
   }
   try {
     unlinkSync(lockPath)
