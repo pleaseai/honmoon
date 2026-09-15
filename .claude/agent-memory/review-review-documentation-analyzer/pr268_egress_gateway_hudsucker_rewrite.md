@@ -5,9 +5,10 @@ description: >-
   repointing it — so the Phase 1 names (handle, authorize, hold_for_approval, read_head) are
   deliberately absent and must not be flagged as missing; the page's slowloris claim is verified
   true through a four-hop dependency chain recorded here, so do not re-derive it and do not
-  "correct" the page to say hudsucker owns that guard; most of the ten defects review found on it
-  were a quantifier or a count that no single code path keeps, and the rest were a mermaid branch
-  whose structure does not match the code's control flow — check those two shapes first
+  "correct" the page to say hudsucker owns that guard; most of the eleven defects review found on it
+  were a quantifier or a count that no single code path keeps, and the rest were a diagram whose
+  shape does not match the code — a branch that cannot carry the control flow, or a rendering of one
+  transport standing in for a mechanism shared by two. Check those shapes first
 metadata:
   type: project
 ---
@@ -47,22 +48,26 @@ So `set_http1_header_read_timeout` is never called. Filed as issue #267 (fix:
 incomplete message — but it is hyper's, not honmoon's, and it does not mitigate slowloris, because
 a client that never fills the buffer never trips it. The page states both at exactly that strength.
 
-**What this review pass missed, which is the part worth keeping.** Ten defects reached the PR and
-were caught by others across four review rounds. They fall into three shapes, and the first two are
-worth going looking for by hand:
+**What this review pass missed, which is the part worth keeping.** Eleven defects reached the PR
+and were caught by others across five review rounds. They fall into three shapes, and the first two
+are worth going looking for by hand:
 
 1. **A quantifier or a count** — seven of the ten. A claim scoped more widely (or, twice, more
    narrowly) than any single code path keeps. Grepping the page for `every|all|only|always|never`
    and each bare number, then checking every hit against the branch that has to hold it, found
    **four more before the next review round did** — so this one is real, mechanical, and cheap.
    Do that sweep rather than waiting to be told.
-2. **A mermaid branch whose structure does not match the code's control flow** — twice, and the
-   second time one round after the first was fixed. `opt` has no early-return semantics, and a
-   two-way `alt` cannot carry three verdicts.
+2. **A diagram whose shape does not match the code** — three times, each one a round after the
+   last was fixed. Two were control flow: `opt` has no early-return semantics, and a two-way `alt`
+   cannot carry three verdicts. The third is the one to internalize, because a sweep for quantifiers
+   will not find it: **a mechanism shared by two transports has two renderings, and a diagram of one
+   is a claim about both unless it says otherwise.** `approval::hold` is shared with the SOCKS5 data
+   path — the prose said so two paragraphs above the diagram — while the diagram's terminal states
+   were HTTP statuses with nothing marking them as such.
 3. **A citation range that opens correctly and covers too little** — once, and invisible to
    `check-wiki-source-anchors.ts`, which only checks where a range *opens*.
 
-The ten, in the order they were found:
+The eleven, in the order they were found:
 
 - The verdict table's "Client response" column said `tunnel (200)`. `host_gate` is not
   CONNECT-only: `handle_request` runs it for every cleartext and absolute-form request no
@@ -112,6 +117,13 @@ The ten, in the order they were found:
   in the blocking branch. An approved hold **forwards** (`mitm.rs:894-922`) and a `Deny` answers
   `403` with no hold in the path (`mitm.rs:883-893`), so one branch carried an outcome that does
   not block at all. Three verdicts need three branches.
+- The hold state diagram's terminal states were HTTP statuses, on a diagram of a hold
+  `approval::hold` shares with SOCKS5. `connection_gate` collapses the whole outcome to a bool
+  (`matches!(hold(…), HoldOutcome::Approved)`, `socks.rs:386-392`) and its caller answers `false`
+  with `REPLY_NOT_ALLOWED` (`socks.rs:180-184`) — so on SOCKS5 a rejection, a timeout, a full queue
+  and an abandonment are **the same byte on the wire**. The diagram did not merely read as
+  HTTP-flavoured; it told an operator they could tell four outcomes apart where they cannot. RFC
+  1928 has no code for "a human declined" as against a policy refusal, and none for a full queue.
 
 **Two drift classes that script cannot see**, both hit on this PR:
 
