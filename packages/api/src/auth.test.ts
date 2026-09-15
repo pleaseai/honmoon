@@ -546,6 +546,54 @@ describe('resolveToken', () => {
     },
   )
 
+  /**
+   * The other throw out of the critical section. `releases the lock when the
+   * publish fails` covers the publish; nothing covered the re-read, because both
+   * unreadable-token tests below fail at the *pre-lock* read and so never reach a
+   * lock at all — the shape PR #255 had to restructure two tests for.
+   *
+   * The seam here is the directory-mode warning, which runs after the pre-lock
+   * read and before the lock is taken. Corrupting the token file there leaves the
+   * re-read under the lock as the first read that can fail, and the assertions
+   * below are what distinguish the two reads: the file does not exist when the
+   * pre-lock read runs, so a `not valid UTF-8` refusal can only have come from
+   * the re-read, and the warning having fired is what says execution got that
+   * far.
+   */
+  test.skipIf(process.platform === 'win32')(
+    'releases the lock when the re-read under it fails',
+    () => {
+      const path = join(dir, 'mgmt-token')
+      const lock = join(dir, 'mgmt-token.lock')
+      // Group- and other-writable, so the directory check warns. No token file:
+      // the pre-lock read has to succeed, or the lock is never taken.
+      chmodSync(dir, 0o777)
+
+      let corrupted = false
+      const original = console.warn
+      console.warn = (...args: unknown[]) => {
+        if (corrupted || !args.join(' ').includes('writable beyond its owner')) {
+          return
+        }
+        corrupted = true
+        writeFileSync(path, new Uint8Array([0xFF, 0xFE, 0x41]), { mode: 0o600 })
+      }
+      try {
+        expect(() => resolveToken(dir, { ...DEFAULT_LOCK_TIMING, pollIntervalMs: 5 }))
+          .toThrow(/not valid UTF-8/)
+      }
+      finally {
+        console.warn = original
+        chmodSync(dir, 0o700)
+      }
+
+      // The seam fired, so the pre-lock read returned and the lock was reached.
+      expect(corrupted).toBe(true)
+      // And the guard released it on the way out of the throw.
+      expect(existsSync(lock)).toBe(false)
+    },
+  )
+
   test('refuses a token file that is not valid UTF-8 instead of serving U+FFFD', () => {
     // Bun substitutes U+FFFD for malformed bytes rather than throwing, so a
     // corrupt file would otherwise become the ordinary-looking token "\uFFFD"

@@ -1,0 +1,44 @@
+---
+name: mgmt-token-lock-warn-seams
+description: 'packages/api/src/auth.ts lock branches that look like they need two processes are testable in one, because console.warn fires at three known points inside resolveToken — which seam reaches which branch, and the one branch that still has no seam'
+metadata:
+  type: project
+---
+
+`resolveToken`'s lock protocol reads like it needs concurrent interpreters to test: the
+branches are about another start breaking, taking or publishing under this one's lock.
+Most of them do not. `console.warn` is called at points the test can stub, and a stub
+that mutates the filesystem *inside* the warning puts the process in the state a rival
+would have produced — deterministically, in one process, with no timing.
+
+The seams, in the order `resolveToken` reaches them (PR #262 / issue #256):
+
+1. **`warnIfDirectoryWritableBeyondOwner(dir)`**, matched on `writable beyond its owner`.
+   Fires after the pre-lock `readOnDisk` and before `acquireLock`, so the token file can
+   be corrupted here and the *re-read under the lock* is the first read that can fail.
+   That is `releases the lock when the re-read under it fails`. Needs `chmodSync(dir,
+   0o777)` to arm, and no token file — a token returns before the lock is taken.
+2. **The empty-file warning**, matched on `is empty`. Fires under the lock and before the
+   identity check, so swapping the lock file for a different inode here is exactly what a
+   break leaves behind. That is `leaves a successor's lock alone when its own was broken`.
+   Use `rmSync` then `writeFileSync`, not a write in place: the identity check compares
+   inodes and only a new file gives it something to see.
+3. **The abandoned-lock warning**, matched on `treating it as abandoned`, which the
+   existing break test asserts on rather than uses as a seam.
+
+**Distinguishing the two reads is the assertion that matters.** A test whose setup makes
+the *pre-lock* read fail never creates a lock, and then `expect(existsSync(lock)).toBe(false)`
+passes on a lock that never existed rather than on one that was released — the vacuous shape
+PR #255 had to restructure two tests for (see
+[[pr255-mgmt-token-lock-claims]] item 6). Pin it: assert the stub actually fired, and choose
+a corruption whose error the pre-lock read could not have produced.
+
+**Still no seam: the in-lock adopt branch** (`case 'token'` in `attemptUnderLock`) — a start
+that wins the `wx` race but finds a token already published. Nothing on that path has a side
+effect to hook, and the functions are unexported, so it would need `mock.module` or an export
+for tests. The 8-way concurrent tests reach it incidentally and assert nothing about it.
+Filed rather than forced.
+
+**Check every release path against the guard, not the prose.** Downgrading
+`using held = acquireLock(...)` to `const held = ...` should turn every release test red; if
+one stays green it is asserting something other than the release.

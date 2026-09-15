@@ -280,12 +280,13 @@ function readOnDisk(path: string): OnDisk {
  *    the lock out, mints, publishes, and returns; the first holder then wakes
  *    with a token of its own and renames it over the successor's. Two services,
  *    two credentials, which is the bug this exists to close. Gated: the publish
- *    below runs only if {@link lockStillOurs} says the path still holds this
- *    start's lock, and the holder otherwise waits for the successor's token
- *    rather than overwriting it. The window is no longer the whole critical
- *    section, only the gap between that check and the `renameSync` inside
- *    {@link publishToken} — during which another start has to complete an entire
- *    break, mint and publish.
+ *    in {@link attemptUnderLock} runs only if the guard's `stillOurs` — backed by
+ *    {@link lockStillOurs} — says the path still holds this start's lock, and the
+ *    holder otherwise waits for the successor's token rather than overwriting
+ *    it. The window is no longer the whole critical section, only the gap
+ *    between that check and the `renameSync` inside {@link publishToken} —
+ *    during which another start has to complete an entire break, mint and
+ *    publish.
  * 2. **The broken holder resumes and releases.** Its unlink would remove the
  *    successor's live lock, and a third start could then acquire while the
  *    successor still believed it held exclusivity. Gated by the same comparison
@@ -519,6 +520,16 @@ function acquireLock(lockPath: string): LockGuard | null {
  * `fd` is {@link acquireLock}'s still-open descriptor. It is closed last, after
  * the identity check and the unlink, because it is what keeps this lock's inode
  * from being handed to a successor while the check is deciding.
+ *
+ * The three steps that can fail are each written to warn rather than throw: the
+ * identity check maps a failed `lstat` to `false` ({@link lockStillOurs}), and
+ * the `unlink` and the `closeSync` warn. That was already worth doing under the
+ * `finally` this replaces, and it is worth more here, because the two disagree
+ * about what a throwing release does. A `finally` that threw *replaced* the
+ * critical section's error; a disposal that throws wraps both in a
+ * `SuppressedError`. So a release rewritten to throw would not merely add a
+ * failure — it would change the error `resolveToken` hands its caller on a path
+ * that has nothing to do with releasing.
  */
 function releaseLock(lockPath: string, ino: number | null, fd: number): void {
   try {
