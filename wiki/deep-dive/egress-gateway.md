@@ -119,10 +119,19 @@ proxy; the accept loop and the task-per-connection are hudsucker's
 3. **Decrypted inner requests** over a terminated tunnel — already authorized at the `CONNECT`, so
    only the body is inspected.
 
-Body scanning on shapes 2 and 3 stops at `MAX_INSPECT_BODY` — 2 MiB, whether declared by
-`Content-Length`, discovered while reading, or reached by decompression. A body past it is forwarded
-unscanned rather than buffered, so a `pii.*` rule does not fire on it and the host-level verdict is
-all that applied ([body.rs:56-61](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-proxy/src/body.rs#L56-L61)).
+Two bounds decide what the PII scanner on shapes 2 and 3 is given. **Size**: buffering stops at
+`MAX_INSPECT_BODY` — 2 MiB, whether declared by `Content-Length`, discovered while reading, or
+reached by decompression — and a body past it is forwarded unscanned rather than buffered
+([body.rs:56-61](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-proxy/src/body.rs#L56-L61)). **Text**: `detect_spans` is given only what decodes as UTF-8,
+so a body carrying an interior non-UTF-8 byte is left unscanned as well; only a *trailing* truncated
+sequence is tolerated, and there it is the valid prefix that gets scanned
+([mitm.rs:761-763](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-proxy/src/mitm.rs#L761-L763), [body.rs:163-169](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-proxy/src/body.rs#L163-L169)).
+
+An unscanned body is not an ungoverned request. A `pii.*` condition cannot fire on one — the summary
+stays empty, so `pii.count > 0` is never satisfied — but the policy engine still runs on the
+request's other facts, and a `domain`, `endpoint`, `k8s.*` or `http.*` rule (method, path,
+`body_size`) denies or pauses it exactly as it would on a scanned body
+([mitm.rs:773-793](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-proxy/src/mitm.rs#L773-L793)).
 
 Which shape a request is in is decided by the `AuthorizedTunnel` the handler clone carries — the
 connection it arrived on must have made an authorized `CONNECT` to exactly that `host:port` — and
@@ -165,9 +174,11 @@ sequenceDiagram
   else any other request
     H->>H: request_host + request_port
     opt not this tunnel's destination
-      H->>Core: host_gate (Allow not audited)
+      H->>Core: host_gate → Gate::Block or Gate::Proceed (Allow not audited)
     end
-    alt authorized — by the tunnel, or by the gate
+    alt Gate::Block
+      H-->>C: 403, or 503 from a full approval queue
+    else tunnel authorizes it, or Gate::Proceed
       H->>H: inspect_body — buffer, decode, scan, decide
       alt content verdict == Allow
         H->>U: forward (redacted when --redact-secrets)
@@ -177,8 +188,6 @@ sequenceDiagram
       else content verdict == Pause
         Note over H,C: held — forwarded on approve, 403 on reject or timeout
       end
-    else the gate blocked it
-      H-->>C: 403, or 503 from a full approval queue
     end
   end
 ```
@@ -273,18 +282,27 @@ stateDiagram-v2
   Rejected --> [*]: Block, audit Rejected — HTTP 403
   Timeout --> [*]: Block, audit Rejected (auto-reject) — HTTP 403
   Abandoned --> [*]: CancelOnDrop frees the slot, audit Rejected
-  note right of Held: the statuses are the HTTP rendering; SOCKS5 renders the same outcomes its own way
+  note right of Held: the statuses are the HTTP rendering; SOCKS5 renders the outcomes it receives its own way
 ```
 <!-- Sources: crates/honmoon-proxy/src/approval.rs:262-372 (hold_until), approval.rs:184-218 (CancelOnDrop), approval.rs:96-132 (register), crates/honmoon-proxy/src/mitm.rs:338-363 (the HTTP rendering), crates/honmoon-proxy/src/socks.rs:386-392 (the SOCKS5 rendering) -->
 
 The statuses in that diagram are `mitm.rs`'s rendering, and they are the only part of it that is
 HTTP's. The SOCKS5 path holds through the same `approval::hold` and collapses the outcome to a
 bool — `matches!(…, HoldOutcome::Approved)` ([socks.rs:386-392](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-proxy/src/socks.rs#L386-L392)) — so
-approval lets the connection proceed to its upstream connect, and **every** other ending, rejection
-and timeout and queue-full and abandonment alike, becomes the one `REPLY_NOT_ALLOWED` (`0x02`)
+approval lets the connection proceed to its upstream connect, while the three endings that return a
+value — rejection, timeout (which the hold itself renders as a rejection) and a full queue — collapse
+into the one `REPLY_NOT_ALLOWED` (`0x02`)
 ([socks.rs:180-184](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-proxy/src/socks.rs#L180-L184), [socks.rs:59-67](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-proxy/src/socks.rs#L59-L67)). RFC 1928 has no
 reply code for a request a human declined as opposed to a policy refusal, and none for a queue that
 was full, so an operator distinguishes those on the audit log rather than on the wire.
+
+Abandonment is not a fourth reply, because it is not an outcome this caller can receive.
+`HoldOutcome::Abandoned` is returned only from the `abandoned` arm of the select, and `approval::hold`
+passes `std::future::pending()` into that arm — an explicit signal is something only a caller that
+keeps being polled while it waits supplies, through `hold_until`
+([approval.rs:242-259](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-proxy/src/approval.rs#L242-L259), [approval.rs:332-339](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-proxy/src/approval.rs#L332-L339)). A
+SOCKS5 client that leaves mid-hold drops the connection task instead, and the drop guard frees the
+slot and audits the rejection with nothing left to write a reply to.
 
 Three fail-closed properties hold here. A **full pending queue** rejects new pauses with `503`
 rather than growing unbounded ([approval.rs:96-132](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-proxy/src/approval.rs#L96-L132), [approval.rs:64-74](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-proxy/src/approval.rs#L64-L74)); a
