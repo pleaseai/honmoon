@@ -143,6 +143,15 @@
  * readers actually consume. Its occurrences are judged against the page each
  * was generated from, which the bundle's own `<doc path="…">` markers name.
  *
+ * That catches a stale bundle only when the staleness shows as a *finding*.
+ * Repoint a page from one valid range to another and leave the bundle alone,
+ * and both copies resolve on their own terms: exit 0, with LLM readers served
+ * the old content. Nothing here compares a `<doc>` section against the page it
+ * was generated from, and rule 7 asks only that every inlined page was
+ * scanned. "The generated bundle is current" is a different invariant with a
+ * different remedy — `check-wiki-io-claim.ts` does not check it either — and
+ * #258 owns it.
+ *
  * It is enforced by its own test rather than by a `ci.yml` step, the way
  * `check-wiki-io-claim.ts` is: it reads the working tree and needs no build, so
  * `bun test` in the `js` job is already the job that runs it, and a contributor
