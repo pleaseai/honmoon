@@ -542,25 +542,30 @@ export function checkAnchor(
  *
  * #119, #169 and #192 were open against specific pages before this check
  * existed. #253 was the rest — thirty-five the check enumerated and nothing
- * owned — and thirty of those are repointed, so what is left here is the five
+ * owned — and thirty of those are repointed, so what was left here is the five
  * that resolving the other thirty proved were not the off-by-ones #253 filed
  * them as. Each is a page describing code that was replaced, where no line
  * range supports the sentence carrying it, so each moved to the issue for the
- * page rather than being deleted: #260 (`egress-gateway.md` still names the
+ * page rather than being deleted: #260 (`egress-gateway.md` named the
  * hand-rolled proxy ADR-0003 replaced), #261 (`protocol-parsing.md`'s SQL
  * section predates `sqlparser`, and the test it cites now asserts the opposite
  * of the sentence), #263 (`roadmap-open-core.md`'s phase table is a phase
  * behind `docs/roadmap.md`).
  *
- * Every entry was resolved against `main` at `bf9b057` and each one is printed
- * with its issue number on every passing run. None is on the page #204
- * repointed: its own anchors are fixed, not tracked, apart from the one
+ * #260's three entries are gone: that page was rewritten against `mitm.rs` and
+ * `approval.rs` rather than repointed, so it produces none of those findings
+ * any more. The same rewrite dropped its copy of #119's `gateway.rs#L206-L271`,
+ * which now defers on `quick-start.md` alone — the page #119 is actually about.
+ *
+ * Every remaining entry was resolved against `main` at `41507dd` and each one
+ * is printed with its issue number on every passing run. None is on the page
+ * #204 repointed: its own anchors are fixed, not tracked, apart from the one
  * `engine.rs` row #169 tabulates.
  */
 export const TRACKED: Tracked[] = [
   // #119
   { path: 'crates/honmoon-proxy/src/gateway.rs', start: 113, end: 153, kind: 'delimiter', issue: 119, pages: ['getting-started/quick-start.md'] },
-  { path: 'crates/honmoon-proxy/src/gateway.rs', start: 206, end: 271, kind: 'range', issue: 119, pages: ['deep-dive/egress-gateway.md', 'getting-started/quick-start.md'] },
+  { path: 'crates/honmoon-proxy/src/gateway.rs', start: 206, end: 271, kind: 'range', issue: 119, pages: ['getting-started/quick-start.md'] },
 
   // #169
   { path: 'crates/honmoon-core/src/engine.rs', start: 59, end: 60, kind: 'blank', issue: 169, pages: ['getting-started/policy-authoring.md'] },
@@ -568,11 +573,6 @@ export const TRACKED: Tracked[] = [
   // #192
   { path: 'crates/honmoon-core/src/engine.rs', start: 23, end: 69, kind: 'delimiter', issue: 192, pages: ['deep-dive/policy-engine.md'] },
   { path: 'crates/honmoon-core/src/engine.rs', start: 444, end: 467, kind: 'delimiter', issue: 192, pages: ['deep-dive/policy-engine.md'] },
-
-  // #260
-  { path: 'crates/honmoon-proxy/src/gateway.rs', start: 112, end: 162, kind: 'delimiter', issue: 260, pages: ['deep-dive/egress-gateway.md'] },
-  { path: 'crates/honmoon-proxy/src/gateway.rs', start: 114, end: 161, kind: 'blank', issue: 260, pages: ['deep-dive/egress-gateway.md'] },
-  { path: 'crates/honmoon-proxy/src/gateway.rs', start: 169, end: 201, kind: 'blank', issue: 260, pages: ['deep-dive/egress-gateway.md'] },
 
   // #261
   { path: 'crates/honmoon-core/src/protocols.rs', start: 248, end: 254, kind: 'blank', issue: 261, pages: ['deep-dive/protocol-parsing.md'] },
