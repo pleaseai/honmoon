@@ -5,8 +5,9 @@ description: >-
   repointing it — so the Phase 1 names (handle, authorize, hold_for_approval, read_head) are
   deliberately absent and must not be flagged as missing; the page's slowloris claim is verified
   true through a four-hop dependency chain recorded here, so do not re-derive it and do not
-  "correct" the page to say hudsucker owns that guard; every one of the eight distinct defects it
-  drew was a quantifier or a count that no single code path keeps, so check those first
+  "correct" the page to say hudsucker owns that guard; most of the ten defects review found on it
+  were a quantifier or a count that no single code path keeps, and the rest were a mermaid branch
+  whose structure does not match the code's control flow — check those two shapes first
 metadata:
   type: project
 ---
@@ -46,11 +47,22 @@ So `set_http1_header_read_timeout` is never called. Filed as issue #267 (fix:
 incomplete message — but it is hyper's, not honmoon's, and it does not mitigate slowloris, because
 a client that never fills the buffer never trips it. The page states both at exactly that strength.
 
-**What this review pass missed, which is the part worth keeping.** Eight defects reached the PR
-and were caught by others across three rounds. Every one was a **quantifier or a count** — a claim
-scoped more widely (or, once, more narrowly) than any single code path keeps. On a page whose whole
-purpose is verifiability, that is where the remaining defects live, so read every "every", "all",
-"only" and bare number against the branch that has to hold it:
+**What this review pass missed, which is the part worth keeping.** Ten defects reached the PR and
+were caught by others across four review rounds. They fall into three shapes, and the first two are
+worth going looking for by hand:
+
+1. **A quantifier or a count** — seven of the ten. A claim scoped more widely (or, twice, more
+   narrowly) than any single code path keeps. Grepping the page for `every|all|only|always|never`
+   and each bare number, then checking every hit against the branch that has to hold it, found
+   **four more before the next review round did** — so this one is real, mechanical, and cheap.
+   Do that sweep rather than waiting to be told.
+2. **A mermaid branch whose structure does not match the code's control flow** — twice, and the
+   second time one round after the first was fixed. `opt` has no early-return semantics, and a
+   two-way `alt` cannot carry three verdicts.
+3. **A citation range that opens correctly and covers too little** — once, and invisible to
+   `check-wiki-source-anchors.ts`, which only checks where a range *opens*.
+
+The ten, in the order they were found:
 
 - The verdict table's "Client response" column said `tunnel (200)`. `host_gate` is not
   CONNECT-only: `handle_request` runs it for every cleartext and absolute-form request no
@@ -91,6 +103,15 @@ purpose is verifiability, that is where the remaining defects live, so read ever
   `clap` never sees the sixth. **A `cfg`-gated enum variant makes a CLI surface count
   target-specific** — and this page documents macOS Seatbelt behavior two screens later, which is
   exactly the reader who would go hunting for it.
+- The intro tip still said both `run` and `gateway` start SOCKS5, one round after the CLI section
+  got the `--socks-addr off` qualifier — so the page contradicted itself two screens apart.
+  **A qualifier added in one place is a prompt to grep for the other sites of the same claim**;
+  `run` does start it unconditionally (`main.rs:808`) and `gateway` does not (`main.rs:691-697`),
+  so the honest form splits the two commands rather than hedging both.
+- The refusal diagram split the content verdict two ways — "forwards" / "blocks" — and put `Pause`
+  in the blocking branch. An approved hold **forwards** (`mitm.rs:894-922`) and a `Deny` answers
+  `403` with no hold in the path (`mitm.rs:883-893`), so one branch carried an outcome that does
+  not block at all. Three verdicts need three branches.
 
 **Two drift classes that script cannot see**, both hit on this PR:
 
