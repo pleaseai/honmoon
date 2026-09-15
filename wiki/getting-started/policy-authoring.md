@@ -9,8 +9,8 @@ A Honmoon policy is a single YAML document with three sections: an `egress` bloc
 allow/deny lists — the common case), an optional `endpoints` map (named network targets), and a
 list of `rules` (protocol-aware CEL conditions — the fine-grained case). The same field structure
 is described by the Rust model
-([lib.rs:44-117](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/lib.rs#L44-L117)),
-the TypeScript types ([index.ts:7-45](https://github.com/pleaseai/honmoon/blob/main/packages/policy/src/index.ts#L7-L45)),
+([lib.rs:57-152](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/lib.rs#L57-L152)),
+the TypeScript types ([index.ts:7-61](https://github.com/pleaseai/honmoon/blob/main/packages/policy/src/index.ts#L7-L61)),
 and the JSON Schema ([policy.schema.json](https://github.com/pleaseai/honmoon/blob/main/packages/policy/schema/policy.schema.json)) —
 though their *validation* differs: the JSON Schema is the strict one (`additionalProperties: false`,
 `version ≥ 1`), while the Rust loader tolerates and defaults missing fields and the TS types are
@@ -21,13 +21,13 @@ compile-time only. Keeping the three aligned is tracked as TD-001.
 | Field | Type | Default | Meaning | Source |
 |-------|------|---------|---------|--------|
 | `version` | integer ≥ 1 | `0` | Policy schema version | [policy.schema.json:8](https://github.com/pleaseai/honmoon/blob/main/packages/policy/schema/policy.schema.json#L8) |
-| `egress.default` | verdict | `deny` | Verdict when no allow/deny entry matches | [lib.rs:86-88](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/lib.rs#L86-L88) |
-| `egress.allow` | string[] | `[]` | Domain patterns to allow | [lib.rs:89-90](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/lib.rs#L89-L90) |
-| `egress.deny` | string[] | `[]` | Domain patterns to deny (wins over allow) | [lib.rs:91-92](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/lib.rs#L91-L92) |
-| `endpoints` | map&lt;name, endpoint&gt; | `{}` | Named network targets a rule can bind to | [lib.rs:51-55](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/lib.rs#L51-L55) |
-| `rules[]` | rule[] | `[]` | Ordered protocol-aware rules | [lib.rs:109-117](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/lib.rs#L109-L117) |
+| `egress.default` | verdict | `deny` | Verdict when no allow/deny entry matches | [lib.rs:121-123](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/lib.rs#L121-L123) |
+| `egress.allow` | string[] | `[]` | Domain patterns to allow | [lib.rs:124-125](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/lib.rs#L124-L125) |
+| `egress.deny` | string[] | `[]` | Domain patterns to deny (wins over allow) | [lib.rs:126-127](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/lib.rs#L126-L127) |
+| `endpoints` | map&lt;name, endpoint&gt; | `{}` | Named network targets a rule can bind to | [lib.rs:64-68](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/lib.rs#L64-L68) |
+| `rules[]` | rule[] | `[]` | Ordered protocol-aware rules | [lib.rs:144-152](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/lib.rs#L144-L152) |
 
-A **verdict** is one of `allow`, `deny`, `pause` ([policy.schema.json:24-27](https://github.com/pleaseai/honmoon/blob/main/packages/policy/schema/policy.schema.json#L24-L27)).
+A **verdict** is one of `allow`, `deny`, `pause` ([policy.schema.json:28-31](https://github.com/pleaseai/honmoon/blob/main/packages/policy/schema/policy.schema.json#L28-L31)).
 
 ## The shipped example
 
@@ -84,7 +84,7 @@ case-insensitive on both sides ([engine.rs:56-64](https://github.com/pleaseai/ho
 The `*.suffix` form matches the bare `suffix` **and** any `*.suffix` subdomain
 ([engine.rs:59-60](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/engine.rs#L59-L60)).
 Within the egress block, **deny wins over allow**, and an unmatched domain falls through to
-`egress.default` ([engine.rs:147-162](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/engine.rs#L147-L162)):
+`egress.default` ([engine.rs:149-164](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/engine.rs#L149-L164)):
 
 ```mermaid
 flowchart TD
@@ -123,7 +123,7 @@ endpoints:
 
 **Matching is exact**: the host must be equal (case-insensitive, with a trailing FQDN dot
 trimmed) *and* the port must be equal. There is no IP resolution and no wildcard host in v0.1.0
-([lib.rs:255-272](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/lib.rs#L255-L272)).
+([lib.rs:346-363](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/lib.rs#L346-L363)).
 The port comes from what the client dialed — the CONNECT authority for an HTTPS tunnel, defaulting
 to 443 (or 80 for a cleartext forward-proxy request) when the authority carries no explicit port,
 or the SOCKS5 handshake's own `host:port` for a non-HTTP protocol.
@@ -163,11 +163,11 @@ tunnel through the same listener, gated once on `domain` by the `egress` block �
 A rule referencing an endpoint that `endpoints` does not declare is a **load-time warning, not an
 error**: `Facts.endpoint` may be set by other means, and refusing the whole policy over one
 dangling name would fail open for every other rule
-([lib.rs:274-290](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/lib.rs#L274-L290)).
+([lib.rs:365-381](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/lib.rs#L365-L381)).
 
 That tolerance covers *undefined references only*. An unusable `endpoints` entry is a **load-time
 error** — the policy is rejected outright
-([lib.rs:199-224](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/lib.rs#L199-L224)):
+([lib.rs:206-231](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/lib.rs#L206-L231)):
 
 | Mistake | Why it fails the load |
 |---------|-----------------------|
@@ -178,15 +178,15 @@ error** — the policy is rejected outright
 
 Each rule binds a [CEL](https://github.com/google/cel-spec) condition to a named `endpoint`.
 Rules are evaluated **in order**; the first rule whose endpoint matches and whose condition
-evaluates to `true` wins ([engine.rs:100-136](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/engine.rs#L100-L136)).
+evaluates to `true` wins ([engine.rs:102-138](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/engine.rs#L102-L138)).
 If no rule matches, the egress block decides.
 
 | Rule field | Meaning | Example | Source |
 |-----------|---------|---------|--------|
-| `name` | Human label | `sql-no-prod-drop` | [lib.rs:112](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/lib.rs#L112) |
-| `endpoint` | Named target; `*` matches any | `postgres-prod` | [lib.rs:113](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/lib.rs#L113), [engine.rs:48-50](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/engine.rs#L48-L50) |
-| `condition` | CEL over protocol facts | `sql.verb == 'DROP'` | [lib.rs:114-115](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/lib.rs#L114-L115) |
-| `verdict` | `allow` / `deny` / `pause` | `pause` | [lib.rs:116](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/lib.rs#L116) |
+| `name` | Human label | `sql-no-prod-drop` | [lib.rs:147](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/lib.rs#L147) |
+| `endpoint` | Named target; `*` matches any | `postgres-prod` | [lib.rs:148](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/lib.rs#L148), [engine.rs:48-50](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/engine.rs#L48-L50) |
+| `condition` | CEL over protocol facts | `sql.verb == 'DROP'` | [lib.rs:149-150](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/lib.rs#L149-L150) |
+| `verdict` | `allow` / `deny` / `pause` | `pause` | [lib.rs:151](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/lib.rs#L151) |
 
 ### Rule order and unreachable rules
 
@@ -217,7 +217,7 @@ rules:
 Write those two the other way round and `postgres-connect` answers every *statement* too — a
 `DROP` is allowed, and the rule meant to stop it never runs. `Policy::from_yaml` warns at load
 when it finds that ordering, naming both rules
-([lib.rs:292-384](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/lib.rs#L292-L384)):
+([lib.rs:383-474](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/lib.rs#L383-L474)):
 
 ```
 WARN policy rule is unreachable: an earlier unconditional rule always matches first
@@ -255,7 +255,7 @@ rule a real condition; write `"true"` when you mean always.
 ### Facts available to conditions
 
 Conditions reference protocol facts as CEL variables of the same name. Each is only populated
-when the corresponding parser has run ([lib.rs:129-148](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/lib.rs#L129-L148)):
+when the corresponding parser has run ([lib.rs:154-173](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/lib.rs#L154-L173)):
 
 | Variable | Fields | Populated by | Status |
 |----------|--------|--------------|--------|
@@ -292,7 +292,7 @@ the policy is loaded rather than on each request, and since
 [#191](https://github.com/pleaseai/honmoon/issues/191) a condition the compiler rejects is a
 **load failure**, not a warning: `Policy::from_yaml` refuses the policy and names every rule
 responsible
-([lib.rs:292-337](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/lib.rs#L292-L337)).
+([lib.rs:299-344](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/lib.rs#L299-L344)).
 So the evaluation layer above is not what you meet when you start a gateway — it is what answers
 for a `Policy` built in code, which the library API accepts without going through the loader, and
 for a `condition` reassigned on a policy after it loaded.
@@ -406,10 +406,10 @@ It is a load-and-exit check, so what it accepts is what a gateway accepts:
 
 How much of that diagnosis you get depends on the fault, because that is how the loader reports.
 Every rule whose `condition` does not compile is named in one go
-([lib.rs:321-337](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/lib.rs#L321-L337)), so three of them take one run to
+([lib.rs:328-344](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/lib.rs#L328-L344)), so three of them take one run to
 find. The loader's other checks — an unusable `endpoints` entry
-([lib.rs:240-257](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/lib.rs#L240-L257)), a blank `condition`
-([lib.rs:280-290](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/lib.rs#L280-L290)) — return on the first offender, so
+([lib.rs:247-264](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/lib.rs#L247-L264)), a blank `condition`
+([lib.rs:287-297](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/lib.rs#L287-L297)) — return on the first offender, so
 those take one run each.
 
 Two properties are worth stating outright, because they are what make it usable.
@@ -419,7 +419,7 @@ Two properties are worth stating outright, because they are what make it usable.
 `honmoon gateway --config` and `honmoon run --policy` make ([main.rs:620](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-cli/src/main.rs#L620),
 [main.rs:797](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-cli/src/main.rs#L797)), and the only place in the binary that reads a
 policy from a path,
-compiled conditions and all ([lib.rs:215-224](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/lib.rs#L215-L224)). A check
+compiled conditions and all ([lib.rs:222-231](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/lib.rs#L222-L231)). A check
 that could accept a policy the gateway then refused would be worse than no check, so there is no
 separate implementation here to drift from that one. Two integration tests run both paths over one
 file and require the same verdict — `validate_and_the_gateway_report_the_same_refusal` on a policy
@@ -487,7 +487,7 @@ three characters.
 
 An empty file is **not** in this class — it is a valid policy. YAML reads it as `null`, and every
 `Policy` field carries `#[serde(default)]`
-([lib.rs:51-80](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/lib.rs#L51-L80)),
+([lib.rs:57-88](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/lib.rs#L57-L88)),
 so a document with no fields in it loads as deny-by-default with no rules. `honmoon gateway
 --config` starts on one, and `a_file_that_is_not_a_policy_is_named_rather_than_quoted` pins that
 `validate` accepts it — both guards have to let `null` through, because refusing it would refuse a
@@ -505,8 +505,8 @@ reaches that code (`validating_a_bad_policy_creates_nothing_under_home` pins it,
 that shows the gateway doing exactly that).
 
 It reports the loader's **warnings** too — an unreachable rule
-([lib.rs:388-397](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/lib.rs#L388-L397)), a rule naming an endpoint
-`endpoints` does not declare ([lib.rs:364-374](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/lib.rs#L364-L374)) —
+([lib.rs:395-404](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/lib.rs#L395-L404)), a rule naming an endpoint
+`endpoints` does not declare ([lib.rs:371-381](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/lib.rs#L371-L381)) —
 which `tracing` filters out of an ordinary gateway run, because this command asks for a `warn`
 default and its own stderr writer ([main.rs:413-436](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-cli/src/main.rs#L413-L436)). They do not
 change the exit code: the gateway starts on a policy carrying one, so this accepts it too.
