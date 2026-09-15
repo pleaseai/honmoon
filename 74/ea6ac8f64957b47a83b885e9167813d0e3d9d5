@@ -1,0 +1,23 @@
+.claude/agent-memory/review-review-pr-test-analyzer/mgmt_token_lock_warn_seams.md
+  s_988ab74319be92::t_0c5e86d919d79e 3,17-26,42-55
+packages/api/src/auth.test.ts
+  s_988ab74319be92::t_e5d86ca373c281 1,597-626,631-676
+  s_988ab74319be92::t_78093bbc05f0b5 627-630
+  s_988ab74319be92::t_06ff8c75a96718 677-679
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "74ea6ac8f64957b47a83b885e9167813d0e3d9d5",
+  "prompts": {},
+  "sessions": {
+    "s_988ab74319be92": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "7b36ff2d-8417-4035-a091-c7250b911c5f",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
