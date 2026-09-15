@@ -44,8 +44,10 @@ const LOCK_FILE_NAME: &str = "mgmt-token.lock";
 #[derive(Clone, Copy)]
 struct LockTiming {
     /// Age past which a waiter treats the lock as left behind by a crashed
-    /// holder. The critical section it guards is one read and one short write,
-    /// so this is about five orders of magnitude of headroom.
+    /// holder. The critical section it guards is one read and one write of ~65
+    /// bytes, with no `fsync`, so ten seconds is four to five orders of
+    /// magnitude of headroom depending on what the filesystem charges for those
+    /// two opens.
     stale_after: Duration,
     /// Total time a waiter will spend before giving up. It never mints on
     /// expiry — minting is exactly the divergence this path exists to prevent —
@@ -239,26 +241,40 @@ fn read_on_disk(path: &Path) -> std::io::Result<OnDisk> {
 /// One lock covers both. A start that finds no usable token takes an `O_EXCL`
 /// sentinel beside it, re-reads the token file *while holding it*, and mints
 /// only if there is still nothing there; every other start waits for the
-/// sentinel and re-reads rather than minting. A waiter never mints, which is
-/// what makes this single-winner rather than merely serialised: minting is the
-/// only action that can produce a second live token. Publishing under the lock
-/// also closes the create-then-write window, because no other start reads the
-/// file until the lock is released.
+/// sentinel and re-reads rather than minting. A waiter that lost a live lock
+/// never mints — that is what makes this single-winner rather than merely
+/// serialised, since minting is the only action that can produce a second live
+/// token. (The qualifier is not decoration: the abandoned-lock window below is
+/// exactly where it stops holding.)
 ///
-/// **What the lock does not cover, stated rather than implied.** A sentinel is
-/// advisory, so the exclusion is only as good as the agreement to use it — and
-/// [`break_abandoned_lock`] deliberately breaks that agreement for a lock left
-/// behind by a crashed holder, because a gateway that will not start until an
-/// operator deletes a file is worse than the divergence being closed. That
-/// leaves one window: a waiter observes an abandoned lock, and between its
-/// `stale_after` check and its rename another waiter breaks the same lock and
-/// takes a fresh one, which the first then renames away. Both would mint. It
-/// needs the holder to have been frozen inside a one-read-one-write critical
-/// section for [`LockTiming::stale_after`] *and* two waiters to interleave
-/// inside a rename — against the original race, which needs only two starts in
-/// the same millisecond. Narrowed by orders of magnitude, not eliminated;
-/// closing it fully needs a real advisory lock (`flock`), which Bun does not
-/// expose and so cannot be spelled the same way on both sides.
+/// Publishing under the lock also closes the create-then-write window, though
+/// not by keeping anyone out of the file — a waiter reads it on every poll,
+/// while the lock is held. What closes it is that a waiter has only two
+/// responses to what it reads: adopt a token, or wait. Zero bytes from a
+/// half-finished create is not a token, so it polls again instead of minting or
+/// failing, which is what the old code did with the same read.
+///
+/// **What the lock does not cover.** A sentinel is advisory, so the exclusion is
+/// only as good as the agreement to use it — and [`break_abandoned_lock`]
+/// deliberately breaks that agreement for a lock left behind by a crashed
+/// holder, because a gateway that will not start until an operator deletes a
+/// file is worse than the divergence being closed. Breaking is therefore where
+/// the residual risk lives, and the window that remains is this: a waiter
+/// observes an abandoned lock, and between its `stale_after` check and its
+/// rename another waiter breaks the same lock and takes a fresh one, which the
+/// first then renames away. Both would mint. It needs the holder to have been
+/// frozen inside a one-read-one-write critical section for
+/// [`LockTiming::stale_after`] *and* two waiters to interleave inside a rename —
+/// against the original race, which needs only two starts in the same
+/// millisecond. Narrowed by orders of magnitude, not eliminated; closing it
+/// fully needs a real advisory lock (`flock`), which Bun does not expose and so
+/// cannot be spelled the same way on both sides.
+///
+/// Two consequences of breaking that *are* handled, named here because they are
+/// not obvious from the break itself: a resumed holder whose lock was broken
+/// does not unlink its successor's ([`LockGuard`] compares the inode), and a
+/// lock path another local user planted as a symlink cannot hold every start off
+/// forever ([`lock_is_abandoned`] stats the link, not its target).
 fn mint_or_adopt_under_lock(dir: &Path, path: &Path, timing: LockTiming) -> Result<Resolved> {
     let lock_path = dir.join(LOCK_FILE_NAME);
     // Minted before the lock is taken, so the critical section is only the
@@ -287,7 +303,7 @@ fn mint_or_adopt_under_lock(dir: &Path, path: &Path, timing: LockTiming) -> Resu
                     ),
                     OnDisk::Absent => {}
                 }
-                publish_token(path, &minted)
+                publish_token(dir, path, &minted)
                     .with_context(|| format!("writing {}", path.display()))?;
                 drop(guard);
                 return Ok(Resolved {
@@ -322,43 +338,109 @@ fn mint_or_adopt_under_lock(dir: &Path, path: &Path, timing: LockTiming) -> Resu
                 lock_path.display()
             );
         }
-        if lock_is_abandoned(&lock_path, timing.stale_after) {
-            break_abandoned_lock(&lock_path, timing.stale_after);
+        if lock_is_abandoned(&lock_path, timing.stale_after)
+            && break_abandoned_lock(&lock_path, timing.stale_after)
+        {
             continue;
         }
         std::thread::sleep(timing.poll_interval);
     }
 }
 
-/// Write the minted token, under the lock.
+/// Publish the minted token atomically, under the lock.
 ///
-/// Exclusively first, so a *fresh* create neither follows nor clobbers a
-/// pre-planted symlink or file — the property `create_secret_file_exclusive`
-/// exists for, and the reason this is not simply a truncating write. The
-/// fallback is for the one case `create_new` cannot express: replacing the empty
-/// file, where it would only report that the path exists. The lock is what makes
-/// that truncation safe, and it is the whole of #189.
-fn publish_token(path: &Path, token: &str) -> std::io::Result<()> {
-    match create_secret_file_exclusive(path, token.as_bytes()) {
-        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
-            write_secret_file(path, token.as_bytes())
-        }
-        other => other,
+/// Write-then-`rename`, not a write in place, because the lock does not keep
+/// waiters out of the token file — they poll it on every iteration, by design,
+/// so that they notice the moment it is published. An in-place write is visible
+/// to those polls while it is still half-written: the truncating open empties
+/// the file and the bytes land after it, and a waiter that reads in between
+/// adopts whatever prefix had arrived. That is not hypothetical — it is what
+/// `concurrent_starts_over_an_empty_token_file_all_hold_the_token_on_disk`
+/// caught, one start holding a 63-character token while the file held 64. The
+/// exclusive create has the same shape for the same reason: it creates the file
+/// and writes it afterwards, so a loser reading in between sees zero bytes.
+///
+/// `rename` closes both, because it swaps a name rather than filling a file: a
+/// waiter reads either what was there before or the whole token, never a prefix
+/// of it. The lock and the rename answer different halves of #189 and neither
+/// substitutes for the other — the lock makes exactly one start *decide* to
+/// mint, the rename makes what it publishes visible all at once. (This is why
+/// the issue was right that atomic publish alone does not close #189, and it
+/// does not follow that the lock alone does either.)
+///
+/// The guarantee is over what honmoon publishes. A token written into place by
+/// something else — an operator's `echo … > mgmt-token` during a start — is not
+/// covered by it, and never was.
+///
+/// It also settles the symlink question the exclusive create used to carry.
+/// `rename` resolves no symlink on its destination, so a link another local user
+/// planted at `mgmt-token` is replaced by this regular file rather than written
+/// through, and the token cannot land on a path they chose. The staging file is
+/// created exclusively at `0600` and is never a name anything else reads.
+fn publish_token(dir: &Path, path: &Path, token: &str) -> std::io::Result<()> {
+    let staging = dir.join(format!("{FILE_NAME}.new.{}", std::process::id()));
+    // A leftover from a crashed run that held this pid would fail the exclusive
+    // create below. Safe to remove: the lock is held and the name is this
+    // process's alone.
+    if let Err(e) = std::fs::remove_file(&staging)
+        && e.kind() != std::io::ErrorKind::NotFound
+    {
+        return Err(e);
     }
+    create_secret_file_exclusive(&staging, token.as_bytes())?;
+    if let Err(e) = std::fs::rename(&staging, path) {
+        if let Err(cleanup) = std::fs::remove_file(&staging) {
+            eprintln!(
+                "honmoon: warning: could not remove the unpublished management token {}: {cleanup}",
+                staging.display()
+            );
+        }
+        return Err(e);
+    }
+    Ok(())
 }
 
-/// The lock, held for `0600` and released by [`Drop`] on every exit from
-/// [`recover_empty_token_file`] — including the `?` on a failed publish, which
+/// The lock, held at `0600` and released by [`Drop`] on every exit from
+/// [`mint_or_adopt_under_lock`] — including the `?` on a failed publish, which
 /// would otherwise leave every other start waiting out the full budget.
-struct LockGuard(PathBuf);
+///
+/// `inode` is what the release compares against, so that a guard only ever
+/// unlinks the file it created. Without it a holder whose lock was broken —
+/// frozen past `stale_after`, then resumed — would unlink whatever now sits at
+/// the path, which is the successor's live lock, and a third start could then
+/// acquire while the successor still believed it held exclusivity. `None` where
+/// the inode could not be read, which falls back to the unconditional unlink
+/// rather than leaking the lock.
+struct LockGuard {
+    path: PathBuf,
+    #[cfg(unix)]
+    inode: Option<u64>,
+}
 
 impl Drop for LockGuard {
     fn drop(&mut self) {
-        if let Err(e) = std::fs::remove_file(&self.0) {
+        #[cfg(unix)]
+        if let Some(inode) = self.inode {
+            use std::os::unix::fs::MetadataExt as _;
+            // `symlink_metadata`, so a symlink dropped at the path is compared
+            // as itself rather than as whatever it points at.
+            let ours = matches!(
+                std::fs::symlink_metadata(&self.path),
+                Ok(metadata) if metadata.ino() == inode
+            );
+            if !ours {
+                eprintln!(
+                    "honmoon: warning: the management token lock {} is no longer the one this start took                      — another start treated it as abandoned, so this start's exclusivity did not hold",
+                    self.path.display()
+                );
+                return;
+            }
+        }
+        if let Err(e) = std::fs::remove_file(&self.path) {
             eprintln!(
                 "honmoon: warning: could not release the management token lock {}: {e} \
                  — other starts will wait for it to look abandoned",
-                self.0.display()
+                self.path.display()
             );
         }
     }
@@ -376,8 +458,29 @@ fn acquire_lock(lock_path: &Path) -> std::io::Result<LockGuard> {
         opts.mode(0o600);
     }
     let mut file = opts.open(lock_path)?;
+    #[cfg(unix)]
+    let inode = {
+        use std::os::unix::fs::MetadataExt as _;
+        match file.metadata() {
+            Ok(metadata) => Some(metadata.ino()),
+            // Not fatal — the lock is taken either way — but the release then
+            // cannot tell this lock from a successor's, so say so.
+            Err(e) => {
+                eprintln!(
+                    "honmoon: warning: could not identify the management token lock {}: {e} \
+                     — releasing it will not be able to check it is still this start's",
+                    lock_path.display()
+                );
+                None
+            }
+        }
+    };
     // Held from here on, so a failure below still releases it.
-    let guard = LockGuard(lock_path.to_path_buf());
+    let guard = LockGuard {
+        path: lock_path.to_path_buf(),
+        #[cfg(unix)]
+        inode,
+    };
     // Diagnostic only — for an operator reading a lock the budget message named.
     // Staleness is decided by the file's age and never by this pid: pids are
     // reused, and one from another mount namespace names a different process
@@ -394,17 +497,52 @@ fn acquire_lock(lock_path: &Path) -> std::io::Result<LockGuard> {
 /// Whether the lock has been held past `stale_after` — the signature of a
 /// holder that crashed between taking it and releasing it.
 ///
-/// Wall-clock, because that is the only timestamp a second process can read.
-/// A modification time in the future (a clock stepped backwards, a file copied
-/// off a host that is ahead) makes `elapsed` fail, and that counts as *not*
+/// `symlink_metadata`, not `metadata`: the age this reads decides whether the
+/// lock may be broken, and following a link would let whoever planted it choose
+/// that age. A symlink to a file with a future modification time would then
+/// never look abandoned, and since the `O_EXCL` acquire cannot succeed against
+/// it either, every start would wait out its budget and refuse — permanently, on
+/// a host where another local user can write this directory. A lock path that is
+/// not a regular file was not written by this protocol, so it is broken rather
+/// than waited on; [`break_abandoned_lock`] renames rather than unlinking and
+/// `rename` follows neither operand, so breaking one is safe.
+///
+/// Wall-clock, because that is the only timestamp a second process can read. A
+/// modification time in the future (a clock stepped backwards, a file copied off
+/// a host that is ahead) makes `elapsed` fail, and that counts as *not*
 /// abandoned: waiting is always safe, and breaking a live lock is the one thing
 /// this must not do on a bad reading.
+///
+/// A stat that fails for any reason other than the lock being gone is reported
+/// before that same `false` is returned. Silence would leave the waiter to spend
+/// its whole budget and then blame "the start holding the lock" for something
+/// that was never another process — [`warn_if_writable_beyond_owner`] already
+/// warns on exactly this kind of `metadata` failure rather than swallowing it.
 fn lock_is_abandoned(lock_path: &Path, stale_after: Duration) -> bool {
-    let Ok(metadata) = std::fs::metadata(lock_path) else {
-        return false;
+    let metadata = match std::fs::symlink_metadata(lock_path) {
+        Ok(metadata) => metadata,
+        // Released while we were looking, which is the protocol working.
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return false,
+        Err(e) => {
+            eprintln!(
+                "honmoon: warning: could not read the management token lock {}: {e}",
+                lock_path.display()
+            );
+            return false;
+        }
     };
-    let Ok(modified) = metadata.modified() else {
-        return false;
+    if !metadata.is_file() {
+        return true;
+    }
+    let modified = match metadata.modified() {
+        Ok(modified) => modified,
+        Err(e) => {
+            eprintln!(
+                "honmoon: warning: could not read the age of the management token lock {}: {e}",
+                lock_path.display()
+            );
+            return false;
+        }
     };
     modified.elapsed().is_ok_and(|age| age >= stale_after)
 }
@@ -418,8 +556,16 @@ fn lock_is_abandoned(lock_path: &Path, stale_after: Duration) -> bool {
 /// lock a faster waiter had already taken and two starts would mint together.
 /// A path holds one file, so of several renames exactly one moves it and the
 /// rest get `NotFound` — the removal becomes a claim. See
-/// [`recover_empty_token_file`] for the window this still leaves open.
-fn break_abandoned_lock(lock_path: &Path, stale_after: Duration) {
+/// [`mint_or_adopt_under_lock`] for the window this still leaves open.
+///
+/// Returns whether the lock is now somebody's to take: `true` when this call
+/// moved it, `true` when another waiter had already moved it, and `false` only
+/// when it is still there and still ours to wait on. The caller sleeps on
+/// `false`, so a rename that keeps failing for a reason that will not clear —
+/// a directory mode that forbids it, something planted at the claim path —
+/// costs one poll interval per attempt instead of spinning a core and flooding
+/// stderr for the whole budget.
+fn break_abandoned_lock(lock_path: &Path, stale_after: Duration) -> bool {
     let claimed =
         lock_path.with_file_name(format!("{LOCK_FILE_NAME}.abandoned.{}", std::process::id()));
     match std::fs::rename(lock_path, &claimed) {
@@ -436,13 +582,17 @@ fn break_abandoned_lock(lock_path: &Path, stale_after: Duration) {
                     claimed.display()
                 );
             }
+            true
         }
         // Another waiter claimed it first, which is the protocol working.
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-        Err(e) => eprintln!(
-            "honmoon: warning: could not break the abandoned management token lock {}: {e}",
-            lock_path.display()
-        ),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => true,
+        Err(e) => {
+            eprintln!(
+                "honmoon: warning: could not break the abandoned management token lock {}: {e}",
+                lock_path.display()
+            );
+            false
+        }
     }
 }
 
@@ -620,32 +770,6 @@ fn create_secret_file_exclusive(path: &Path, bytes: &[u8]) -> std::io::Result<()
         opts.mode(0o600);
     }
     opts.open(path)?.write_all(bytes)
-}
-
-/// Truncating `0600` write, for replacing a file already known to be unusable.
-///
-/// `OpenOptionsExt::mode` applies only to a file the open *creates*, so
-/// truncating one that already exists would otherwise keep whatever mode it
-/// had — a `0644` empty placeholder would receive a live credential and stay
-/// world-readable. The explicit `set_permissions` is what makes the `0600` in
-/// this function's name true on the replace path, and it runs *before* the
-/// bytes so there is no window where the new token sits at the old mode.
-fn write_secret_file(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
-    use std::io::Write as _;
-    let mut opts = std::fs::OpenOptions::new();
-    opts.write(true).create(true).truncate(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt as _;
-        opts.mode(0o600);
-    }
-    let mut file = opts.open(path)?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt as _;
-        file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
-    }
-    file.write_all(bytes)
 }
 
 #[cfg(test)]
@@ -856,18 +980,30 @@ mod tests {
         );
     }
 
-    /// The create race had no test either, though the `O_CREAT|O_EXCL` protocol
-    /// has always covered it. Asserted here so the two paths that both have to
-    /// be single-winner are held to it by the same kind of test.
+    /// The create race had no test either, and unlike the empty-file path it was
+    /// never actually safe: `create_secret_file_exclusive` creates the file and
+    /// *then* writes it, so a loser re-reading on `AlreadyExists` could land
+    /// between the two syscalls, read zero bytes, and abort.
+    ///
+    /// Repeated, because one batch is not enough to rely on. That window is a
+    /// two-syscall gap rather than the whole read-mint-write span the empty-file
+    /// race opens, so a single batch caught the old behaviour on roughly a third
+    /// of runs — a regression would have had two chances in three of reaching
+    /// `main`. Eight batches take it to about 96%, and cost ~10ms.
     #[test]
     fn concurrent_first_starts_all_hold_the_token_on_disk() {
-        let tmp = TempDir::new("create-race");
+        for round in 0..8 {
+            let tmp = TempDir::new("create-race");
 
-        let (tokens, on_disk) = concurrent_resolutions(tmp.path(), 16);
+            let (tokens, on_disk) = concurrent_resolutions(tmp.path(), 16);
 
-        assert_eq!(on_disk.len(), TOKEN_BYTES * 2);
-        for token in &tokens {
-            assert_eq!(*token, on_disk);
+            assert_eq!(on_disk.len(), TOKEN_BYTES * 2, "round {round}");
+            for token in &tokens {
+                assert_eq!(
+                    *token, on_disk,
+                    "round {round}: a start held a token the persisted file does not authenticate"
+                );
+            }
         }
     }
 
@@ -888,7 +1024,13 @@ mod tests {
         let waiter = std::thread::spawn(move || load_or_create_with(&dir, TEST_TIMING));
 
         std::thread::sleep(Duration::from_millis(30));
-        std::fs::write(&path, "the-holders-token\n").unwrap();
+        // Published by `rename`, the way `publish_token` does it. A plain
+        // `std::fs::write` here truncates and then fills, and the waiter — which
+        // polls the file on every iteration by design — reads the prefix: this
+        // test caught its own stand-in handing over "he-holders-token".
+        let staging = tmp.path().join("holder-staging");
+        std::fs::write(&staging, "the-holders-token\n").unwrap();
+        std::fs::rename(&staging, &path).unwrap();
         std::fs::remove_file(&lock).unwrap();
 
         let resolved = waiter.join().unwrap().unwrap();
@@ -948,6 +1090,128 @@ mod tests {
         assert!(matches!(resolved.source, Source::Generated(_)));
         assert_eq!(resolved.token.len(), TOKEN_BYTES * 2);
         assert!(!lock.exists(), "the broken lock must not be left behind");
+    }
+
+    /// A symlink planted at the token path must not receive the token.
+    ///
+    /// The exclusive create refuses a symlink — a dangling one included, which
+    /// it reports as `AlreadyExists` like any other existing path — so an
+    /// in-place publish that fell back to a truncating write on that error wrote
+    /// *through* the link: another local user who can write this directory
+    /// points `mgmt-token` at a path they chose and the token lands there at
+    /// `0600`. Publishing by `rename` resolves no link on its destination, so
+    /// the planted link is replaced by the real file instead.
+    #[cfg(unix)]
+    #[test]
+    fn a_symlink_at_the_token_path_is_replaced_rather_than_written_through() {
+        let tmp = TempDir::new("symlink-token");
+        let target = tmp.path().join("a-path-the-attacker-chose");
+        let path = tmp.path().join(FILE_NAME);
+        std::os::unix::fs::symlink(&target, &path).unwrap();
+
+        let resolved = load_or_create_with(tmp.path(), TEST_TIMING).unwrap();
+
+        assert!(
+            !target.exists(),
+            "the token was written through the planted symlink"
+        );
+        assert!(
+            !std::fs::symlink_metadata(&path).unwrap().is_symlink(),
+            "the planted symlink must not survive as the token path"
+        );
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), resolved.token);
+        assert!(
+            !tmp.path().join(LOCK_FILE_NAME).exists(),
+            "the lock must not outlive the start that took it"
+        );
+    }
+
+    /// A publish that fails must still release the lock.
+    ///
+    /// `LockGuard`'s `Drop` has to cover the `?` on the publish, not only the
+    /// explicit `drop`; otherwise one failed start leaves every later one to
+    /// wait out `stale_after` before it can even try.
+    #[cfg(unix)]
+    #[test]
+    fn a_failed_publish_still_releases_the_lock() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let tmp = TempDir::new("failed-publish");
+        let dir = tmp.path().join("locked-down");
+        std::fs::create_dir(&dir).unwrap();
+        // The lock is taken while the directory is still writable, and the
+        // publish then fails on the staging create.
+        let lock_path = dir.join(LOCK_FILE_NAME);
+        std::fs::write(dir.join(FILE_NAME), "\n").unwrap();
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o500)).unwrap();
+
+        let outcome = load_or_create_with(&dir, TEST_TIMING);
+
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let Err(_) = outcome else {
+            panic!("a publish into a read-only directory must not resolve a token");
+        };
+        assert!(
+            !lock_path.exists(),
+            "a start that failed to publish left its lock behind"
+        );
+    }
+
+    /// A lock path another local user planted as a symlink must not hold every
+    /// start off forever.
+    ///
+    /// `metadata` would report the *target's* age, so a link to a file with a
+    /// future modification time never looks abandoned while `O_EXCL` can never
+    /// succeed against it either — every start would wait out its budget and
+    /// refuse, permanently. Stat the link itself and a lock that is not a
+    /// regular file is broken rather than waited on.
+    #[cfg(unix)]
+    #[test]
+    fn a_symlinked_lock_path_is_broken_rather_than_waited_on_forever() {
+        let tmp = TempDir::new("symlink-lock");
+        std::fs::write(tmp.path().join(FILE_NAME), "\n").unwrap();
+        // Dangling, so there is no target whose age could make it look fresh:
+        // what must decide is that this is not a regular file.
+        std::os::unix::fs::symlink(
+            tmp.path().join("never-created"),
+            tmp.path().join(LOCK_FILE_NAME),
+        )
+        .unwrap();
+
+        // `stale_after` far in the future, so only the not-a-regular-file rule
+        // can break this lock.
+        let resolved = load_or_create_with(tmp.path(), TEST_TIMING).unwrap();
+        assert!(matches!(resolved.source, Source::Generated(_)));
+        assert_eq!(resolved.token.len(), TOKEN_BYTES * 2);
+    }
+
+    /// A guard whose lock was broken must not unlink the successor's.
+    ///
+    /// Otherwise a holder frozen past `stale_after` and then resumed deletes a
+    /// live lock on its way out, and a third start acquires while the successor
+    /// still believes it holds exclusivity.
+    #[cfg(unix)]
+    #[test]
+    fn a_broken_lock_is_not_unlinked_by_the_start_that_lost_it() {
+        let tmp = TempDir::new("guard-inode");
+        let lock_path = tmp.path().join(LOCK_FILE_NAME);
+
+        let guard = acquire_lock(&lock_path).unwrap();
+        // Stand in for a waiter that judged the lock abandoned, broke it, and
+        // took one of its own: same path, different inode.
+        std::fs::remove_file(&lock_path).unwrap();
+        let successor = acquire_lock(&lock_path).unwrap();
+
+        drop(guard);
+        assert!(
+            lock_path.exists(),
+            "the resumed holder deleted the successor's live lock"
+        );
+        drop(successor);
+        assert!(
+            !lock_path.exists(),
+            "the successor must release its own lock"
+        );
     }
 
     #[test]
