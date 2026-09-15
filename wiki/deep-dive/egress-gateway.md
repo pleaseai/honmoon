@@ -62,7 +62,8 @@ not rewritten ([ADR-0003:42-64](https://github.com/pleaseai/honmoon/blob/main/.p
 | `inspect_body` | Buffer, decode, scan for PII, decide, forward or block | [mitm.rs:614-924](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-proxy/src/mitm.rs#L614-L924) |
 | `handle_response` | Restore known placeholders in identity-encoded responses | [mitm.rs:975-1034](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-proxy/src/mitm.rs#L975-L1034) |
 | `should_intercept` | Apply `InterceptPolicy` to one tunnel | [mitm.rs:1036-1045](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-proxy/src/mitm.rs#L1036-L1045) |
-| `status_response` | The `Content-Length: 0`, `Connection: close` refusal every gate returns | [mitm.rs:1601-1610](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-proxy/src/mitm.rs#L1601-L1610) |
+| `status_response` | The empty `Content-Length: 0`, `Connection: close` refusal — what the host gate, a content `deny` and a full approval queue return | [mitm.rs:1601-1610](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-proxy/src/mitm.rs#L1601-L1610) |
+| The reason-carrying refusals | A refusal the operator can act on carries a `text/plain` explanation and an `x-honmoon-reason` header instead of an empty body, and names the flag to change | [mitm.rs:65](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-proxy/src/mitm.rs#L65), [mitm.rs:1240-1261](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-proxy/src/mitm.rs#L1240-L1261), [mitm.rs:1551-1599](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-proxy/src/mitm.rs#L1551-L1599) |
 
 ::: warning Names that moved
 Anything you read elsewhere about `gateway::handle`, `gateway::authorize`,
@@ -296,11 +297,11 @@ flowchart TD
   main --> gw["gateway --config P --addr A<br>--socks-addr --mgmt-addr --audit-log"]
   main --> join["join --gateway G"]
   run --> bind["bind two loopback pairs:<br>CONNECT + SOCKS5, v4 + v6"]
-  bind --> thread["one thread, one runtime,<br>select! over all four serve loops"]
+  bind --> thread["one thread, one runtime,<br>select! over the serve loops"]
   thread --> exec["exec child with *_proxy + ALL_PROXY set"]
   exec --> code["propagate child exit code"]
   gw --> gwstate["build GatewayState (audit + approvals + CA)"]
-  gwstate --> gwboth["one runtime: gateway::serve + serve_socks + honmoon-mgmt::serve"]
+  gwstate --> gwboth["one runtime: gateway::serve + honmoon-mgmt::serve,<br>+ serve_socks unless --socks-addr off"]
   join --> bail["bail! not yet implemented"]
   style main fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
   style run fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
@@ -388,7 +389,7 @@ arm waits forever rather than firing at once and killing the gateway
 | `--redact-secrets` | off | Rewrite detected secrets and Tier-1 PII to stable placeholders before forwarding, and restore them in identity-encoded responses. Requires `--tls-intercept` | [main.rs:158-168](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-cli/src/main.rs#L158-L168) |
 | `--signed-body` | `block` | What to do when redaction would rewrite a body an authentication signature covers: `block` refuses locally with `403`, `forward` sends the original bytes unredacted. Requires `--redact-secrets` | [main.rs:169-189](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-cli/src/main.rs#L169-L189), [gateway.rs:63-76](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-proxy/src/gateway.rs#L63-L76) |
 | `--mgmt-token` | (minted at `~/.honmoon/mgmt-token`, `0600`) | Bearer token required by **every** `/api/*` route — the audit, approval and policy reads as well as the Claude Code hook endpoint. Browsers exchange it at `GET /login?token=…` — the URL honmoon prints on startup — for a session secret they send in the `X-Honmoon-Session` header; deliberately not a cookie, whose scope would cover every other port on `127.0.0.1` (#188). `--hook-token` / `HONMOON_HOOK_TOKEN` remain accepted as deprecated aliases. Prefer the environment variable to the flag: a command line can be read by other local users via `ps` (how far that reaches is platform- and configuration-dependent), while a token file honmoon created is `0600`. An existing file that is readable beyond its owner is reported rather than tightened — replacing such a token is the operator's call, since it invalidates anything holding the old value. Minting — whether the file is absent or empty — happens under a `mgmt-token.lock` sentinel in the same directory, so a gateway and an `@honmoon/api` starting together converge on one token instead of each keeping the one it minted (#189); a lock a start left behind by crashing mid-mint is broken after ten seconds, and a start that waits thirty seconds for one refuses rather than minting a second token. `@honmoon/api` reads only the variable or the file, never this flag | [main.rs:99-138](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-cli/src/main.rs#L99-L138), [mgmt_token.rs:301-402](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-cli/src/mgmt_token.rs#L301-L402), [auth.ts:64-68](https://github.com/pleaseai/honmoon/blob/main/packages/api/src/auth.ts#L64-L68), [auth.ts:310-362](https://github.com/pleaseai/honmoon/blob/main/packages/api/src/auth.ts#L310-L362) |
-| `--audit-log` | (in-memory only) | Append every verdict — and any recorded security degradation — to a JSONL file. Must name a **regular file**: opened with `O_NOFOLLOW`, so a symlink as the final path component is refused, as are a FIFO, socket, device and directory, and the refusal aborts startup. Created owner-only when absent; an existing file keeps its mode | [main.rs:79-98](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-cli/src/main.rs#L79-L98), [main.rs:629-638](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-cli/src/main.rs#L629-L638) |
+| `--audit-log` | (in-memory only) | Append every **recorded** verdict — the set the intro describes, not each forwarded request — and any recorded security degradation, to a JSONL file. Must name a **regular file**: opened with `O_NOFOLLOW`, so a symlink as the final path component is refused, as are a FIFO, socket, device and directory, and the refusal aborts startup. Created owner-only when absent; an existing file keeps its mode | [main.rs:79-98](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-cli/src/main.rs#L79-L98), [main.rs:629-638](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-cli/src/main.rs#L629-L638) |
 
 ## Hermetic integration tests
 
@@ -414,8 +415,8 @@ PII modes, compressed and chunked bodies, Kubernetes endpoint rules, and the uni
 refusal ([mitm.rs:1-8](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-proxy/tests/mitm.rs#L1-L8)).
 `crates/honmoon-mgmt/tests/e2e.rs` holds a live `CONNECT` on a `pause` rule, finds it on the
 management API's approval queue, and shows approving it lets the tunnel through (`200`) while
-rejecting blocks it (`403`) — every step recorded in the audit log
-([e2e.rs:1-10](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-mgmt/tests/e2e.rs#L1-L10)).
+rejecting blocks it (`403`), asserting the `Paused`/`Approved` and `Rejected` audit entries for
+each ([e2e.rs:248-294](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-mgmt/tests/e2e.rs#L248-L294), [e2e.rs:297-325](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-mgmt/tests/e2e.rs#L297-L325)).
 
 ## Related Pages
 
