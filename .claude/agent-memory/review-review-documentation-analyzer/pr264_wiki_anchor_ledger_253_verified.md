@@ -16,11 +16,11 @@ PR #264 closed issue #253 by repointing the 30 remaining stale `#L` source ancho
 and honmoon-mgmt `lib.rs`, protocols.rs, gateway.rs, auth.ts, index.ts→routes.ts, Cargo.toml,
 ADR-0002, product.md, workflow.md, business-model.md, README.md — `main.rs` is *not* among
 them: its citation shares a table row with one that was repointed and only looks changed in
-the diff) and re-attributing the other 5 to #260
-(`egress-gateway.md`'s hand-rolled-proxy prose, superseded by ADR-0003/`mitm.rs::host_gate`),
-#261 (`protocol-parsing.md`'s pre-`sqlparser` `DROP MATERIALIZED VIEW` claim, now asserting the
-opposite), and #263 (`roadmap-open-core.md`'s phase table one phase behind `docs/roadmap.md`
-since Phase 5/PII-DLP was inserted — "Isolation modes" is Phase 6, not 5).
+the diff), and re-attributing the other 5: to #260 for `egress-gateway.md`'s hand-rolled-proxy
+prose, superseded by ADR-0003 and `mitm.rs::host_gate`; to #261 for `protocol-parsing.md`'s
+pre-`sqlparser` `DROP MATERIALIZED VIEW` claim, which the test it cites now asserts the
+opposite of; and to #263 for `roadmap-open-core.md`'s phase table, one phase behind
+`docs/roadmap.md` since Phase 5 (PII / DLP) was inserted — "Isolation modes" is Phase 6, not 5.
 
 I independently re-resolved every one of the 30 repointed anchors against the branch's actual
 file content (`cat -n` / `sed -n` on each cited range) against the sentence or table cell it
