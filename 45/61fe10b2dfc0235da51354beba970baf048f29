@@ -1,0 +1,19 @@
+.claude/agent-memory/review-review-documentation-analyzer/pr268_egress_gateway_hudsucker_rewrite.md
+  s_926069aa05d635::t_de322917f0c7bb 8-11,51-53,60-66,70,120-126
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "4561fe10b2dfc0235da51354beba970baf048f29",
+  "prompts": {},
+  "sessions": {
+    "s_926069aa05d635": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "0cdf8566-426e-4c4f-914c-e93cd6beac73",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
