@@ -17,7 +17,7 @@
  * service alone: it never had a browser credential to harvest.
  */
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto'
-import { closeSync, fchmodSync, fstatSync, mkdirSync, openSync, readFileSync, renameSync, statSync, unlinkSync, writeSync } from 'node:fs'
+import { closeSync, fstatSync, lstatSync, mkdirSync, openSync, readFileSync, renameSync, unlinkSync, writeSync } from 'node:fs'
 import { join } from 'node:path'
 
 /** File under the honmoon directory holding a generated token. */
@@ -104,6 +104,11 @@ export function isAuthorized(header: string | null | undefined, token: string): 
   }
   const digest = (value: string) => createHash('sha256').update(value).digest()
   return timingSafeEqual(digest(header.slice(prefix.length)), digest(token))
+}
+
+/** Compile-time exhaustiveness: an unhandled union member fails to type-check. */
+function assertNever(value: never): never {
+  throw new Error(`unhandled case: ${JSON.stringify(value)}`)
 }
 
 function errorCode(error: unknown): string | undefined {
@@ -282,22 +287,31 @@ function mintOrAdoptUnderLock(dir: string, path: string, timing: LockTiming): Re
   const started = Date.now()
 
   for (;;) {
-    if (acquireLock(lockPath)) {
+    const held = acquireLock(lockPath)
+    if (held !== null) {
       try {
         // Re-read under the lock. A start that held it before us published
         // before it released, so anything here now is the winner's, and minting
         // over it would be the divergence itself.
         const underLock = readOnDisk(path)
-        if (underLock.kind === 'token') {
-          return underLock.resolved
+        switch (underLock.kind) {
+          case 'token':
+            return underLock.resolved
+          case 'empty':
+            console.warn(`honmoon api: management token ${path} is empty — minting a new one`)
+            break
+          case 'absent':
+            break
+          default:
+            // Rust's `match` on `OnDisk` is exhaustive by construction; this is
+            // what makes the TypeScript side fail the build rather than treat a
+            // later variant as 'absent' and mint over it.
+            return assertNever(underLock)
         }
-        if (underLock.kind === 'empty') {
-          console.warn(`honmoon api: management token ${path} is empty — minting a new one`)
-        }
-        publishToken(path, minted)
+        publishToken(dir, path, minted)
       }
       finally {
-        releaseLock(lockPath)
+        releaseLock(lockPath, held.ino)
       }
       return { token: minted, source: 'generated', path }
     }
@@ -313,25 +327,47 @@ function mintOrAdoptUnderLock(dir: string, path: string, timing: LockTiming): Re
         + `for the start holding ${lockPath} — delete the lock if no other honmoon is running`,
       )
     }
-    if (lockIsAbandoned(lockPath, timing.staleAfterMs)) {
-      breakAbandonedLock(lockPath, timing.staleAfterMs)
+    if (lockIsAbandoned(lockPath, timing.staleAfterMs)
+      && breakAbandonedLock(lockPath, timing.staleAfterMs)) {
       continue
     }
     sleepSync(timing.pollIntervalMs)
   }
 }
 
-/** Take the lock, or report that another start holds it. */
-function acquireLock(lockPath: string): boolean {
+/**
+ * Take the lock, or report `null` if another start holds it.
+ *
+ * `ino` identifies the file this call created, so {@link releaseLock} only ever
+ * unlinks that one. Without it a holder whose lock was broken — frozen past
+ * `staleAfterMs`, then resumed — would unlink whatever now sits at the path,
+ * which is the successor's live lock, and a third start could then acquire while
+ * the successor still believed it held exclusivity. `null` where the inode could
+ * not be read, which falls back to the unconditional unlink rather than leaking
+ * the lock.
+ */
+function acquireLock(lockPath: string): { ino: number | null } | null {
   let fd: number
   try {
     fd = openSync(lockPath, 'wx', 0o600)
   }
   catch (error) {
     if (errorCode(error) === 'EEXIST') {
-      return false
+      return null
     }
     throw new Error(`cannot create the management token lock ${lockPath}: ${String(error)}`)
+  }
+  let ino: number | null = null
+  try {
+    ino = fstatSync(fd).ino
+  }
+  catch (error) {
+    // Not fatal — the lock is taken either way — but the release then cannot
+    // tell this lock from a successor's, so say so.
+    console.warn(
+      `honmoon api: warning: could not identify the management token lock ${lockPath}: ${String(error)} `
+      + '— releasing it will not be able to check it is still this start\'s',
+    )
   }
   try {
     // Diagnostic only — for an operator reading a lock the budget message
@@ -348,14 +384,32 @@ function acquireLock(lockPath: string): boolean {
   finally {
     closeSync(fd)
   }
-  return true
+  return { ino }
 }
 
 /**
  * Release the lock. Called from a `finally`, so a failed publish does not leave
  * every other start waiting out the full budget.
  */
-function releaseLock(lockPath: string): void {
+function releaseLock(lockPath: string, ino: number | null): void {
+  if (ino !== null) {
+    // `lstatSync`, so a symlink dropped at the path is compared as itself rather
+    // than as whatever it points at.
+    let ours = false
+    try {
+      ours = lstatSync(lockPath).ino === ino
+    }
+    catch {
+      ours = false
+    }
+    if (!ours) {
+      console.warn(
+        `honmoon api: warning: the management token lock ${lockPath} is no longer the one this start took `
+        + '— another start treated it as abandoned, so this start\'s exclusivity did not hold',
+      )
+      return
+    }
+  }
   try {
     unlinkSync(lockPath)
   }
@@ -368,42 +422,68 @@ function releaseLock(lockPath: string): void {
 }
 
 /**
- * Write the minted token, under the lock.
+ * Publish the minted token atomically, under the lock.
  *
- * Exclusively first, so a *fresh* create neither follows nor clobbers a
- * pre-planted symlink or file. The fallback is for the one case `wx` cannot
- * express: replacing the empty file, where it would only report that the path
- * exists. The lock is what makes that truncation safe, and it is the whole
- * of #189.
+ * Write-then-`rename`, not a write in place, because the lock does not keep
+ * waiters out of the token file — they poll it on every iteration, by design, so
+ * that they notice the moment it is published. An in-place write is visible to
+ * those polls while it is still half-written: the truncating open empties the
+ * file and the bytes land after it, and a waiter reading in between adopts
+ * whatever prefix had arrived. The Rust side's race test caught exactly that,
+ * one start holding a 63-character token while the file held 64. `wx` has the
+ * same shape for the same reason: it creates the file and the write follows, so
+ * a loser reading in between sees zero bytes.
  *
- * `fchmodSync` rather than the open's mode argument on that fallback, because
- * the mode applies only when the open *creates* the file: a pre-existing empty
- * `0644` placeholder would otherwise take a live credential at its old mode. It
- * runs before the bytes, so the token is never briefly readable beyond its
- * owner, and it goes through the descriptor rather than the path so it can only
- * affect the inode actually being written.
+ * `rename` closes both, because it swaps a name rather than filling a file: a
+ * waiter reads either what was there before or the whole token, never a prefix
+ * of it. The lock and the rename answer different halves of #189 and neither
+ * substitutes for the other — the lock makes exactly one start *decide* to mint,
+ * the rename makes what it publishes visible all at once.
+ *
+ * The guarantee is over what honmoon publishes. A token written into place by
+ * something else — an operator's `echo … > mgmt-token` during a start — is not
+ * covered by it, and never was.
+ *
+ * It also settles the symlink question `wx` used to carry. `rename` resolves no
+ * symlink on its destination, so a link another local user planted at
+ * `mgmt-token` is replaced by this regular file rather than written through, and
+ * the token cannot land on a path they chose. The staging file is created
+ * exclusively at `0600` and is never a name anything else reads, so it needs no
+ * `fchmodSync`: the mode argument applies precisely because the open creates it.
  */
-function publishToken(path: string, token: string): void {
-  let replacing = false
-  let fd: number
+function publishToken(dir: string, path: string, token: string): void {
+  const staging = join(dir, `${FILE_NAME}.new.${process.pid}`)
+  // A leftover from a crashed run that held this pid would fail the exclusive
+  // create below. Safe to remove: the lock is held and the name is this
+  // process's alone.
   try {
-    fd = openSync(path, 'wx', 0o600)
+    unlinkSync(staging)
   }
   catch (error) {
-    if (errorCode(error) !== 'EEXIST') {
+    if (errorCode(error) !== 'ENOENT') {
       throw error
     }
-    replacing = true
-    fd = openSync(path, 'w', 0o600)
   }
+  const fd = openSync(staging, 'wx', 0o600)
   try {
-    if (replacing) {
-      fchmodSync(fd, 0o600)
-    }
     writeSync(fd, token)
   }
   finally {
     closeSync(fd)
+  }
+  try {
+    renameSync(staging, path)
+  }
+  catch (error) {
+    try {
+      unlinkSync(staging)
+    }
+    catch (cleanup) {
+      console.warn(
+        `honmoon api: warning: could not remove the unpublished management token ${staging}: ${String(cleanup)}`,
+      )
+    }
+    throw error
   }
 }
 
@@ -411,22 +491,45 @@ function publishToken(path: string, token: string): void {
  * Whether the lock has been held past `staleAfterMs` — the signature of a holder
  * that crashed between taking it and releasing it.
  *
+ * `lstatSync`, not `statSync`: the age this reads decides whether the lock may be
+ * broken, and following a link would let whoever planted it choose that age. A
+ * symlink to a file with a future modification time would then never look
+ * abandoned, and since the `wx` acquire cannot succeed against it either, every
+ * start would wait out its budget and refuse — permanently, on a host where
+ * another local user can write this directory. A lock path that is not a regular
+ * file was not written by this protocol, so it is broken rather than waited on;
+ * {@link breakAbandonedLock} renames rather than unlinking and `rename` follows
+ * neither operand, so breaking one is safe.
+ *
  * Wall-clock, because that is the only timestamp a second process can read. A
- * modification time in the future (a clock stepped backwards, a file copied off
- * a host that is ahead) gives a negative age, and that counts as *not*
- * abandoned: waiting is always safe, and breaking a live lock is the one thing
- * this must not do on a bad reading.
+ * modification time in the future (a clock stepped backwards, a file copied off a
+ * host that is ahead) gives a negative age, and that counts as *not* abandoned:
+ * waiting is always safe, and breaking a live lock is the one thing this must not
+ * do on a bad reading.
+ *
+ * A stat that fails for any reason other than the lock being gone is reported
+ * before that same `false` is returned. Silence would leave the waiter to spend
+ * its whole budget and then blame "the start holding the lock" for something that
+ * was never another process.
  */
 function lockIsAbandoned(lockPath: string, staleAfterMs: number): boolean {
-  let mtimeMs: number
+  let stats: ReturnType<typeof lstatSync>
   try {
-    mtimeMs = statSync(lockPath).mtimeMs
+    stats = lstatSync(lockPath)
   }
-  catch {
-    // Gone between the failed acquire and now, which is the holder releasing it.
+  catch (error) {
+    // Released while we were looking, which is the protocol working.
+    if (errorCode(error) !== 'ENOENT') {
+      console.warn(
+        `honmoon api: warning: could not read the management token lock ${lockPath}: ${String(error)}`,
+      )
+    }
     return false
   }
-  return Date.now() - mtimeMs >= staleAfterMs
+  if (!stats.isFile()) {
+    return true
+  }
+  return Date.now() - stats.mtimeMs >= staleAfterMs
 }
 
 /**
@@ -440,20 +543,28 @@ function lockIsAbandoned(lockPath: string, staleAfterMs: number): boolean {
  * file, so of several renames exactly one moves it and the rest get `ENOENT` —
  * the removal becomes a claim. See {@link mintOrAdoptUnderLock} for the window
  * this still leaves open.
+ *
+ * Returns whether the lock is now somebody's to take: `true` when this call moved
+ * it, `true` when another waiter had already moved it, and `false` only when it
+ * is still there and still ours to wait on. The caller sleeps on `false`, so a
+ * rename that keeps failing for a reason that will not clear costs one poll
+ * interval per attempt instead of spinning and flooding the console for the whole
+ * budget.
  */
-function breakAbandonedLock(lockPath: string, staleAfterMs: number): void {
+function breakAbandonedLock(lockPath: string, staleAfterMs: number): boolean {
   const claimed = `${lockPath}.abandoned.${process.pid}`
   try {
     renameSync(lockPath, claimed)
   }
   catch (error) {
     // Another waiter claimed it first, which is the protocol working.
-    if (errorCode(error) !== 'ENOENT') {
-      console.warn(
-        `honmoon api: warning: could not break the abandoned management token lock ${lockPath}: ${String(error)}`,
-      )
+    if (errorCode(error) === 'ENOENT') {
+      return true
     }
-    return
+    console.warn(
+      `honmoon api: warning: could not break the abandoned management token lock ${lockPath}: ${String(error)}`,
+    )
+    return false
   }
   console.warn(
     `honmoon api: warning: management token lock ${lockPath} had been held for over `
@@ -467,18 +578,19 @@ function breakAbandonedLock(lockPath: string, staleAfterMs: number): void {
       `honmoon api: warning: could not remove the broken management token lock ${claimed}: ${String(error)}`,
     )
   }
+  return true
 }
 
 /**
  * Block this thread for `ms`.
  *
- * `resolveToken` is synchronous — it runs before the server exists and its
- * result is the server's constructor argument — so a waiter cannot `await`. This
- * is the only synchronous sleep the runtime offers; `Atomics.wait` on a value
- * that never changes simply times out.
+ * `resolveToken` is synchronous — it runs before the server exists and its result
+ * is the server's constructor argument — so a waiter cannot `await`. This package
+ * is a Bun service (`Bun.serve` in `index.ts`, `Bun.file` in `audit.ts`), so its
+ * built-in synchronous sleep is available and is what this uses.
  */
 function sleepSync(ms: number): void {
-  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms)
+  Bun.sleepSync(ms)
 }
 
 /**

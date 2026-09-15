@@ -1,4 +1,4 @@
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
@@ -237,23 +237,33 @@ describe('resolveToken', () => {
             `const idle = new Int32Array(new SharedArrayBuffer(4))`,
             `while (!existsSync(${JSON.stringify(gate)})) Atomics.wait(idle, 0, 0, 1)`,
           ]),
-      `process.stdout.write(resolveToken(${JSON.stringify(target)}).token)`,
+      `const r = resolveToken(${JSON.stringify(target)})`,
+      // The source decides whether honmoon may print the token, so an adopted
+      // one mislabelled 'generated' is a real defect the token alone hides.
+      `process.stdout.write(r.token + ' ' + r.source)`,
     ].join('\n')
     return Bun.spawn([process.execPath, '-e', script], { stdout: 'pipe', stderr: 'pipe' })
   }
 
-  async function tokenOf(started: Bun.Subprocess<'ignore', 'pipe', 'pipe'>): Promise<string> {
-    const [token, stderr] = await Promise.all([
+  async function resolutionOf(
+    started: Bun.Subprocess<'ignore', 'pipe', 'pipe'>,
+  ): Promise<{ token: string, source: string }> {
+    const [out, stderr] = await Promise.all([
       new Response(started.stdout).text(),
       new Response(started.stderr).text(),
     ])
     expect(await started.exited).toBe(0)
     // Surfaced rather than swallowed: a start that refused has its reason here,
     // and the bare token comparison below would say only "expected '' to be ...".
-    if (token === '') {
+    if (out === '') {
       throw new Error(`a concurrent start produced no token: ${stderr}`)
     }
-    return token
+    const [token, source] = out.split(' ')
+    return { token: token ?? '', source: source ?? '' }
+  }
+
+  async function tokenOf(started: Bun.Subprocess<'ignore', 'pipe', 'pipe'>): Promise<string> {
+    return (await resolutionOf(started)).token
   }
 
   async function concurrentResolutions(starts: number): Promise<{ tokens: string[], onDisk: string }> {
@@ -299,13 +309,21 @@ describe('resolveToken', () => {
    * "empty after a lost create race" and threw.
    */
   test('concurrent first starts all hold the token on disk', async () => {
-    const { tokens, onDisk } = await concurrentResolutions(8)
+    // Repeated: this window is a two-syscall gap rather than the whole
+    // read-mint-write span the empty-file race opens, so one batch caught the
+    // old behaviour on only some runs.
+    for (let round = 0; round < 3; round++) {
+      rmSync(dir, { recursive: true, force: true })
+      mkdirSync(dir, { recursive: true, mode: 0o700 })
 
-    expect(onDisk).toMatch(/^[0-9a-f]{64}$/)
-    for (const token of tokens) {
-      expect(token).toBe(onDisk)
+      const { tokens, onDisk } = await concurrentResolutions(8)
+
+      expect(onDisk).toMatch(/^[0-9a-f]{64}$/)
+      for (const token of tokens) {
+        expect(token).toBe(onDisk)
+      }
     }
-  }, 30_000)
+  }, 60_000)
 
   /**
    * A waiter adopts what the holder publishes. It must never mint: a second
@@ -322,10 +340,18 @@ describe('resolveToken', () => {
 
     const waiter = startResolution(dir)
     await Bun.sleep(300)
-    writeFileSync(path, 'the-holders-token\n')
+    // Published by rename, the way publishToken does it. A plain writeFileSync
+    // truncates and then fills, and the waiter — which polls the file on every
+    // iteration by design — reads the prefix.
+    const staging = join(dir, 'holder-staging')
+    writeFileSync(staging, 'the-holders-token\n')
+    renameSync(staging, path)
     rmSync(lock)
 
-    expect(await tokenOf(waiter)).toBe('the-holders-token')
+    const adopted = await resolutionOf(waiter)
+    expect(adopted.token).toBe('the-holders-token')
+    // An adopted token is not this start's to print.
+    expect(adopted.source).toBe('persisted')
   }, 30_000)
 
   /**
@@ -372,6 +398,80 @@ describe('resolveToken', () => {
     // the lock they may have noticed is gone.
     expect(warnings.join(' ')).toContain('treating it as abandoned')
   })
+
+  /**
+   * A symlink planted at the token path must not receive the token.
+   *
+   * `wx` refuses a symlink — a dangling one included, which it reports as
+   * EEXIST like any other existing path — so an in-place publish that fell back
+   * to a truncating write on that error wrote *through* the link: another local
+   * user who can write this directory points `mgmt-token` at a path they chose
+   * and the token lands there at 0600. Publishing by rename resolves no link on
+   * its destination, so the planted link is replaced by the real file.
+   */
+  test.skipIf(process.platform === 'win32')(
+    'replaces a symlink at the token path rather than writing through it',
+    () => {
+      const target = join(dir, 'a-path-the-attacker-chose')
+      const path = join(dir, 'mgmt-token')
+      symlinkSync(target, path)
+
+      const resolved = resolveToken(dir)
+
+      expect(existsSync(target)).toBe(false)
+      expect(lstatSync(path).isSymbolicLink()).toBe(false)
+      expect(readFileSync(path, 'utf8')).toBe(resolved.token)
+      expect(existsSync(join(dir, 'mgmt-token.lock'))).toBe(false)
+    },
+  )
+
+  /**
+   * A lock path another local user planted as a symlink must not hold every
+   * start off forever.
+   *
+   * `statSync` would report the target's age, so a link to a file with a future
+   * mtime never looks abandoned while `wx` can never succeed against it either —
+   * every start would wait out its budget and refuse, permanently.
+   */
+  test.skipIf(process.platform === 'win32')(
+    'breaks a symlinked lock path rather than waiting on it forever',
+    () => {
+      writeFileSync(join(dir, 'mgmt-token'), '\n')
+      // Dangling, so no target age could make it look fresh: what must decide is
+      // that this is not a regular file.
+      symlinkSync(join(dir, 'never-created'), join(dir, 'mgmt-token.lock'))
+
+      // staleAfterMs far in the future, so only the not-a-regular-file rule can
+      // break this lock.
+      const resolved = resolveToken(dir, { ...DEFAULT_LOCK_TIMING, pollIntervalMs: 5 })
+
+      expect(resolved.source).toBe('generated')
+      expect(resolved.token).toMatch(/^[0-9a-f]{64}$/)
+    },
+  )
+
+  /**
+   * A publish that fails must still release the lock, or one failed start leaves
+   * every later one to wait out staleAfterMs before it can even try.
+   */
+  test.skipIf(process.platform === 'win32')(
+    'releases the lock when the publish fails',
+    () => {
+      const locked = join(dir, 'locked-down')
+      mkdirSync(locked, { mode: 0o700 })
+      writeFileSync(join(locked, 'mgmt-token'), '\n')
+      // The lock is taken while the directory is still writable; the publish
+      // then fails on the staging create.
+      chmodSync(locked, 0o500)
+      try {
+        expect(() => resolveToken(locked, { ...DEFAULT_LOCK_TIMING, pollIntervalMs: 5 })).toThrow()
+      }
+      finally {
+        chmodSync(locked, 0o700)
+      }
+      expect(existsSync(join(locked, 'mgmt-token.lock'))).toBe(false)
+    },
+  )
 
   test('refuses a token file that is not valid UTF-8 instead of serving U+FFFD', () => {
     // Bun substitutes U+FFFD for malformed bytes rather than throwing, so a
