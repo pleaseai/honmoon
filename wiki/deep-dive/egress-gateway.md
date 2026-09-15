@@ -329,8 +329,10 @@ slot and audits the rejection with nothing left to write a reply to.
 Three fail-closed properties hold here, and the first is the shared mechanism rendered twice, so it
 is stated as the refusal rather than as a status. A **full pending queue** refuses new pauses rather
 than growing unbounded ([approval.rs:96-132](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-proxy/src/approval.rs#L96-L132), [approval.rs:64-74](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-proxy/src/approval.rs#L64-L74)); HTTP renders that
-refusal `503` ([mitm.rs:359-360](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-proxy/src/mitm.rs#L359-L360)) and SOCKS5 renders it the same `0x02` as
-every other non-approval, exactly as above; a
+refusal `503` ([mitm.rs:359-360](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-proxy/src/mitm.rs#L359-L360)) and SOCKS5 renders it `0x02`, exactly as
+above. `0x02` is SOCKS5's code for a *policy* refusal, not for every failed connection: a malformed
+or unsupported request is answered `0x01`/`0x07`/`0x08` and a failed upstream connect `0x05`
+([socks.rs:60-67](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-proxy/src/socks.rs#L60-L67), [socks.rs:499-517](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-proxy/src/socks.rs#L499-L517)). A
 **timeout auto-rejects** a held request so it never hangs forever
 ([approval.rs:318-347](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-proxy/src/approval.rs#L318-L347)); and a **hold that ends without a
 decision** — the HTTP client disconnecting drops the caller's future — frees its slot and audits
