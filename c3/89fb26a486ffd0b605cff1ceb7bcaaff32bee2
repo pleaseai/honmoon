@@ -1,0 +1,20 @@
+crates/honmoon-cli/src/mgmt_token.rs
+  s_328cc15f8a9753::t_7875d9cb24afa1 23,33-65,153-156,164-166,168-176,181-182,184-209,211-216,218-342,344-436,440-445,793-799,801-806,809,821-825,830-834,839,841-846,848-851,853-856,859-861,865,867,872-950
+  s_328cc15f8a9753::t_4db93a68093272 800,807-808,810-820,826-829,835-838,840,847,852,857-858,862-864,866,868-871,951-952
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "c389fb26a486ffd0b605cff1ceb7bcaaff32bee2",
+  "prompts": {},
+  "sessions": {
+    "s_328cc15f8a9753": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "68e0c0a2-6cdf-4ff1-94e0-79887096bc89",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
