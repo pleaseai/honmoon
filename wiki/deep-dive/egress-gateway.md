@@ -124,30 +124,40 @@ sequenceDiagram
   HS->>H: handle_request(req)
   alt method == CONNECT
     H->>H: canonical_host + authority_port
-    opt endpoint declares protocol postgres
+    alt endpoint declares protocol postgres
+      H->>Core: decide_explained — the entry still names the rule that matched
       H->>Audit: record(Denied, policy verdict kept)
-      H-->>C: 403 — dial the SOCKS5 listener instead
-    end
-    H->>Core: host_gate → Facts{domain, endpoint, http.host}
-    alt verdict == Allow
-      H->>Audit: record(Allowed)
-      H->>H: authorize_tunnel(host, port)
-      H-->>HS: forward the CONNECT
-      HS-->>C: 200 Connection Established
-      HS->>H: should_intercept? → terminate TLS, or tunnel raw
-    else verdict == Deny
-      H->>Audit: record(Denied)
-      H-->>C: 403 Forbidden
-    else verdict == Pause
-      Note over H,C: held — see the approval hold below
+      H-->>C: 403 — refused, never tunnelled uninspected
+    else every other endpoint
+      H->>Core: host_gate → Facts{domain, endpoint, http.host}
+      alt verdict == Allow
+        H->>Audit: record(Allowed)
+        H->>H: authorize_tunnel(host, port)
+        H-->>HS: forward the CONNECT
+        HS-->>C: 200 Connection Established
+        HS->>H: should_intercept? → terminate TLS, or tunnel raw
+      else verdict == Deny
+        H->>Audit: record(Denied)
+        H-->>C: 403 Forbidden
+      else verdict == Pause
+        Note over H,C: held — see the approval hold below
+      end
     end
   else any other request
     H->>H: request_host + request_port
     opt not this tunnel's destination
       H->>Core: host_gate (Allow not audited)
     end
-    H->>H: inspect_body — buffer, decode, scan, decide
-    H->>U: forward (redacted when --redact-secrets)
+    alt authorized — by the tunnel, or by the gate
+      H->>H: inspect_body — buffer, decode, scan, decide
+      alt content verdict forwards
+        H->>U: forward (redacted when --redact-secrets)
+      else content verdict blocks
+        H-->>C: 403 — held first, on a content pause
+      end
+    else the gate blocked it
+      H-->>C: 403, or 503 from a full approval queue
+    end
   end
 ```
 <!-- Sources: crates/honmoon-proxy/src/mitm.rs:928-973 (handle_request), mitm.rs:296-336 (host_gate), mitm.rs:217-294 (the uninspectable-endpoint refusal), mitm.rs:614-924 (inspect_body), mitm.rs:1036-1045 (should_intercept), crates/honmoon-proxy/src/gateway.rs:177-203 (serve) -->
