@@ -1709,7 +1709,8 @@ flood the bounded audit ring and cycle out the refusals that matter
 A `CONNECT` proxy carries HTTP and TLS. A PostgreSQL or Redis client speaks neither, so a **SOCKS5
 listener** runs beside this one and gates every connection the same way
 ([socks.rs:1-29](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-proxy/src/socks.rs#L1-L29)).
-Both `honmoon run` and `honmoon gateway` start it; see [Quick Start](/getting-started/quick-start).
+`honmoon run` always starts it; `honmoon gateway` does too unless `--socks-addr off` declines it.
+See [Quick Start](/getting-started/quick-start).
 :::
 
 ## At a glance
@@ -1835,10 +1836,13 @@ sequenceDiagram
     end
     alt authorized — by the tunnel, or by the gate
       H->>H: inspect_body — buffer, decode, scan, decide
-      alt content verdict forwards
+      alt content verdict == Allow
         H->>U: forward (redacted when --redact-secrets)
-      else content verdict blocks
-        H-->>C: 403 — held first, on a content pause
+      else content verdict == Deny
+        H->>Audit: record(Denied)
+        H-->>C: 403 Forbidden
+      else content verdict == Pause
+        Note over H,C: held — forwarded on approve, 403 on reject or timeout
       end
     else the gate blocked it
       H-->>C: 403, or 503 from a full approval queue
