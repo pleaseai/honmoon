@@ -1,0 +1,25 @@
+wiki/deep-dive/control-plane.md
+  s_4cda2cdfdbc842::t_a916cb8d9903d5 66,148
+wiki/onboarding/staff-engineer-guide.md
+  s_4cda2cdfdbc842::t_a916cb8d9903d5 211
+wiki/getting-started/installation.md
+  s_4cda2cdfdbc842::t_a916cb8d9903d5 71
+wiki/llms-full.txt
+  s_4cda2cdfdbc842::t_a916cb8d9903d5 572,2015,2097,2451
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "3aeb9879225b2baf37ddf5e810af47274a77413e",
+  "prompts": {},
+  "sessions": {
+    "s_4cda2cdfdbc842": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "29396608-082e-4e8f-bac0-720ae2da96b1",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
