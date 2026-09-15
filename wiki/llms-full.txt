@@ -1949,7 +1949,9 @@ same `Arc<ApprovalRegistry>` shared with the management API — see
 [Control Plane & Dashboard](/deep-dive/control-plane).
 
 ::: tip Which `pause` rules fire today
-Over a raw tunnel only `http.host`-based rules see facts, so host-level `pause` rules hold there.
+Over a raw tunnel the gate sees the facts `host_facts` builds — `domain`, the `endpoint` name when
+`(host, port)` names one, and `http.host` — so a `pause` on any of those holds there
+([mitm.rs:205-215](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-proxy/src/mitm.rs#L205-L215)).
 With `--tls-intercept --pii-mode block`, a content `pause` holds an individual request and the
 approval queue names its PII labels and count — never the matched text
 ([mitm.rs:894-922](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-proxy/src/mitm.rs#L894-L922), [mitm.rs:1620-1639](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-proxy/src/mitm.rs#L1620-L1639)). SQL `pause` rules
@@ -1958,10 +1960,12 @@ run on the SOCKS5 PostgreSQL path, not here.
 
 ## CLI wiring: `run` vs `gateway`
 
-`honmoon-cli` dispatches six `clap` subcommands, one of them hidden. Two drive the gateway
-(`run`, `gateway`), two are tooling that binds no listener (`policy validate`, `hook`), one is a
-stub (`join`), and `supervise-sandbox` is an internal Linux helper
-([main.rs:36-283](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-cli/src/main.rs#L36-L283), [main.rs:325-383](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-cli/src/main.rs#L325-L383)).
+`honmoon-cli` dispatches five `clap` subcommands, plus a hidden sixth on Linux only. Two drive the
+gateway (`run`, `gateway`), two are tooling that binds no listener (`policy validate`, `hook`), and
+one is a stub (`join`). `supervise-sandbox` is an internal helper compiled in under
+`#[cfg(target_os = "linux")]` — the in-namespace half of enforced `run` isolation — so a macOS
+build has no sixth command at all
+([main.rs:36-283](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-cli/src/main.rs#L36-L283), [main.rs:265-282](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-cli/src/main.rs#L265-L282), [main.rs:325-383](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-cli/src/main.rs#L325-L383)).
 
 ```mermaid
 flowchart TD
