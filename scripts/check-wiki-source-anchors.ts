@@ -49,10 +49,13 @@
  * 6. **Every blob link was read.** A `](…/blob/…)` occurrence the anchor
  *    pattern cannot parse is reported per document, because a citation that
  *    does not match is not merely unchecked — it is invisible, absent from the
- *    resolved count and unable to produce a finding. Review found three shapes
- *    that fell out this way, and a fourth will be written eventually; this rule
- *    is what makes any of them loud rather than the pattern being widened once
- *    per shape.
+ *    resolved count and unable to produce a finding. Review kept finding shapes
+ *    that fell out this way and another will be written eventually; this rule
+ *    is what makes them loud rather than the pattern being widened once per
+ *    shape. It only works while the *counter* sees more than the parser, so
+ *    {@link BLOB_LINK} is deliberately the looser of the two — a reference
+ *    definition and a destination on the next line are counted here and
+ *    resolved nowhere, which is a report rather than a silence.
  * 7. **The scan reached the published wiki.** Every page `llms-full.txt`
  *    inlines has to be a document the scan opened. `wikiDocuments()` finds
  *    pages by glob, so a directory rename or a pattern regression can shrink
@@ -203,16 +206,19 @@ const ANCHOR
  *
  * Deliberately just the `](` and the prefix: it is what {@link ANCHOR} has to
  * account for, so the two disagreeing is the signal rule 6 reports. Where the
- * two differ, this one is deliberately the looser: it takes any whitespace
- * after `](`, including the newline {@link ANCHOR} refuses, because a shape
- * only the parser rejects is reported, while a shape *neither* sees is silent.
- * It counts a link written as markdown with a literal host, bare or
+ * two differ, this one is deliberately the looser — a shape only the parser
+ * rejects is reported, while a shape *neither* sees is silent — so it takes
+ * any whitespace after the `](`, including the newline {@link ANCHOR} refuses,
+ * and it counts a reference *definition* (`[label]: …/blob/…`) as well as an
+ * inline link. Neither the definition nor the `[text][label]` that uses it is
+ * resolved, and that is the point: rule 6 reports the document, and the page
+ * spells the citation inline. It counts a literal host, bare or
  * angle-bracketed. What it does not see through is an encoded destination
  * (`github&#46;com`, a percent-encoding); the module doc says why that bound is
  * where it is. A bare URL in prose is not a citation either pattern reads, and
  * is not counted as one.
  */
-const BLOB_LINK = /\]\(\s*<?https:\/\/github\.com\/pleaseai\/honmoon\/blob\//g
+const BLOB_LINK = /\](?:\(|:)\s*<?https:\/\/github\.com\/pleaseai\/honmoon\/blob\//g
 
 /** A line holding nothing but the end of the item above it. */
 const BARE_DELIMITER = /^[)\]}]+[,;]?$/

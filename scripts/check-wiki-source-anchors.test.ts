@@ -392,6 +392,23 @@ describe('checkLinksRead', () => {
     expect(checkLinksRead(source, 'wiki/p.md')).toHaveLength(1)
   })
 
+  // A link title is legal and the parser stops at it. Counted, so it reports.
+  test('a destination carrying a title is counted, then reported', () => {
+    const source = `[lib.rs:1](${BLOB}/crates/honmoon-core/src/lib.rs#L1 "the policy model")`
+    expect(parseAnchors(source, 'wiki/p.md')).toEqual([])
+    expect(checkLinksRead(source, 'wiki/p.md')[0]?.kind).toBe('coverage')
+  })
+
+  // A reference link resolves through a definition elsewhere in the document,
+  // which neither pattern follows. The counter sees the definition, so the
+  // document is reported and the page spells the citation inline — without
+  // this the whole shape was invisible to both halves.
+  test('a reference definition is counted, then reported', () => {
+    const source = `see [lib.rs:1][x]\n\n[x]: ${BLOB}/crates/honmoon-core/src/lib.rs#L1\n`
+    expect(parseAnchors(source, 'wiki/p.md')).toEqual([])
+    expect(checkLinksRead(source, 'wiki/p.md')[0]?.kind).toBe('coverage')
+  })
+
   // The counter is looser than the parser on purpose. A newline after `](` is
   // legal markdown that `ANCHOR` refuses, so it has to land as a report rather
   // than as silence — the failure mode rule 6 exists to prevent.
