@@ -1885,11 +1885,19 @@ the inner request's method, path, body size and PII findings all reach the engin
 (verdict + the rule that fired), records the decision to the shared `AuditLog`, and dispatches
 ([mitm.rs:296-336](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-proxy/src/mitm.rs#L296-L336)):
 
-| Verdict | Audit `Decision` | Client response | Source |
-|---------|------------------|-----------------|--------|
-| `Allow` | `Allowed` (on the `CONNECT` only) | `Gate::Proceed` → tunnel (`200`) | [mitm.rs:306-318](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-proxy/src/mitm.rs#L306-L318) |
-| `Deny` | `Denied` | `403 Forbidden` | [mitm.rs:319-329](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-proxy/src/mitm.rs#L319-L329) |
-| `Pause` | `Paused` → `Approved`/`Rejected` | held, then tunnel or `403` (`503` if the queue is full) | [mitm.rs:330-334](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-proxy/src/mitm.rs#L330-L334), [mitm.rs:338-363](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-proxy/src/mitm.rs#L338-L363) |
+| Verdict | Audit `Decision` | `Gate` | Source |
+|---------|------------------|--------|--------|
+| `Allow` | `Allowed` (on the `CONNECT` only) | `Proceed` | [mitm.rs:306-318](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-proxy/src/mitm.rs#L306-L318) |
+| `Deny` | `Denied` | `Block` → `403 Forbidden` | [mitm.rs:319-329](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-proxy/src/mitm.rs#L319-L329) |
+| `Pause` | `Paused` → `Approved`/`Rejected` | held for the whole wait, then `Proceed` on approval, `Block` → `403` on a rejection or timeout, `Block` → `503` when the queue was full | [mitm.rs:330-334](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-proxy/src/mitm.rs#L330-L334), [mitm.rs:338-363](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-proxy/src/mitm.rs#L338-L363) |
+
+**The gate returns a `Gate`, not a status** ([mitm.rs:151-158](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-proxy/src/mitm.rs#L151-L158)) — so what a *proceeding*
+request gets depends on its shape, and only a refusal is a status the gate itself chose. A
+`CONNECT` that proceeds is handed back to hudsucker, which answers `200 Connection Established`
+and opens the tunnel; a cleartext or absolute-form request that proceeds goes on to `inspect_body`
+and, if that forwards it, the client gets the **upstream's** response and no `200` of honmoon's
+([mitm.rs:928-973](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-proxy/src/mitm.rs#L928-L973)). A `pause` on either shape holds the client for the whole
+wait before the same split applies.
 
 `Allow` is audited on the `CONNECT` gate but not on individual forwarded requests, which would
 flood the bounded audit ring ([mitm.rs:296-301](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-proxy/src/mitm.rs#L296-L301)).
