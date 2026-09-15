@@ -4,9 +4,10 @@ description: >-
   PR #264 (issue #253) repointed all 30 remaining #253 wiki anchors and re-attributed the other
   5 to #260/#261/#263 — every repointed range was independently re-resolved against the branch
   content and found accurate (source range matches the sentence/table-row it supports), zero
-  findings from this pass — but greptile caught one the pass missed, an unsupported "schema"
-  in a Guards cell whose citation the PR had just repointed, corrected before merge; read that
-  as the calibration point rather than as a clean-PR one
+  findings from this pass — but greptile caught one the pass missed (an unsupported "schema"
+  in a Guards cell whose citation the PR had just repointed) and cubic caught a wrong ledger
+  total in this note, both corrected before merge; read that as the calibration point rather
+  than as a clean-PR one
 metadata:
   type: project
 ---
@@ -54,10 +55,15 @@ of the prose against the range, including a comma-separated list in a table cell
 item is its own claim. This pass checked that each range supported its row and stopped there.
 
 A second lesson, from getting the follow-up wrong before getting it right: the *replacement*
-line numbers quoted in a reply, an issue comment or a commit message are claims under exactly
-the same rule as the ones in the page. Four of them were asserted here from a half-remembered
-grep and three were wrong — including the name of the test holding the schema case. Re-derive
-every number before it leaves the worktree, the same way the page's own anchors are.
+line numbers quoted in a reply, an issue comment, a commit message or this note itself are
+claims under exactly the same rule as the ones in the page. Four of them were asserted here
+from a half-remembered grep and three were wrong — including the name of the test holding the
+schema case. Then cubic found the fourth site: this note's own summary said the ledger it
+leaves is "5 entries, 3 issues", which is the re-attributed subset, where the ledger is 10
+entries over six issues. That count came from the shape of the work rather than from the
+array, which is the same failure one step further out — and a note read as ground truth on a
+later review turns it into a finding against a ledger that is correct. Re-derive every number
+before it leaves the worktree, the same way the page's own anchors are.
 
 See [[pr254-wiki-anchor-drift-fix-verified]] for the sibling PR on `policy-authoring.md`, and
 [[line-anchors-drift-from-your-own-commits]] (global memory) for the general pattern this whole
