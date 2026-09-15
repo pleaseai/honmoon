@@ -1,0 +1,21 @@
+wiki/llms-full.txt
+  s_06b93d480f1377::t_b4a5251b347740 1803,1811-1819
+wiki/deep-dive/egress-gateway.md
+  s_06b93d480f1377::t_b4a5251b347740 122,130-138
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "ae55acb4b5b59e91880f9a71527232909ab7e4c7",
+  "prompts": {},
+  "sessions": {
+    "s_06b93d480f1377": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "4e9c7356-4ebe-4cc1-b928-ec028710b9d4",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
