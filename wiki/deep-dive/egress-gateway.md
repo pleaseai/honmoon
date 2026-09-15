@@ -17,7 +17,7 @@ to the audit log** and, for a `pause` verdict, **holds the connection pending hu
 | Element | Role | Source |
 |---------|------|--------|
 | `GatewayState` | Shared `Arc`s: policy + `AuditLog` + `ApprovalRegistry` + pause timeout | [gateway.rs:34-59](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-proxy/src/gateway.rs#L34-L59) |
-| `run(policy, addr)` | Bind `addr`, serve forever | [gateway.rs:62-65](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-proxy/src/gateway.rs#L62-L65) |
+| `run(policy, addr)` | Bind `addr`, serve forever | [gateway.rs:155-159](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-proxy/src/gateway.rs#L155-L159) |
 | `serve_listener(policy, listener)` | Serve a pre-bound listener (no TOCTOU) | [gateway.rs:71-74](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-proxy/src/gateway.rs#L71-L74) |
 | `serve_listener_with_state` / `serve` | Serve with caller-provided shared state (used by `honmoon gateway`) | [gateway.rs:78-109](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-proxy/src/gateway.rs#L78-L109) |
 | `handle(client, state)` | One connection: parse → authorize → tunnel | [gateway.rs:112-162](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-proxy/src/gateway.rs#L112-L162) |
@@ -40,7 +40,7 @@ was tested against Pingora 0.8.1 and **disproven** for this use case
 
 Decision: ship Phase 1 on raw tokio; **defer** Pingora (and its heavy dependency) to the phase
 that terminates TLS and inspects HTTP requests, where its hooks actually pay off (YAGNI)
-([ADR-0002:32-44](https://github.com/pleaseai/honmoon/blob/main/.please/docs/decisions/0002-phase1-connect-proxy-on-tokio.md#L32-L44)).
+([ADR-0002:33-45](https://github.com/pleaseai/honmoon/blob/main/.please/docs/decisions/0002-phase1-connect-proxy-on-tokio.md#L33-L45)).
 
 ## Connection handling
 

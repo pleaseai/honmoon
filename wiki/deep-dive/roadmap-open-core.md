@@ -53,7 +53,7 @@ line between Phase 5 and Phase 6 is the open-core boundary.
 The monetization boundary is *the moment a user moves from a single node to operating a
 team/fleet*. The firewall must be powerful for free on one node; the problems of running many
 agents, nodes, and people are the paid surface
-([business-model.md:32-44](https://github.com/pleaseai/honmoon/blob/main/docs/business-model.md#L32-L44)).
+([business-model.md:33-44](https://github.com/pleaseai/honmoon/blob/main/docs/business-model.md#L33-L44)).
 
 | Area | Open source (adoption & trust) | Paid (team & enterprise) |
 |------|--------------------------------|--------------------------|
@@ -91,7 +91,7 @@ flowchart TB
 *"Security teams will not trust a black-box proxy that inspects their traffic and credentials.
 Auditability is itself a feature."* Locking the traffic-inspecting components behind a paywall
 breaks trust and prevents adoption from happening at all
-([business-model.md:12-18](https://github.com/pleaseai/honmoon/blob/main/docs/business-model.md#L12-L18)). This is encoded as
+([business-model.md:13-18](https://github.com/pleaseai/honmoon/blob/main/docs/business-model.md#L13-L18)). This is encoded as
 the "data plane stays open source" architectural invariant.
 :::
 
@@ -104,7 +104,7 @@ the "data plane stays open source" architectural invariant.
 
 ⚠️ The current scaffold still pins `MIT` in `Cargo.toml`
 ([Cargo.toml:12](https://github.com/pleaseai/honmoon/blob/main/Cargo.toml#L12)); moving the core to Apache-2.0 is a tracked
-next action ([business-model.md:68-74](https://github.com/pleaseai/honmoon/blob/main/docs/business-model.md#L68-L74)).
+next action ([business-model.md:69-73](https://github.com/pleaseai/honmoon/blob/main/docs/business-model.md#L69-L73)).
 
 ## The moat
 
@@ -128,7 +128,7 @@ Two ADRs record the most consequential technical pivot — the data-plane framew
 The lesson recorded in ADR-0002: a documented premise (Pingora's `allow_connect_method_proxying`
 gives terminating forward-proxy behavior) was **disproven by a prototype**, so the team shipped
 ~130 LOC of tokio instead and deferred the heavy dependency until a phase actually needs it
-([0002:10-44](https://github.com/pleaseai/honmoon/blob/main/.please/docs/decisions/0002-phase1-connect-proxy-on-tokio.md#L10-L44)). See
+([0002:11-45](https://github.com/pleaseai/honmoon/blob/main/.please/docs/decisions/0002-phase1-connect-proxy-on-tokio.md#L11-L45)). See
 [Egress Gateway](/deep-dive/egress-gateway#why-a-hand-rolled-tokio-proxy-and-not-pingora) for the detail.
 
 ## Platform reality check

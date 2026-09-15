@@ -195,7 +195,7 @@ ADR-0001 adopted Pingora on a documentation-derived premise. During Phase 1, tha
 tested against the real Pingora 0.8.1 source and a prototype, and **disproven**: `HttpProxy` is
 reverse-proxy oriented and `allow_connect_method_proxying` does proxy *chaining*, not terminating
 tunnels. ADR-0002 reversed course to ~130 LOC of tokio and deferred the framework to the phase
-that actually terminates TLS ([.please/docs/decisions/0002-phase1-connect-proxy-on-tokio.md:10-44](https://github.com/pleaseai/honmoon/blob/main/.please/docs/decisions/0002-phase1-connect-proxy-on-tokio.md#L10-L44)).
+that actually terminates TLS ([.please/docs/decisions/0002-phase1-connect-proxy-on-tokio.md:11-45](https://github.com/pleaseai/honmoon/blob/main/.please/docs/decisions/0002-phase1-connect-proxy-on-tokio.md#L11-L45)).
 
 ```mermaid
 sequenceDiagram
@@ -229,7 +229,7 @@ Be precise about maturity when you plan work ([tech-debt-tracker.md:9-14](https:
 
 The data plane is single-binary, single-node by design today. The open-core thesis is that this
 stays free and powerful, and monetization begins at the **fleet** boundary — central policy,
-RBAC/SSO, approval routing, compliance retention ([business-model.md:32-44](https://github.com/pleaseai/honmoon/blob/main/docs/business-model.md#L32-L44)).
+RBAC/SSO, approval routing, compliance retention ([business-model.md:33-44](https://github.com/pleaseai/honmoon/blob/main/docs/business-model.md#L33-L44)).
 A hard platform constraint shapes scope: the wire-level core needs OS networking, so it cannot run
 on serverless isolates (Cloudflare Workers can host the egress filter + control plane only)
 ([roadmap.md:137-144](https://github.com/pleaseai/honmoon/blob/main/docs/roadmap.md#L137-L144)). Treat "must own a host/container"

@@ -17,7 +17,7 @@ every outbound connection — allow it, block it, or hold it for human approval.
 is **protocol awareness**: beyond a domain allowlist, it inspects SQL, Kubernetes, and HTTP at the
 wire level, so policy can say "never `DROP` the prod database" or "never delete a Kubernetes
 secret," not merely "block this domain"
-([product.md:6-29](https://github.com/pleaseai/honmoon/blob/main/.please/docs/knowledge/product.md#L6-L29)).
+([product.md:7-28](https://github.com/pleaseai/honmoon/blob/main/.please/docs/knowledge/product.md#L7-L28)).
 
 ## The problem it addresses
 
@@ -25,7 +25,7 @@ AI agents now run shell commands, call APIs, and touch databases autonomously. A
 inference can exfiltrate data, run a destructive query, or delete production resources. Existing
 controls are either too coarse (block all network) or too narrow (HTTP domain allowlists). Honmoon
 targets the gap: fine-grained, protocol-aware enforcement at the network boundary
-([product.md:13-18](https://github.com/pleaseai/honmoon/blob/main/.please/docs/knowledge/product.md#L13-L18)).
+([product.md:14-17](https://github.com/pleaseai/honmoon/blob/main/.please/docs/knowledge/product.md#L14-L17)).
 
 ## Capability map
 
@@ -134,7 +134,7 @@ The architecture reflects a deliberate, defensible set of bets:
 The open-core boundary is explicit and well-reasoned: the data plane stays 100% open source to
 build trust; monetization begins where a customer moves from one node to operating a fleet —
 central policy, compliance retention, approval routing, RBAC/SSO
-([business-model.md:32-44](https://github.com/pleaseai/honmoon/blob/main/docs/business-model.md#L32-L44)).
+([business-model.md:33-44](https://github.com/pleaseai/honmoon/blob/main/docs/business-model.md#L33-L44)).
 
 ## Cost & scaling model
 
@@ -155,7 +155,7 @@ flowchart LR
   ([roadmap.md:137-144](https://github.com/pleaseai/honmoon/blob/main/docs/roadmap.md#L137-L144)). Budget for host/container infrastructure.
 - **Monetization timing:** individual developers don't pay for security tools; the buyer is the
   platform/security team operating many agents. Revenue should follow team operation, not precede
-  it ([business-model.md:94-98](https://github.com/pleaseai/honmoon/blob/main/docs/business-model.md#L94-L98)).
+  it ([business-model.md:95-98](https://github.com/pleaseai/honmoon/blob/main/docs/business-model.md#L95-L98)).
 
 ## Recommendations
 
@@ -164,7 +164,7 @@ flowchart LR
 | **Now** | Pilot **gateway mode** for HTTPS egress control of agent fleets. It is tested and enforcing. The process-wrapper is hard isolation too, on Linux and macOS, for an unprivileged child — but not on other platforms, and not where a container blocks the namespace. |
 | **Now** | Author protocol policies (SQL/K8s) against the engine to validate fit, knowing live-traffic enforcement is the next data-plane milestone (TD-006). |
 | **Near-term** | If protocol-level enforcement is your driver, **fund/track TD-006 (live relay)** — it converts this from "promising engine" to "deployable control" for database and cloud traffic. |
-| **Strategic** | The open-core thesis only works if the free core is generous. Resist pressure to gate the data plane; the moat and the trust both live there ([business-model.md:24-28](https://github.com/pleaseai/honmoon/blob/main/docs/business-model.md#L24-L28)). |
+| **Strategic** | The open-core thesis only works if the free core is generous. Resist pressure to gate the data plane; the moat and the trust both live there ([business-model.md:25-27](https://github.com/pleaseai/honmoon/blob/main/docs/business-model.md#L25-L27)). |
 
 ## Related Pages
 
