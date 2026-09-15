@@ -1,0 +1,46 @@
+wiki/deep-dive/roadmap-open-core.md
+  s_4cda2cdfdbc842::t_edfed2b8096559 56,94,107,131
+scripts/check-wiki-source-anchors.ts
+  s_4cda2cdfdbc842::t_f283d132a51110 544-558
+  s_4cda2cdfdbc842::t_9746d7ade2b6d3 572-581
+wiki/deep-dive/control-plane.md
+  s_4cda2cdfdbc842::t_edfed2b8096559 65,67,82,133,211
+scripts/check-wiki-source-anchors.test.ts
+  s_4cda2cdfdbc842::t_43b9ce127d8e67 285-295
+wiki/deep-dive/architecture.md
+  s_4cda2cdfdbc842::t_edfed2b8096559 208,211
+wiki/onboarding/contributor-guide.md
+  s_4cda2cdfdbc842::t_edfed2b8096559 272,303
+wiki/getting-started/overview.md
+  s_4cda2cdfdbc842::t_edfed2b8096559 19,21,31,64
+wiki/onboarding/executive-guide.md
+  s_4cda2cdfdbc842::t_edfed2b8096559 20,28,137,158,167
+wiki/onboarding/product-manager-guide.md
+  s_4cda2cdfdbc842::t_edfed2b8096559 30,118,132
+wiki/deep-dive/protocol-parsing.md
+  s_4cda2cdfdbc842::t_edfed2b8096559 114,157,174-175,192-193
+wiki/deep-dive/egress-gateway.md
+  s_4cda2cdfdbc842::t_edfed2b8096559 20,43
+wiki/onboarding/staff-engineer-guide.md
+  s_4cda2cdfdbc842::t_edfed2b8096559 198,232
+wiki/llms-full.txt
+  s_4cda2cdfdbc842::t_7259e1f3434ac6 274,305,559,593,652,660,769,790,799,840,928,942,1176,1179,1591,1634,1651-1652,1669-1670,1701,1724,2014,2016,2031,2082,2160,2228,2230,2240,2273,2398,2538,3415,3453,3466,3490
+wiki/getting-started/installation.md
+  s_4cda2cdfdbc842::t_edfed2b8096559 18,158
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "549b764bf2fd93b747e959ef43f7f77f9627fbaa",
+  "prompts": {},
+  "sessions": {
+    "s_4cda2cdfdbc842": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "29396608-082e-4e8f-bac0-720ae2da96b1",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
