@@ -251,17 +251,27 @@ stateDiagram-v2
   [*] --> Register: pause verdict
   Register --> QueueFull: registry at capacity (1024)
   Register --> Held: slot acquired, audit Paused
-  QueueFull --> [*]: 503, audit Rejected (fail closed)
+  QueueFull --> [*]: Block, audit Rejected (fail closed) — HTTP 503
   Held --> Approved: human POST /approve
   Held --> Rejected: human POST /reject
   Held --> Timeout: pause_timeout (300s)
   Held --> Abandoned: caller's future dropped (client gone)
   Approved --> [*]: Proceed, audit Approved — a CONNECT gets its 200, a request its own upstream response
-  Rejected --> [*]: 403, audit Rejected
-  Timeout --> [*]: 403, audit Rejected (auto-reject)
+  Rejected --> [*]: Block, audit Rejected — HTTP 403
+  Timeout --> [*]: Block, audit Rejected (auto-reject) — HTTP 403
   Abandoned --> [*]: CancelOnDrop frees the slot, audit Rejected
+  note right of Held: the statuses are the HTTP rendering; SOCKS5 renders the same outcomes its own way
 ```
-<!-- Sources: crates/honmoon-proxy/src/approval.rs:262-372 (hold_until), approval.rs:184-218 (CancelOnDrop), approval.rs:96-132 (register), crates/honmoon-proxy/src/mitm.rs:338-363 (the HTTP rendering) -->
+<!-- Sources: crates/honmoon-proxy/src/approval.rs:262-372 (hold_until), approval.rs:184-218 (CancelOnDrop), approval.rs:96-132 (register), crates/honmoon-proxy/src/mitm.rs:338-363 (the HTTP rendering), crates/honmoon-proxy/src/socks.rs:386-392 (the SOCKS5 rendering) -->
+
+The statuses in that diagram are `mitm.rs`'s rendering, and they are the only part of it that is
+HTTP's. The SOCKS5 path holds through the same `approval::hold` and collapses the outcome to a
+bool — `matches!(…, HoldOutcome::Approved)` ([socks.rs:386-392](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-proxy/src/socks.rs#L386-L392)) — so
+approval lets the connection proceed to its upstream connect, and **every** other ending, rejection
+and timeout and queue-full and abandonment alike, becomes the one `REPLY_NOT_ALLOWED` (`0x02`)
+([socks.rs:180-184](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-proxy/src/socks.rs#L180-L184), [socks.rs:59-67](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-proxy/src/socks.rs#L59-L67)). RFC 1928 has no
+reply code for a request a human declined as opposed to a policy refusal, and none for a queue that
+was full, so an operator distinguishes those on the audit log rather than on the wire.
 
 Three fail-closed properties hold here. A **full pending queue** rejects new pauses with `503`
 rather than growing unbounded ([approval.rs:96-132](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-proxy/src/approval.rs#L96-L132), [approval.rs:64-74](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-proxy/src/approval.rs#L64-L74)); a
