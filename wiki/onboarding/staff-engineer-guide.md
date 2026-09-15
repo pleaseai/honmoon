@@ -208,7 +208,7 @@ sequenceDiagram
   P-->>B: InvalidHTTPHeader — premise false
   B->>B: ship tokio CONNECT; defer Pingora to TLS phase (YAGNI)
 ```
-<!-- Sources: .please/docs/decisions/0001-adopt-pingora-http-data-plane.md:1-12, .please/docs/decisions/0002-phase1-connect-proxy-on-tokio.md:10-44 -->
+<!-- Sources: .please/docs/decisions/0001-adopt-pingora-http-data-plane.md:1-12, .please/docs/decisions/0002-phase1-connect-proxy-on-tokio.md:11-45 -->
 
 The transferable lesson: the transport-agnostic seam made a load-bearing framework decision
 **cheaply reversible.** Architectures that make their biggest bets reversible age well.

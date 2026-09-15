@@ -63,7 +63,7 @@ shared `GatewayState`. `honmoon gateway` runs the proxy and this API on one toki
 |-------|--------|---------|--------|
 | `/api/audit?limit=N` | GET | Recent audit events, newest first (default 200, cap 1000) | [lib.rs:86-93](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-mgmt/src/lib.rs#L86-L93) |
 | `/api/approvals` | GET | Requests held pending approval | [lib.rs:642-644](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-mgmt/src/lib.rs#L642-L644) |
-| `/api/approvals/{id}/approve` | POST | Resolve → wakes the held connection | [lib.rs:104-106](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-mgmt/src/lib.rs#L104-L106) |
+| `/api/approvals/{id}/approve` | POST | Resolve → wakes the held connection | [lib.rs:651-653](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-mgmt/src/lib.rs#L651-L653) |
 | `/api/approvals/{id}/reject` | POST | Resolve → blocks the held connection | [lib.rs:655-657](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-mgmt/src/lib.rs#L655-L657) |
 | `/api/policy` | GET | Active policy (raw YAML + parsed) | [lib.rs:129-134](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-mgmt/src/lib.rs#L129-L134) |
 | `/healthz` | GET | `{status:"ok"}` | [lib.rs:77-79](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-mgmt/src/lib.rs#L77-L79) |
@@ -145,7 +145,7 @@ flowchart LR
   style bin fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
   style serve fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
 ```
-<!-- Sources: crates/honmoon-mgmt/build.rs:1-36, apps/dashboard/vite.config.ts:1-21, crates/honmoon-mgmt/src/lib.rs:30-36 -->
+<!-- Sources: crates/honmoon-mgmt/build.rs:1-36, apps/dashboard/vite.config.ts:1-21, crates/honmoon-mgmt/src/lib.rs:49-55 -->
 
 Every `/api` route requires the management token (#173), so the dashboard's own credential is the
 session secret `GET /login?token=…` hands it in the redirect fragment — the URL the gateway prints

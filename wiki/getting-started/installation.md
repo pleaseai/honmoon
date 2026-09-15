@@ -68,7 +68,7 @@ flowchart LR
   style ctest fill:#161b22,stroke:#30363d,color:#e6edf3
   style btest fill:#161b22,stroke:#30363d,color:#e6edf3
 ```
-<!-- Sources: mise.toml:34-54, .please/docs/knowledge/workflow.md:76-81 -->
+<!-- Sources: mise.toml:34-54, .please/docs/knowledge/workflow.md:77-81 -->
 
 ## Building without mise
 
