@@ -94,6 +94,14 @@ describe('parseAnchors', () => {
     expect(found).toMatchObject({ path: 'policies/agent.yaml', start: null, end: null })
   })
 
+  // A stray space after `](` is a typo, not a decision, and CommonMark renders
+  // it as a normal link — the likeliest way a real page lands in a shape
+  // neither pattern sees.
+  test('whitespace either side of the destination is permitted', () => {
+    const [found] = parseAnchors(`[lib.rs:12-34](\t ${BLOB}/crates/honmoon-core/src/lib.rs#L12-L34 )`, 'wiki/p.md')
+    expect(found).toMatchObject({ path: 'crates/honmoon-core/src/lib.rs', start: 12, end: 34 })
+  })
+
   test('a link to another repository is not a citation into this tree', () => {
     expect(parseAnchors('[cel](https://github.com/google/cel-spec/blob/main/README.md#L1)', 'wiki/p.md'))
       .toEqual([])
@@ -382,6 +390,15 @@ describe('checkLinksRead', () => {
     const source = `[a:1](${BLOB}/README.md#L1) and [b [x]:1](${BLOB}/README.md#L1)`
     expect(parseAnchors(source, 'wiki/p.md')).toHaveLength(1)
     expect(checkLinksRead(source, 'wiki/p.md')).toHaveLength(1)
+  })
+
+  // The counter is looser than the parser on purpose. A newline after `](` is
+  // legal markdown that `ANCHOR` refuses, so it has to land as a report rather
+  // than as silence — the failure mode rule 6 exists to prevent.
+  test('a destination on the next line is counted, then reported', () => {
+    const source = `[lib.rs:1](\n${BLOB}/crates/honmoon-core/src/lib.rs#L1)`
+    expect(parseAnchors(source, 'wiki/p.md')).toEqual([])
+    expect(checkLinksRead(source, 'wiki/p.md')[0]?.kind).toBe('coverage')
   })
 
   // The residue of accepting the angle-bracketed form: a space is legal inside

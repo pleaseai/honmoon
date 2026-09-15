@@ -85,14 +85,15 @@
  * read as it is written.** Markdown resolves a character reference or a
  * percent-encoding in the URL — `https://github&#46;com/…` links to the same
  * page — and neither {@link ANCHOR} nor {@link BLOB_LINK} sees through one, so
- * such a citation is neither counted nor resolved. Two shapes are read because
- * ordinary writing produces them: the angle-bracketed destination CommonMark
- * allows, and the permalinks GitHub's own copy button emits. An encoded host is
- * not one of those; nobody types it by accident, and seeing through the general
- * case means decoding destinations with a markdown parser. This is a floor
- * under review of documentation written in good faith, not a gate against a
- * citation spelled to evade it — which a page could do far more simply by
- * carrying no link at all, since nothing here can require one.
+ * such a citation is neither counted nor resolved. The shapes that *are* read
+ * are the ones ordinary writing produces: the angle-bracketed destination
+ * CommonMark allows, the whitespace it permits on either side of one, and the
+ * permalinks GitHub's own copy button emits. An encoded host is not one of
+ * those; nobody types it by accident, and seeing through the general case means
+ * decoding destinations with a markdown parser. This is a floor under review of
+ * documentation written in good faith, not a gate against a citation spelled to
+ * evade it — which a page could do far more simply by carrying no link at all,
+ * since nothing here can require one.
  *
  * So this is a floor under review, not a replacement for it — the same split
  * `check-wiki-io-claim.ts` draws for the I/O claim. What it buys is that the
@@ -169,6 +170,15 @@ export { REPO_ROOT }
  * destination with a space inside the brackets — legal there and nowhere else —
  * still does not parse, and that one is caught by rule 6, having been counted.
  *
+ * The horizontal whitespace CommonMark permits between `](` and the
+ * destination, and between the destination and `)`, is read for the same
+ * reason and one more: `]( https://…)` is a typo rather than a decision, and a
+ * stray space is the likeliest way a real page ends up in a shape neither
+ * pattern sees. Spaces and tabs only. A newline is legal there too, and
+ * {@link BLOB_LINK} deliberately allows it where this does not — the counter
+ * is looser than the parser on purpose, so the shape lands as a rule 6 report
+ * rather than as silence.
+ *
  * The link text stops at a newline and at 200 characters. Both bound the
  * backtracking: without them the engine retries every `[` in the document and
  * scans to end-of-input before failing. Measured on 200KB of bare `[`, that was
@@ -186,21 +196,23 @@ export { REPO_ROOT }
  * not what would fix it.
  */
 const ANCHOR
-  = /\[([^\]\n]{0,200})\]\(<?https:\/\/github\.com\/pleaseai\/honmoon\/blob\/([^/)>]+)\/([^)?#\s>]+)(?:\?[^)#\s>]*)?(?:#L(\d+)(?:C\d+)?(?:-L(\d+)(?:C\d+)?)?)?>?\)/g
+  = /\[([^\]\n]{0,200})\]\([ \t]*<?https:\/\/github\.com\/pleaseai\/honmoon\/blob\/([^/)>]+)\/([^)?#\s>]+)(?:\?[^)#\s>]*)?(?:#L(\d+)(?:C\d+)?(?:-L(\d+)(?:C\d+)?)?)?>?[ \t]*\)/g
 
 /**
  * A markdown link into this repository's blob tree, counted but not parsed.
  *
  * Deliberately just the `](` and the prefix: it is what {@link ANCHOR} has to
- * account for, so the two disagreeing is the signal rule 6 reports. It counts a
- * link written as markdown with a literal host, bare or angle-bracketed — the
- * bracketed form included, because a shape neither pattern sees is a citation
- * rule 6 cannot report. What it does not see through is an encoded destination
+ * account for, so the two disagreeing is the signal rule 6 reports. Where the
+ * two differ, this one is deliberately the looser: it takes any whitespace
+ * after `](`, including the newline {@link ANCHOR} refuses, because a shape
+ * only the parser rejects is reported, while a shape *neither* sees is silent.
+ * It counts a link written as markdown with a literal host, bare or
+ * angle-bracketed. What it does not see through is an encoded destination
  * (`github&#46;com`, a percent-encoding); the module doc says why that bound is
  * where it is. A bare URL in prose is not a citation either pattern reads, and
  * is not counted as one.
  */
-const BLOB_LINK = /\]\(<?https:\/\/github\.com\/pleaseai\/honmoon\/blob\//g
+const BLOB_LINK = /\]\(\s*<?https:\/\/github\.com\/pleaseai\/honmoon\/blob\//g
 
 /** A line holding nothing but the end of the item above it. */
 const BARE_DELIMITER = /^[)\]}]+[,;]?$/
