@@ -1,0 +1,20 @@
+scripts/check-wiki-source-anchors.ts
+  s_179ae213b8fbe5::t_32960a929c927b 146-152,154
+  s_179ae213b8fbe5::t_4de8e81e981157 153
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "88e33871f59286cc3694b32d9021b1fe5581e0ca",
+  "prompts": {},
+  "sessions": {
+    "s_179ae213b8fbe5": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "854ad83a-3f97-4fff-ac96-977da3e2476b",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
