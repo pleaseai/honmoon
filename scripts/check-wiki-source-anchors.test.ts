@@ -305,10 +305,10 @@ describe('bundleSections', () => {
     '</doc>',
   ].join('\n')
 
-  test('names every inlined page with the line its section opens on', () => {
+  test('names every inlined page with the lines its section spans', () => {
     expect(bundleSections(bundle)).toEqual([
-      { line: 2, page: 'wiki/a.md' },
-      { line: 6, page: 'wiki/b.md' },
+      { line: 2, end: 4, page: 'wiki/a.md' },
+      { line: 6, end: 8, page: 'wiki/b.md' },
     ])
   })
 
@@ -324,11 +324,40 @@ describe('bundleSections', () => {
     expect(bundleOwner(sections, 7)).toBe('wiki/b.md')
   })
 
+  // The section's end is read, not inferred from where the next one opens.
+  // Otherwise everything the generator writes between or after sections — its
+  // header today, a footer tomorrow — is attributed to the page above it, and
+  // a tracked finding placed there would be deferred by a page that does not
+  // contain it (cubic, #254).
+  test('a line between two sections belongs to neither', () => {
+    expect(bundleOwner(bundleSections(bundle), 5)).toBeNull()
+  })
+
+  test('a line after the last `</doc>` belongs to no page', () => {
+    const sections = bundleSections(`${bundle}\n\nfooter written by the generator`)
+    expect(bundleOwner(sections, 10)).toBeNull()
+  })
+
+  // Fail-loud: a bundle whose shape this cannot read should defer nothing,
+  // rather than hand one page everything that follows an unclosed marker.
+  test('an unterminated section spans only its own line', () => {
+    const sections = bundleSections('<doc title="A" path="wiki/a.md">\nbody\nmore body')
+    expect(sections).toEqual([{ line: 1, end: 1, page: 'wiki/a.md' }])
+    expect(bundleOwner(sections, 2)).toBeNull()
+  })
+
   test('the real bundle is indexed by the pages the scan opened', () => {
     const pages = bundleSections(readFileSync(join(REPO_ROOT, 'wiki/llms-full.txt'), 'utf8'))
       .map(({ page }) => page)
     expect(pages.length).toBeGreaterThan(0)
     expect(pages.filter(page => !wikiDocuments().includes(page))).toEqual([])
+  })
+
+  // Every section the generator writes is closed, so no page's span runs to the
+  // end of the file — the property the attribution above depends on.
+  test('every section in the real bundle is terminated', () => {
+    const sections = bundleSections(readFileSync(join(REPO_ROOT, 'wiki/llms-full.txt'), 'utf8'))
+    expect(sections.filter(({ line, end }) => end === line)).toEqual([])
   })
 })
 

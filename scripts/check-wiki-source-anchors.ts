@@ -203,6 +203,9 @@ const TEXT_LINES = /:(\d+)(?:-(\d+))?$/
  */
 const BUNDLE_DOC = /^<doc\s[^>]*\bpath="([^"]+)"/
 
+/** The marker that closes one, likewise at column 1. */
+const BUNDLE_DOC_END = /^<\/doc>/
+
 /**
  * Which rule a finding came from — {@link TRACKED} matches on it.
  *
@@ -250,6 +253,16 @@ export interface Problem {
  * line stops matching if that range later falls off the end of a shrinking
  * file, and the range failure is reported.
  */
+/** One `<doc>…</doc>` span of `llms-full.txt`, and the page it came from. */
+export interface Section {
+  /** 1-based line of the opening marker. */
+  line: number
+  /** 1-based line of the closing marker; equals `line` while unterminated. */
+  end: number
+  /** Repo-relative path of the page, as the marker spells it. */
+  page: string
+}
+
 export interface Tracked {
   path: string
   start: number
@@ -526,39 +539,47 @@ export function defers(
 /**
  * Index `llms-full.txt` by the page each of its lines was generated from.
  *
- * One entry per `<doc path="…">` marker, in file order, so a citation on line
- * N belongs to the last entry at or before N. The bundle is a concatenation of
- * pages and a deferral is per page ({@link defers}), so without the attribution
- * a bundle occurrence can only be matched by anchor — and review found what
- * that costs: for an entry naming several pages, one page repointed without
- * regenerating the bundle leaves its stale copy hiding behind another listed
- * page that still carries the same anchor.
+ * One entry per `<doc path="…">…</doc>` section, in file order, carrying the
+ * lines the section spans. The bundle is a concatenation of pages and a
+ * deferral is per page ({@link defers}), so without the attribution a bundle
+ * occurrence can only be matched by anchor — and review found what that costs:
+ * for an entry naming several pages, one page repointed without regenerating
+ * the bundle leaves its stale copy hiding behind another listed page that still
+ * carries the same anchor.
+ *
+ * The **end** of a section is read, not assumed from where the next one starts.
+ * Everything the generator writes outside a section — its header today, a
+ * footer tomorrow — belongs to no page, so a citation there is reported rather
+ * than attributed to whichever page happens to precede it. A `<doc>` with no
+ * `</doc>` before the next one or the end of file spans only its own line, for
+ * the same reason: a bundle this cannot read the shape of should defer nothing.
  */
-export function bundleSections(source: string): { line: number, page: string }[] {
-  const sections: { line: number, page: string }[] = []
+export function bundleSections(source: string): Section[] {
+  const sections: Section[] = []
   source.split('\n').forEach((text, index) => {
-    const match = BUNDLE_DOC.exec(text)
-    if (match !== null) {
-      sections.push({ line: index + 1, page: match[1]! })
+    const line = index + 1
+    const open = BUNDLE_DOC.exec(text)
+    if (open !== null) {
+      sections.push({ line, end: line, page: open[1]! })
+    }
+    else if (BUNDLE_DOC_END.test(text) && sections.length > 0) {
+      const last = sections[sections.length - 1]!
+      if (last.end === last.line) {
+        last.end = line
+      }
     }
   })
   return sections
 }
 
 /**
- * The page a bundle line was generated from, or `null` ahead of the first
- * marker — the generator's own preamble, which carries no citation today and
- * is attributed to no page if it comes to.
+ * The page a bundle line was generated from, or `null` when it falls outside
+ * every section — the generator's own header, the blank line between two
+ * sections, anything after the last `</doc>`.
  */
-export function bundleOwner(sections: { line: number, page: string }[], line: number): string | null {
-  let owner: string | null = null
-  for (const section of sections) {
-    if (section.line > line) {
-      break
-    }
-    owner = section.page
-  }
-  return owner
+export function bundleOwner(sections: Section[], line: number): string | null {
+  const section = sections.find(({ line: from, end }) => line >= from && line <= end)
+  return section?.page ?? null
 }
 
 /**
@@ -617,7 +638,7 @@ export function checkRepository(): Report {
   const files = new Map<string, { lines: string[] } | { detail: string }>()
   let resolved = 0
 
-  const resolve = (where: string, sections: { line: number, page: string }[] | null): void => {
+  const resolve = (where: string, sections: Section[] | null): void => {
     for (const anchor of parseAnchors(sources.get(where)!, where)) {
       resolved += 1
       if (!files.has(anchor.path)) {
@@ -629,8 +650,8 @@ export function checkRepository(): Report {
       }
       // In the bundle an occurrence carries the bundle's own `where`, so the
       // page it has to be judged against is the one it was generated from. A
-      // bundle line ahead of the first `<doc>` marker belongs to no page, and
-      // is reported rather than deferred by whichever entry the anchor matches.
+      // bundle line outside every `<doc>` section belongs to no page, and is
+      // reported rather than deferred by whichever entry the anchor matches.
       const page = sections === null ? anchor.where : bundleOwner(sections, anchor.line)
       const entry = page === null
         ? undefined
