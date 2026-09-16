@@ -1,0 +1,38 @@
+wiki/getting-started/quick-start.md
+  s_9fcafa2b9ca1f1::t_e60fb0e9d42337 213-218
+wiki/deep-dive/architecture.md
+  s_9fcafa2b9ca1f1::t_3077fdc1218eda 127,131
+wiki/llms-full.txt
+  s_9fcafa2b9ca1f1::t_dcfd22e797e210 1949-1950,1952-1957
+  s_9fcafa2b9ca1f1::t_83dd18e1fe6738 72,92,107,169,1097,1101,1699,1732-1740,1795,1889,1897-1899,1906-1907,1933,1941,2128,2171,2188-2189,2276
+wiki/index.md
+  s_9fcafa2b9ca1f1::t_3077fdc1218eda 63
+wiki/onboarding/contributor-guide.md
+  s_9fcafa2b9ca1f1::t_3077fdc1218eda 167
+  s_9fcafa2b9ca1f1::t_037e3704cc5869 70,90
+  s_9fcafa2b9ca1f1::t_83dd18e1fe6738 105
+wiki/deep-dive/egress-gateway.md
+  s_9fcafa2b9ca1f1::t_dcfd22e797e210 266-267,269-274
+  s_9fcafa2b9ca1f1::t_3077fdc1218eda 16,49-57,112,206,214-216,223,445,488
+  s_9fcafa2b9ca1f1::t_83dd18e1fe6738 224,250,258,505-506
+wiki/deep-dive/control-plane.md
+  s_9fcafa2b9ca1f1::t_3077fdc1218eda 53
+scripts/check-wiki-source-anchors.ts
+  s_9fcafa2b9ca1f1::t_78cd2f5cad0e3e 567-568
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "c609ee827ca26f1c3d89ac1c089a89f7dd8aeab0",
+  "prompts": {},
+  "sessions": {
+    "s_9fcafa2b9ca1f1": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a66aad7f-306b-4110-94b3-2a72437a2de5",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
