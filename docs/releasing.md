@@ -37,7 +37,7 @@ release is never visible without them. Everything that follows from that is unde
    adding no bump of their own.
 
    The type is not the only gate. A commit whose files *all* sit under `.claude`, `.please`,
-   `docs`, `scripts` or `wiki` is dropped regardless of its type: none of those directories is
+   `datasets`, `docs`, `scripts` or `wiki` is dropped regardless of its type: none of those directories is
    an input to the binary, the packages or the README, so a `feat:` confined to them ships
    nothing and bumps nothing (#279). One file outside them is enough to make the whole commit
    count, so a change that also updates the wiki is unaffected. The list is `exclude-paths` in

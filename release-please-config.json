@@ -7,7 +7,7 @@
       "changelog-path": "CHANGELOG.md",
       "include-component-in-tag": false,
       "initial-version": "0.1.0",
-      "exclude-paths": [".claude", ".please", "docs", "scripts", "wiki"],
+      "exclude-paths": [".claude", ".please", "datasets", "docs", "scripts", "wiki"],
       "bump-minor-pre-major": true,
       "bump-patch-for-minor-pre-major": false,
       "draft": true,
