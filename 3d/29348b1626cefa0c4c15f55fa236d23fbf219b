@@ -1,0 +1,19 @@
+wiki/llms-full.txt
+  s_9fcafa2b9ca1f1::t_9c40947dcdfeb1 72,92,169,1097,1101,1699,1732-1740,1795,1889,1897-1899,1906,2128,2171,2276,3037-3042
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "3d29348b1626cefa0c4c15f55fa236d23fbf219b",
+  "prompts": {},
+  "sessions": {
+    "s_9fcafa2b9ca1f1": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a66aad7f-306b-4110-94b3-2a72437a2de5",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
