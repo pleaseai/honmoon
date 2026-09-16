@@ -1,0 +1,21 @@
+wiki/onboarding/contributor-guide.md
+  s_9fcafa2b9ca1f1::t_d7014cc7c7f1b0 102-105
+wiki/llms-full.txt
+  s_9fcafa2b9ca1f1::t_d7014cc7c7f1b0 104-107
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "770c31394e7e1772767fd0f7fdf7016106c695a0",
+  "prompts": {},
+  "sessions": {
+    "s_9fcafa2b9ca1f1": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a66aad7f-306b-4110-94b3-2a72437a2de5",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
