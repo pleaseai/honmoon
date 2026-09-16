@@ -1,0 +1,30 @@
+crates/honmoon-proxy/src/gateway.rs
+  s_9fcafa2b9ca1f1::t_d4581e06a83657 36,38-42,44-67
+wiki/deep-dive/egress-gateway.md
+  s_9fcafa2b9ca1f1::t_4a148741f72424 224,250,258
+  s_9fcafa2b9ca1f1::t_9d6ce15b8cf540 244-249,251-257,259-265
+wiki/llms-full.txt
+  s_9fcafa2b9ca1f1::t_4a148741f72424 107,1907,1927-1948
+crates/honmoon-proxy/tests/egress.rs
+  s_9fcafa2b9ca1f1::t_26795fa50e43a0 280-356
+scripts/check-wiki-source-anchors.ts
+  s_9fcafa2b9ca1f1::t_9859a794c23606 565-573,576
+wiki/onboarding/contributor-guide.md
+  s_9fcafa2b9ca1f1::t_4a148741f72424 105
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "b3fed52ca748b8e63128d72ebcf2dd77faa43578",
+  "prompts": {},
+  "sessions": {
+    "s_9fcafa2b9ca1f1": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a66aad7f-306b-4110-94b3-2a72437a2de5",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
