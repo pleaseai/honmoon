@@ -16,6 +16,10 @@ bun run preview        # preview the built site
 bun .vitepress/gen-llms-full.mjs
 ```
 
+Forgetting that last command is caught rather than shipped: `scripts/check-wiki-bundle-current.ts`
+calls the generator and fails `bun test` at the repository root unless `llms-full.txt` is
+byte-identical to the pages it inlines. It names the page whose section drifted.
+
 The build must complete cleanly. Mermaid syntax errors, `<br/>` in Mermaid labels, and bare
 generics (`Vec<T>`, `Task<string>`) outside code fences will break the Vue compiler.
 
@@ -47,7 +51,7 @@ generics (`Vec<T>`, `Task<string>`) outside code fences will break the Vue compi
 ## Boundaries
 
 - ✅ **Always**: run `bun run build` after edits; keep citations accurate to real file/line;
-  regenerate `llms-full.txt` after content changes.
+  regenerate `llms-full.txt` after content changes (enforced — see above).
 - ⚠️ **Ask first**: modifying `.vitepress/theme/` (test the build after); restructuring the
   sidebar in `config.mts`.
 - 🚫 **Never**: delete generated pages wholesale; introduce `<br/>` or unescaped `<…>` generics
