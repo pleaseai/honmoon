@@ -17,6 +17,48 @@ name: Release Please
 #
 # The App token is also why the release PR gets CI at all: events raised by GITHUB_TOKEN never
 # trigger other workflows, so a GITHUB_TOKEN release PR would sit there permanently untested.
+#
+# Which commits are *eligible* to move the version at all is the `exclude-paths` array in
+# release-please-config.json, and the rule behind that list lives here because JSON has no
+# comments: release-please fetches the config and `JSON.parse`s it, so a `//` line would fail
+# the run rather than document it. On the list are the directories that are not an input to anything
+# this version names — `.claude`, `.please`, `datasets`, `docs`, `scripts` and `wiki` reach
+# neither the binary, nor the packages under `packages/` and `apps/`, nor the README install
+# snippets.
+#
+# `policies/` is **not** on the list, although nothing links it into the binary either:
+# `agent.yaml` is `include_str!`'d only by a `#[cfg(test)]` test and a bench. It stays because
+# it is product surface rather than tooling — the README's quickstart runs every one of its
+# commands against `policies/agent.yaml`, and the test guarding it is named
+# `shipped_example_policy_fires`. A change to the rules a user runs from the documented
+# quickstart should cut a release. That asymmetry is how to decide the next doubtful path, too:
+# a bump that should not have happened is visible in the release PR and correctable, while a
+# bump that should have happened and did not is silent.
+#
+# A commit is dropped only when **every** file it touches is under one of those paths, which is
+# what makes the list safe: `5f3b7dd` (`fix(proxy):`) also edited `scripts/` and `wiki/` and
+# still cuts a release, while `71ff6b5` (`feat(scripts):`) touched nothing outside them and no
+# longer bumps the minor version of a binary it did not change (#279).
+#
+# `.github` is deliberately **not** excluded, and the argument is about release.yml alone: it
+# decides the archive's contents — its targets, its build flags, what it packages — so a commit
+# that changes the release payload without touching a line of source lives there, and excluding
+# it would make that change invisible in the release that makes it. release.yml cannot be
+# singled out; `exclude-paths` matches whole directories and every workflow file sits directly
+# in `.github/workflows/`, so the choice is all of `.github` or none of it.
+#
+# Keeping all of it in leaves a residual, and it is not the case that sentence covers: ci.yml,
+# codspeed.yml, the three deploy-*.yml and dependabot.yml decide nothing about the archive, so
+# a commit confined to one of them and typed `feat:` or `fix:` bumps a version for something
+# that ships nothing — the same class of commit #279 is about. `ci:` and `build:` are hidden
+# types and open no release by themselves, but `feat:` and `fix:` are visible and nothing else
+# filters them. That is accepted rather than argued away: there is no path-granular way to keep
+# release.yml counted and drop the rest, and losing sight of a change to the release payload is
+# the worse of the two failures.
+#
+# Matching is a literal directory prefix (`wiki/…`), never a glob — `wiki/**` would match no
+# file at all, and a renamed directory silently stops excluding anything. Neither failure is
+# loud; the only symptom is a version that moves when it should not.
 
 on:
   push:

@@ -36,6 +36,15 @@ release is never visible without them. Everything that follows from that is unde
    commits produces no release PR. They ride along in the next release a visible commit opens,
    adding no bump of their own.
 
+   The type is not the only gate. A commit whose files *all* sit under `.claude`, `.please`,
+   `datasets`, `docs`, `scripts` or `wiki` is dropped regardless of its type: none of those directories is
+   an input to the binary, the packages or the README, so a `feat:` confined to them ships
+   nothing and bumps nothing (#279). One file outside them is enough to make the whole commit
+   count, so a change that also updates the wiki is unaffected. The list is `exclude-paths` in
+   [`release-please-config.json`](../release-please-config.json); why those directories and not
+   `.github` is in the header of
+   [`release-please.yml`](../.github/workflows/release-please.yml).
+
 2. **Review the release PR.** Every push to `main` refreshes an open PR titled
    `chore(release): vX.Y.Z`, carrying the new version across every manifest and the CHANGELOG
    entry it will publish. It only ever *proposes* — nothing is tagged or published while it
@@ -56,7 +65,15 @@ release is never visible without them. Everything that follows from that is unde
 To cut a version release-please would not pick on its own — a specific number, or any release
 at all out of hidden-type commits — put `Release-As: 0.3.0` in a commit body on `main`. The
 footer is a note, and a commit carrying a note renders even under a hidden section, so it
-clears the empty-CHANGELOG gate that would otherwise suppress the release. A version carrying a pre-release identifier (`v0.2.0-rc.1` — anything with a
+clears the empty-CHANGELOG gate that would otherwise suppress the release.
+
+That footer is only read from a commit that survives the path filter in step 1, so the commit
+carrying it must touch at least one file outside `exclude-paths`. Two shapes look right and do
+nothing: `Release-As:` on a commit confined to `docs/` or `scripts/`, and `Release-As:` on a
+`git commit --allow-empty`. The empty commit is dropped by the same rule as the confined one —
+"every file is under an excluded path" is vacuously true of a commit with no files, and
+release-please reads the footer only after that filter has run. Put the footer on the commit
+that carries the change, or on one that also touches a counted path. A version carrying a pre-release identifier (`v0.2.0-rc.1` — anything with a
 `-`) is marked a GitHub pre-release and never becomes "latest".
 
 `scripts/bump-version.ts` predates release-please and is no longer part of this path; the
