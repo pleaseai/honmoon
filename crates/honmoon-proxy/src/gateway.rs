@@ -230,11 +230,15 @@ pub fn serve_listener_with_state(state: GatewayState, listener: std::net::TcpLis
 /// adds the timer and the bound and changes nothing else. `egress.rs` pins both
 /// of them, so dropping either fails a test rather than only this comment.
 ///
-/// The HTTP/2 half is left at hyper's defaults, as hudsucker leaves it. It is
-/// not a timer that half is missing: hyper's HTTP/2 server exposes no
-/// header-read bound to arm, and its one defaulted duration —
-/// `keep_alive_timeout`, 20s — does nothing unless `keep_alive_interval` is
-/// set, which defaults to `None` (hyper 1.10.1 `proto/h2/server.rs:73-74`).
+/// The HTTP/2 half is left at hyper's defaults, as hudsucker leaves it — but
+/// that is a gap, not a non-issue. What that half is missing is not a *timer*:
+/// hyper's HTTP/2 server exposes no header-read bound to arm at all, and its
+/// one defaulted duration — `keep_alive_timeout`, 20s — does nothing unless
+/// `keep_alive_interval` is set, which defaults to `None` (hyper 1.10.1
+/// `proto/h2/server.rs:73-74`). So a peer that completes the preface and then
+/// stalls is held indefinitely, measured still connected at 70s. Bounding that
+/// is a design choice about what an idle pooled HTTP/2 connection may cost, not
+/// a setting to flip here — tracked in #275.
 fn server_builder() -> ServerBuilder<TokioExecutor> {
     let mut builder = ServerBuilder::new(TokioExecutor::new());
     builder

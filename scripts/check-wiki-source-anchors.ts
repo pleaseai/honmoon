@@ -565,7 +565,7 @@ export function checkAnchor(
 export const TRACKED: Tracked[] = [
   // #119
   { path: 'crates/honmoon-proxy/src/gateway.rs', start: 152, end: 192, kind: 'delimiter', issue: 119, pages: ['getting-started/quick-start.md'] },
-  { path: 'crates/honmoon-proxy/src/gateway.rs', start: 281, end: 346, kind: 'range', issue: 119, pages: ['getting-started/quick-start.md'] },
+  { path: 'crates/honmoon-proxy/src/gateway.rs', start: 285, end: 350, kind: 'range', issue: 119, pages: ['getting-started/quick-start.md'] },
 
   // #169
   { path: 'crates/honmoon-core/src/engine.rs', start: 59, end: 60, kind: 'blank', issue: 169, pages: ['getting-started/policy-authoring.md'] },

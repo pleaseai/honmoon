@@ -211,9 +211,9 @@ stateDiagram-v2
 | Outcome | HTTP status | When | Source |
 |---------|------------|------|--------|
 | Tunnel established | `200 Connection Established` | Verdict `Allow` (or approved `pause`), upstream reachable | [gateway.rs:195-200](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-proxy/src/gateway.rs#L195-L200) |
-| Forbidden | `403` | Verdict `Deny`, or a `pause` rejected/timed out | [gateway.rs:271](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-proxy/src/gateway.rs#L271) |
-| Held, then resolved | — → `200`/`403` | Verdict `Pause` — held in the approval queue | [gateway.rs:281-346](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-proxy/src/gateway.rs#L281-L346) |
-| Service unavailable | `503` | `pause` but the approval queue is full (fail closed) | [gateway.rs:293-305](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-proxy/src/gateway.rs#L293-L305) |
+| Forbidden | `403` | Verdict `Deny`, or a `pause` rejected/timed out | [gateway.rs:275](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-proxy/src/gateway.rs#L275) |
+| Held, then resolved | — → `200`/`403` | Verdict `Pause` — held in the approval queue | [gateway.rs:285-350](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-proxy/src/gateway.rs#L285-L350) |
+| Service unavailable | `503` | `pause` but the approval queue is full (fail closed) | [gateway.rs:297-309](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-proxy/src/gateway.rs#L297-L309) |
 | Method not allowed | `405` | Non-CONNECT method | [gateway.rs:164-167](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-proxy/src/gateway.rs#L164-L167) |
 | Bad request / timeout / bad gateway | `400` / `408` / `502` | Malformed head / slowloris / upstream failed | [gateway.rs:152-192](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-proxy/src/gateway.rs#L152-L192) |
 
