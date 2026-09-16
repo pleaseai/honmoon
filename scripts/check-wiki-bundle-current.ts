@@ -52,8 +52,9 @@
  * reuses {@link bundleSections}, the index `check-wiki-source-anchors.ts`
  * already builds over this format, rather than adding a second parser for it.
  * If that attribution is ever wrong — a page whose own prose holds a line
- * starting `<doc ` or `</doc>` at column 1 would confuse it — the finding moves
- * but the verdict does not, and the remedy printed is the same either way.
+ * starting `<doc ` or `</doc>` at column 1 would confuse it — the finding
+ * moves, and can even name a page matching no file, but the verdict does not,
+ * and the remedy printed is the same either way.
  *
  * ## What it does not cover, so it is not read as more than it is
  *
@@ -108,9 +109,14 @@ interface Chunk {
 /**
  * Split a bundle into its sections, each as the lines it spans.
  *
- * Diagnostic only — see the module doc. Applied to the generator's output and
- * to the committed file alike, so a format this cannot read misattributes both
- * sides symmetrically rather than inventing a difference between them.
+ * Diagnostic only — see the module doc. It runs over the generator's output
+ * and over the committed file independently, and only once those two strings
+ * are already known to differ, so it does **not** misattribute them
+ * symmetrically: a line starting `<doc ` or `</doc>` at column 1 inside one
+ * side's copy of a page invents a section on that side alone. The finding can
+ * then name a page matching no file, and can fail to name the page that
+ * actually changed. Only the message is affected — the verdict is byte
+ * equality, which no parse of either side can reach.
  */
 function chunks(source: string): Chunk[] {
   const lines = source.split('\n')
@@ -120,9 +126,16 @@ function chunks(source: string): Chunk[] {
   }))
 }
 
-/** `a` and `b` as the same pages in the same order, counting repeats. */
+/**
+ * `a` and `b` as the same pages in the same order, counting repeats.
+ *
+ * Indexed with `?.` rather than a non-null assertion: an index past the end
+ * yields `undefined`, which compares unequal and reports, so a length
+ * invariant that ever stops holding surfaces as a finding rather than as a
+ * thrown guard or a silent pass.
+ */
 function samePages(a: Chunk[], b: Chunk[]): boolean {
-  return a.length === b.length && a.every((chunk, index) => chunk.page === b[index]!.page)
+  return a.length === b.length && a.every((chunk, index) => chunk.page === b[index]?.page)
 }
 
 /**
@@ -155,8 +168,10 @@ export function compareBundle(expected: string, actual: string): Problem[] {
   if (!samePages(want, have)) {
     const dropped = missingFrom(want, have)
     const extra = missingFrom(have, want)
+    const reordered = `inlines the same set of pages as ${GENERATOR}, in a different order or `
+      + 'with one of them repeated'
     const detail = dropped.length === 0 && extra.length === 0
-      ? `inlines the same pages in a different order from the one ${GENERATOR} writes them in`
+      ? reordered
       : [
           dropped.length > 0 ? `does not inline ${dropped.map(page => `\`${page}\``).join(', ')}` : '',
           extra.length > 0 ? `inlines ${extra.map(page => `\`${page}\``).join(', ')}, which the generator does not` : '',
@@ -168,7 +183,7 @@ export function compareBundle(expected: string, actual: string): Problem[] {
   }
 
   const stale = want
-    .filter(({ text }, index) => text !== have[index]!.text)
+    .filter(({ text }, index) => text !== have[index]?.text)
     .map(({ page }): Problem => ({
       where: LLMS_FULL,
       detail: `its \`${page}\` section is not that page's current content — the page was edited `
@@ -186,32 +201,43 @@ export function compareBundle(expected: string, actual: string): Problem[] {
   }]
 }
 
-/**
- * The committed bundle, or the finding that it could not be read.
- *
- * Read from {@link BUNDLE_PATH}, the path the generator writes to, rather than
- * from a second spelling of it here — so the file this compares is the file
- * `bun .vitepress/gen-llms-full.mjs` would overwrite, and a future move of the
- * bundle cannot leave the check reading the old location and passing.
- */
-function committed(): { text: string } | { problem: Problem } {
-  try {
-    return { text: readFileSync(BUNDLE_PATH, 'utf8') }
-  }
-  catch (error) {
-    return {
-      problem: {
-        where: LLMS_FULL,
-        detail: `could not be read (${(error as Error).message}) — write it with ${REGENERATE}`,
-      },
-    }
-  }
+/** A thrown value as a sentence, since not everything thrown is an `Error`. */
+function describe(error: unknown): string {
+  return error instanceof Error ? error.message : String(error)
 }
 
-export function checkRepository(): Problem[] {
+/** The two things a run compares: what the generator builds, and what is committed. */
+export interface Sources {
+  /** The bytes the bundle should hold. */
+  render: () => string
+  /** The bytes it does hold. */
+  read: () => string
+}
+
+/**
+ * The real pair — the generator, and the file the generator writes.
+ *
+ * `read` opens {@link BUNDLE_PATH} rather than a second spelling of the path
+ * here, so the file compared is the file `bun .vitepress/gen-llms-full.mjs`
+ * would overwrite, and a future move of the bundle cannot leave the check
+ * reading the old location and passing. That covers the *read* only:
+ * {@link LLMS_FULL} is an independent repo-relative spelling used to label
+ * findings, so such a move would still need it updated by hand — the findings
+ * would name the old path while the comparison used the new one.
+ *
+ * Injectable because both failure branches below are documented behaviour that
+ * a test has to be able to reach; against the real repository neither can be
+ * provoked without renaming a page or deleting the bundle.
+ */
+export const LIVE: Sources = {
+  render: () => renderBundle(),
+  read: () => readFileSync(BUNDLE_PATH, 'utf8'),
+}
+
+export function checkRepository(sources: Sources = LIVE): Problem[] {
   let expected: string
   try {
-    expected = renderBundle()
+    expected = sources.render()
   }
   catch (error) {
     // The generator reads each page it lists, so a page renamed or deleted
@@ -220,13 +246,26 @@ export function checkRepository(): Problem[] {
     // repository state it describes is a real finding about the wiki.
     return [{
       where: GENERATOR,
-      detail: `could not build the bundle to compare against (${(error as Error).message}) — a `
+      detail: `could not build the bundle to compare against (${describe(error)}) — a `
         + 'page it lists was renamed or deleted, so fix its page list first',
     }]
   }
 
-  const file = committed()
-  return 'problem' in file ? [file.problem] : compareBundle(expected, file.text)
+  let actual: string
+  try {
+    actual = sources.read()
+  }
+  catch (error) {
+    // A bundle that cannot be read is a finding, not a skip — the same rule
+    // `check-wiki-source-anchors.ts` applies to a file it cannot open. Passing
+    // here would report a deleted bundle as current.
+    return [{
+      where: LLMS_FULL,
+      detail: `could not be read (${describe(error)}) — write it with ${REGENERATE}`,
+    }]
+  }
+
+  return compareBundle(expected, actual)
 }
 
 export function main(): number {

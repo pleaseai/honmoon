@@ -6,7 +6,7 @@
 // file — which could then drift from it exactly the way the bundle drifts from
 // the pages — is to call it.
 import { readFileSync, realpathSync, writeFileSync } from 'node:fs'
-import { dirname, join } from 'node:path'
+import { dirname, join, resolve } from 'node:path'
 import process from 'node:process'
 import { fileURLToPath } from 'node:url'
 
@@ -77,16 +77,37 @@ export function renderBundle() {
  * they had regenerated the bundle. That is the silent staleness this file's
  * checker exists to catch, and it should not be introduced here to build it.
  * Comparing the entry path works on every runtime that can run the file at all.
+ *
+ * The plain comparison is tried before `realpathSync` so that an ordinary
+ * `bun .vitepress/gen-llms-full.mjs` is decided without a filesystem call —
+ * otherwise a throw there would answer "not the entry point" for a run that is
+ * one, which is the same silence by another route.
  */
 function invokedAsScript() {
   const entry = process.argv[1]
   if (entry === undefined) {
     return false
   }
-  try {
-    return realpathSync(entry) === realpathSync(fileURLToPath(import.meta.url))
+  const self = fileURLToPath(import.meta.url)
+  // The ordinary invocation is decided here, without touching the filesystem,
+  // so the symlink fallback below is never what stops a real run from writing.
+  if (resolve(entry) === self) {
+    return true
   }
-  catch {
+  try {
+    return realpathSync(entry) === realpathSync(self)
+  }
+  catch (error) {
+    // Only reachable once `entry` already names a different path than this
+    // file, so `false` is the answer either way and the symlink question is
+    // moot. Said out loud regardless: the one thing this file must never do is
+    // decline to write and exit quietly, which is the silence its own checker
+    // exists to break.
+    console.error(
+      `gen-llms-full.mjs: could not resolve ${entry} `
+      + `(${error instanceof Error ? error.message : String(error)}) — treating it as a `
+      + 'different file and writing nothing',
+    )
     return false
   }
 }
