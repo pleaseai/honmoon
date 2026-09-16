@@ -1,0 +1,25 @@
+.claude/agent-memory/review-review-documentation-analyzer/pr271_wiki_bundle_guard_verified.md
+  s_53d910c39757e9::t_30cd486666258a 3,8,10-11,13-25,36-45
+  s_53d910c39757e9::t_3235d186271db0 26-34
+  s_53d910c39757e9::t_58ab060a86d82d 1-2,4-7,9,12,35
+.claude/agent-memory/review-review-silent-failure-hunter/project_pr271_wiki_bundle_guard.md
+  s_53d910c39757e9::t_ac16632fc84a00 3,8-10,12-16,18,20-33,35-37
+.claude/agent-memory/review-review-comment-analyzer/pr271_chunks_symmetric_misattribution_claim.md
+  s_53d910c39757e9::t_ac16632fc84a00 3,8-9,11,13-17,19-32
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "e39aa8372cafdfaaa248cedacd48e07de076a01f",
+  "prompts": {},
+  "sessions": {
+    "s_53d910c39757e9": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "25e7be95-1ece-4307-8b88-9fc929f85273",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
