@@ -13,7 +13,7 @@ hand-rolled tokio `CONNECT` proxy of Phase 1 ([ADR-0003](https://github.com/plea
 That split is the thing to hold on to when reading the code. **hudsucker owns the connection
 lifecycle** — the accept loop, head parsing, the `CONNECT` upgrade, TLS termination, and the
 upstream leg. **Honmoon owns the decisions**, supplied as an `HttpHandler`
-([gateway.rs:231-258](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-proxy/src/gateway.rs#L231-L258), [mitm.rs:927-1046](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-proxy/src/mitm.rs#L927-L1046)).
+([gateway.rs:251-278](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-proxy/src/gateway.rs#L251-L278), [mitm.rs:927-1046](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-proxy/src/mitm.rs#L927-L1046)).
 So `gateway.rs` holds the shared state and the four entry points, and every per-request decision —
 the host gate, the body scan, the approval hold — lives in `mitm.rs`.
 
@@ -46,15 +46,15 @@ See [Quick Start](/getting-started/quick-start).
 
 | Element | Role | Source |
 |---------|------|--------|
-| `GatewayState` | Shared `Arc`s: policy + `AuditLog` + `ApprovalRegistry` + CA + pause timeout + intercept/PII/redaction settings | [gateway.rs:134-154](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-proxy/src/gateway.rs#L134-L154) |
-| `InterceptPolicy` | Which tunnels to TLS-terminate: `None` (the default), `All`, or a host set | [gateway.rs:56-70](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-proxy/src/gateway.rs#L56-L70) |
-| `PiiMode` | Whether body PII findings only inform audit (`Detect`) or enforce the verdict (`Block`) | [gateway.rs:72-80](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-proxy/src/gateway.rs#L72-L80) |
-| `RedactionState` | Wire-level secret redaction: HMAC salt, placeholder store, signed-body policy | [gateway.rs:97-112](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-proxy/src/gateway.rs#L97-L112) |
-| `run(policy, addr)` | Bind `addr`, serve forever | [gateway.rs:174-178](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-proxy/src/gateway.rs#L174-L178) |
-| `serve_listener(policy, listener)` | Serve a pre-bound listener (no TOCTOU) | [gateway.rs:180-187](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-proxy/src/gateway.rs#L180-L187) |
-| `serve_listener_with_state` | The same, with caller-provided shared state | [gateway.rs:189-194](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-proxy/src/gateway.rs#L189-L194) |
-| `serve(state, listener)` | Build the hudsucker `Proxy` around `HonmoonHandler` and start it | [gateway.rs:231-258](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-proxy/src/gateway.rs#L231-L258) |
-| `host_of` / `authority_port` / `canonical_host` | Authority parsing and host canonicalization | [gateway.rs:260-290](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-proxy/src/gateway.rs#L260-L290) |
+| `GatewayState` | Shared `Arc`s: policy + `AuditLog` + `ApprovalRegistry` + CA + pause timeout + intercept/PII/redaction settings | [gateway.rs:154-174](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-proxy/src/gateway.rs#L154-L174) |
+| `InterceptPolicy` | Which tunnels to TLS-terminate: `None` (the default), `All`, or a host set | [gateway.rs:76-90](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-proxy/src/gateway.rs#L76-L90) |
+| `PiiMode` | Whether body PII findings only inform audit (`Detect`) or enforce the verdict (`Block`) | [gateway.rs:92-100](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-proxy/src/gateway.rs#L92-L100) |
+| `RedactionState` | Wire-level secret redaction: HMAC salt, placeholder store, signed-body policy | [gateway.rs:117-132](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-proxy/src/gateway.rs#L117-L132) |
+| `run(policy, addr)` | Bind `addr`, serve forever | [gateway.rs:194-198](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-proxy/src/gateway.rs#L194-L198) |
+| `serve_listener(policy, listener)` | Serve a pre-bound listener (no TOCTOU) | [gateway.rs:200-207](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-proxy/src/gateway.rs#L200-L207) |
+| `serve_listener_with_state` | The same, with caller-provided shared state | [gateway.rs:209-214](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-proxy/src/gateway.rs#L209-L214) |
+| `serve(state, listener)` | Build the hudsucker `Proxy` around `HonmoonHandler` and start it | [gateway.rs:251-278](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-proxy/src/gateway.rs#L251-L278) |
+| `host_of` / `authority_port` / `canonical_host` | Authority parsing and host canonicalization | [gateway.rs:280-310](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-proxy/src/gateway.rs#L280-L310) |
 
 `honmoon-proxy::mitm` — the request path. This is where the Phase 1 control logic was **ported**,
 not rewritten ([ADR-0003:42-64](https://github.com/pleaseai/honmoon/blob/main/.please/docs/decisions/0003-adopt-hudsucker-for-tls-termination.md#L42-L64)):
@@ -109,7 +109,7 @@ The hand-rolled accept loop, head reader and tunnel copy went with it.
 
 `serve` hands hudsucker a bound listener, a CA authority, one `HonmoonHandler` and a server
 builder, then starts the proxy; the accept loop and the task-per-connection are hudsucker's
-([gateway.rs:231-258](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-proxy/src/gateway.rs#L231-L258)). Every request reaches
+([gateway.rs:251-278](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-proxy/src/gateway.rs#L251-L278)). Every request reaches
 `handle_request`, in one of three shapes
 ([mitm.rs:1-36](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-proxy/src/mitm.rs#L1-L36)):
 
@@ -203,7 +203,7 @@ sequenceDiagram
     end
   end
 ```
-<!-- Sources: crates/honmoon-proxy/src/mitm.rs:928-973 (handle_request), mitm.rs:296-336 (host_gate), mitm.rs:217-294 (the uninspectable-endpoint refusal), mitm.rs:614-924 (inspect_body), mitm.rs:796-815 (the pii_mode filter), mitm.rs:1036-1045 (should_intercept), crates/honmoon-proxy/src/gateway.rs:231-258 (serve) -->
+<!-- Sources: crates/honmoon-proxy/src/mitm.rs:928-973 (handle_request), mitm.rs:296-336 (host_gate), mitm.rs:217-294 (the uninspectable-endpoint refusal), mitm.rs:614-924 (inspect_body), mitm.rs:796-815 (the pii_mode filter), mitm.rs:1036-1045 (should_intercept), crates/honmoon-proxy/src/gateway.rs:251-278 (serve) -->
 
 ## What the proxy still guards itself
 
@@ -211,17 +211,17 @@ These are honmoon's own, in honmoon's own code:
 
 | Guard | Mechanism | Source |
 |-------|-----------|--------|
-| Host canonicalization | `GitHub.com:443` / `github.com.` → `github.com`, so a rule can't be bypassed by case or FQDN root | [gateway.rs:285-290](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-proxy/src/gateway.rs#L285-L290) |
-| IPv6 authority | `host_of` handles `[::1]:443` | [gateway.rs:260-267](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-proxy/src/gateway.rs#L260-L267) |
-| Port confusion | An unbracketed authority with several colons is a bare IPv6 address, not `host:port` — reading `::1` as port 1 would let a client claim any endpoint's port | [gateway.rs:269-283](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-proxy/src/gateway.rs#L269-L283) |
+| Host canonicalization | `GitHub.com:443` / `github.com.` → `github.com`, so a rule can't be bypassed by case or FQDN root | [gateway.rs:305-310](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-proxy/src/gateway.rs#L305-L310) |
+| IPv6 authority | `host_of` handles `[::1]:443` | [gateway.rs:280-287](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-proxy/src/gateway.rs#L280-L287) |
+| Port confusion | An unbracketed authority with several colons is a bare IPv6 address, not `host:port` — reading `::1` as port 1 would let a client claim any endpoint's port | [gateway.rs:289-303](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-proxy/src/gateway.rs#L289-L303) |
 | Spoofed `Host` port | The `Host` header is only consulted when the URI carries no authority of its own | [mitm.rs:1655-1679](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-proxy/src/mitm.rs#L1655-L1679) |
 | Scheme is not authorization | An inner request is recognized by the tunnel the clone inherited, never by `https://` | [mitm.rs:928-973](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-proxy/src/mitm.rs#L928-L973) |
 | Authorization can't outlive its connection | `AuthorizedTunnel` lives on the handler clone, not in a registry keyed by client address | [mitm.rs:71-91](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-proxy/src/mitm.rs#L71-L91) |
 | Body memory | Bodies over 2 MiB — declared or streamed — are forwarded unscanned rather than buffered | [body.rs:56-61](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-proxy/src/body.rs#L56-L61) |
 | Uninspectable tunnels | A `CONNECT` to a `protocol: postgres` endpoint is refused, not tunnelled past the `sql.*` rules it exists to enforce | [mitm.rs:217-294](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-proxy/src/mitm.rs#L217-L294) |
 | Bounded approval queue | 1024 simultaneous holds, then fail closed | [approval.rs:64-74](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-proxy/src/approval.rs#L64-L74) |
-| No TOCTOU on bind | `serve_listener` adopts a pre-bound socket | [gateway.rs:180-187](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-proxy/src/gateway.rs#L180-L187) |
-| Head read | A request head that never completes — and a keep-alive connection idling between heads — is dropped after `HEAD_READ_TIMEOUT` (30s), because hudsucker installs no `Timer` and hyper's own default does not arm without one | [gateway.rs:211-244](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-proxy/src/gateway.rs#L211-L244) |
+| No TOCTOU on bind | `serve_listener` adopts a pre-bound socket | [gateway.rs:200-207](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-proxy/src/gateway.rs#L200-L207) |
+| Head read | A request head that never completes — and a keep-alive connection idling between heads — is dropped after `HEAD_READ_TIMEOUT` (30s), because hudsucker installs no `Timer` and hyper's own default does not arm without one | [gateway.rs:216-249](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-proxy/src/gateway.rs#L216-L249) |
 
 ### Guards the Phase 1 proxy had, and where each stands now
 
@@ -247,7 +247,7 @@ reading bytes — but that did not make both of them hudsucker's either.
   guard failed to arm and said so to no one.
 
   honmoon now supplies its own server builder, which installs `TokioTimer` and sets
-  `header_read_timeout` ([gateway.rs:211-244](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-proxy/src/gateway.rs#L211-L244)). **The bound is hyper's own 30s
+  `header_read_timeout` ([gateway.rs:216-249](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-proxy/src/gateway.rs#L216-L249)). **The bound is hyper's own 30s
   default, and it governs two waits, not one** — hyper re-arms the timer on every head read
   ([hyper conn.rs:219-240](https://github.com/hyperium/hyper/blob/v1.10.1/src/proto/h1/conn.rs#L219-L240)), so a keep-alive connection idling
   between one response and the next request head is bounded by the same constant as a head that
@@ -255,7 +255,7 @@ reading bytes — but that did not make both of them hudsucker's either.
   saying nothing — but the second is why the value is not the 10s Phase 1 and `socks` use: those
   wrap a one-shot handshake future that cannot re-arm, so their bound does not transfer to a client's
   idle-pool budget. Both roles are pinned by tests
-  ([egress.rs:200-242](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-proxy/tests/egress.rs#L200-L242), [egress.rs:301-356](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-proxy/tests/egress.rs#L301-L356)).
+  ([egress.rs:200-244](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-proxy/tests/egress.rs#L200-L244), [egress.rs:303-358](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-proxy/tests/egress.rs#L303-L358)).
 
   It reaches the inner connection of a **TLS-intercepted** tunnel too: hudsucker clones the builder
   into `InternalProxy` ([hudsucker mod.rs:156-164](https://github.com/omjadas/hudsucker/blob/v0.24.1/src/proxy/mod.rs#L156-L164)) and serves the
@@ -263,13 +263,15 @@ reading bytes — but that did not make both of them hudsucker's either.
   tunnel forwarded raw is not bounded — it leaves HTTP/1 at the CONNECT upgrade. A partially-sent
   head is dropped, not answered: hyper writes no `408`, so the Phase 1 status code did not come back
   with the Phase 1 bound.
-- **Connections that send nothing at all.** <span class="status-caveat">open</span> The bound above
-  arms only once hyper-util has sniffed the HTTP/2 preface and picked a protocol, and that read
+- **Connections stalled inside the HTTP/2 preface sniff.** <span class="status-caveat">open</span>
+  The bound arms only once hyper-util has sniffed the preface and picked a protocol, and that read
   carries no deadline of its own
-  ([hyper-util auto/mod.rs:337-372](https://github.com/hyperium/hyper-util/blob/v0.1.20/src/server/conn/auto/mod.rs#L337-L372)). A peer that
-  connects and writes zero bytes is therefore still held. It needs a deadline on the accepted
-  stream rather than a server setting, so it is tracked separately, in
-  [#272](https://github.com/pleaseai/honmoon/issues/272).
+  ([hyper-util auto/mod.rs:337-372](https://github.com/hyperium/hyper-util/blob/v0.1.20/src/server/conn/auto/mod.rs#L337-L372)). It keeps
+  waiting while every byte sent so far matches a prefix of the 24-byte preface and fewer than 24 have
+  arrived — sending nothing at all is only the simplest way to sit there, and 22 matching bytes does
+  it too. One diverging byte ends the sniff, which is why an ordinary stalled request head *is*
+  bounded. Closing this needs a deadline on the accepted stream rather than a server setting, so it
+  is tracked separately, in [#272](https://github.com/pleaseai/honmoon/issues/272).
 - **Oversized head.** hyper bounds its own header buffer, so this is not unbounded — but the bound
   is hyper's `max_buf_size` default and honmoon neither chooses nor asserts it. The page claims no
   8 KB cap.
@@ -440,7 +442,7 @@ On Linux the child no longer shares the host's loopback, so those listeners are 
 Unix-socket bridge into the child's namespace instead
 ([ADR-0005](https://github.com/pleaseai/honmoon/blob/main/.please/docs/decisions/0005-empty-namespace-and-bridged-proxy-sockets.md)). `run` uses an
 in-memory audit ring and does **not** expose the management API — it is the ephemeral,
-single-command mode ([gateway.rs:156-172](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-proxy/src/gateway.rs#L156-L172)).
+single-command mode ([gateway.rs:176-192](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-proxy/src/gateway.rs#L176-L192)).
 
 ::: tip Enforcing on Linux and macOS, advisory elsewhere (TD-003)
 An **unprivileged** child that ignores the env vars reaches nothing over the network rather than
@@ -483,7 +485,7 @@ arm waits forever rather than firing at once and killing the gateway
 | `--tls-intercept` | off | Terminate TLS to inspect request bodies. Agents must trust the CA; `InterceptPolicy::All` when set, `None` otherwise | [main.rs:154-157](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-cli/src/main.rs#L154-L157), [main.rs:640-659](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-cli/src/main.rs#L640-L659) |
 | `--pii-mode` | `detect` | `detect` audits the would-be verdict; `block` enforces it inline. `block` requires `--tls-intercept` | [main.rs:190-195](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-cli/src/main.rs#L190-L195), [main.rs:616-618](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-cli/src/main.rs#L616-L618) |
 | `--redact-secrets` | off | Rewrite detected secrets and Tier-1 PII to stable placeholders before forwarding, and restore them in identity-encoded responses. Requires `--tls-intercept` | [main.rs:158-168](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-cli/src/main.rs#L158-L168) |
-| `--signed-body` | `block` | What to do when redaction would rewrite a body an authentication signature covers: `block` refuses locally with `403`, `forward` sends the original bytes unredacted. Requires `--redact-secrets` | [main.rs:169-189](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-cli/src/main.rs#L169-L189), [gateway.rs:82-95](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-proxy/src/gateway.rs#L82-L95) |
+| `--signed-body` | `block` | What to do when redaction would rewrite a body an authentication signature covers: `block` refuses locally with `403`, `forward` sends the original bytes unredacted. Requires `--redact-secrets` | [main.rs:169-189](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-cli/src/main.rs#L169-L189), [gateway.rs:102-115](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-proxy/src/gateway.rs#L102-L115) |
 | `--mgmt-token` | (minted at `~/.honmoon/mgmt-token`, `0600`) | Bearer token required by **every** `/api/*` route — the audit, approval and policy reads as well as the Claude Code hook endpoint. Browsers exchange it at `GET /login?token=…` — the URL honmoon prints on startup — for a session secret they send in the `X-Honmoon-Session` header; deliberately not a cookie, whose scope would cover every other port on `127.0.0.1` (#188). `--hook-token` / `HONMOON_HOOK_TOKEN` remain accepted as deprecated aliases. Prefer the environment variable to the flag: a command line can be read by other local users via `ps` (how far that reaches is platform- and configuration-dependent), while a token file honmoon created is `0600`. An existing file that is readable beyond its owner is reported rather than tightened — replacing such a token is the operator's call, since it invalidates anything holding the old value. Minting — whether the file is absent or empty — happens under a `mgmt-token.lock` sentinel in the same directory, so a gateway and an `@honmoon/api` starting together converge on one token instead of each keeping the one it minted (#189); a lock a start left behind by crashing mid-mint is broken after ten seconds, and a start that waits thirty seconds for one refuses rather than minting a second token. `@honmoon/api` reads only the variable or the file, never this flag | [main.rs:99-138](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-cli/src/main.rs#L99-L138), [mgmt_token.rs:301-402](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-cli/src/mgmt_token.rs#L301-L402), [auth.ts:64-68](https://github.com/pleaseai/honmoon/blob/main/packages/api/src/auth.ts#L64-L68), [auth.ts:310-362](https://github.com/pleaseai/honmoon/blob/main/packages/api/src/auth.ts#L310-L362) |
 | `--audit-log` | (in-memory only) | Append every **recorded** verdict — the set the intro describes, not each forwarded request — and any recorded security degradation, to a JSONL file. Must name a **regular file**: opened with `O_NOFOLLOW`, so a symlink as the final path component is refused, as are a FIFO, socket, device and directory, and the refusal aborts startup. Created owner-only when absent; an existing file keeps its mode | [main.rs:79-98](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-cli/src/main.rs#L79-L98), [main.rs:629-638](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-cli/src/main.rs#L629-L638) |
 
@@ -500,8 +502,8 @@ in-process TCP upstream and a hand-rolled client over loopback exercise the **re
 | `plain_http_to_denied_host_is_blocked_with_403` | Cleartext `http://` is gated too — no bypass by skipping `CONNECT` | [egress.rs:144-162](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-proxy/tests/egress.rs#L144-L162) |
 | `absolute_form_https_without_connect_is_blocked_with_403` | The `https://` scheme alone does not prove an authorized tunnel | [egress.rs:164-181](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-proxy/tests/egress.rs#L164-L181) |
 | `origin_form_request_is_gated_via_host_header` | `GET /` is gated on its `Host` header, not on an empty host | [egress.rs:183-198](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-proxy/tests/egress.rs#L183-L198) |
-| `partial_request_head_is_dropped_after_the_head_read_timeout` | A head that never completes is dropped rather than held for the life of the process | [egress.rs:200-242](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-proxy/tests/egress.rs#L200-L242) |
-| `forwarded_request_preserves_the_client_header_casing` | Supplying a server builder keeps hudsucker's two wire-fidelity settings rather than silently dropping them | [egress.rs:244-279](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-proxy/tests/egress.rs#L244-L279) |
+| `partial_request_head_is_dropped_after_the_head_read_timeout` | A head that never completes is dropped rather than held for the life of the process | [egress.rs:200-244](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-proxy/tests/egress.rs#L200-L244) |
+| `forwarded_request_preserves_the_client_header_casing` | Supplying a server builder keeps hudsucker's two wire-fidelity settings rather than silently dropping them | [egress.rs:246-281](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-proxy/tests/egress.rs#L246-L281) |
 
 The Phase 1 `405`-on-non-CONNECT test is gone on purpose: since hudsucker the proxy serves plain
 HTTP as well, so a `GET http://denied/` is answered with the stronger `403` rather than a method

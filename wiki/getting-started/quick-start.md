@@ -210,12 +210,12 @@ stateDiagram-v2
 
 | Outcome | HTTP status | When | Source |
 |---------|------------|------|--------|
-| Tunnel established | `200 Connection Established` | Verdict `Allow` (or approved `pause`), upstream reachable | [gateway.rs:156-161](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-proxy/src/gateway.rs#L156-L161) |
-| Forbidden | `403` | Verdict `Deny`, or a `pause` rejected/timed out | [gateway.rs:196](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-proxy/src/gateway.rs#L196) |
-| Held, then resolved | — → `200`/`403` | Verdict `Pause` — held in the approval queue | [gateway.rs:206-271](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-proxy/src/gateway.rs#L206-L271) |
-| Service unavailable | `503` | `pause` but the approval queue is full (fail closed) | [gateway.rs:218-230](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-proxy/src/gateway.rs#L218-L230) |
-| Method not allowed | `405` | Non-CONNECT method | [gateway.rs:125-128](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-proxy/src/gateway.rs#L125-L128) |
-| Bad request / timeout / bad gateway | `400` / `408` / `502` | Malformed head / slowloris / upstream failed | [gateway.rs:113-153](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-proxy/src/gateway.rs#L113-L153) |
+| Tunnel established | `200 Connection Established` | Verdict `Allow` (or approved `pause`), upstream reachable | [gateway.rs:195-200](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-proxy/src/gateway.rs#L195-L200) |
+| Forbidden | `403` | Verdict `Deny`, or a `pause` rejected/timed out | [gateway.rs:271](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-proxy/src/gateway.rs#L271) |
+| Held, then resolved | — → `200`/`403` | Verdict `Pause` — held in the approval queue | [gateway.rs:281-346](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-proxy/src/gateway.rs#L281-L346) |
+| Service unavailable | `503` | `pause` but the approval queue is full (fail closed) | [gateway.rs:293-305](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-proxy/src/gateway.rs#L293-L305) |
+| Method not allowed | `405` | Non-CONNECT method | [gateway.rs:164-167](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-proxy/src/gateway.rs#L164-L167) |
+| Bad request / timeout / bad gateway | `400` / `408` / `502` | Malformed head / slowloris / upstream failed | [gateway.rs:152-192](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-proxy/src/gateway.rs#L152-L192) |
 
 ::: tip `pause` now holds for approval (Phase 4)
 A `pause` verdict **holds the connection** in the approval queue until a human approves it (via the

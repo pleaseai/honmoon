@@ -50,7 +50,7 @@ flowchart TB
   style api fill:#2d333b,stroke:#3fb950,color:#e6edf3
   style browser fill:#161b22,stroke:#30363d,color:#e6edf3
 ```
-<!-- Sources: crates/honmoon-mgmt/src/lib.rs:1-75, crates/honmoon-proxy/src/gateway.rs:53-78, packages/api/src/index.ts:1-18 -->
+<!-- Sources: crates/honmoon-mgmt/src/lib.rs:1-75, crates/honmoon-proxy/src/gateway.rs:73-98, packages/api/src/index.ts:1-18 -->
 
 ## `honmoon-mgmt` — the in-process management API
 
