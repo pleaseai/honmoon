@@ -1,0 +1,21 @@
+.claude/agent-memory/review-review-documentation-analyzer/pr273_head_read_timeout_restored.md
+  s_9fcafa2b9ca1f1::t_6c129e9097b556 30-33,53-57
+.claude/agent-memory/review-review-security-reviewer/gateway-head-read-timeout-reach.md
+  s_9fcafa2b9ca1f1::t_fb19c4f5ef05bd 41-46
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "e7cb27ea70e6c74ac99b365a7a9b99794fbc4167",
+  "prompts": {},
+  "sessions": {
+    "s_9fcafa2b9ca1f1": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a66aad7f-306b-4110-94b3-2a72437a2de5",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
