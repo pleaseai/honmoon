@@ -1,6 +1,13 @@
 // Generates llms-full.txt: full page content inlined in <doc> blocks, frontmatter stripped.
-import { readFileSync, writeFileSync } from 'node:fs'
-import { join, dirname } from 'node:path'
+//
+// `renderBundle()` is exported because `scripts/check-wiki-bundle-current.ts`
+// holds the requirement in `AGENTS.md` that a content change is followed by a
+// regeneration, and the only way to check that without re-implementing this
+// file — which could then drift from it exactly the way the bundle drifts from
+// the pages — is to call it.
+import { readFileSync, realpathSync, writeFileSync } from 'node:fs'
+import { dirname, join, resolve } from 'node:path'
+import process from 'node:process'
 import { fileURLToPath } from 'node:url'
 
 const wikiRoot = join(dirname(fileURLToPath(import.meta.url)), '..')
@@ -39,11 +46,74 @@ const header = `# Honmoon — Full Documentation
 
 `
 
-let out = header
-for (const [rel, title] of pages) {
-  const body = stripFrontmatter(readFileSync(join(wikiRoot, rel), 'utf8')).trimEnd()
-  out += `<doc title="${title}" path="wiki/${rel}">\n${body}\n</doc>\n\n`
+/** Where the bundle is written, and where the check reads it back from. */
+export const BUNDLE_PATH = join(wikiRoot, 'llms-full.txt')
+
+/** How many pages a full bundle inlines, for a caller reporting the result. */
+export const PAGE_COUNT = pages.length
+
+/**
+ * The exact bytes `llms-full.txt` must hold, built from the pages on disk.
+ *
+ * Pure: it reads the pages and returns the text, so a caller can compare the
+ * result against the committed file without writing anything.
+ */
+export function renderBundle() {
+  let out = header
+  for (const [rel, title] of pages) {
+    const body = stripFrontmatter(readFileSync(join(wikiRoot, rel), 'utf8')).trimEnd()
+    out += `<doc title="${title}" path="wiki/${rel}">\n${body}\n</doc>\n\n`
+  }
+  return out
 }
 
-writeFileSync(join(wikiRoot, 'llms-full.txt'), out)
-console.log(`wrote llms-full.txt (${out.length} bytes, ${pages.length} docs)`)
+/**
+ * Whether this file is the entry point, rather than an import.
+ *
+ * Not `import.meta.main`, which is Bun and Node >= 24.2 only. `wiki/AGENTS.md`
+ * documents this as a `bun` command, but it is plain ESM that has been run with
+ * `node` too, and on an older Node `import.meta.main` reads as `undefined` — so
+ * the guard would skip the write, exit 0, and leave a contributor believing
+ * they had regenerated the bundle. That is the silent staleness this file's
+ * checker exists to catch, and it should not be introduced here to build it.
+ * Comparing the entry path works on every runtime that can run the file at all.
+ *
+ * The plain comparison is tried before `realpathSync` so that an ordinary
+ * `bun .vitepress/gen-llms-full.mjs` is decided without a filesystem call —
+ * otherwise a throw there would answer "not the entry point" for a run that is
+ * one, which is the same silence by another route.
+ */
+function invokedAsScript() {
+  const entry = process.argv[1]
+  if (entry === undefined) {
+    return false
+  }
+  const self = fileURLToPath(import.meta.url)
+  // The ordinary invocation is decided here, without touching the filesystem,
+  // so the symlink fallback below is never what stops a real run from writing.
+  if (resolve(entry) === self) {
+    return true
+  }
+  try {
+    return realpathSync(entry) === realpathSync(self)
+  }
+  catch (error) {
+    // Only reachable once `entry` already names a different path than this
+    // file, so `false` is the answer either way and the symlink question is
+    // moot. Said out loud regardless: the one thing this file must never do is
+    // decline to write and exit quietly, which is the silence its own checker
+    // exists to break.
+    console.error(
+      `gen-llms-full.mjs: could not resolve ${entry} `
+      + `(${error instanceof Error ? error.message : String(error)}) — treating it as a `
+      + 'different file and writing nothing',
+    )
+    return false
+  }
+}
+
+if (invokedAsScript()) {
+  const out = renderBundle()
+  writeFileSync(BUNDLE_PATH, out)
+  console.log(`wrote llms-full.txt (${out.length} bytes, ${PAGE_COUNT} docs)`)
+}
