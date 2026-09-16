@@ -1,0 +1,23 @@
+wiki/llms-full.txt
+  s_46b22fa6e318c3::t_95d8504c214c8f 2298,2302-2304,2361,2432
+scripts/check-wiki-source-anchors.test.ts
+  s_46b22fa6e318c3::t_388f31373b45cf 509-606
+wiki/deep-dive/control-plane.md
+  s_46b22fa6e318c3::t_4e5eeb18305a44 64,68-70,127,198
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "4f3fa4d40c7b51b9c9134086395281e6994ac85b",
+  "prompts": {},
+  "sessions": {
+    "s_46b22fa6e318c3": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "3b7a4deb-5806-47a3-ad55-814603ce894c",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
