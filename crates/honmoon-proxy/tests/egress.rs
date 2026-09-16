@@ -211,9 +211,11 @@ fn partial_request_head_is_dropped_after_the_head_read_timeout() {
     let proxy = start_proxy(allow_policy("allowed.example"));
 
     let mut s = TcpStream::connect(("127.0.0.1", proxy)).unwrap();
-    // Comfortably past the proxy's own bound, so a failure here reads as "the
-    // proxy did not close the connection" rather than as a hung suite.
-    let bound = HEAD_READ_TIMEOUT * 3;
+    // Past the proxy's own bound, so a failure here reads as "the proxy did not
+    // close the connection" rather than as a hung suite. What separates armed from
+    // unarmed is not this margin, though: with no timer installed nothing closes
+    // the connection at all, at any bound.
+    let bound = HEAD_READ_TIMEOUT * 2;
     s.set_read_timeout(Some(bound)).unwrap();
 
     // A head that never terminates: header lines, but no blank line after them.
