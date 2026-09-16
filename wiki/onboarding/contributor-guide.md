@@ -67,7 +67,7 @@ Rust's headline feature is that memory safety is checked at compile time, with n
 each value has one owner; you either **move** ownership or **borrow** a reference (`&` read-only,
 `&mut` exclusive-mutable). You will mostly *borrow* in this codebase. When the gateway shares one
 policy across many connections, it wraps it in an `Arc` (atomic reference count) and clones the
-*handle*, not the data ([gateway.rs:46-55](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-proxy/src/gateway.rs#L46-L55)):
+*handle*, not the data ([gateway.rs:65-74](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-proxy/src/gateway.rs#L65-L74)):
 
 ```rust
 let policy = std::sync::Arc::new(policy);     // shared ownership
@@ -87,7 +87,7 @@ The proxy is asynchronous; the policy engine is not. That split is intentional �
 a socket, so it stays a set of plain synchronous functions you can test without a runtime.
 
 In `honmoon-proxy`, async works much like JS `async`/`await`, with `tokio` as the event loop
-(think Node's libuv) ([gateway.rs:42-60](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-proxy/src/gateway.rs#L42-L60)):
+(think Node's libuv) ([gateway.rs:61-79](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-proxy/src/gateway.rs#L61-L79)):
 
 | JS / Node | Rust / tokio |
 |-----------|--------------|
@@ -100,7 +100,7 @@ In `honmoon-proxy`, async works much like JS `async`/`await`, with `tokio` as th
 
 The accept loop spawns one task per connection — the Rust equivalent of handling each request on
 its own green thread. The slowloris guard is a `tokio::time::timeout` around reading the request
-head ([gateway.rs:64-67](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-proxy/src/gateway.rs#L64-L67)).
+head ([gateway.rs:83-86](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-proxy/src/gateway.rs#L83-L86)).
 
 ### 1.3 CEL — the policy condition language
 
@@ -162,7 +162,7 @@ flowchart LR
   style parse fill:#161b22,stroke:#6d5dfc,color:#e6edf3
   style ext fill:#161b22,stroke:#30363d,color:#e6edf3
 ```
-<!-- Sources: ARCHITECTURE.md:50-80, crates/honmoon-proxy/src/gateway.rs:62-112 -->
+<!-- Sources: ARCHITECTURE.md:50-80, crates/honmoon-proxy/src/gateway.rs:81-131 -->
 
 Three Rust crates form a clean dependency chain — `cli` → `proxy` → `core` — and `core` depends on
 nothing networked. Read [Architecture](/deep-dive/architecture) for the full layer model.

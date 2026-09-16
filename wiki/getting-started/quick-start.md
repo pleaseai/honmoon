@@ -239,7 +239,7 @@ bun test
 ```
 
 The egress test proves an allowed host tunnels (`200`) and a denied host is blocked (`403`)
-hermetically ([egress.rs:74-127](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-proxy/tests/egress.rs#L74-L127)); the `honmoon-mgmt`
+hermetically ([egress.rs:104-157](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-proxy/tests/egress.rs#L104-L157)); the `honmoon-mgmt`
 e2e test drives a full `pause` → approve-over-HTTP → tunnel (and reject → `403`) cycle
 ([e2e.rs](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-mgmt/tests/e2e.rs)).
 
