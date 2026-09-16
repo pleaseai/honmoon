@@ -219,7 +219,7 @@ Verified once against the #121 shape, so do not re-derive:
   or a four-char `\xNN`. So no newline/CR can ever reach the record (no CWE-117),
   and no output can spell `none` (that needs 4 chars with no backslash, and the
   only 4-char form starts with one) — the sentinel is unforgeable.
-  **#248 closed the one residual that left.** `0x20` and `0x3d` used to pass
+  **#248 (PR #277) closed the one residual that left.** `0x20` and `0x3d` used to pass
   through literally into an unquoted logfmt-ish field
   (`tracing_subscriber::fmt`, not JSON — see honmoon-cli main.rs), which could
   empty or mis-split a naive key=value read but could never forge a second field
