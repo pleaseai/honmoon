@@ -61,13 +61,13 @@ shared `GatewayState`. `honmoon gateway` runs the proxy and this API on one toki
 
 | Route | Method | Returns | Source |
 |-------|--------|---------|--------|
-| `/api/audit?limit=N` | GET | Recent audit events, newest first (default 200, cap 1000) | [lib.rs:86-93](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-mgmt/src/lib.rs#L86-L93) |
+| `/api/audit?limit=N` | GET | Recent audit events, newest first (default 200, cap 1000) | [lib.rs:633-640](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-mgmt/src/lib.rs#L633-L640) |
 | `/api/approvals` | GET | Requests held pending approval | [lib.rs:642-644](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-mgmt/src/lib.rs#L642-L644) |
 | `/api/approvals/{id}/approve` | POST | Resolve → wakes the held connection | [lib.rs:651-653](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-mgmt/src/lib.rs#L651-L653) |
 | `/api/approvals/{id}/reject` | POST | Resolve → blocks the held connection | [lib.rs:655-657](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-mgmt/src/lib.rs#L655-L657) |
-| `/api/policy` | GET | Active policy (raw YAML + parsed) | [lib.rs:129-134](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-mgmt/src/lib.rs#L129-L134) |
-| `/healthz` | GET | `{status:"ok"}` | [lib.rs:77-79](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-mgmt/src/lib.rs#L77-L79) |
-| anything else | — | Embedded dashboard (SPA fallback) | [lib.rs:138-168](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-mgmt/src/lib.rs#L138-L168) |
+| `/api/policy` | GET | Active policy (raw YAML + parsed) | [lib.rs:676-681](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-mgmt/src/lib.rs#L676-L681) |
+| `/healthz` | GET | `{status:"ok"}` | [lib.rs:276-278](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-mgmt/src/lib.rs#L276-L278) |
+| anything else | — | Embedded dashboard (SPA fallback) | [lib.rs:811-844](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-mgmt/src/lib.rs#L811-L844) |
 
 Every `/api` row above requires the management token (issue #173) — either
 `Authorization: Bearer <token>` or the session secret in the `X-Honmoon-Session` header that
@@ -124,7 +124,7 @@ that does. Revocation is still rotating the token, as it is for the bearer.
 
 One careful detail: the SPA fallback **refuses to mask an unmatched `/api/...` path as `200 text/html`**
 — those 404 honestly, so a failed management action is never hidden behind the dashboard shell
-([lib.rs:142-146](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-mgmt/src/lib.rs#L142-L146)).
+([lib.rs:816-821](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-mgmt/src/lib.rs#L816-L821)).
 
 ## The embedded dashboard pipeline
 
@@ -195,7 +195,7 @@ sequenceDiagram
   API-->>UI: {resolved}
   UI->>API: refresh GET /api/approvals
 ```
-<!-- Sources: apps/dashboard/src/components/Approvals.tsx:7-71, crates/honmoon-mgmt/src/lib.rs:104-121, crates/honmoon-proxy/src/approval.rs:148-160 -->
+<!-- Sources: apps/dashboard/src/components/Approvals.tsx:7-71, crates/honmoon-mgmt/src/lib.rs:642-668, crates/honmoon-proxy/src/approval.rs:148-160 -->
 
 ## `@honmoon/api` — the durable audit-query layer
 
