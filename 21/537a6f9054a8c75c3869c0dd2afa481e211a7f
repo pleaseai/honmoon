@@ -1,0 +1,31 @@
+.claude/agent-memory/review-review-documentation-analyzer/pr236_client_quiet_second_window.md
+  s_36b01612950d8f::t_5b02137ef120d1 18-21
+.claude/agent-memory/review-review-documentation-analyzer/pr225_oversized_copy_warning_verified.md
+  s_36b01612950d8f::t_5b02137ef120d1 13
+crates/honmoon-proxy/src/runtime/postgres.rs
+  s_36b01612950d8f::t_e4314487df84ca 222
+  s_36b01612950d8f::t_6c74ab0823cb11 183-221,223-227
+  s_36b01612950d8f::t_72e4cf3b3d78cd 860-867,870-876,1484-1486,1500
+  s_36b01612950d8f::t_bb1c5411284a7f 3734-3738
+  s_36b01612950d8f::t_2048a8e0142026 3719-3733,3739-3792,3802-3805
+  s_36b01612950d8f::t_0efa44cd82fb00 4114-4120,4122,4410-4472
+  s_36b01612950d8f::t_b884b39e0961b8 4473
+.claude/agent-memory/review-review-security-reviewer/postgres-refusal-ordering-barrier.md
+  s_36b01612950d8f::t_5b02137ef120d1 3,184-188,207-208,215-216,221-231,235-236,238-243
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "21537a6f9054a8c75c3869c0dd2afa481e211a7f",
+  "prompts": {},
+  "sessions": {
+    "s_36b01612950d8f": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d0ce7f8c-1d1b-428b-aa80-a4b889ca8122",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
