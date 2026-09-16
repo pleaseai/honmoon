@@ -180,6 +180,51 @@ const REFUSAL_ORDER_STALL_TIMEOUT: std::time::Duration = std::time::Duration::fr
 /// as meaningful when nothing chose it.
 const OVERSIZED_COPY_QUIET_WARNING: std::time::Duration = REFUSAL_ORDER_STALL_TIMEOUT;
 
+/// A backend message tag as a `tracing` field value.
+///
+/// `std::ascii::escape_default` does the work, and is still the right escaping
+/// for the reason the three warnings that carry a tag byte chose it: the
+/// upstream picks the byte and nothing on those paths constrains it to the
+/// protocol's set, so a raw newline in the field would end the record and start
+/// another for any line-oriented collector. On one byte it emits the byte
+/// itself for `0x20..=0x7e` except `\`, `'` and `"`, a two-character escape, or
+/// a four-character `\xNN` — never a control character, and never more than
+/// four characters.
+///
+/// Two bytes it passes through are significant to the *format the field is
+/// written in* rather than to the record. The CLI installs
+/// `tracing_subscriber::fmt()`, whose fields are unquoted `key=value`, so a
+/// `0x20` or a `0x3d` reaching a value renders as `tag= ` or `tag==` and a
+/// logfmt-style splitter downstream reads the value as empty or splits the pair
+/// in the wrong place. That is the whole of it: neither byte can emit a second
+/// pair, close the record or reach the client, because the escaping above
+/// already rules that out. One field read wrong on a session whose upstream is
+/// hostile or broken, not a forged one (#248).
+///
+/// So those two take the `\xNN` form every other byte outside the bare set
+/// already takes, which leaves one rule to hold: a tag renders as itself when
+/// it is printable and means nothing to the log format, and as an escape
+/// otherwise. A value rendered this way is a bare logfmt token by construction
+/// — no space, no `=`, and never a leading `"`, since `escape_default` writes
+/// that byte as `\"`.
+///
+/// Used by all three warnings rather than the one that prompted this. They are
+/// meant to be read together, and three answers to *what does a tag byte look
+/// like in a log* would cost an operator more than the wart did.
+struct LoggedTag(u8);
+
+impl std::fmt::Display for LoggedTag {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self.0 {
+            // Written from the byte rather than spelled out, so the escape and
+            // the byte it stands for cannot drift apart, and in the lowercase
+            // hex `escape_default` uses so the two forms read as one notation.
+            tag @ (b' ' | b'=') => write!(f, "\\x{tag:02x}"),
+            tag => std::fmt::Display::fmt(&std::ascii::escape_default(tag), f),
+        }
+    }
+}
+
 /// Frames honmoon has forwarded that the database still owes the client an
 /// answer for, as the message loop counts them.
 ///
@@ -812,22 +857,23 @@ impl Relay {
         // very value and settles on nothing else — but it is context for the
         // silence, not an alternative to it.
         //
-        // Escaped, not rendered, for the reason the oversized-copy warnings in
-        // [`relay_backend_messages`] give and about the same kind of byte: the
-        // upstream chooses it and nothing here constrains it to the protocol's
-        // set, so a raw newline would split this record in two for any
-        // line-oriented collector. Named `last_tag` rather than their `tag`
-        // because it is not this line's own message — there is no message here,
-        // which is the point — but the last one the client received.
+        // Escaped, not rendered, through the same [`LoggedTag`] the
+        // oversized-copy warnings in [`relay_backend_messages`] use and about
+        // the same kind of byte: the upstream chooses it and nothing here
+        // constrains it to the protocol's set, so a raw newline would split this
+        // record in two for any line-oriented collector. Named `last_tag` rather
+        // than their `tag` because it is not this line's own message — there is
+        // no message here, which is the point — but the last one the client
+        // received.
         //
         // `none` for a session that has delivered nothing at all, which a stall
-        // can expire before. It cannot collide with a tag: `escape_default`
-        // renders one byte as itself, as a two-character escape, or as `\xNN`,
-        // and none of those spells `none`.
-        let last_tag = self.last_tag.map_or_else(
-            || "none".to_owned(),
-            |tag| std::ascii::escape_default(tag).to_string(),
-        );
+        // can expire before. It cannot collide with a tag: [`LoggedTag`] renders
+        // one byte as itself, as a two-character escape, or as `\xNN`, and none
+        // of those spells `none` — four characters with no backslash, where
+        // every four-character form there starts with one.
+        let last_tag = self
+            .last_tag
+            .map_or_else(|| "none".to_owned(), |tag| LoggedTag(tag).to_string());
         tracing::warn!(
             expected = sync_points,
             delivered = self.sync.received(),
@@ -1435,8 +1481,9 @@ where
                             // constrains it to the protocol's set. A raw
                             // newline would split this record in two for any
                             // line-oriented collector, and the record exists to
-                            // be collected.
-                            tag = %std::ascii::escape_default(tag),
+                            // be collected — see [`LoggedTag`], which also keeps
+                            // a space or an `=` out of an unquoted field value.
+                            tag = %LoggedTag(tag),
                             payload_len,
                             outstanding,
                             holding_refusal =
@@ -1450,7 +1497,7 @@ where
                     |outstanding| {
                         tracing::warn!(
                             // Escaped for the same reason, and the same byte.
-                            tag = %std::ascii::escape_default(tag),
+                            tag = %LoggedTag(tag),
                             payload_len,
                             outstanding,
                             holding_refusal =
@@ -3669,6 +3716,80 @@ mod tests {
         );
     }
 
+    #[test]
+    fn no_tag_byte_renders_as_something_an_unquoted_field_reads_as_structure() {
+        // The rule [`LoggedTag`] holds, over the whole byte range rather than at
+        // the two bytes that prompted it (#248). A value reaching a
+        // `tracing_subscriber::fmt` field is written unquoted after a `=`, so it
+        // has to be a bare token: printable, no space to end it early and no `=`
+        // to split the pair somewhere else.
+        for byte in 0..=u8::MAX {
+            let rendered = LoggedTag(byte).to_string();
+            assert!(
+                rendered
+                    .bytes()
+                    .all(|b| (0x21..=0x7e).contains(&b) && b != b'='),
+                "{byte:#04x} renders as {rendered:?}, which an unquoted field cannot carry"
+            );
+            assert!(
+                !rendered.starts_with('"'),
+                "{byte:#04x} renders as {rendered:?}, which a logfmt reader would take \
+                 for the start of a quoted value"
+            );
+            assert_ne!(
+                rendered, "none",
+                "{byte:#04x} would be indistinguishable from give_up's \"nothing delivered\""
+            );
+            // And nothing else moved. The escaping the warnings were already
+            // built on is what the field still goes through everywhere it was
+            // sufficient, so an operator reads one notation rather than two.
+            if byte != b' ' && byte != b'=' {
+                assert_eq!(
+                    rendered,
+                    std::ascii::escape_default(byte).to_string(),
+                    "{byte:#04x} is escaped by this type rather than passed to escape_default"
+                );
+            }
+        }
+        assert_eq!(LoggedTag(b' ').to_string(), r"\x20");
+        assert_eq!(LoggedTag(b'=').to_string(), r"\x3d");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_tag_the_log_format_reads_as_structure_is_escaped_into_the_field() {
+        // The other half of the sibling below, and a weaker byte: `0x20` cannot
+        // end the record or forge a second `key=value` pair — it renders one
+        // field unreadable, because `tracing_subscriber::fmt` writes values
+        // unquoted and a naive logfmt splitter takes the space as the end of
+        // this one. Pinned as what the field actually says, so a call site that
+        // went back to bare `escape_default` fails here.
+        let mut acc = accounting().await;
+        acc.link.forwarded_flush();
+        let upstream = ScriptedUpstream::new([
+            (std::time::Duration::ZERO, vec![b' ', 0, 0, 0, 4]),
+            (REFUSAL_ORDER_STALL_TIMEOUT * 2, Vec::new()),
+        ]);
+
+        let ack = queue_refusal(&acc.link, "honmoon: denied by policy");
+        let (logs, _guard) = capture_logs();
+        let (_stop, ()) = tokio::join!(
+            relay_backend_messages(upstream, &mut acc.relay, &mut acc.taken),
+            async {
+                ack.await.expect("the refusal is written");
+            },
+        );
+
+        let logs = logs.text();
+        assert!(
+            logs.contains(r"last_tag=\x20"),
+            "the space is escaped into the field rather than emptying it, got {logs}"
+        );
+        assert!(
+            !logs.contains("last_tag= "),
+            "no rendering leaves the value looking absent, got {logs}"
+        );
+    }
+
     #[tokio::test(start_paused = true)]
     async fn a_tag_that_would_split_the_record_is_escaped_into_it() {
         // The upstream chooses the tag byte and nothing on this path constrains
@@ -3678,10 +3799,10 @@ mod tests {
         // remainder as a record of its own — which is why the two oversized-copy
         // warnings in this file escape their tag and why this one does.
         //
-        // Pinned as one line rather than as one substring: `escape_default` is
-        // stdlib and needs no test, but *that this field goes through it* is the
-        // guarantee, and dropping it would leave every other assertion here
-        // green.
+        // Pinned as one line rather than as one substring: the escaping
+        // [`LoggedTag`] wraps is stdlib and needs no test, but *that this field
+        // goes through it* is the guarantee, and dropping it would leave every
+        // other assertion here green.
         let mut acc = accounting().await;
         acc.link.forwarded_flush();
         let upstream = ScriptedUpstream::new([
@@ -3990,8 +4111,15 @@ mod tests {
     /// The head of a `CopyData` message too large for the relay to buffer, so it
     /// is written to the client before its payload is streamed.
     fn oversized_head() -> Vec<u8> {
+        oversized_head_tagged(b'd')
+    }
+
+    /// The same head under a tag the caller picks. Nothing on the copy path
+    /// constrains the tag to the protocol's set, so a test about what an
+    /// upstream-chosen byte does to the warning has to be able to send one.
+    fn oversized_head_tagged(tag: u8) -> Vec<u8> {
         let payload_len = (MAX_BUFFERED_BACKEND_MESSAGE + 1_000) as u32;
-        let mut head = vec![b'd'];
+        let mut head = vec![tag];
         head.extend_from_slice(&(payload_len + 4).to_be_bytes());
         head
     }
@@ -4277,6 +4405,70 @@ mod tests {
             Some(&b'E'),
             "the refusal follows the frame rather than landing inside it, got {after:?}"
         );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn both_oversized_copy_lines_escape_a_tag_the_log_format_reads_as_structure() {
+        // One copy that stalls on each side in turn, so the two warnings are
+        // pinned against the same byte rather than one at a time. They are meant
+        // to be read together, and an operator who saw `tag==` on one of them
+        // and `tag=\x3d` on the other would be working out which of the two
+        // lines they were looking at before they could read either (#248).
+        //
+        // `0x3d` rather than give_up's `0x20`: `tracing_subscriber::fmt` writes
+        // field values unquoted, so an `=` splits the pair somewhere the writer
+        // did not choose, where the space only ends it early. Neither can end
+        // the record — the escaping already rules that out — which is why this
+        // asserts on what the field says and not on the record's shape.
+        let payload = oversized_payload();
+        let upstream = ScriptedUpstream::new([
+            (std::time::Duration::ZERO, oversized_head_tagged(b'=')),
+            // Two windows with the head out and nothing behind it: the copy is
+            // parked on the upstream and on nothing else.
+            (OVERSIZED_COPY_QUIET_WARNING * 2, payload.clone()),
+            (std::time::Duration::ZERO, Vec::new()),
+        ]);
+
+        let (mut peer, honmoon_end) = socket_pair_with_small_buffers(4 * 1024).await;
+        let (_read, client_write) = honmoon_end.into_split();
+        let forwarded = Arc::new(Forwarded::new());
+        // Held open for the copy. Nothing is injected here — this test is about
+        // the field, not about what is being kept waiting behind it — but a
+        // closed channel is a different session from the one being described.
+        let (_injections, taken) = mpsc::channel(1);
+
+        let (logs, _guard) = capture_logs();
+        let mut framed = oversized_head_tagged(b'=');
+        framed.extend_from_slice(&payload);
+        let mut seen = vec![0u8; framed.len()];
+        let (handed, read) = tokio::join!(
+            upstream_to_client(upstream, client_write, taken, forwarded),
+            async {
+                // Past the upstream's own two windows, so the payload arrives to
+                // a client that is not draining it and the second window opens
+                // on the write rather than on the read.
+                tokio::time::sleep(OVERSIZED_COPY_QUIET_WARNING * 4).await;
+                peer.read_exact(&mut seen).await
+            },
+        );
+        read.expect("the whole frame reaches the client once it reads again");
+
+        assert_eq!(seen, framed, "the copy is byte-for-byte across both stalls");
+        let logs = logs.text();
+        for line in ["no database bytes", "has not cleared to the client"] {
+            let record: Vec<&str> = logs.lines().filter(|l| l.contains(line)).collect();
+            assert_eq!(
+                record.len(),
+                1,
+                "one {line:?} line for this copy, got {logs}"
+            );
+            assert!(
+                record[0].contains(r"tag=\x3d"),
+                "the `=` is escaped into the field rather than splitting the pair, got {logs}"
+            );
+        }
+
+        let _handed = handed.expect("a whole copy leaves the client's stream framed");
     }
 
     #[tokio::test(start_paused = true)]

@@ -1,6 +1,6 @@
 ---
 name: postgres-refusal-ordering-barrier
-description: 'The honmoon postgres runtime''s refusal ordering barrier after issue #121 (the relay owns the client write half) — what it covers, its live gaps (per-stall bound, the swallowed COPY-Sync of #128, the per-refusal window of #148, the single coverage snapshot of #153), the #211 inversion of the flush-settling tag list into a positive list, the #218 quiet warning inside the oversized copy (escaped tag, holding_refusal read at write time), the #229 second (client-side) window with its pinned non-recreated write_all, the #214 `last_tag` field on give_up''s stall warning (Option<u8>, escape_default, unforgeable `none` sentinel), and the settled rules not to undo.'
+description: 'The honmoon postgres runtime''s refusal ordering barrier after issue #121 (the relay owns the client write half) — what it covers, its live gaps (per-stall bound, the swallowed COPY-Sync of #128, the per-refusal window of #148, the single coverage snapshot of #153), the #211 inversion of the flush-settling tag list into a positive list, the #218 quiet warning inside the oversized copy (escaped tag, holding_refusal read at write time), the #229 second (client-side) window with its pinned non-recreated write_all, the #214 `last_tag` field on give_up''s stall warning (Option<u8>, unforgeable `none` sentinel) and the #248 `LoggedTag` wrapper that escapes a space or `=` tag byte at all three sites, and the settled rules not to undo.'
 metadata:
   type: project
 ---
@@ -181,10 +181,11 @@ Verified once against the #121 shape, so do not re-derive:
   `UnexpectedEof`), and the closure cannot write to the client because `dst`
   holds the mutable borrow. The line is the one place in this file a byte the
   database controls reaches a log record, and it reaches it **escaped**:
-  `tag = %std::ascii::escape_default(tag)`. It was raw (`%(tag as char)`) in
-  #225's first commit and was fixed in that PR after review — a raw newline
-  there splits the record for any line-oriented collector (CWE-117). Do not
-  re-report it, and do not cite the raw form as current.
+  `tag = %LoggedTag(tag)` since #248, `tag = %std::ascii::escape_default(tag)`
+  before it. It was raw (`%(tag as char)`) in #225's first commit and was fixed
+  in that PR after review — a raw newline there splits the record for any
+  line-oriented collector (CWE-117). Do not re-report it, and do not cite the
+  raw form as current.
   Its `holding_refusal` field is read **when the line is written**, not when the
   copy starts: `Relay::pending` (`Relay::queued` before #210) is snapshotted at
   the head because it cannot change during the copy, but the injection channel is
@@ -203,32 +204,43 @@ Verified once against the #121 shape, so do not re-derive:
   Verified once: the timer arm only calls the closure and loops back to the same
   pinned future, `until(None)` pends forever after the reporter is taken, the
   arms are `biased` toward the write, and both log lines escape the
-  upstream-chosen tag (`std::ascii::escape_default`) and carry only integers and
-  a bool otherwise — no CWE-117 regression, no duplication/drop/reorder, no
+  upstream-chosen tag (`std::ascii::escape_default`, wrapped in `LoggedTag`
+  since #248) and carry only integers and a bool otherwise — no CWE-117 regression, no duplication/drop/reorder, no
   per-copy timer or allocation growth. Do not re-report these; the absence of a
   deadline on the copy remains deliberate (ADR-0007).
 
 
 - **#214 put a third database-controlled byte in a log line: `give_up`'s
   `last_tag`.** `Relay::last_tag` became `Option<u8>` (`None` until a message is
-  delivered) and the warning renders `escape_default(tag).to_string()`, or the
-  literal `"none"`. Settled once, do not re-derive:
+  delivered) and the warning renders the tag escaped (through `LoggedTag` since
+  #248), or the literal `"none"`. Settled once, do not re-derive:
   `std::ascii::escape_default` on ONE byte emits exactly one of — the byte
   itself for `0x20..=0x7e` except `\ ' "`, a two-char escape (`\t \r \n \\ \' \"`),
   or a four-char `\xNN`. So no newline/CR can ever reach the record (no CWE-117),
   and no output can spell `none` (that needs 4 chars with no backslash, and the
-  only 4-char form starts with one) — the sentinel is unforgeable. The residual
-  is cosmetic only: `0x20` and `0x3d` pass through literally into an unquoted
-  logfmt-ish field (`tracing_subscriber::fmt`, not JSON — see honmoon-cli
-  main.rs), which can empty or confuse a naive key=value split but cannot forge
-  a second field or a second record from one byte.
+  only 4-char form starts with one) — the sentinel is unforgeable.
+  **#248 closed the one residual that left.** `0x20` and `0x3d` used to pass
+  through literally into an unquoted logfmt-ish field
+  (`tracing_subscriber::fmt`, not JSON — see honmoon-cli main.rs), which could
+  empty or mis-split a naive key=value read but could never forge a second field
+  or a second record from one byte. All three tag fields now go through
+  `LoggedTag`, a `Display` wrapper that renders those two bytes in the same
+  `\xNN` form and defers to `escape_default` for every other byte, so a rendered
+  tag is a bare logfmt token by construction. Do not re-report the residue, and
+  do not propose taking one site back to bare `escape_default`: the three lines
+  are meant to be read together and one answer for all of them was the point.
   The `u8` -> `Option<u8>` change does not touch fail-closed: the settling gate
   became `matches!(relay.last_tag, Some(b'1' | ...))`, and both the old `0`
   sentinel and the new `None` fail that match identically.
-  The escaping now has a regression guard —
+  The escaping has regression guards, so a later diff that drops it fails a test
+  rather than needing this re-derived:
   `a_tag_that_would_split_the_record_is_escaped_into_it` drives a newline tag and
-  asserts the warning stays one line carrying `last_tag=\n` — so a later diff
-  that drops `escape_default` fails a test rather than needing this re-derived.
+  asserts the warning stays one line carrying `last_tag=\n`;
+  `a_tag_the_log_format_reads_as_structure_is_escaped_into_the_field` and
+  `both_oversized_copy_lines_escape_a_tag_the_log_format_reads_as_structure`
+  drive `0x20`/`0x3d` through give_up and through both copy lines; and
+  `no_tag_byte_renders_as_something_an_unquoted_field_reads_as_structure` holds
+  the rule over all 256 bytes.
 
 - **#210 (PR #252) regrouped the barrier state into two types; behaviour is
   unchanged and was checked field-by-field, so do not re-derive the mapping.**

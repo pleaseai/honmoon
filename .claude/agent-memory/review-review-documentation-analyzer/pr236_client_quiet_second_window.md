@@ -15,7 +15,10 @@ Verified accurate, clause by clause:
 - Both quoted log lines in ADR-0007 match the two `tracing::warn!` message strings verbatim
   (mod Rust's `\` line-continuation joins).
 - Both closures carry exactly `tag`, `payload_len`, `outstanding`, `holding_refusal` — same four
-  fields, same escaping (`std::ascii::escape_default`) on `tag`.
+  fields, same escaping on `tag`. (That escaping was bare `std::ascii::escape_default` as verified
+  here; since #248 both closures call it through a `LoggedTag` wrapper that also escapes a `0x20`
+  or `0x3d` tag, which an unquoted `tracing_subscriber::fmt` field would otherwise read as
+  structure. The ADR text is unaffected — it names the fields, not the rendering.)
 - `outstanding` differs by design and the ADR states it correctly: the upstream closure receives
   `len - filled` (what `src` still owes mid-read), the client closure receives `len` (what `dst`
   has not yet taken, chunk-in-flight included, captured before `len -= want`).
