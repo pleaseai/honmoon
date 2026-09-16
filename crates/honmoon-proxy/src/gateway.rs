@@ -22,6 +22,8 @@ use std::time::Duration;
 
 use honmoon_core::{AuditLog, MappingStore, Policy};
 use hudsucker::Proxy;
+use hudsucker::hyper_util::rt::{TokioExecutor, TokioTimer};
+use hudsucker::hyper_util::server::conn::auto::Builder as ServerBuilder;
 use hudsucker::rustls::crypto::aws_lc_rs;
 use tokio::net::TcpListener;
 
@@ -31,6 +33,23 @@ use crate::mitm::HonmoonHandler;
 
 /// How long a `pause`d request is held before it is auto-rejected (no approver).
 pub const DEFAULT_PAUSE_TIMEOUT: Duration = Duration::from_secs(300);
+/// How long a client has to finish sending a request head before the connection
+/// is dropped (slowloris guard).
+///
+/// The listener takes no credentials, so without a deadline a peer that opens a
+/// socket and dribbles header bytes pins a task and a file descriptor for the
+/// life of the process, as many times over as it cares to connect — neither
+/// `honmoon run` nor `honmoon gateway` caps connections. Only the head is
+/// bounded; an established tunnel is long-lived by design and is never timed
+/// out. The value is the Phase 1 proxy's own `HEAD_READ_TIMEOUT`, and the same
+/// bound `socks::HANDSHAKE_TIMEOUT` puts on honmoon's other unauthenticated
+/// front door.
+///
+/// What this bounds is a head that arrives *partially*. A peer that connects
+/// and sends no byte at all is still held, because hyper only arms the bound
+/// once hyper-util's preface sniff has picked a protocol and that sniff has no
+/// deadline of its own — a separate mechanism, tracked in #272.
+pub const HEAD_READ_TIMEOUT: Duration = Duration::from_secs(10);
 /// In-memory audit ring size for ephemeral (`honmoon run`) proxies.
 const DEFAULT_AUDIT_CAPACITY: usize = 1024;
 
@@ -174,6 +193,41 @@ pub fn serve_listener_with_state(state: GatewayState, listener: std::net::TcpLis
     runtime.block_on(serve(state, listener))
 }
 
+/// The HTTP server builder hudsucker serves accepted connections with.
+///
+/// Supplying one at all is what arms [`HEAD_READ_TIMEOUT`]. hyper's
+/// `header_read_timeout` already carries a 30s default, but a *default* is
+/// checked against the connection's `Timer` and silently yields `None` when
+/// there is none (hyper 1.10.1 `common/time.rs:70-78`), and hudsucker's own
+/// builder installs no timer (hudsucker 0.24.1 `proxy/mod.rs:117-124`). A
+/// *configured* one panics rather than warning, so the timer below is what
+/// makes the line under it mean anything.
+///
+/// Because `with_server` *replaces* hudsucker's builder rather than amending
+/// it, everything hudsucker sets has to be reproduced here or it is lost.
+/// hudsucker sets exactly two things on its builder, both HTTP/1 wire fidelity
+/// (`title_case_headers`, `preserve_header_case`) and both repeated below; this
+/// adds the timer and the bound and changes nothing else. `egress.rs` pins both
+/// of them, so dropping either fails a test rather than only this comment.
+///
+/// The HTTP/2 half is left at hyper's defaults, as hudsucker leaves it. It is
+/// not a timer that half is missing: hyper's HTTP/2 server exposes no
+/// header-read bound to arm, and its one defaulted duration —
+/// `keep_alive_timeout`, 20s — does nothing unless `keep_alive_interval` is
+/// set, which defaults to `None` (hyper 1.10.1 `proto/h2/server.rs:73-74`).
+fn server_builder() -> ServerBuilder<TokioExecutor> {
+    let mut builder = ServerBuilder::new(TokioExecutor::new());
+    builder
+        .http1()
+        // hudsucker's settings, reproduced verbatim.
+        .title_case_headers(true)
+        .preserve_header_case(true)
+        // ...plus the timer it never installs, and the bound that needs it.
+        .timer(TokioTimer::new())
+        .header_read_timeout(HEAD_READ_TIMEOUT);
+    builder
+}
+
 /// Run the accept loop on an existing tokio runtime (does not return).
 ///
 /// Used when the proxy shares a runtime with the management API server.
@@ -192,6 +246,7 @@ pub async fn serve(state: GatewayState, std_listener: std::net::TcpListener) -> 
         .with_ca(authority)
         .with_rustls_connector(aws_lc_rs::default_provider())
         .with_http_handler(handler)
+        .with_server(server_builder())
         .build()
         .expect("build proxy");
 

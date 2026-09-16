@@ -5,12 +5,13 @@
 //! loopback. Proves the Phase 1 exit criteria: an allowed host tunnels through
 //! while a denied host is blocked with 403.
 
-use std::io::{Read, Write};
+use std::io::{ErrorKind, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use honmoon_core::Policy;
+use honmoon_proxy::gateway::HEAD_READ_TIMEOUT;
 
 /// A minimal HTTP upstream that answers every connection with `200 OK / "ok"`.
 fn start_upstream() -> u16 {
@@ -23,6 +24,35 @@ fn start_upstream() -> u16 {
             let _ = s.read(&mut buf);
             let _ =
                 s.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok");
+        }
+    });
+    port
+}
+
+/// An upstream that answers `200 OK` with the request head it received as the
+/// body, so a test can assert on the bytes that reached the far side verbatim.
+fn start_head_echo_upstream() -> u16 {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    thread::spawn(move || {
+        for stream in listener.incoming() {
+            let Ok(mut s) = stream else { continue };
+            let mut head = Vec::new();
+            let mut byte = [0u8; 1];
+            while s.read(&mut byte).map(|n| n == 1).unwrap_or(false) {
+                head.push(byte[0]);
+                if head.ends_with(b"\r\n\r\n") {
+                    break;
+                }
+            }
+            let _ = s.write_all(
+                format!(
+                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    head.len()
+                )
+                .as_bytes(),
+            );
+            let _ = s.write_all(&head);
         }
     });
     port
@@ -164,5 +194,86 @@ fn origin_form_request_is_gated_via_host_header() {
     assert!(
         resp.starts_with("HTTP/1.1 403"),
         "expected 403, got: {resp:?}"
+    );
+}
+
+/// A client that opens a connection and never finishes its request head must be
+/// dropped rather than held forever (#267).
+///
+/// hudsucker supplies hyper no `Timer`, and hyper's `header_read_timeout`
+/// default silently does not arm without one — so before the gateway passed its
+/// own server builder this connection stayed open for the life of the process,
+/// one task and one file descriptor each. The gateway now bounds the head read
+/// at [`HEAD_READ_TIMEOUT`], after which hyper drops the connection (it writes
+/// no response: the head it would have answered never arrived).
+#[test]
+fn partial_request_head_is_dropped_after_the_head_read_timeout() {
+    let proxy = start_proxy(allow_policy("allowed.example"));
+
+    let mut s = TcpStream::connect(("127.0.0.1", proxy)).unwrap();
+    // Comfortably past the proxy's own bound, so a failure here reads as "the
+    // proxy did not close the connection" rather than as a hung suite.
+    let bound = HEAD_READ_TIMEOUT * 3;
+    s.set_read_timeout(Some(bound)).unwrap();
+
+    // A head that never terminates: header lines, but no blank line after them.
+    s.write_all(b"CONNECT allowed.example:443 HTTP/1.1\r\nHost: allowed.example:443\r\n")
+        .unwrap();
+
+    let started = Instant::now();
+    let mut buf = [0u8; 256];
+    loop {
+        match s.read(&mut buf) {
+            // FIN — the proxy closed it.
+            Ok(0) => break,
+            // A refusal head first would also be fine; keep reading to the close.
+            Ok(_) => continue,
+            Err(e) if e.kind() == ErrorKind::ConnectionReset => break,
+            Err(e) => panic!(
+                "proxy held a partially-sent request head for {bound:?} without closing it: {e}"
+            ),
+        }
+    }
+    assert!(
+        started.elapsed() < bound,
+        "connection closed only after {:?}, past the {bound:?} bound",
+        started.elapsed()
+    );
+}
+
+/// Supplying a server builder to hudsucker *replaces* the one it would have
+/// built, so the two settings it puts there — `title_case_headers` and
+/// `preserve_header_case` — are lost unless honmoon repeats them. Losing them is
+/// a wire-fidelity regression on a proxy: hyper would normalize every received
+/// header name to lowercase and the upstream would see a request honmoon's
+/// client never sent. Assert the original casing survives the round trip.
+#[test]
+fn forwarded_request_preserves_the_client_header_casing() {
+    let upstream = start_head_echo_upstream();
+    let proxy = start_proxy(allow_policy("127.0.0.1"));
+
+    let mut s = connect_to_proxy(proxy);
+    s.write_all(
+        format!(
+            "GET http://127.0.0.1:{upstream}/ HTTP/1.1\r\n\
+             Host: 127.0.0.1:{upstream}\r\n\
+             x-CUSTOM-Header: kept\r\n\r\n"
+        )
+        .as_bytes(),
+    )
+    .unwrap();
+
+    let mut response = String::new();
+    s.read_to_string(&mut response).unwrap();
+    assert!(
+        response.contains("x-CUSTOM-Header"),
+        "upstream saw a renormalized header name: {response:?}"
+    );
+    // The response side pins the other setting: `Date` is hyper's own header,
+    // so its casing comes from `title_case_headers` rather than from anything
+    // the upstream wrote.
+    assert!(
+        response.contains("\r\nDate:"),
+        "response header names were not title-cased: {response:?}"
     );
 }
