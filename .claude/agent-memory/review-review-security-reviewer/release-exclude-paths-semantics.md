@@ -21,8 +21,11 @@ them when this list is touched again:
 - Matching is a literal prefix `file.indexOf(path + '/') === 0` after
   `normalizePaths` strips surrounding slashes. So it is top-level-only (`docs/` matches,
   `crates/x/docs/` does not), and a glob entry such as `wiki/**` would match nothing.
-- `!commit.files` → the commit is **kept**. The failure direction is "release anyway",
-  never "silently suppress".
+- `!commit.files` → the commit is **kept**. But an **empty** commit is *dropped*, not kept:
+  `getCommitFiles` returns `[]` rather than `undefined`, and `[].every(...)` is vacuously
+  true. So `git commit --allow-empty` carrying a `Release-As:` footer cuts nothing — the
+  footer is read only after this filter. Documented in docs/releasing.md at PR #280; do not
+  "fix" it by dropping the exclusion.
 - File lists are not silently truncated: the manifest passes `backfillFiles: true`, so a
   PR with more than 100 files is re-fetched over REST (`getCommitFiles`, warns past 3000).
 - `exclude-paths` can only *remove* commits from the bump and the CHANGELOG. It can never

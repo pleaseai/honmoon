@@ -65,7 +65,15 @@ release is never visible without them. Everything that follows from that is unde
 To cut a version release-please would not pick on its own — a specific number, or any release
 at all out of hidden-type commits — put `Release-As: 0.3.0` in a commit body on `main`. The
 footer is a note, and a commit carrying a note renders even under a hidden section, so it
-clears the empty-CHANGELOG gate that would otherwise suppress the release. A version carrying a pre-release identifier (`v0.2.0-rc.1` — anything with a
+clears the empty-CHANGELOG gate that would otherwise suppress the release.
+
+That footer is only read from a commit that survives the path filter in step 1, so the commit
+carrying it must touch at least one file outside `exclude-paths`. Two shapes look right and do
+nothing: `Release-As:` on a commit confined to `docs/` or `scripts/`, and `Release-As:` on a
+`git commit --allow-empty`. The empty commit is dropped by the same rule as the confined one —
+"every file is under an excluded path" is vacuously true of a commit with no files, and
+release-please reads the footer only after that filter has run. Put the footer on the commit
+that carries the change, or on one that also touches a counted path. A version carrying a pre-release identifier (`v0.2.0-rc.1` — anything with a
 `-`) is marked a GitHub pre-release and never becomes "latest".
 
 `scripts/bump-version.ts` predates release-please and is no longer part of this path; the
