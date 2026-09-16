@@ -530,13 +530,14 @@ const ROUTE_ROWS = [
  * What `control-plane.md`'s `honmoon-mgmt` citations actually display.
  *
  * Rule 3 judges a range's *first line* and nothing else, so a range that slid
- * onto a content line reads as fine: every row of this table named an axum
- * handler while displaying the `HookSalt`/`HookKey` constructors ~500 lines
- * above it, and the scan stayed quiet through all seven (#266). The module doc
- * says nothing mechanical can close that in general, and that stands — it would
- * have to know what the prose means. This page is the case where it does not
- * have to: the prose names the handler, so the range can be required to show
- * the function `router()` binds to that route.
+ * onto a content line reads as fine: four of the seven rows below named an axum
+ * handler while displaying an unrelated declaration hundreds of lines above it,
+ * and the scan stayed quiet through all four (#266) — the other three came back
+ * from #264 already current, and are pinned here rather than repaired.
+ * The module doc says nothing mechanical can close that in general, and that
+ * stands — it would have to know what the prose means. This page is the case
+ * where it does not have to: the prose names the handler, so the range can be
+ * required to show the function `router()` binds to that route.
  *
  * Deliberately carries no line numbers of its own. Both halves are read out of
  * the tree — the handler from the route binding, the range from the citation —
@@ -562,7 +563,11 @@ describe('control-plane.md shows the management API it cites', () => {
   function after(marker: string, count: number): Anchor[] {
     const at = page.indexOf(marker)
     expect(at).toBeGreaterThanOrEqual(0)
-    return parseAnchors(page.slice(at), CONTROL_PLANE).slice(0, count)
+    const anchors = parseAnchors(page.slice(at), CONTROL_PLANE).slice(0, count)
+    // Short of `count`, the caller would destructure `undefined` and `shown`
+    // would throw a `TypeError` on `.path` instead of naming what is missing.
+    expect(anchors).toHaveLength(count)
+    return anchors
   }
 
   test.each(ROUTE_ROWS)('the %s row shows the handler router() binds to it', (label, binding, handler) => {
