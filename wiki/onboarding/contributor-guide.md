@@ -99,8 +99,10 @@ In `honmoon-proxy`, async works much like JS `async`/`await`, with `tokio` as th
 | worker per request | `tokio::spawn(async move { … })` |
 
 The accept loop spawns one task per connection — the Rust equivalent of handling each request on
-its own green thread. The slowloris guard is a `tokio::time::timeout` around reading the request
-head ([gateway.rs:83-86](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-proxy/src/gateway.rs#L83-L86)).
+its own green thread. The SOCKS5 front door bounds its handshake with exactly that idiom
+([socks.rs:143-151](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-proxy/src/socks.rs#L143-L151)). The HTTP front door has the same guard but not the same shape:
+hudsucker owns that read, so the bound is a setting on the hyper server builder honmoon hands it
+rather than a wrapper honmoon writes ([gateway.rs:196-229](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-proxy/src/gateway.rs#L196-L229)).
 
 ### 1.3 CEL — the policy condition language
 
