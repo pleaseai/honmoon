@@ -506,3 +506,101 @@ describe('checkRepository', () => {
     expect(checkRepository().problems.filter(p => p.kind === 'coverage')).toEqual([])
   })
 })
+
+const CONTROL_PLANE = 'wiki/deep-dive/control-plane.md'
+const MGMT_LIB = 'crates/honmoon-mgmt/src/lib.rs'
+
+/**
+ * Every row of `control-plane.md`'s route table, as label / binding / handler.
+ *
+ * The binding is read out of `router()` as well, so a renamed handler fails
+ * here rather than leaving this list checking a name nothing answers to.
+ */
+const ROUTE_ROWS = [
+  ['`/api/audit?limit=N`', '.route("/audit", get(list_audit))', 'list_audit'],
+  ['`/api/approvals`', '.route("/approvals", get(list_approvals))', 'list_approvals'],
+  ['`/api/approvals/{id}/approve`', '.route("/approvals/{id}/approve", post(approve))', 'approve'],
+  ['`/api/approvals/{id}/reject`', '.route("/approvals/{id}/reject", post(reject))', 'reject'],
+  ['`/api/policy`', '.route("/policy", get(get_policy))', 'get_policy'],
+  ['`/healthz`', '.route("/healthz", get(healthz))', 'healthz'],
+  ['anything else', '.fallback(static_handler)', 'static_handler'],
+] as const
+
+/**
+ * What `control-plane.md`'s `honmoon-mgmt` citations actually display.
+ *
+ * Rule 3 judges a range's *first line* and nothing else, so a range that slid
+ * onto a content line reads as fine: every row of this table named an axum
+ * handler while displaying the `HookSalt`/`HookKey` constructors ~500 lines
+ * above it, and the scan stayed quiet through all seven (#266). The module doc
+ * says nothing mechanical can close that in general, and that stands — it would
+ * have to know what the prose means. This page is the case where it does not
+ * have to: the prose names the handler, so the range can be required to show
+ * the function `router()` binds to that route.
+ *
+ * Deliberately carries no line numbers of its own. Both halves are read out of
+ * the tree — the handler from the route binding, the range from the citation —
+ * so the next commit that moves `lib.rs` fails here naming the row to repoint,
+ * instead of drifting silently a second time.
+ */
+describe('control-plane.md shows the management API it cites', () => {
+  const page = readFileSync(join(REPO_ROOT, CONTROL_PLANE), 'utf8')
+  const source = readFileSync(join(REPO_ROOT, MGMT_LIB), 'utf8')
+  const read = readCited(MGMT_LIB)
+  if (!('lines' in read)) {
+    throw new Error(`${MGMT_LIB}: ${read.detail}`)
+  }
+  const { lines } = read
+
+  /** The lines one citation displays, as a reader following the link sees them. */
+  function shown(anchor: Anchor): string {
+    expect(anchor.path).toBe(MGMT_LIB)
+    return lines.slice(anchor.start! - 1, anchor.end!).join('\n')
+  }
+
+  /** The first `count` citations at or after `marker`, which the prose precedes. */
+  function after(marker: string, count: number): Anchor[] {
+    const at = page.indexOf(marker)
+    expect(at).toBeGreaterThanOrEqual(0)
+    return parseAnchors(page.slice(at), CONTROL_PLANE).slice(0, count)
+  }
+
+  test.each(ROUTE_ROWS)('the %s row shows the handler router() binds to it', (label, binding, handler) => {
+    expect(source).toContain(binding)
+    const row = page.split('\n').find(line => line.startsWith(`| ${label} |`))
+    expect(row).toBeDefined()
+    const anchors = parseAnchors(row!, CONTROL_PLANE)
+    expect(anchors).toHaveLength(1)
+    expect(shown(anchors[0]!)).toContain(`fn ${handler}(`)
+  })
+
+  // The two citations #266 filed as stale that are not: both already point at
+  // the function the sentence names. Pinned rather than repointed, so the next
+  // reader of that issue does not re-derive them a third time.
+  test('the credential paragraph shows the two checks it names', () => {
+    const [authorized, login] = after('Every `/api` row above requires the management token', 2)
+    expect(shown(authorized!)).toContain('fn authorized(')
+    expect(shown(login!)).toContain('fn login(')
+  })
+
+  test('the SPA-fallback 404 detail shows the guard that answers it', () => {
+    const [guard] = after('One careful detail: the SPA fallback', 1)
+    expect(shown(guard!)).toContain('path.starts_with("api/")')
+    expect(shown(guard!)).toContain('StatusCode::NOT_FOUND')
+  })
+
+  // A `<!-- Sources: … -->` comment is not a link, so no rule above resolves it
+  // and the checker never sees it at all — the reason this one sat ~540 lines
+  // off the handlers its diagram draws.
+  test('the approvals diagram names the handlers it draws', () => {
+    const comment = page.split('\n')
+      .find(line => line.startsWith('<!-- Sources:') && line.includes('Approvals.tsx'))
+    expect(comment).toBeDefined()
+    const range = new RegExp(`${MGMT_LIB.replace(/[./]/g, '\\$&')}:(\\d+)-(\\d+)`).exec(comment!)
+    expect(range).not.toBeNull()
+    const drawn = lines.slice(Number(range![1]) - 1, Number(range![2])).join('\n')
+    for (const handler of ['fn list_approvals(', 'fn approve(', 'fn resolve(']) {
+      expect(drawn).toContain(handler)
+    }
+  })
+})
