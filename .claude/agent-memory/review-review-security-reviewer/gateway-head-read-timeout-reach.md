@@ -38,5 +38,9 @@ comment and pinned by tests in `crates/honmoon-proxy/tests/egress.rs`
 understates the reach, or that the idle role is untested, is answered by this note and by those
 tests rather than being a new defect.
 
-The zero-byte-connection case (hyper-util's preface sniff has no deadline of its own) is knowingly
-out of scope and tracked on #272 — do not report it as undisclosed.
+The preface-sniff residual is knowingly out of scope and tracked on #272 — do not report it as
+undisclosed. Its reach is wider than "a peer that sends nothing": hyper-util's `ReadVersion::poll`
+has no deadline of its own and keeps waiting while every byte so far matches a prefix of the
+24-byte HTTP/2 preface and fewer than 24 have arrived, so a 22-byte partial preface is held just as
+a zero-byte connection is (measured 45s). One diverging byte ends the sniff and hands the
+connection to HTTP/1, which is why an ordinary stalled head *is* bounded by `HEAD_READ_TIMEOUT`.

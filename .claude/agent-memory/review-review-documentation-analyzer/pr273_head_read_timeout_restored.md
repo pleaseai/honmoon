@@ -27,7 +27,10 @@ since #260/#268 as "Guards the Phase 1 proxy had and honmoon no longer implement
 - HTTP/2's `keep_alive_timeout` (20s) does nothing without `keep_alive_interval`
   (`hyper/src/proto/h2/server.rs:73-74`).
 - hyper-util's preface sniff `ReadVersion::poll` (`auto/mod.rs:337-372`) carries no deadline — the
-  `#272` "still held on zero bytes" residual is accurate.
+  `#272` residual is accurate. It is **not** only the zero-byte case: the sniff keeps waiting while
+  every byte received so far matches a prefix of the 24-byte HTTP/2 preface and fewer than 24 have
+  arrived, so a 22-byte partial preface is held too (measured 45s on this branch). One diverging
+  byte ends the sniff, which is why an ordinary stalled request head *is* bounded.
 
 **Both defects review found were fixed in the PR. Do not re-report either.**
 
@@ -47,7 +50,8 @@ since #260/#268 as "Guards the Phase 1 proxy had and honmoon no longer implement
    [[gateway-head-read-timeout-reach]] for the traced mechanism.
 
 **Do not flag `quick-start.md`'s Phase-1 `400`/`405`/`408` status table.** It describes the proxy
-ADR-0003 replaced and is tracked under #119. PR #273 moved `gateway.rs` far enough that its stale
-anchors stopped tripping any rule in `check-wiki-source-anchors.ts`, so they were dropped from
-`TRACKED` and the loss was recorded on #119 — meaning the table is now stale *and* unreported. That
-is #119's to fix, not a finding against a later PR.
+ADR-0003 replaced and is tracked under #119. PR #273 moved `gateway.rs` by 75 lines and shifted that
+page's three citations with the rest, so both `TRACKED` entries still fire on the same code they
+named before (a bare closing delimiter, and a range past the end of the file) — their line numbers
+in `scripts/check-wiki-source-anchors.ts` were updated to match. The table is stale and still
+reported. That is #119's to fix, not a finding against a later PR.
