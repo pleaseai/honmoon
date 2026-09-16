@@ -1,0 +1,21 @@
+docs/releasing.md
+  s_c2e230493dfaa6::t_bf23592fbb7aaa 68-76
+.claude/agent-memory/review-review-security-reviewer/release-exclude-paths-semantics.md
+  s_c2e230493dfaa6::t_bf23592fbb7aaa 24-28
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "b3e12a606468a8810da5ec95dcc7241be54ed17a",
+  "prompts": {},
+  "sessions": {
+    "s_c2e230493dfaa6": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "4562e829-edcc-440c-a448-4f4344cc99f4",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
