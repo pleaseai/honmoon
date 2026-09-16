@@ -61,9 +61,14 @@ pub const DEFAULT_PAUSE_TIMEOUT: Duration = Duration::from_secs(300);
 /// forwarded raw is not bounded: it leaves HTTP/1 at the CONNECT upgrade and is
 /// copied bidirectionally from there.
 ///
-/// A peer that connects and sends no byte at all is not covered, because hyper
-/// arms the bound only once hyper-util's preface sniff has picked a protocol and
-/// that sniff has no deadline of its own — a separate mechanism, tracked in #272.
+/// A peer stalled inside hyper-util's HTTP/2 preface sniff is not covered: hyper
+/// arms the bound only once that sniff has picked a protocol, and the sniff has no
+/// deadline of its own. It keeps waiting while every byte sent so far matches a
+/// prefix of the 24-byte preface and fewer than 24 have arrived — sending nothing
+/// is only the simplest way to sit there, and 22 matching bytes works as well. One
+/// diverging byte ends it, which is why an ordinary stalled head *is* bounded.
+/// Closing it needs a deadline on the accepted stream, which this builder cannot
+/// express — tracked in #272.
 pub const HEAD_READ_TIMEOUT: Duration = Duration::from_secs(30);
 /// In-memory audit ring size for ephemeral (`honmoon run`) proxies.
 const DEFAULT_AUDIT_CAPACITY: usize = 1024;
