@@ -277,3 +277,80 @@ fn forwarded_request_preserves_the_client_header_casing() {
         "response header names were not title-cased: {response:?}"
     );
 }
+
+/// An upstream that answers every request on a connection and never closes it,
+/// so the client-side connection stays keep-alive and the test controls when it
+/// goes idle.
+fn start_keep_alive_upstream() -> u16 {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    thread::spawn(move || {
+        for stream in listener.incoming() {
+            let Ok(mut s) = stream else { continue };
+            thread::spawn(move || {
+                let mut buf = [0u8; 1024];
+                while matches!(s.read(&mut buf), Ok(n) if n > 0) {
+                    let _ = s.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok");
+                }
+            });
+        }
+    });
+    port
+}
+
+/// [`HEAD_READ_TIMEOUT`] governs the idle gap on a keep-alive connection as well
+/// as a partial head, because hyper re-arms the timer on every head read and an
+/// idle keep-alive connection is parked in exactly that read.
+///
+/// That coupling is the reason the bound is hyper's 30s default rather than the
+/// 10s its one-shot namesakes (`socks::HANDSHAKE_TIMEOUT`, the Phase 1 constant)
+/// use, so it is pinned here: a future edit that re-tightens the constant on the
+/// stalled-head argument alone would be shortening a client's idle-pool budget
+/// without meaning to, and this test is what says so.
+#[test]
+fn an_idle_keep_alive_connection_is_held_for_the_head_read_timeout() {
+    let upstream = start_keep_alive_upstream();
+    let proxy = start_proxy(allow_policy("127.0.0.1"));
+
+    let mut s = TcpStream::connect(("127.0.0.1", proxy)).unwrap();
+    s.set_read_timeout(Some(HEAD_READ_TIMEOUT * 3)).unwrap();
+    s.write_all(
+        format!("GET http://127.0.0.1:{upstream}/ HTTP/1.1\r\nHost: 127.0.0.1:{upstream}\r\n\r\n")
+            .as_bytes(),
+    )
+    .unwrap();
+
+    let mut buf = [0u8; 1024];
+    let n = s.read(&mut buf).expect("first response");
+    let response = String::from_utf8_lossy(&buf[..n]).into_owned();
+    assert!(
+        response.starts_with("HTTP/1.1 200"),
+        "expected the request to be proxied: {response:?}"
+    );
+
+    // Now go idle on the same connection. hyper is waiting for the next head.
+    let idle_started = Instant::now();
+    loop {
+        match s.read(&mut buf) {
+            Ok(0) => break,
+            Ok(_) => continue,
+            Err(e) if e.kind() == ErrorKind::ConnectionReset => break,
+            Err(e) => panic!("idle keep-alive connection was never closed: {e}"),
+        }
+    }
+    let idle = idle_started.elapsed();
+
+    // The floor is the point of the test: an idle client must keep its pooled
+    // connection for the whole budget, not merely lose it eventually. The
+    // allowance absorbs the first request's own share of the re-armed timer.
+    assert!(
+        idle > HEAD_READ_TIMEOUT - Duration::from_secs(5),
+        "idle keep-alive connection was dropped after only {idle:?}, \
+         well inside the {HEAD_READ_TIMEOUT:?} budget"
+    );
+    assert!(
+        idle < HEAD_READ_TIMEOUT * 2,
+        "idle keep-alive connection outlived {:?}, so the bound did not govern it",
+        HEAD_READ_TIMEOUT * 2
+    );
+}

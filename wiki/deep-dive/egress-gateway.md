@@ -221,7 +221,7 @@ These are honmoon's own, in honmoon's own code:
 | Uninspectable tunnels | A `CONNECT` to a `protocol: postgres` endpoint is refused, not tunnelled past the `sql.*` rules it exists to enforce | [mitm.rs:217-294](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-proxy/src/mitm.rs#L217-L294) |
 | Bounded approval queue | 1024 simultaneous holds, then fail closed | [approval.rs:64-74](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-proxy/src/approval.rs#L64-L74) |
 | No TOCTOU on bind | `serve_listener` adopts a pre-bound socket | [gateway.rs:180-187](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-proxy/src/gateway.rs#L180-L187) |
-| Head read | A request head that never completes is dropped after `HEAD_READ_TIMEOUT` (10s), because hudsucker installs no `Timer` and hyper's own default does not arm without one | [gateway.rs:196-229](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-proxy/src/gateway.rs#L196-L229) |
+| Head read | A request head that never completes — and a keep-alive connection idling between heads — is dropped after `HEAD_READ_TIMEOUT` (30s), because hudsucker installs no `Timer` and hyper's own default does not arm without one | [gateway.rs:211-244](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-proxy/src/gateway.rs#L211-L244) |
 
 ### Guards the Phase 1 proxy had, and where each stands now
 
@@ -241,12 +241,28 @@ reading bytes — but that did not make both of them hudsucker's either.
   `Time::Empty` warns and returns `None` instead of arming
   ([hyper time.rs:70-78](https://github.com/hyperium/hyper/blob/v1.10.1/src/common/time.rs#L70-L78)). Each link is cited at the version this
   workspace builds (`Cargo.lock`: hudsucker 0.24.1, hyper-util 0.1.20, hyper 1.10.1), because the
-  claim crosses two dependencies. honmoon now supplies its own server builder, which installs
-  `TokioTimer` and sets `header_read_timeout` to the Phase 1 value of 10s — the same bound
-  `socks::HANDSHAKE_TIMEOUT` puts on the SOCKS front door
-  ([gateway.rs:196-229](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-proxy/src/gateway.rs#L196-L229)). A partially-sent head is dropped, not answered: hyper
-  writes no `408`, so the Phase 1 status code did not come back with the Phase 1 bound
-  ([egress.rs:200-242](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-proxy/tests/egress.rs#L200-L242)).
+  claim crosses two dependencies. That warning is also why nobody noticed: hyper routes it through
+  its own `warn!` macro, which compiles to nothing unless hyper's `tracing` feature is on
+  ([hyper trace.rs:5-20](https://github.com/hyperium/hyper/blob/v1.10.1/src/trace.rs#L5-L20)), and this workspace does not enable it — so the
+  guard failed to arm and said so to no one.
+
+  honmoon now supplies its own server builder, which installs `TokioTimer` and sets
+  `header_read_timeout` ([gateway.rs:211-244](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-proxy/src/gateway.rs#L211-L244)). **The bound is hyper's own 30s
+  default, and it governs two waits, not one** — hyper re-arms the timer on every head read
+  ([hyper conn.rs:219-240](https://github.com/hyperium/hyper/blob/v1.10.1/src/proto/h1/conn.rs#L219-L240)), so a keep-alive connection idling
+  between one response and the next request head is bounded by the same constant as a head that
+  never completes. Both are the same exposure — a socket that pins a task and a descriptor while
+  saying nothing — but the second is why the value is not the 10s Phase 1 and `socks` use: those
+  wrap a one-shot handshake future that cannot re-arm, so their bound does not transfer to a client's
+  idle-pool budget. Both roles are pinned by tests
+  ([egress.rs:200-242](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-proxy/tests/egress.rs#L200-L242), [egress.rs:301-356](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-proxy/tests/egress.rs#L301-L356)).
+
+  It reaches the inner connection of a **TLS-intercepted** tunnel too: hudsucker clones the builder
+  into `InternalProxy` ([hudsucker mod.rs:156-164](https://github.com/omjadas/hudsucker/blob/v0.24.1/src/proxy/mod.rs#L156-L164)) and serves the
+  decrypted stream with it ([hudsucker internal.rs:406-410](https://github.com/omjadas/hudsucker/blob/v0.24.1/src/proxy/internal.rs#L406-L410)). A
+  tunnel forwarded raw is not bounded — it leaves HTTP/1 at the CONNECT upgrade. A partially-sent
+  head is dropped, not answered: hyper writes no `408`, so the Phase 1 status code did not come back
+  with the Phase 1 bound.
 - **Connections that send nothing at all.** <span class="status-caveat">open</span> The bound above
   arms only once hyper-util has sniffed the HTTP/2 preface and picked a protocol, and that read
   carries no deadline of its own

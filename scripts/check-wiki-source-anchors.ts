@@ -562,19 +562,18 @@ export function checkAnchor(
  * #204 repointed: its own anchors are fixed, not tracked, apart from the one
  * `engine.rs` row #169 tabulates.
  *
- * #119's entries are line ranges into a file it does not own, so an unrelated
- * edit to `gateway.rs` reshuffles which of them trips which rule without any
- * page changing. #267 moved that file by 55 lines and did exactly that: the
- * `L113-L153` citation opens on a blank line now rather than a delimiter,
- * `L125-L128` newly opens on one, and `L206-L271` is inside the file again and
- * so trips nothing at all. Its citation is no more accurate for that — the rows
- * around it still describe the `400`/`405`/`408` proxy ADR-0003 replaced — so it
- * is dropped here and recorded on #119 rather than treated as repointed.
+ * #119 has no entries left, and that is a loss rather than a fix. Its entries
+ * were line ranges into a file it does not own, so an unrelated edit to
+ * `gateway.rs` reshuffles which of them trips which rule without any page
+ * changing. #267 moved that file by 70 lines and moved all three of its
+ * citations onto ordinary declaration lines, where rule 3 has nothing to say.
+ * The citations are no more accurate for that — `quick-start.md`'s rows still
+ * describe the `400`/`405`/`408` proxy ADR-0003 replaced — so that table is now
+ * stale *and* silent, which is strictly worse than stale and reported. Recorded
+ * on #119, which owns the rewrite; nothing here will raise it again until then.
  */
 export const TRACKED: Tracked[] = [
-  // #119
-  { path: 'crates/honmoon-proxy/src/gateway.rs', start: 113, end: 153, kind: 'blank', issue: 119, pages: ['getting-started/quick-start.md'] },
-  { path: 'crates/honmoon-proxy/src/gateway.rs', start: 125, end: 128, kind: 'delimiter', issue: 119, pages: ['getting-started/quick-start.md'] },
+  // #119 — intentionally empty, see the note above.
 
   // #169
   { path: 'crates/honmoon-core/src/engine.rs', start: 59, end: 60, kind: 'blank', issue: 169, pages: ['getting-started/policy-authoring.md'] },

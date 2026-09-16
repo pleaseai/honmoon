@@ -102,7 +102,7 @@ The accept loop spawns one task per connection — the Rust equivalent of handli
 its own green thread. The SOCKS5 front door bounds its handshake with exactly that idiom
 ([socks.rs:143-151](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-proxy/src/socks.rs#L143-L151)). The HTTP front door has the same guard but not the same shape:
 hudsucker owns that read, so the bound is a setting on the hyper server builder honmoon hands it
-rather than a wrapper honmoon writes ([gateway.rs:196-229](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-proxy/src/gateway.rs#L196-L229)).
+rather than a wrapper honmoon writes ([gateway.rs:211-244](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-proxy/src/gateway.rs#L211-L244)).
 
 ### 1.3 CEL — the policy condition language
 

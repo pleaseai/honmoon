@@ -33,23 +33,38 @@ use crate::mitm::HonmoonHandler;
 
 /// How long a `pause`d request is held before it is auto-rejected (no approver).
 pub const DEFAULT_PAUSE_TIMEOUT: Duration = Duration::from_secs(300);
-/// How long a client has to finish sending a request head before the connection
-/// is dropped (slowloris guard).
+/// How long the proxy waits for a request head before dropping the connection.
 ///
-/// The listener takes no credentials, so without a deadline a peer that opens a
-/// socket and dribbles header bytes pins a task and a file descriptor for the
-/// life of the process, as many times over as it cares to connect — neither
-/// `honmoon run` nor `honmoon gateway` caps connections. Only the head is
-/// bounded; an established tunnel is long-lived by design and is never timed
-/// out. The value is the Phase 1 proxy's own `HEAD_READ_TIMEOUT`, and the same
-/// bound `socks::HANDSHAKE_TIMEOUT` puts on honmoon's other unauthenticated
-/// front door.
+/// This is hyper's `header_read_timeout`, and it bounds **two** waits rather than
+/// one, because hyper re-arms the timer on every head read (hyper 1.10.1
+/// `proto/h1/conn.rs:219-240`): a head that arrives partially and never completes
+/// — the case #267 is about — and the idle gap on a keep-alive connection between
+/// one response and the next request head.
 ///
-/// What this bounds is a head that arrives *partially*. A peer that connects
-/// and sends no byte at all is still held, because hyper only arms the bound
-/// once hyper-util's preface sniff has picked a protocol and that sniff has no
-/// deadline of its own — a separate mechanism, tracked in #272.
-pub const HEAD_READ_TIMEOUT: Duration = Duration::from_secs(10);
+/// Both are the same exposure. The listener takes no credentials and neither
+/// `honmoon run` nor `honmoon gateway` caps connections, so a peer that opens
+/// sockets and then says nothing — mid-head or between requests — pins a task and
+/// a file descriptor for the life of the process, as many times over as it cares
+/// to connect.
+///
+/// The value is **hyper's own default** for this setting rather than one honmoon
+/// invents, because the setting has to serve the idle role as well as the stalled
+/// one and 30s is what upstream chose knowing that. Phase 1's `HEAD_READ_TIMEOUT`
+/// and `socks::HANDSHAKE_TIMEOUT` are both 10s and neither transfers: each wraps a
+/// one-shot handshake future that cannot re-arm, so what is safe there says
+/// nothing about what is safe here.
+///
+/// It reaches every HTTP/1 connection hudsucker serves with this builder, the
+/// inner connection of a **TLS-intercepted** tunnel included — hudsucker clones
+/// the builder into `InternalProxy` and serves the decrypted stream with it
+/// (hudsucker 0.24.1 `proxy/mod.rs:156-164`, `proxy/internal.rs:408`). A tunnel
+/// forwarded raw is not bounded: it leaves HTTP/1 at the CONNECT upgrade and is
+/// copied bidirectionally from there.
+///
+/// A peer that connects and sends no byte at all is not covered, because hyper
+/// arms the bound only once hyper-util's preface sniff has picked a protocol and
+/// that sniff has no deadline of its own — a separate mechanism, tracked in #272.
+pub const HEAD_READ_TIMEOUT: Duration = Duration::from_secs(30);
 /// In-memory audit ring size for ephemeral (`honmoon run`) proxies.
 const DEFAULT_AUDIT_CAPACITY: usize = 1024;
 
