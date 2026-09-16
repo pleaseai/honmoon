@@ -124,11 +124,11 @@ sequenceDiagram
     Gateway-->>Agent: 403 Forbidden
   end
 ```
-<!-- Sources: crates/honmoon-proxy/src/gateway.rs:62-112, crates/honmoon-core/src/engine.rs:19-28, crates/honmoon-core/src/protocols.rs:17-156 -->
+<!-- Sources: crates/honmoon-proxy/src/gateway.rs:101-151, crates/honmoon-core/src/engine.rs:19-28, crates/honmoon-core/src/protocols.rs:17-156 -->
 
 ::: tip What flows today vs later
 Over a Phase 1 CONNECT tunnel the gateway sees only the **host** — it builds `Facts{domain,
-http.host}` ([gateway.rs:81-92](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-proxy/src/gateway.rs#L81-L92)).
+http.host}` ([gateway.rs:120-131](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-proxy/src/gateway.rs#L120-L131)).
 The `parse_*` steps above exist and are fully tested in `honmoon-core`, but are not yet wired to
 a live socket relay (**TD-006**). So the "opt" block is engine-ready, not yet traffic-driven.
 :::

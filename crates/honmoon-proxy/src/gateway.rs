@@ -22,6 +22,8 @@ use std::time::Duration;
 
 use honmoon_core::{AuditLog, MappingStore, Policy};
 use hudsucker::Proxy;
+use hudsucker::hyper_util::rt::{TokioExecutor, TokioTimer};
+use hudsucker::hyper_util::server::conn::auto::Builder as ServerBuilder;
 use hudsucker::rustls::crypto::aws_lc_rs;
 use tokio::net::TcpListener;
 
@@ -31,6 +33,43 @@ use crate::mitm::HonmoonHandler;
 
 /// How long a `pause`d request is held before it is auto-rejected (no approver).
 pub const DEFAULT_PAUSE_TIMEOUT: Duration = Duration::from_secs(300);
+/// How long the proxy waits for a request head before dropping the connection.
+///
+/// This is hyper's `header_read_timeout`, and it bounds **two** waits rather than
+/// one, because hyper re-arms the timer on every head read (hyper 1.10.1
+/// `proto/h1/conn.rs:219-240`): a head that arrives partially and never completes
+/// — the case #267 is about — and the idle gap on a keep-alive connection between
+/// one response and the next request head.
+///
+/// Both are the same exposure. The listener takes no credentials and neither
+/// `honmoon run` nor `honmoon gateway` caps connections, so a peer that opens
+/// sockets and then says nothing — mid-head or between requests — pins a task and
+/// a file descriptor for the life of the process, as many times over as it cares
+/// to connect.
+///
+/// The value is **hyper's own default** for this setting rather than one honmoon
+/// invents, because the setting has to serve the idle role as well as the stalled
+/// one and 30s is what upstream chose knowing that. Phase 1's `HEAD_READ_TIMEOUT`
+/// and `socks::HANDSHAKE_TIMEOUT` are both 10s and neither transfers: each wraps a
+/// one-shot handshake future that cannot re-arm, so what is safe there says
+/// nothing about what is safe here.
+///
+/// It reaches every HTTP/1 connection hudsucker serves with this builder, the
+/// inner connection of a **TLS-intercepted** tunnel included — hudsucker clones
+/// the builder into `InternalProxy` and serves the decrypted stream with it
+/// (hudsucker 0.24.1 `proxy/mod.rs:156-164`, `proxy/internal.rs:408`). A tunnel
+/// forwarded raw is not bounded: it leaves HTTP/1 at the CONNECT upgrade and is
+/// copied bidirectionally from there.
+///
+/// A peer stalled inside hyper-util's HTTP/2 preface sniff is not covered: hyper
+/// arms the bound only once that sniff has picked a protocol, and the sniff has no
+/// deadline of its own. It keeps waiting while every byte sent so far matches a
+/// prefix of the 24-byte preface and fewer than 24 have arrived — sending nothing
+/// is only the simplest way to sit there, and 22 matching bytes works as well. One
+/// diverging byte ends it, which is why an ordinary stalled head *is* bounded.
+/// Closing it needs a deadline on the accepted stream, which this builder cannot
+/// express — tracked in #272.
+pub const HEAD_READ_TIMEOUT: Duration = Duration::from_secs(30);
 /// In-memory audit ring size for ephemeral (`honmoon run`) proxies.
 const DEFAULT_AUDIT_CAPACITY: usize = 1024;
 
@@ -174,6 +213,45 @@ pub fn serve_listener_with_state(state: GatewayState, listener: std::net::TcpLis
     runtime.block_on(serve(state, listener))
 }
 
+/// The HTTP server builder hudsucker serves accepted connections with.
+///
+/// Supplying one at all is what arms [`HEAD_READ_TIMEOUT`]. hyper's
+/// `header_read_timeout` already carries a 30s default, but a *default* is
+/// checked against the connection's `Timer` and silently yields `None` when
+/// there is none (hyper 1.10.1 `common/time.rs:70-78`), and hudsucker's own
+/// builder installs no timer (hudsucker 0.24.1 `proxy/mod.rs:117-124`). A
+/// *configured* one panics rather than warning, so the timer below is what
+/// makes the line under it mean anything.
+///
+/// Because `with_server` *replaces* hudsucker's builder rather than amending
+/// it, everything hudsucker sets has to be reproduced here or it is lost.
+/// hudsucker sets exactly two things on its builder, both HTTP/1 wire fidelity
+/// (`title_case_headers`, `preserve_header_case`) and both repeated below; this
+/// adds the timer and the bound and changes nothing else. `egress.rs` pins both
+/// of them, so dropping either fails a test rather than only this comment.
+///
+/// The HTTP/2 half is left at hyper's defaults, as hudsucker leaves it — but
+/// that is a gap, not a non-issue. What that half is missing is not a *timer*:
+/// hyper's HTTP/2 server exposes no header-read bound to arm at all, and its
+/// one defaulted duration — `keep_alive_timeout`, 20s — does nothing unless
+/// `keep_alive_interval` is set, which defaults to `None` (hyper 1.10.1
+/// `proto/h2/server.rs:73-74`). So a peer that completes the preface and then
+/// stalls is held indefinitely, measured still connected at 70s. Bounding that
+/// is a design choice about what an idle pooled HTTP/2 connection may cost, not
+/// a setting to flip here — tracked in #275.
+fn server_builder() -> ServerBuilder<TokioExecutor> {
+    let mut builder = ServerBuilder::new(TokioExecutor::new());
+    builder
+        .http1()
+        // hudsucker's settings, reproduced verbatim.
+        .title_case_headers(true)
+        .preserve_header_case(true)
+        // ...plus the timer it never installs, and the bound that needs it.
+        .timer(TokioTimer::new())
+        .header_read_timeout(HEAD_READ_TIMEOUT);
+    builder
+}
+
 /// Run the accept loop on an existing tokio runtime (does not return).
 ///
 /// Used when the proxy shares a runtime with the management API server.
@@ -192,6 +270,7 @@ pub async fn serve(state: GatewayState, std_listener: std::net::TcpListener) -> 
         .with_ca(authority)
         .with_rustls_connector(aws_lc_rs::default_provider())
         .with_http_handler(handler)
+        .with_server(server_builder())
         .build()
         .expect("build proxy");
 

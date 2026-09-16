@@ -60,7 +60,7 @@ flowchart LR
   style ext fill:#161b22,stroke:#30363d,color:#e6edf3
   style dash fill:#161b22,stroke:#30363d,color:#e6edf3
 ```
-<!-- Sources: README.md:36-45, crates/honmoon-proxy/src/gateway.rs:62-112, crates/honmoon-core/src/engine.rs:19-28 -->
+<!-- Sources: README.md:36-45, crates/honmoon-proxy/src/gateway.rs:101-151, crates/honmoon-core/src/engine.rs:19-28 -->
 
 ## Documentation map
 
