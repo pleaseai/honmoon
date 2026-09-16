@@ -196,10 +196,14 @@ const OVERSIZED_COPY_QUIET_WARNING: std::time::Duration = REFUSAL_ORDER_STALL_TI
 /// `tracing_subscriber::fmt()`, whose fields are unquoted `key=value`, so a
 /// `0x20` or a `0x3d` reaching a value renders as `tag= ` or `tag==` and a
 /// logfmt-style splitter downstream reads the value as empty or splits the pair
-/// in the wrong place. That is the whole of it: neither byte can emit a second
-/// pair, close the record or reach the client, because the escaping above
-/// already rules that out. One field read wrong on a session whose upstream is
-/// hostile or broken, not a forged one (#248).
+/// in the wrong place. That is the whole of it: one byte cannot emit a second
+/// pair and cannot close the record, because the escaping above already rules
+/// both out, and none of this is visible to the client. The tag byte itself of
+/// course reaches the client — it is the first byte of the message being
+/// proxied, written by the `write_all(&head)` the two copy warnings sit behind,
+/// and `last_tag` is by definition one the client already received. What cannot
+/// reach it is anything about how the field rendered. One field read wrong on a
+/// session whose upstream is hostile or broken, not a forged one (#248).
 ///
 /// So those two take the `\xNN` form every other byte outside the bare set
 /// already takes, which leaves one rule to hold: a tag renders as itself when
