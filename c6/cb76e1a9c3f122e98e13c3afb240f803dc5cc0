@@ -1,0 +1,26 @@
+.claude/agent-memory/review-review-pr-test-analyzer/pr276_control_plane_anchor_test_verified.md
+  s_46b22fa6e318c3::t_33535328be1d37 3
+  s_46b22fa6e318c3::t_32debb3bca08b3 1-2,4-41
+.claude/agent-memory/review-review-code-reviewer/project_control_plane_anchors_266.md
+  s_46b22fa6e318c3::t_d8f262506b5fec 3,26-28
+  s_46b22fa6e318c3::t_2176597e025126 1-2,4-25,29-32
+.claude/agent-memory/review-review-silent-failure-hunter/project_pr276_control_plane_test_guard_verified.md
+  s_46b22fa6e318c3::t_e824fc261f28ff 1-2,4-40
+  s_46b22fa6e318c3::t_0ca6632cb564fc 3
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "c6cb76e1a9c3f122e98e13c3afb240f803dc5cc0",
+  "prompts": {},
+  "sessions": {
+    "s_46b22fa6e318c3": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "3b7a4deb-5806-47a3-ad55-814603ce894c",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
