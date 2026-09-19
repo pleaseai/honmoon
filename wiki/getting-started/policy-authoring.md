@@ -415,7 +415,7 @@ those take one run each.
 Two properties are worth stating outright, because they are what make it usable.
 
 **It is the gateway's own loader, not a second opinion.** The command calls `load_policy`
-([main.rs:1042-1065](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-cli/src/main.rs#L1042-L1065)) — the same one call
+([main.rs:1051-1083](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-cli/src/main.rs#L1051-L1083)) — the same one call
 `honmoon gateway --config` and `honmoon run --policy` make ([main.rs:620](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-cli/src/main.rs#L620),
 [main.rs:797](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-cli/src/main.rs#L797)), and the only place in the binary that reads a
 policy from a path,
@@ -426,10 +426,10 @@ file and require the same verdict — `validate_and_the_gateway_report_the_same_
 both refuse, and `validate_and_the_gateway_accept_the_same_policy` on one both accept
 ([tests/policy_validate.rs](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-cli/tests/policy_validate.rs)).
 
-The read says two things in its own words, and they are different kinds of check. **The first
+The read says three things in its own words, and they are different kinds of check. **The first
 refuses nothing extra**: a file whose top level is not a mapping — plain text, a list, a single
 value — is named as *not a policy document* rather than handed to the parser
-([main.rs:1120-1122](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-cli/src/main.rs#L1120-L1122)). The loader refuses those
+([main.rs:1138-1140](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-cli/src/main.rs#L1138-L1140)). The loader refuses those
 too; what changes is that the parser would have quoted the file to say so, and for a document that
 is one plain scalar the quote is the whole file. Pointed at a token file, an SSH key or a `.env` by
 a mistyped path, that lands in the log.
@@ -451,7 +451,7 @@ with an explicit `---` is one document and loads normally.
 
 **The second does refuse something extra, on purpose.** A mapping in which none of `version`,
 `egress`, `endpoints` or `rules` appears is refused, and the parser would have taken it
-([main.rs:1247-1276](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-cli/src/main.rs#L1247-L1276)). Every `Policy` field
+([main.rs:1265-1294](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-cli/src/main.rs#L1265-L1294)). Every `Policy` field
 carries `#[serde(default)]` and the struct has no `deny_unknown_fields`, so *any* mapping used to
 deserialize into a policy with every field at its default — which means a Kubernetes `Secret`
 manifest, a `DB_PASSWORD: …` file and a service-account JSON key (JSON is valid YAML) each loaded,
@@ -469,21 +469,30 @@ forward-compatibility is why `#[serde(deny_unknown_fields)]` was rejected for th
 `an_unknown_sibling_of_a_recognised_key_still_loads` pins it. An explicitly empty mapping (`{}`) is
 refused, which is the literal rule and not an oversight: an empty file already spells "no policy".
 
-The bound is worth stating so it is not mistaken for a gap. A file that **is** a mapping but carries
-a mistyped field value (`version: "1.0"`) still reaches the parser's quoting, and the value quoted is
-the author's own field, with a line and column. That is the diagnosis they asked for; suppressing it
-would turn a useful error into a useless one.
+**The third qualifies the second on one key.** `version` is the one recognised key that is not
+honmoon-specific — a `docker-compose.yml` opens with an unquoted `version: 3` — so by name alone a
+compose file was admitted and loaded as a 0-rule policy whose source `gateway --config` served
+([issue #240](https://github.com/pleaseai/honmoon/issues/240)). It is not closed by dropping
+`version` from the admission set, because that refuses a file containing only `version: 1`, a
+policy the gateway starts on. It is closed on the *value*: when `version` is the only recognised key
+a mapping declares, it admits the document only as `version: 1`, the policy version this build reads
+([main.rs:1359-1392](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-cli/src/main.rs#L1359-L1392)).
+Any other value — compose's `2` and `3`, the `0` an absent `version` defaults to, or a spelling the
+parser would refuse anyway — is refused for the path, with nothing from the file in the message.
+Beside `egress`, `endpoints` or `rules` the value is not consulted, so a policy declaring a version
+this build does not know still loads on the fields it does know;
+`a_policy_carrying_an_unknown_field_still_loads` runs that through the binary. Two files are pinned
+either side: `no_command_accepts_a_compose_file_admitted_only_by_its_version` and
+`a_policy_declaring_only_its_version_still_loads`.
 
-**One residual is left open deliberately, and the rule looks tighter than it is without it.** The
-admission test is by *name*, and `version` is the one of the four keys that is not honmoon-specific —
-a `docker-compose.yml` opens with an unquoted `version: 3`, so it is admitted and still loads as a
-0-rule policy whose source `gateway --config` serves. Closing it would mean dropping `version` from
-the admission set, which refuses a file containing only `version: 1` — a policy the gateway starts
-on — so narrowing the ticket is its own decision rather than part of this rule. It is measured and
-pinned by `version_alone_admits_a_file_no_operator_wrote_as_a_policy`, and tracked in
-[issue #240](https://github.com/pleaseai/honmoon/issues/240). The quoted spelling (`version: "3.8"`)
-does not reach the rule at all: `version` is a `u32`, so the parser refuses it and quotes only those
-three characters.
+The bound is worth stating so it is not mistaken for a gap. A file that **is** a mapping but carries
+a mistyped field value beside a field the parser can run (`version: "1.0"` above `rules:`) still
+reaches the parser's quoting, and the value quoted is the author's own field, with a line and
+column. That is the diagnosis they asked for; suppressing it would turn a useful error into a
+useless one. Only a file whose sole recognised key is a mistyped `version` gets the content-free
+refusal instead. And the value rule stops where the value can no longer tell: a foreign file that
+opens with an unquoted `version: 1` and declares nothing else honmoon reads is admitted, because
+nothing about that line distinguishes it from the minimal policy.
 
 An empty file is **not** in this class — it is a valid policy. YAML reads it as `null`, and every
 `Policy` field carries `#[serde(default)]`
