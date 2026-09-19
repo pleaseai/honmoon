@@ -574,9 +574,6 @@ export const TRACKED: Tracked[] = [
   { path: 'crates/honmoon-core/src/engine.rs', start: 23, end: 69, kind: 'delimiter', issue: 192, pages: ['deep-dive/policy-engine.md'] },
   { path: 'crates/honmoon-core/src/engine.rs', start: 444, end: 467, kind: 'delimiter', issue: 192, pages: ['deep-dive/policy-engine.md'] },
 
-  // #261
-  { path: 'crates/honmoon-core/src/protocols.rs', start: 248, end: 254, kind: 'blank', issue: 261, pages: ['deep-dive/protocol-parsing.md'] },
-
   // #263
   { path: 'docs/roadmap.md', start: 93, end: 100, kind: 'blank', issue: 263, pages: ['deep-dive/roadmap-open-core.md'] },
 ]
