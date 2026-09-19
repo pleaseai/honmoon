@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.1.1](https://github.com/pleaseai/honmoon/compare/v0.1.0...v0.1.1) (2026-09-16)
+
+
+### Bug Fixes
+
+* **proxy:** bound the egress head read by supplying hyper a timer ([#273](https://github.com/pleaseai/honmoon/issues/273)) ([5f3b7dd](https://github.com/pleaseai/honmoon/commit/5f3b7ddacaa19301bb50f1c02dc674ba8f90d59c)), closes [#267](https://github.com/pleaseai/honmoon/issues/267)
+* **proxy:** escape a space or '=' tag byte out of an unquoted log field ([#277](https://github.com/pleaseai/honmoon/issues/277)) ([85e5d51](https://github.com/pleaseai/honmoon/commit/85e5d5105b1a41def986615f97e1f2d5779e1e86))
+
 ## 0.1.0 (2026-09-15)
 
 

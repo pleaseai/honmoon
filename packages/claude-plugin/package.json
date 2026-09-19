@@ -1,6 +1,6 @@
 {
   "name": "@honmoon/claude-plugin",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "private": true,
   "description": "Honmoon Claude Code plugin — hook-based secret/PII redaction for transcript hygiene.",
   "scripts": {
