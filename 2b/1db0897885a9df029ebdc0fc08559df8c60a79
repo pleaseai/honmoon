@@ -1,0 +1,24 @@
+crates/honmoon-cli/src/main.rs
+  s_edb4b9903fbdc4::t_8bd464a608eb38 1301-1306
+  s_edb4b9903fbdc4::t_2c98c1a26ef07f 2035-2046
+wiki/getting-started/policy-authoring.md
+  s_edb4b9903fbdc4::t_d14b214d03b19e 479
+wiki/llms-full.txt
+  s_edb4b9903fbdc4::t_f28dfb741cabc1 3615
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "2b1db0897885a9df029ebdc0fc08559df8c60a79",
+  "prompts": {},
+  "sessions": {
+    "s_edb4b9903fbdc4": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "623f5ad6-b19c-4be9-b893-ca63415dbb10",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}

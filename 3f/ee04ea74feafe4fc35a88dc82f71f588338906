@@ -1,0 +1,33 @@
+wiki/llms-full.txt
+  s_edb4b9903fbdc4::t_42ca3612d940d3 3554,3565,3568,3590,3608-3623,3625-3631
+crates/honmoon-cli/src/main.rs
+  s_edb4b9903fbdc4::t_aa2a054d008c38 1906,1908-1913,1915-1918,1920-1921,1928,1930-1934,1938-1939,1942-1973,1975-2061
+  s_edb4b9903fbdc4::t_caeae3d52c3909 1296-1393
+  s_edb4b9903fbdc4::t_13fd28eff4246c 1974
+  s_edb4b9903fbdc4::t_69288bcfcf063e 1042-1050
+  s_edb4b9903fbdc4::t_e17fda8a4df325 1072-1080
+  s_edb4b9903fbdc4::t_e463e051f05c40 1252-1264
+crates/honmoon-cli/tests/policy_validate.rs
+  s_edb4b9903fbdc4::t_90683386fceafa 716-721,740-742,746,762-839,841
+  s_edb4b9903fbdc4::t_f40b4612b81041 666-671
+  s_edb4b9903fbdc4::t_0f37f82106469b 840,842
+wiki/getting-started/policy-authoring.md
+  s_edb4b9903fbdc4::t_f8eb58d12c22f7 472-478,480-487,489-495
+  s_edb4b9903fbdc4::t_cb347b66c3f0aa 418,429,432,454,479
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "3fee04ea74feafe4fc35a88dc82f71f588338906",
+  "prompts": {},
+  "sessions": {
+    "s_edb4b9903fbdc4": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "623f5ad6-b19c-4be9-b893-ca63415dbb10",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}

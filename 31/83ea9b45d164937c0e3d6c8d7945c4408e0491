@@ -1,0 +1,30 @@
+crates/honmoon-cli/src/main.rs
+  s_edb4b9903fbdc4::t_ce691ad61f593f 1743-1751
+  s_edb4b9903fbdc4::t_7bb3ccae108049 1960-1962
+crates/honmoon-cli/tests/policy_validate.rs
+  s_edb4b9903fbdc4::t_0d5225d242c81c 772-778,781-795,810-813
+  s_edb4b9903fbdc4::t_88cfb7c541066a 814
+.please/docs/review/rejected-findings.jsonl
+  s_edb4b9903fbdc4::t_d63ede39a0da39 19-20
+  s_edb4b9903fbdc4::t_771c9119c4f6a9 21
+wiki/getting-started/policy-authoring.md
+  s_edb4b9903fbdc4::t_53222bdc1a244e 418,432,454,479,494-497
+wiki/llms-full.txt
+  s_edb4b9903fbdc4::t_85ec03d038a35c 3554,3568,3590,3615,3630-3633
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "3183ea9b45d164937c0e3d6c8d7945c4408e0491",
+  "prompts": {},
+  "sessions": {
+    "s_edb4b9903fbdc4": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "623f5ad6-b19c-4be9-b893-ca63415dbb10",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}

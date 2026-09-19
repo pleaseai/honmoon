@@ -1,0 +1,20 @@
+.claude/agent-memory/review-review-security-reviewer/policy-load-error-echoes-file.md
+  s_edb4b9903fbdc4::t_4f4a553f2bd5ad 60-76
+  s_edb4b9903fbdc4::t_16aa042f3c4e8e 3
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "aade03c636bd5349927bdd69bd3320dfe7b023d9",
+  "prompts": {},
+  "sessions": {
+    "s_edb4b9903fbdc4": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "623f5ad6-b19c-4be9-b893-ca63415dbb10",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
