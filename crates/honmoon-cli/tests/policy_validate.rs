@@ -769,14 +769,30 @@ fn no_command_takes_it(fixture: &str, name: &str, contents: &str, says: &str) {
 /// admitted file's whole text reached `GET /api/policy`, inline secrets and all.
 /// The reproduction on the binary before this change was
 /// `policy is valid (0 rules, 0 endpoints)`, exit 0.
+///
+/// The second fixture is the quoted spelling with nothing beside it. Before
+/// this change the loader refused it and quoted the value; now the read
+/// refuses it first, in the same content-free words, which is asserted here
+/// on the binary rather than only of the two halves in isolation — the order
+/// of the guards in `load_policy` is what decides which answer an operator
+/// reads, and a unit test of the rule alone cannot see that order.
 #[test]
 fn no_command_accepts_a_compose_file_admitted_only_by_its_version() {
-    no_command_takes_it(
-        "a docker-compose file",
-        "compose.yml",
-        NOT_A_POLICY_COMPOSE,
-        "not the policy version this build reads",
-    );
+    for (fixture, name, contents) in [
+        ("a docker-compose file", "compose.yml", NOT_A_POLICY_COMPOSE),
+        (
+            "a quoted version with nothing beside it",
+            "quoted-version.yaml",
+            NOT_A_POLICY_QUOTED_VERSION,
+        ),
+    ] {
+        no_command_takes_it(
+            fixture,
+            name,
+            contents,
+            "not the policy version this build reads",
+        );
+    }
 }
 
 /// The v2/v3-era compose spelling, with `version` unquoted. Quoted (`"3.8"`)
@@ -790,6 +806,11 @@ services:
     environment:
       POSTGRES_PASSWORD: throwaway-not-a-real-value
 ";
+
+/// A mapping whose only key is a `version` the loader cannot read as a `u32`.
+/// Its one line is what `no_command_takes_it` checks the message for, so the
+/// refusal has to name the rule without quoting the value.
+const NOT_A_POLICY_QUOTED_VERSION: &str = "version: \"1.0\"\n";
 
 /// The trap #240 names, held shut on the binary: a file containing only
 /// `version: 1` is a policy the gateway starts on, and the fix for the compose

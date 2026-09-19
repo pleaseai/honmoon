@@ -1740,7 +1740,15 @@ mod tests {
     ///
     /// `#[serde(deny_unknown_fields)]` was rejected for #220 because it breaks
     /// this, so the option that was taken has to keep it exactly. One recognised
-    /// key admits the document and nothing about its siblings is consulted.
+    /// key admits the document past *this rule* and nothing about its siblings
+    /// is consulted. Past the read as a whole the first fixture is another
+    /// matter: `version: 2` is its only recognised key, so
+    /// [`admitted_only_by_an_unknown_version`] refuses it in [`load_policy`]
+    /// (#240) — deliberately, and pinned there — while the field-level
+    /// forward-compatibility this test is about is kept by the same rule for
+    /// `version: 1` (`a_compose_file_is_refused_and_a_version_one_policy_is_not`)
+    /// and, through the binary, for `version: 2` beside `egress`
+    /// (`a_policy_carrying_an_unknown_field_still_loads`).
     #[test]
     fn an_unknown_sibling_of_a_recognised_key_still_loads() {
         use super::mapping_names_no_policy_field;
@@ -1949,6 +1957,9 @@ mod tests {
             // A tagged mapping is a mapping, and the value is read through a
             // tag on the document the way `mapping_names_no_policy_field` does.
             "!Foo {version: 1}\n",
+            // A tag on the value itself: `as_u64` untags before it reads, and
+            // the loader takes the same file, so the two agree.
+            "version: !t 1\n",
         ] {
             assert!(
                 !admitted_only_by_an_unknown_version(src),
