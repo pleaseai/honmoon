@@ -1,0 +1,19 @@
+wiki/deep-dive/protocol-parsing.md
+  s_9d56a26b400aa9::t_2f8556031e204c 97
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "5ec6cc949228a41c52ad5d06392d8ffbb606aad8",
+  "prompts": {},
+  "sessions": {
+    "s_9d56a26b400aa9": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "f4feb044-f1d1-472d-b35c-5b0a213961b2",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
