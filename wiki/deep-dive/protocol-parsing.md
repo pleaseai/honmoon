@@ -94,7 +94,7 @@ flowchart TD
 
 The test `rejects_malformed_query_frames` covers trailing bytes, a missing NUL terminator, and a
 length field larger than the buffer — all must return `None`
-([protocols.rs:219-237](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/protocols.rs#L219-L237)).
+([protocols.rs:1061-1079](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/protocols.rs#L1061-L1079)).
 
 ## SQL verb and table
 
