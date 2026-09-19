@@ -556,6 +556,8 @@ export function checkAnchor(
  * `approval.rs` rather than repointed, so it produces none of those findings
  * any more. The same rewrite dropped its copy of #119's `gateway.rs#L206-L271`,
  * which now defers on `quick-start.md` alone — the page #119 is actually about.
+ * #261's entry is gone the same way: the SQL section was rewritten against
+ * `parse_sql` as ADR-0008 leaves it, so the anchor it deferred no longer exists.
  *
  * Every remaining entry was resolved against `main` at `ed53fb4` and each one
  * is printed with its issue number on every passing run. None is on the page
@@ -573,9 +575,6 @@ export const TRACKED: Tracked[] = [
   // #192
   { path: 'crates/honmoon-core/src/engine.rs', start: 23, end: 69, kind: 'delimiter', issue: 192, pages: ['deep-dive/policy-engine.md'] },
   { path: 'crates/honmoon-core/src/engine.rs', start: 444, end: 467, kind: 'delimiter', issue: 192, pages: ['deep-dive/policy-engine.md'] },
-
-  // #261
-  { path: 'crates/honmoon-core/src/protocols.rs', start: 248, end: 254, kind: 'blank', issue: 261, pages: ['deep-dive/protocol-parsing.md'] },
 
   // #263
   { path: 'docs/roadmap.md', start: 93, end: 100, kind: 'blank', issue: 263, pages: ['deep-dive/roadmap-open-core.md'] },

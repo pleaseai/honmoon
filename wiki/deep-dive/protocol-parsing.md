@@ -24,7 +24,7 @@ See [tech-debt-tracker.md:14](https://github.com/pleaseai/honmoon/blob/main/.ple
 | Function | Input | Output | Scope | Source |
 |----------|-------|--------|-------|--------|
 | `parse_postgres_query` | PostgreSQL `'Q'` packet bytes | `Option<SqlFacts>` | Frontend simple query | [protocols.rs:17-35](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/protocols.rs#L17-L35) |
-| `parse_sql` | SQL statement text | `SqlFacts` | verb + best-effort table | [protocols.rs:41-93](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/protocols.rs#L41-L93) |
+| `parse_sql` | SQL statement text | `SqlFacts` | verb + best-effort table | [protocols.rs:72-99](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/protocols.rs#L72-L99) |
 | `parse_k8s_request` | HTTP method + path | `K8sFacts` | verb + resource + namespace | [protocols.rs:111-156](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/protocols.rs#L111-L156) |
 
 The design principle, stated in the module doc: *extract only the declared facts (verb / table /
@@ -94,28 +94,73 @@ flowchart TD
 
 The test `rejects_malformed_query_frames` covers trailing bytes, a missing NUL terminator, and a
 length field larger than the buffer — all must return `None`
-([protocols.rs:219-237](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/protocols.rs#L219-L237)).
+([protocols.rs:1061-1079](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/protocols.rs#L1061-L1079)).
 
-## SQL verb/table heuristic
+## SQL verb and table
 
-`parse_sql` is a deliberate **heuristic, not a full SQL grammar** — just enough to drive policy
-on the dangerous verbs. It uppercases the leading token as the `verb`, then extracts a best-effort
-table per the verb's syntax ([protocols.rs:37-93](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/protocols.rs#L37-L93)):
+`parse_sql` parses the statement with `sqlparser`'s PostgreSQL dialect and classifies it by what
+it **executes**, not by what it starts with — the decision recorded in
+[ADR-0008](https://github.com/pleaseai/honmoon/blob/main/.please/docs/decisions/0008-parse-sql-with-postgresql-grammar.md) ([protocols.rs:72-99](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/protocols.rs#L72-L99)). The dialect is
+`sqlparser`'s model of PostgreSQL, not the server's grammar: syntax it models differently is
+classified differently, and input it rejects takes the fallback path below. Two statement shapes
+make the difference:
 
-| Verb | Table extraction strategy | Example → table |
-|------|---------------------------|-----------------|
-| `DROP` / `TRUNCATE` | Skip object-type/option modifiers (`TABLE`, `IF`, `EXISTS`, `ONLY`, `CONCURRENTLY`, …); first remaining token | `DROP TABLE IF EXISTS users` → `users` |
-| `INSERT` / `DELETE` / `SELECT` | Token after the first `FROM` / `INTO` | `SELECT * FROM public.orders` → `orders` |
-| `UPDATE` | Token immediately after `UPDATE` | `update Users set x=1` → `users` |
-| other | (none) | `EXPLAIN ANALYZE foo` → `` (verb `EXPLAIN`) |
+- `EXPLAIN ANALYZE` runs the statement it wraps, so `EXPLAIN ANALYZE DELETE FROM sessions` is a
+  `DELETE`; a plain `EXPLAIN` only plans it and stays an `EXPLAIN` ([protocols.rs:1163-1179](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/protocols.rs#L1163-L1179)).
+- A data-modifying CTE runs inside the outer `SELECT`, so
+  `WITH x AS (DELETE FROM t RETURNING *) SELECT * FROM x` is a `DELETE` ([protocols.rs:1190-1197](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/protocols.rs#L1190-L1197)).
 
+Where several verbs execute, `sql.verb` is the most dangerous of them. The order is fixed once, in
+`VERB_PRECEDENCE`: `DROP > TRUNCATE > ALTER > MERGE > DELETE > UPDATE > INSERT > SELECT`
+([protocols.rs:57-70](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/protocols.rs#L57-L70)). The order picks the verb a deny rule is most likely to name; it does not make the other verbs
+visible to rules written about them. `INSERT … ON CONFLICT DO UPDATE` reports `UPDATE`, so a policy
+that denies `INSERT` and allows `UPDATE` permits the insert of an unseen key — the limit ADR-0008
+records and [#104](https://github.com/pleaseai/honmoon/issues/104) tracks. Only the first statement
+is classified; the data
+plane refuses a batch outright rather than forward the rest uninspected
+(`carries_multiple_statements`, [protocols.rs:711-729](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/protocols.rs#L711-L729)).
+
+`sql.table` is the field a table-scoped allow rule matches on. It holds **one relation or
+nothing**: the single target the reported verb writes, or the single relation a `SELECT` reads. It
+is empty when that verb has several targets (a comma list, or a `CASCADE` that reaches tables the
+statement never names), when two writes of the same rank execute — whatever relations they name,
+since a name that reaches the facts has lost its schema qualifier and cannot be compared — or when
+a read reaches more than one relation, so no table-scoped rule can match such a statement and only a
+table-blind rule decides it: naming the first of `DROP TABLE scratch, users` would let a rule
+scoped to `scratch` authorize dropping `users` (`sole_relation`, [protocols.rs:191-204](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/protocols.rs#L191-L204); `more_dangerous`,
+[protocols.rs:111-135](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/protocols.rs#L111-L135)). Writes of *different* rank are not a tie:
+`WITH a AS (DELETE FROM t1 …), b AS (UPDATE t2 …) SELECT 1` reports `DELETE` on `t1`, and the
+`UPDATE` of `t2` is visible to no rule — the one-verb, one-table limit tracked in
+[#104](https://github.com/pleaseai/honmoon/issues/104). A `DROP` fills the table only when it drops a *table*: a
+rule written as `sql.table == 'scratch'` meant the table, not a schema, index or view of that name
+([protocols.rs:453-466](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/protocols.rs#L453-L466)).
+
+| Statement | `sql.verb` | `sql.table` | Proven by |
+|-----------|------------|-------------|-----------|
+| `DROP TABLE IF EXISTS users` | `DROP` | `users` | `drop_if_exists_extracts_real_table` ([protocols.rs:1090-1099](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/protocols.rs#L1090-L1099)) |
+| `DROP MATERIALIZED VIEW scratch` | `DROP` | `` — not a table | `a_drop_of_a_non_table_object_names_no_table` ([protocols.rs:1530-1550](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/protocols.rs#L1530-L1550)) |
+| `DROP TABLE a, b` / `TRUNCATE a, b` | `DROP` / `TRUNCATE` | `` — two targets | `a_multi_target_drop_or_truncate_names_no_table` ([protocols.rs:1241-1256](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/protocols.rs#L1241-L1256)) |
+| `TRUNCATE scratch CASCADE` | `TRUNCATE` | `` — reaches tables it never names | `a_cascading_truncate_or_drop_names_no_table` ([protocols.rs:1360-1380](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/protocols.rs#L1360-L1380)) |
+| `SELECT * FROM public.orders WHERE id = 1` | `SELECT` | `orders` | `parses_postgres_truncate_and_select` ([protocols.rs:1041-1053](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/protocols.rs#L1041-L1053)) |
+| `SELECT * FROM approved JOIN secrets ON …` | `SELECT` | `` — reads two relations | `a_select_over_several_relations_names_none_of_them` ([protocols.rs:1320-1336](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/protocols.rs#L1320-L1336)) |
+| `EXPLAIN ANALYZE DELETE FROM sessions` | `DELETE` | `sessions` | `explain_analyze_reports_the_statement_it_executes` ([protocols.rs:1163-1170](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/protocols.rs#L1163-L1170)) |
+| `WITH x AS (DELETE FROM t RETURNING *) SELECT * FROM x` | `DELETE` | `t` | `a_data_modifying_cte_outranks_the_outer_select` ([protocols.rs:1190-1197](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/protocols.rs#L1190-L1197)) |
+| `WITH a AS (DELETE FROM t1 …), b AS (DELETE FROM t2 …) SELECT 1` | `DELETE` | `` — two writes | `tied_write_verbs_on_different_relations_name_no_table` ([protocols.rs:1496-1528](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/protocols.rs#L1496-L1528)) |
+
+A relation name is reported the same way on both paths below: schema qualifier dropped, quotes
+gone, lowercased, so `public."Orders"` → `orders` (`relation_name`, [protocols.rs:151-157](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/protocols.rs#L151-L157)).
+
+Input the dialect rejects — `DROP INDEX CONCURRENTLY idx_a` is one, an unterminated comment
+another — falls back to `parse_sql_heuristic`, the leading-token scanner that shipped before it
+([protocols.rs:531-628](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/protocols.rs#L531-L628)): the verb is the first keyword past any comment prologue, and the table is a
+best-effort read of the words after it. A statement whose shape carries no verb in
+`VERB_PRECEDENCE` (`SET`, `BEGIN`, `VACUUM`, `VALUES`, …) keeps that classification too. The
+fallback shares the one guard it must not undercut: only a `DROP TABLE` names a table, so
+`CONCURRENTLY` — the word that sends a `DROP INDEX` down this path — cannot become a route into
+`sql.table` (`unparseable_input_falls_back_to_the_shipped_scanners`, [protocols.rs:1565-1596](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/protocols.rs#L1565-L1596)).
 Extracted identifiers are normalized by `clean_identifier`: strip quotes/backticks/semicolons,
 drop the schema qualifier (`public.users;` → `users`), and lowercase
 ([protocols.rs:700-709](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/protocols.rs#L700-L709)).
-
-The modifier-skipping logic matters for correctness: `DROP MATERIALIZED VIEW mv` must yield `mv`,
-not `materialized` — proven by `drop_if_exists_extracts_real_table`
-([protocols.rs:248-254](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/protocols.rs#L248-L254)).
 
 ## Kubernetes API parser
 
@@ -181,14 +226,15 @@ prefix ([protocols.rs:239-273](https://github.com/pleaseai/honmoon/blob/main/cra
 
 ## Test coverage
 
-The parsers carry the densest test suite in the repo — 9 unit tests in `protocols.rs` plus the
-end-to-end tests in `engine.rs`:
+The parsers carry their own unit-test module in `protocols.rs`, plus the end-to-end tests in
+`engine.rs`:
 
 | Test | Guards | Source |
 |------|--------|--------|
-| `parses_postgres_drop` | `'Q'` → `DROP` + table | [protocols.rs:192-197](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/protocols.rs#L192-L197) |
-| `rejects_non_query_packet` | non-`Q` / too-short → `None` | [protocols.rs:213-217](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/protocols.rs#L213-L217) |
-| `rejects_malformed_query_frames` | framing edge cases | [protocols.rs:219-237](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/protocols.rs#L219-L237) |
+| `parses_postgres_drop` | `'Q'` → `DROP` + table | [protocols.rs:1034-1039](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/protocols.rs#L1034-L1039) |
+| `parses_postgres_truncate_and_select` | schema-qualified `public.orders` → `orders` | [protocols.rs:1041-1053](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/protocols.rs#L1041-L1053) |
+| `rejects_non_query_packet` | non-`Q` / too-short → `None` | [protocols.rs:1055-1059](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/protocols.rs#L1055-L1059) |
+| `rejects_malformed_query_frames` | framing edge cases | [protocols.rs:1061-1079](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/protocols.rs#L1061-L1079) |
 | `parse_sql_extracts_verb_and_table` | quoting, case | [protocols.rs:1728-1734](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/protocols.rs#L1728-L1734) |
 | `parses_k8s_list_vs_get` | collection vs named GET | [protocols.rs:1764-1772](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/protocols.rs#L1764-L1772) |
 
