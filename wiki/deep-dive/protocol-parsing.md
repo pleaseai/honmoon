@@ -120,8 +120,9 @@ plane refuses a batch outright rather than forward the rest uninspected
 `sql.table` is the field a table-scoped allow rule matches on. It holds **one relation or
 nothing**: the single target the reported verb writes, or the single relation a `SELECT` reads. It
 is empty when that verb has several targets (a comma list, or a `CASCADE` that reaches tables the
-statement never names), when two writes of the same rank hit different relations, or when a read
-reaches more than one relation — so no table-scoped rule can match such a statement and only a
+statement never names), when two writes of the same rank execute — whatever relations they name,
+since a name that reaches the facts has lost its schema qualifier and cannot be compared — or when
+a read reaches more than one relation, so no table-scoped rule can match such a statement and only a
 table-blind rule decides it: naming the first of `DROP TABLE scratch, users` would let a rule
 scoped to `scratch` authorize dropping `users` (`sole_relation`, [protocols.rs:191-204](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/protocols.rs#L191-L204); `more_dangerous`,
 [protocols.rs:111-135](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/protocols.rs#L111-L135)). Writes of *different* rank are not a tie:
