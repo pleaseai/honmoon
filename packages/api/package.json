@@ -1,7 +1,7 @@
 {
   "name": "@honmoon/api",
   "type": "module",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "scripts": {
     "dev": "bun --watch src/index.ts",
     "start": "bun src/index.ts",
