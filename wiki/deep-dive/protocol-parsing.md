@@ -98,10 +98,12 @@ length field larger than the buffer — all must return `None`
 
 ## SQL verb and table
 
-`parse_sql` parses the statement with PostgreSQL's own grammar (`sqlparser`'s `PostgreSqlDialect`)
-and classifies it by what it **executes**, not by what it starts with — the decision recorded in
-[ADR-0008](https://github.com/pleaseai/honmoon/blob/main/.please/docs/decisions/0008-parse-sql-with-postgresql-grammar.md) ([protocols.rs:72-99](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/protocols.rs#L72-L99)). Two statement shapes
-make that difference:
+`parse_sql` parses the statement with `sqlparser`'s PostgreSQL dialect and classifies it by what
+it **executes**, not by what it starts with — the decision recorded in
+[ADR-0008](https://github.com/pleaseai/honmoon/blob/main/.please/docs/decisions/0008-parse-sql-with-postgresql-grammar.md) ([protocols.rs:72-99](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/protocols.rs#L72-L99)). The dialect is
+`sqlparser`'s model of PostgreSQL, not the server's grammar: syntax it models differently is
+classified differently, and input it rejects takes the fallback path below. Two statement shapes
+make the difference:
 
 - `EXPLAIN ANALYZE` runs the statement it wraps, so `EXPLAIN ANALYZE DELETE FROM sessions` is a
   `DELETE`; a plain `EXPLAIN` only plans it and stays an `EXPLAIN` ([protocols.rs:1163-1179](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/protocols.rs#L1163-L1179)).
@@ -116,11 +118,16 @@ plane refuses a batch outright rather than forward the rest uninspected
 (`carries_multiple_statements`, [protocols.rs:711-729](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/protocols.rs#L711-L729)).
 
 `sql.table` is the field a table-scoped allow rule matches on. It holds **one relation or
-nothing**: the single target a write names, or the single relation a `SELECT` reads. A statement
-that writes more than one relation, or a read that reaches more than one, reports an empty table,
-so no table-scoped rule can match it and only a table-blind rule decides it: naming the first of
-`DROP TABLE scratch, users` would let a rule scoped to `scratch` authorize dropping `users`
-(`sole_relation`, [protocols.rs:191-204](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/protocols.rs#L191-L204)). A `DROP` fills the table only when it drops a *table*: a
+nothing**: the single target the reported verb writes, or the single relation a `SELECT` reads. It
+is empty when that verb has several targets (a comma list, or a `CASCADE` that reaches tables the
+statement never names), when two writes of the same rank hit different relations, or when a read
+reaches more than one relation — so no table-scoped rule can match such a statement and only a
+table-blind rule decides it: naming the first of `DROP TABLE scratch, users` would let a rule
+scoped to `scratch` authorize dropping `users` (`sole_relation`, [protocols.rs:191-204](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/protocols.rs#L191-L204); `more_dangerous`,
+[protocols.rs:111-135](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/protocols.rs#L111-L135)). Writes of *different* rank are not a tie:
+`WITH a AS (DELETE FROM t1 …), b AS (UPDATE t2 …) SELECT 1` reports `DELETE` on `t1`, and the
+`UPDATE` of `t2` is visible to no rule — the one-verb, one-table limit tracked in
+[#104](https://github.com/pleaseai/honmoon/issues/104). A `DROP` fills the table only when it drops a *table*: a
 rule written as `sql.table == 'scratch'` meant the table, not a schema, index or view of that name
 ([protocols.rs:453-466](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/protocols.rs#L453-L466)).
 
@@ -139,9 +146,9 @@ rule written as `sql.table == 'scratch'` meant the table, not a schema, index or
 A relation name is reported the same way on both paths below: schema qualifier dropped, quotes
 gone, lowercased, so `public."Orders"` → `orders` (`relation_name`, [protocols.rs:151-157](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/protocols.rs#L151-L157)).
 
-Input the grammar cannot read — `DROP INDEX CONCURRENTLY idx_a` is one, an unterminated comment
+Input the dialect rejects — `DROP INDEX CONCURRENTLY idx_a` is one, an unterminated comment
 another — falls back to `parse_sql_heuristic`, the leading-token scanner that shipped before it
-([protocols.rs:540-628](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/protocols.rs#L540-L628)): the verb is the first keyword past any comment prologue, and the table is a
+([protocols.rs:531-628](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/protocols.rs#L531-L628)): the verb is the first keyword past any comment prologue, and the table is a
 best-effort read of the words after it. A statement whose shape carries no verb in
 `VERB_PRECEDENCE` (`SET`, `BEGIN`, `VACUUM`, `VALUES`, …) keeps that classification too. The
 fallback shares the one guard it must not undercut: only a `DROP TABLE` names a table, so
