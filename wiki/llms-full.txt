@@ -1503,7 +1503,7 @@ See [tech-debt-tracker.md:14](https://github.com/pleaseai/honmoon/blob/main/.ple
 | Function | Input | Output | Scope | Source |
 |----------|-------|--------|-------|--------|
 | `parse_postgres_query` | PostgreSQL `'Q'` packet bytes | `Option<SqlFacts>` | Frontend simple query | [protocols.rs:17-35](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/protocols.rs#L17-L35) |
-| `parse_sql` | SQL statement text | `SqlFacts` | verb + best-effort table | [protocols.rs:41-93](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/protocols.rs#L41-L93) |
+| `parse_sql` | SQL statement text | `SqlFacts` | verb + best-effort table | [protocols.rs:72-99](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/protocols.rs#L72-L99) |
 | `parse_k8s_request` | HTTP method + path | `K8sFacts` | verb + resource + namespace | [protocols.rs:111-156](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/protocols.rs#L111-L156) |
 
 The design principle, stated in the module doc: *extract only the declared facts (verb / table /
