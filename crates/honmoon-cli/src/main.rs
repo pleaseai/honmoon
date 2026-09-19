@@ -1039,6 +1039,15 @@ fn hook_salt_for(context: Option<&str>, wire_salt: Vec<u8>, machine_key: Vec<u8>
 /// anybody mistyped. Putting it here also keeps `Policy` itself untouched, which
 /// is what keeps this off the `crates/AGENTS.md` **Ask first** list and out of
 /// TD-001's TS-type and JSON Schema sync.
+///
+/// [`admitted_only_by_an_unknown_version`] runs third and is the second rule's
+/// residual closed (#240): a mapping whose only recognised key is `version`
+/// with a value other than [`POLICY_VERSION`] — an unquoted `version: 3` at the
+/// top of a `docker-compose.yml` — was admitted by name and refused by nothing.
+/// It runs after the name rule so that a file with no `version` at all gets the
+/// message about missing fields, and it moves a verdict for the same reason and
+/// on the same terms: `Policy` is untouched, and a file containing only
+/// `version: 1` goes on loading.
 fn load_policy(path: &Path) -> Result<(Policy, String)> {
     let src = std::fs::read_to_string(path)
         .with_context(|| format!("reading policy {}", path.display()))?;
@@ -1057,6 +1066,15 @@ fn load_policy(path: &Path) -> Result<(Policy, String)> {
              policy field ({}). Contents withheld — check the path.",
             path.display(),
             POLICY_FIELDS.join(", ")
+        );
+    }
+
+    if admitted_only_by_an_unknown_version(&src) {
+        anyhow::bail!(
+            "{} is not a policy document: `version` is the only policy field it \
+             declares, and its value is not the policy version this build reads \
+             ({POLICY_VERSION}). Contents withheld — check the path.",
+            path.display()
         );
     }
 
@@ -1231,19 +1249,19 @@ const POLICY_FIELDS: [&str; 4] = ["version", "egress", "endpoints", "rules"];
 /// read from here on — fail-closed, and the operator is told which keys are
 /// missing, but it is a behaviour change and not only a refusal of bad input.
 ///
-/// **The residual, stated because the rule looks tighter than it is.** This is a
-/// name-only test, and `version` is the one of the four that is not
-/// honmoon-specific: a `docker-compose.yml` opens with an unquoted `version: 3`,
-/// so it is admitted and still loads as a 0-rule policy whose source `gateway`
-/// serves. Measured, and pinned by
-/// `version_alone_admits_a_file_no_operator_wrote_as_a_policy` so it cannot drift
-/// unnoticed. It is not closed here because the alternative — dropping `version`
-/// from the admission set — refuses a file containing only `version: 1`, which is
-/// a policy the gateway starts on, and over-refusal is the failure that costs an
-/// operator an outage rather than a diagnosis. The quoted spelling
-/// (`version: "3.8"`) does not even reach this rule: `version` is a `u32`, so the
-/// loader refuses it and quotes only the author's own three characters. Narrowing
-/// the ticket is its own decision, filed rather than taken in passing.
+/// **The residual this rule had, and where it is closed.** This is a name-only
+/// test, and `version` is the one of the four that is not honmoon-specific: a
+/// `docker-compose.yml` opens with an unquoted `version: 3`, so by name alone
+/// it was admitted and loaded as a 0-rule policy whose source `gateway` served
+/// (#240). It is not closed by dropping `version` from the set — that refuses a
+/// file containing only `version: 1`, a policy the gateway starts on, and
+/// over-refusal is the failure that costs an operator an outage rather than a
+/// diagnosis. [`admitted_only_by_an_unknown_version`] closes it on the
+/// *value* instead, after this rule has run: `version` admits a document on
+/// its own only as [`POLICY_VERSION`]. So "one recognised key admits the
+/// document whatever else it carries" holds for `egress`, `endpoints`, `rules`
+/// and `version: 1`, and this function's tests read it as a statement about
+/// this function.
 fn mapping_names_no_policy_field(src: &str) -> bool {
     first_document(src).is_some_and(|value| names_no_policy_field(&value))
 }
@@ -1271,6 +1289,106 @@ fn names_no_policy_field(value: &serde_yaml::Value) -> bool {
         // Not a mapping, so this rule has nothing to say. `Null` is the empty
         // file, which is a valid policy; every other shape here is one
         // `not_a_policy_document` has already named, since it runs first.
+        _ => false,
+    }
+}
+
+/// The policy schema version this build reads — the one value of `version`
+/// that says "honmoon policy" rather than "some file with a version line".
+///
+/// Written out here for the same reason [`POLICY_FIELDS`] is: nothing in
+/// `honmoon-core` declares it. `Policy::version` is a plain `u32` with no
+/// check on its value, and the JSON Schema says only `>= 1`. The artifact
+/// that does define the version operators write is the shipped example,
+/// `policies/agent.yaml`, and
+/// `only_this_builds_policy_version_is_an_admission_ticket` reads that file
+/// and requires its `version` to be this constant — so a schema bump that
+/// lands in the example and not here fails a test rather than refusing the
+/// bumped file at a deploy.
+const POLICY_VERSION: u32 = 1;
+
+/// A mapping whose only recognised key is `version`, carrying a value that is
+/// not [`POLICY_VERSION`] — a file admitted by a name it uses for something
+/// else (#240).
+///
+/// [`mapping_names_no_policy_field`] tests by name, and `version` is the one of
+/// [`POLICY_FIELDS`] that is not honmoon-specific: a `docker-compose.yml` opens
+/// with an unquoted `version: 3`, so by name it was admitted and loaded as a
+/// 0-rule policy whose source `gateway --config` served — #220's consequence on
+/// a narrower file class than the three that issue measured. The obvious
+/// narrowing, dropping `version` from the name rule, refuses a file containing
+/// only `version: 1`, which is a policy the gateway starts on; refusing a policy
+/// the gateway runs is the failure that costs an operator an outage rather than
+/// a diagnosis, so it was not taken. This rule turns on the *value* instead:
+/// `version` admits a document only as the version this build reads.
+///
+/// It answers only when `version` is the **sole** ticket. Beside `egress`,
+/// `endpoints` or `rules` the value is not consulted — the loader then has
+/// something to run, and its own diagnosis of a bad value (`version: "1.0"`
+/// quoted, with a line and column) is the useful one, exactly as before. A
+/// mapping the name rule already refuses is not this rule's to answer, so the
+/// two refusals cannot both fire on one file; the ordering in [`load_policy`]
+/// is what `another_policy_field_admits_the_document_whatever_version_says`
+/// relies on.
+///
+/// What "unknown" covers is every value but the integer [`POLICY_VERSION`]:
+/// another integer (compose's `2` and `3`, and the `0` an absent `version`
+/// defaults to, which the schema forbids), and every spelling the loader would
+/// refuse on its own — quoted, fractional, a word, `null`, a list. For those
+/// the loader refuses anyway, so only the message moves: from serde quoting
+/// the value to a content-free refusal for the path. For the integers the
+/// loader takes them as an empty policy, so this moves a verdict on purpose,
+/// the way the name rule does; `a_compose_file_is_refused_and_a_version_one_policy_is_not`
+/// asks the loader as well so that stays measured rather than assumed.
+///
+/// Two boundaries are kept, and pinned:
+///
+/// - `version: 1` alone still loads, with or without a sibling this build has
+///   never heard of. Forward-compatibility of *fields* is untouched.
+/// - A policy that declares a schema version this build does not implement
+///   **and** nothing this build reads is refused. That file loaded before, as
+///   deny-all with no rules — a policy this build could not run as written,
+///   which is #220's class — and the message names the version rule rather
+///   than the path alone, so a rollback that lands here is a diagnosis. One
+///   that also carries `egress`, `endpoints` or `rules` is admitted on those,
+///   which is what `a_policy_carrying_an_unknown_field_still_loads` runs
+///   through the binary.
+///
+/// The residual of the residual is a foreign file that opens with an unquoted
+/// `version: 1` and declares nothing else honmoon reads. It is admitted, and
+/// nothing about the value can tell it from the minimal policy; that is the
+/// bound this rule stops at, stated in `wiki/getting-started/policy-authoring.md`.
+fn admitted_only_by_an_unknown_version(src: &str) -> bool {
+    first_document(src).is_some_and(|value| only_an_unknown_version_admits(&value))
+}
+
+/// The recursive half of [`admitted_only_by_an_unknown_version`], split out
+/// for the tag exactly as [`names_no_policy_field`] is.
+///
+/// `Value::as_u64` reads through a tag on the *value* the same way `as_str`
+/// reads through one on a key (`untag_ref`, `serde_yaml` 0.9); whether the
+/// loader takes `version: !t 1` is not claimed here, only that a document is
+/// not refused for the tag alone.
+fn only_an_unknown_version_admits(value: &serde_yaml::Value) -> bool {
+    use serde_yaml::Value;
+
+    match value {
+        Value::Mapping(mapping) => {
+            let mut version = None;
+            for (key, value) in mapping {
+                match key.as_str() {
+                    Some("version") => version = Some(value),
+                    // Any other recognised key admits the document by itself,
+                    // whatever `version` says.
+                    Some(key) if POLICY_FIELDS.contains(&key) => return false,
+                    _ => {}
+                }
+            }
+            // No `version` at all is the name rule's file, already refused.
+            version.is_some_and(|value| value.as_u64() != Some(u64::from(POLICY_VERSION)))
+        }
+        Value::Tagged(tagged) => only_an_unknown_version_admits(&tagged.value),
+        // Not a mapping: `not_a_policy_document` has already answered.
         _ => false,
     }
 }
@@ -1624,7 +1742,15 @@ mod tests {
     ///
     /// `#[serde(deny_unknown_fields)]` was rejected for #220 because it breaks
     /// this, so the option that was taken has to keep it exactly. One recognised
-    /// key admits the document and nothing about its siblings is consulted.
+    /// key admits the document past *this rule* and nothing about its siblings
+    /// is consulted. Past the read as a whole the first fixture is another
+    /// matter: `version: 2` is its only recognised key, so
+    /// [`admitted_only_by_an_unknown_version`] refuses it in [`load_policy`]
+    /// (#240) — deliberately, and pinned there — while the field-level
+    /// forward-compatibility this test is about is kept by the same rule for
+    /// `version: 1` (`a_compose_file_is_refused_and_a_version_one_policy_is_not`)
+    /// and, through the binary, for `version: 2` beside `egress`
+    /// (`a_policy_carrying_an_unknown_field_still_loads`).
     #[test]
     fn an_unknown_sibling_of_a_recognised_key_still_loads() {
         use super::mapping_names_no_policy_field;
@@ -1787,59 +1913,176 @@ mod tests {
         );
     }
 
-    /// The rule's residual, measured rather than left to be discovered.
+    /// #240: the name rule's residual, closed on the *value* of `version`.
     ///
-    /// The admission test is by *name*, and `version` is the one of the four keys
-    /// that other config formats also use. A `docker-compose.yml` opens with an
-    /// unquoted `version: 3`, so it is admitted, loads as a 0-rule policy, and
-    /// under `gateway --config` its source — inline environment secrets included —
-    /// is what `GET /api/policy` serves. That is #220's consequence on a narrower
-    /// file class than the three the issue measured, and this test exists so the
-    /// gap is a recorded fact with a failing test behind any change to it, rather
-    /// than a surprise for whoever finds it next.
+    /// `version` is the one of the four keys other config formats also use, so
+    /// by name alone a `docker-compose.yml` (`version: 3` + `services:`) was
+    /// admitted and loaded as a 0-rule policy whose source `gateway --config`
+    /// served. The loader still takes it — asserted, so this stays the read's
+    /// own refusal — and the read now refuses it: `version` admits a document
+    /// only as [`POLICY_VERSION`], and this file declares nothing else.
     ///
-    /// Kept rather than closed on purpose: dropping `version` from
-    /// [`POLICY_FIELDS`] would refuse a file containing only `version: 1`, a
-    /// policy the gateway starts on, and refusing a policy the gateway runs is the
-    /// worse direction. If this test ever starts failing because the ticket was
-    /// narrowed deliberately, delete it — do not weaken it.
+    /// Both halves of the trap the issue names are here. Dropping `version`
+    /// from [`POLICY_FIELDS`] would have refused `version: 1` alone, a policy
+    /// the gateway starts on; the value rule keeps it, with or without a
+    /// sibling this build has never heard of.
     #[test]
-    fn version_alone_admits_a_file_no_operator_wrote_as_a_policy() {
-        use super::mapping_names_no_policy_field;
+    fn a_compose_file_is_refused_and_a_version_one_policy_is_not() {
+        use super::{admitted_only_by_an_unknown_version, mapping_names_no_policy_field};
         use honmoon_core::Policy;
 
         let compose = "version: 3\nservices:\n  db:\n    environment:\n      \
                        POSTGRES_PASSWORD: throwaway-not-a-real-value\n";
         assert!(
             !mapping_names_no_policy_field(compose),
-            "`version` is a recognised key, so this is admitted — the residual, \
-             not a bug in the check"
+            "by name `version` admits it — which is why the value rule exists"
         );
-        let policy = Policy::from_yaml(compose).expect("and it loads");
+        assert!(
+            admitted_only_by_an_unknown_version(compose),
+            "…and the value rule refuses it: 3 is not this build's policy version"
+        );
+        let policy = Policy::from_yaml(compose).expect("the loader takes it");
         assert_eq!(
             (policy.rules.len(), policy.endpoints.len()),
             (0, 0),
-            "as a policy that enforces nothing anybody wrote"
+            "as a policy that enforces nothing anybody wrote — #220's case, so the \
+             refusal has to be the read's"
         );
 
-        // The spelling that does not reach this rule at all, and the reason the
-        // residual is narrower than "every compose file": `version` is a `u32`,
-        // so the loader refuses the quoted form and quotes only those three
-        // characters — the author's own field value, which is the documented
-        // bound rather than a leak.
-        let quoted = "version: \"3.8\"\nservices:\n  db:\n    image: postgres\n";
-        assert!(
-            !mapping_names_no_policy_field(quoted),
-            "still admitted by name — the refusal below is the loader's"
+        for src in [
+            // The trap: a policy the gateway starts on, and the reason `version`
+            // could not simply leave the admission set.
+            "version: 1\n",
+            // Forward-compatibility, kept: a sibling this build does not know is
+            // not consulted when the version is the one it reads.
+            "version: 1\ntelemetry:\n  exporter: otlp\n",
+            // A tagged mapping is a mapping, and the value is read through a
+            // tag on the document the way `mapping_names_no_policy_field` does.
+            "!Foo {version: 1}\n",
+            // A tag on the value itself: `as_u64` untags before it reads, and
+            // the loader takes the same file, so the two agree.
+            "version: !t 1\n",
+        ] {
+            assert!(
+                !admitted_only_by_an_unknown_version(src),
+                "`version: 1` is an admission ticket: {src:?}"
+            );
+            assert!(
+                Policy::from_yaml(src).is_ok(),
+                "…for a file the loader takes: {src:?}"
+            );
+        }
+    }
+
+    /// The value rule answers only when `version` is the *sole* ticket.
+    ///
+    /// Any other recognised key admits the document whatever `version` says,
+    /// because the loader then has something to run and its own diagnosis for
+    /// the value is the useful one — `version: "1.0"` beside `rules` still
+    /// reaches serde, which quotes the author's own three characters with a
+    /// line and column. And a mapping the name rule already refuses is not this
+    /// rule's to answer, so the two messages cannot both fire on one file.
+    #[test]
+    fn another_policy_field_admits_the_document_whatever_version_says() {
+        use super::admitted_only_by_an_unknown_version;
+
+        for src in [
+            "version: 3\negress:\n  default: deny\n",
+            "version: \"1.0\"\nrules: []\n",
+            "endpoints: {}\nversion: 0\n",
+            // No `version` at all: nothing for this rule to weigh.
+            "rules: []\n",
+        ] {
+            assert!(
+                !admitted_only_by_an_unknown_version(src),
+                "a recognised key other than `version` admits it: {src:?}"
+            );
+        }
+
+        for src in [
+            // The name rule's own files, including the one whose only key is a
+            // near miss of `version`.
+            "apiVersion: v1\nkind: Secret\n",
+            "Version: 3\n",
+            "{}\n",
+            // Not a mapping: `not_a_policy_document` owns these.
+            "",
+            "- version: 3\n",
+            "version\n",
+        ] {
+            assert!(
+                !admitted_only_by_an_unknown_version(src),
+                "a file an earlier guard answers for is not this rule's: {src:?}"
+            );
+        }
+    }
+
+    /// What "unknown" covers, spelled out per value so the boundary is a list
+    /// rather than an adjective.
+    ///
+    /// Every entry is a mapping whose only recognised key is `version`, so the
+    /// verdict turns on the value alone. Each is asked of the loader too, in
+    /// whichever direction it answers: the integers load as an empty policy
+    /// (#220's shape, so refusing them moves a verdict on purpose), and the
+    /// quoted and fractional spellings are ones the loader refuses anyway —
+    /// there the value rule changes only the message, from serde's quoting of
+    /// the value to a content-free refusal for the path.
+    #[test]
+    fn only_this_builds_policy_version_is_an_admission_ticket() {
+        use super::{POLICY_VERSION, admitted_only_by_an_unknown_version};
+        use honmoon_core::Policy;
+
+        // The artifact that defines the version operators write, read
+        // mechanically rather than restated as a second literal: the shipped
+        // example is what a new policy is copied from, so a schema bump lands
+        // there, and this is where it fails until `POLICY_VERSION` follows.
+        let shipped = Policy::from_yaml(include_str!("../../../policies/agent.yaml"))
+            .expect("the shipped example policy loads");
+        assert_eq!(
+            shipped.version, POLICY_VERSION,
+            "`policies/agent.yaml` declares a version `POLICY_VERSION` does not — \
+             a policy copied from the example and stripped to its `version` line \
+             would now be refused; update the constant, not this test"
         );
-        let error = Policy::from_yaml(quoted)
-            .expect_err("`version` is a u32")
-            .to_string();
-        assert!(
-            error.contains("3.8") && !error.contains("postgres"),
-            "the loader quotes the offending value and not the rest of the \
-             file: {error}"
-        );
+
+        for src in [
+            // compose v2 and v3, unquoted.
+            "version: 2\nservices: {}\n",
+            "version: 3\n",
+            // The default an absent `version` takes; the schema says `>= 1`.
+            "version: 0\n",
+        ] {
+            assert!(
+                admitted_only_by_an_unknown_version(src),
+                "an integer other than {POLICY_VERSION} admits nothing: {src:?}"
+            );
+            let policy = Policy::from_yaml(src)
+                .unwrap_or_else(|error| panic!("the loader takes {src:?}: {error}"));
+            assert_eq!(
+                policy.rules.len(),
+                0,
+                "…as an empty policy, which is why refusing it is #220's case"
+            );
+        }
+
+        for src in [
+            "version: \"3.8\"\nservices: {}\n",
+            "version: 3.8\n",
+            "version: \"1\"\n",
+            "version: one\n",
+            "version: null\n",
+            "version: [1]\n",
+        ] {
+            assert!(
+                admitted_only_by_an_unknown_version(src),
+                "a value that is not the integer {POLICY_VERSION} admits nothing: {src:?}"
+            );
+            assert!(
+                Policy::from_yaml(src).is_err(),
+                "…and the loader refuses this spelling on its own, so only the \
+                 message moves: {src:?}"
+            );
+        }
     }
 
     #[test]

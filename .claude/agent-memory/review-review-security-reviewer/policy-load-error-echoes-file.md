@@ -1,6 +1,6 @@
 ---
 name: policy-load-error-echoes-file
-description: "Policy::from_yaml on a file that is not a policy echoes its whole content into the error, because serde quotes the offending scalar; closed for all three commands by the shared load_policy guard (#202), and the mapping-shaped residual (a secrets file or a JSON key loading as a valid 0-rule policy) is closed too, by load_policy refusing a mapping that declares no recognised policy key (#220) — do not report either as live"
+description: "Policy::from_yaml on a file that is not a policy echoes its whole content into the error, because serde quotes the offending scalar; closed for all three commands by the shared load_policy guard (#202), the mapping-shaped residual (a secrets file or a JSON key loading as a valid 0-rule policy) is closed by load_policy refusing a mapping that declares no recognised policy key (#220), and the compose-file residual (admitted by an unquoted version: 3 alone) is closed by the value rule that admits version on its own only as 1 (#240) — do not report any of the three as live"
 metadata:
   type: project
 ---
@@ -57,19 +57,27 @@ for #220 on exactly that ground, and the policy struct was deliberately left unt
 stays off the `crates/AGENTS.md` **Ask first** list. An explicitly empty mapping (`{}`) is refused
 and that is intended, not a bug.
 
-**The residual of the residual, measured on the #220 build (do not re-derive).** The admission
-ticket is the *name* of one of `version`, `egress`, `endpoints`, `rules`, and `version` is a generic
-name other config formats use. Measured with the built binary: `version: 3` + `services:` with a
-`POSTGRES_PASSWORD:` (an ordinary docker-compose file) still answers
-`policy is valid (0 rules, 0 endpoints)` and, under `gateway --config`, its whole text still reaches
-`AppState.policy_yaml` → `GET /api/policy`. `version: "3.8"` (quoted) does not — serde fails the
-`u32` and quotes only `"3.8"`. Also measured and *not* gaps: a k8s Secret, a `KEY: value` file, a
+**The residual of the residual — closed by #240, do not re-report it as live.** The name rule's
+admission ticket is one of `version`, `egress`, `endpoints`, `rules`, and `version` is a generic
+name other config formats use. Measured on the #220 build: `version: 3` + `services:` with a
+`POSTGRES_PASSWORD:` (an ordinary docker-compose file) answered
+`policy is valid (0 rules, 0 endpoints)` and, under `gateway --config`, its whole text reached
+`AppState.policy_yaml` → `GET /api/policy`. `load_policy` now runs a third guard after the name
+rule, `admitted_only_by_an_unknown_version` (`crates/honmoon-cli/src/main.rs`): when `version` is
+the *only* recognised key a mapping declares, it admits the document only as the integer
+`POLICY_VERSION` (1). Any other value — compose's `2`/`3`, `0`, or a quoted/fractional spelling —
+is refused for the path with no content in the message, on all three commands. It was **not**
+closed by dropping `version` from the name rule, because that refuses a file containing only
+`version: 1`, a policy the gateway starts on; `a_policy_declaring_only_its_version_still_loads`
+pins that on the binary. Beside `egress`/`endpoints`/`rules` the value is not consulted, so a
+mistyped `version: "1.0"` above `rules:` still reaches serde's quoting of those three characters
+(the documented bound, unchanged). The remaining bound is a foreign file opening with an unquoted
+`version: 1` and nothing else honmoon reads — admitted, and the value cannot tell it from the
+minimal policy. Also measured and *not* gaps: a k8s Secret, a `KEY: value` file, a
 service-account JSON, `{}`, a tagged mapping, a complex (non-string) key, `Version:`/`Rules:` case
 variants, a `%YAML` directive, a BOM'd file and a merge-key-only document are all refused with no
 content in the message; a `---\n---\n<PEM>` (empty first document) does not leak either — the
 loader stops at "more than one document". Multi-document files never load at all, though which guard *answers* for one moved in #239: a stream whose first document is a secrets mapping is now refused by the recognised-key rule for the path, not by the loader for being a stream.
-
-The compose case is **tracked in #240**, with the reasoning for leaving it open — dropping `version` from the admission set would refuse a file containing only `version: 1`, a policy the gateway starts on. Do not re-file it, and do not report it as an oversight in #239: it is pinned there by `version_alone_admits_a_file_no_operator_wrote_as_a_policy` and stated in `wiki/getting-started/policy-authoring.md`.
 
 **State after #201 (historical).** `honmoon policy validate` classifies the top-level shape itself
 (`not_a_policy_document` in `crates/honmoon-cli/src/main.rs`) and refuses plain text, a list or

@@ -663,7 +663,12 @@ fn no_command_accepts_a_mapping_that_declares_no_policy_field() {
             NOT_A_POLICY_SERVICE_ACCOUNT,
         ),
     ] {
-        no_command_takes_it(fixture, name, contents);
+        no_command_takes_it(
+            fixture,
+            name,
+            contents,
+            "none of its keys is a policy field",
+        );
     }
 }
 
@@ -708,7 +713,12 @@ const NOT_A_POLICY_SERVICE_ACCOUNT: &str = r#"{
 
 /// The body of the test above, run once per fixture — the counterpart of
 /// `no_command_quotes`, asserting the verdict it could not.
-fn no_command_takes_it(fixture: &str, name: &str, contents: &str) {
+///
+/// `says` is the fragment of the refusal that names the rule which answered,
+/// because two rules now refuse a mapping content-free and which one answers
+/// is part of the claim: a compose file is refused for its `version`, not for
+/// declaring no policy field.
+fn no_command_takes_it(fixture: &str, name: &str, contents: &str, says: &str) {
     let home = TempHome::new(&format!("no-policy-field-{name}"));
     let mistyped = home.write_policy(name, contents);
     let path = mistyped.to_str().unwrap();
@@ -727,13 +737,13 @@ fn no_command_takes_it(fixture: &str, name: &str, contents: &str) {
         let output = run(&home, &args);
         assert!(
             !output.status.success(),
-            "`{label}` must refuse {fixture}: it is a mapping, but it declares no \
-             policy field, so accepting it reports a credential file as a valid \
-             0-rule policy"
+            "`{label}` must refuse {fixture}: it is a mapping that declares nothing \
+             this build reads as a policy, so accepting it reports a file nobody \
+             wrote as a policy as a valid 0-rule one"
         );
         let printed = format!("{}{}", stdout(&output), stderr(&output));
         assert!(
-            printed.contains("none of its keys is a policy field"),
+            printed.contains(says),
             "`{label}` must say what is actually wrong with {fixture}; got: {printed}"
         );
         // Not a repeat of `no_command_quotes`: that test's fixtures are refused
@@ -746,6 +756,108 @@ fn no_command_takes_it(fixture: &str, name: &str, contents: &str) {
                  the line {line:?} is in: {printed}"
             );
         }
+    }
+}
+
+/// #240: `version` is the one recognised key other formats also use, and by
+/// name alone it admitted a `docker-compose.yml`. The read now admits a
+/// document on `version` only when the value is the policy version this build
+/// reads, so the ordinary unquoted `version: 3` spelling is refused on every
+/// command — for the path, with nothing from the file in the message.
+///
+/// The `environment:` block is why this matters: under `gateway --config` the
+/// admitted file's whole text reached `GET /api/policy`, inline secrets and all.
+/// The reproduction on the binary before this change was
+/// `policy is valid (0 rules, 0 endpoints)`, exit 0.
+///
+/// The second fixture is the quoted spelling with nothing beside it. Before
+/// this change the loader refused it and quoted the value; now the read
+/// refuses it first, in the same content-free words, which is asserted here
+/// on the binary rather than only of the two halves in isolation — the order
+/// of the guards in `load_policy` is what decides which answer an operator
+/// reads, and a unit test of the rule alone cannot see that order.
+#[test]
+fn no_command_accepts_a_compose_file_admitted_only_by_its_version() {
+    for (fixture, name, contents) in [
+        ("a docker-compose file", "compose.yml", NOT_A_POLICY_COMPOSE),
+        (
+            "a quoted version with nothing beside it",
+            "quoted-version.yaml",
+            NOT_A_POLICY_QUOTED_VERSION,
+        ),
+    ] {
+        no_command_takes_it(
+            fixture,
+            name,
+            contents,
+            "not the policy version this build reads",
+        );
+    }
+}
+
+/// The v2/v3-era compose spelling, with `version` unquoted. Quoted (`"3.8"`)
+/// never reached the name rule — `version` is a `u32`, so the loader refused
+/// it — and unquoted is what a `--config` mistyped one file over lands on.
+const NOT_A_POLICY_COMPOSE: &str = "\
+version: 3
+services:
+  db:
+    image: postgres:16
+    environment:
+      POSTGRES_PASSWORD: throwaway-not-a-real-value
+";
+
+/// A mapping whose only key is a `version` the loader cannot read as a `u32`.
+/// Its one line is what `no_command_takes_it` checks the message for, so the
+/// refusal has to name the rule without quoting the value.
+const NOT_A_POLICY_QUOTED_VERSION: &str = "version: \"1.0\"\n";
+
+/// The trap #240 names, held shut on the binary: a file containing only
+/// `version: 1` is a policy the gateway starts on, and the fix for the compose
+/// case must not cost it. Dropping `version` from the admission set would have;
+/// refusing on the value does not.
+///
+/// Through the gateway as well as `validate`, for the reason
+/// `a_policy_carrying_an_unknown_field_still_loads` gives.
+#[test]
+fn a_policy_declaring_only_its_version_still_loads() {
+    let home = TempHome::new("version-only");
+    let policy = home.write_policy("version-only.yaml", "version: 1\n");
+
+    let output = run(&home, &["policy", "validate", policy.to_str().unwrap()]);
+    assert!(
+        output.status.success(),
+        "`version: 1` alone is a policy the gateway starts on and must go on \
+         loading; got: {}",
+        stderr(&output)
+    );
+    assert!(
+        stderr(&output).contains("policy is valid (0 rules, 0 endpoints)"),
+        "…reported as the empty policy it is; got: {}",
+        stderr(&output)
+    );
+
+    #[cfg(unix)]
+    {
+        let gateway_home = TempHome::new("version-only-gateway");
+        let gateway_policy = gateway_home.write_policy("version-only.yaml", "version: 1\n");
+        let started = run(
+            &gateway_home,
+            &[
+                "gateway",
+                "--config",
+                gateway_policy.to_str().unwrap(),
+                "--addr",
+                UNBINDABLE_ADDR,
+            ],
+        );
+        let stderr = stderr(&started);
+        assert!(
+            stderr.contains("binding proxy"),
+            "the gateway must have got past the loader and failed at the bind — \
+             anything about `version` here means the read refused a policy it \
+             used to start on; got: {stderr}"
+        );
     }
 }
 
