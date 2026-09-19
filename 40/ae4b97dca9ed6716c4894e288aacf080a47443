@@ -1,0 +1,23 @@
+wiki/deep-dive/protocol-parsing.md
+  s_9d56a26b400aa9::t_49e7782cffa957 99-117,124-149,218-219,223-226
+  s_9d56a26b400aa9::t_89477f3876cb5e 118-123
+wiki/llms-full.txt
+  s_9d56a26b400aa9::t_89477f3876cb5e 1597-1602
+  s_9d56a26b400aa9::t_49e7782cffa957 1578-1596,1603-1628,1697-1698,1702-1705
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "40ae4b97dca9ed6716c4894e288aacf080a47443",
+  "prompts": {},
+  "sessions": {
+    "s_9d56a26b400aa9": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "f4feb044-f1d1-472d-b35c-5b0a213961b2",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
