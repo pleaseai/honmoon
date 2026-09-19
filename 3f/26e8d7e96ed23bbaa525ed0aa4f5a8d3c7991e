@@ -1,0 +1,19 @@
+scripts/check-wiki-source-anchors.ts
+  s_9d56a26b400aa9::t_417e18f77cd9ab 559-560
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "3f26e8d7e96ed23bbaa525ed0aa4f5a8d3c7991e",
+  "prompts": {},
+  "sessions": {
+    "s_9d56a26b400aa9": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "f4feb044-f1d1-472d-b35c-5b0a213961b2",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
