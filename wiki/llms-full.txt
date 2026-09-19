@@ -1591,8 +1591,11 @@ make the difference:
 
 Where several verbs execute, `sql.verb` is the most dangerous of them. The order is fixed once, in
 `VERB_PRECEDENCE`: `DROP > TRUNCATE > ALTER > MERGE > DELETE > UPDATE > INSERT > SELECT`
-([protocols.rs:57-70](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/protocols.rs#L57-L70)). Rules are deny-oriented, so over-reporting a verb can only refuse a statement, while
-under-reporting one hands an attacker a bypass. Only the first statement is classified; the data
+([protocols.rs:57-70](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/protocols.rs#L57-L70)). The order picks the verb a deny rule is most likely to name; it does not make the other verbs
+visible to rules written about them. `INSERT … ON CONFLICT DO UPDATE` reports `UPDATE`, so a policy
+that denies `INSERT` and allows `UPDATE` permits the insert of an unseen key — the limit ADR-0008
+records and [#104](https://github.com/pleaseai/honmoon/issues/104) tracks. Only the first statement
+is classified; the data
 plane refuses a batch outright rather than forward the rest uninspected
 (`carries_multiple_statements`, [protocols.rs:711-729](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/protocols.rs#L711-L729)).
 
