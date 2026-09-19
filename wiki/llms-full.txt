@@ -3612,7 +3612,7 @@ compose file was admitted and loaded as a 0-rule policy whose source `gateway --
 `version` from the admission set, because that refuses a file containing only `version: 1`, a
 policy the gateway starts on. It is closed on the *value*: when `version` is the only recognised key
 a mapping declares, it admits the document only as `version: 1`, the policy version this build reads
-([main.rs:1308-1392](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-cli/src/main.rs#L1308-L1392)).
+([main.rs:1310-1394](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-cli/src/main.rs#L1310-L1394)).
 Any other value — compose's `2` and `3`, the `0` an absent `version` defaults to, or a spelling the
 parser would refuse anyway — is refused for the path, with nothing from the file in the message.
 Beside `egress`, `endpoints` or `rules` the value is not consulted, so a policy declaring a version

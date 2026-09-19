@@ -1298,10 +1298,12 @@ fn names_no_policy_field(value: &serde_yaml::Value) -> bool {
 ///
 /// Written out here for the same reason [`POLICY_FIELDS`] is: nothing in
 /// `honmoon-core` declares it. `Policy::version` is a plain `u32` with no
-/// check on its value, the JSON Schema says only `>= 1`, and the shipped
-/// example and every policy in this repository declare `1`.
-/// `only_this_builds_policy_version_is_an_admission_ticket` pins the value, so
-/// a schema bump that leaves this behind fails a test rather than refusing the
+/// check on its value, and the JSON Schema says only `>= 1`. The artifact
+/// that does define the version operators write is the shipped example,
+/// `policies/agent.yaml`, and
+/// `only_this_builds_policy_version_is_an_admission_ticket` reads that file
+/// and requires its `version` to be this constant — so a schema bump that
+/// lands in the example and not here fails a test rather than refusing the
 /// bumped file at a deploy.
 const POLICY_VERSION: u32 = 1;
 
@@ -2030,7 +2032,18 @@ mod tests {
         use super::{POLICY_VERSION, admitted_only_by_an_unknown_version};
         use honmoon_core::Policy;
 
-        assert_eq!(POLICY_VERSION, 1, "the shipped example policy declares 1");
+        // The artifact that defines the version operators write, read
+        // mechanically rather than restated as a second literal: the shipped
+        // example is what a new policy is copied from, so a schema bump lands
+        // there, and this is where it fails until `POLICY_VERSION` follows.
+        let shipped = Policy::from_yaml(include_str!("../../../policies/agent.yaml"))
+            .expect("the shipped example policy loads");
+        assert_eq!(
+            shipped.version, POLICY_VERSION,
+            "`policies/agent.yaml` declares a version `POLICY_VERSION` does not — \
+             a policy copied from the example and stripped to its `version` line \
+             would now be refused; update the constant, not this test"
+        );
 
         for src in [
             // compose v2 and v3, unquoted.
