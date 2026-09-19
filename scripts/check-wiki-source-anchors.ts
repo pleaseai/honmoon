@@ -556,6 +556,8 @@ export function checkAnchor(
  * `approval.rs` rather than repointed, so it produces none of those findings
  * any more. The same rewrite dropped its copy of #119's `gateway.rs#L206-L271`,
  * which now defers on `quick-start.md` alone — the page #119 is actually about.
+ * #261's entry is gone the same way: the SQL section was rewritten against
+ * `parse_sql` as ADR-0008 leaves it, so the anchor it deferred no longer exists.
  *
  * Every remaining entry was resolved against `main` at `ed53fb4` and each one
  * is printed with its issue number on every passing run. None is on the page
