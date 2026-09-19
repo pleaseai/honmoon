@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.2](https://github.com/pleaseai/honmoon/compare/v0.1.1...v0.1.2) (2026-09-19)
+
+
+### Bug Fixes
+
+* **cli:** admit a mapping on `version` alone only as the policy version this build reads ([#283](https://github.com/pleaseai/honmoon/issues/283)) ([e722aca](https://github.com/pleaseai/honmoon/commit/e722aca593fa8bd2262f8f6451d27e47cc1cd054))
+
 ## [0.1.1](https://github.com/pleaseai/honmoon/compare/v0.1.0...v0.1.1) (2026-09-16)
 
 
