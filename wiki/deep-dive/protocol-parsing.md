@@ -135,7 +135,7 @@ rule written as `sql.table == 'scratch'` meant the table, not a schema, index or
 | Statement | `sql.verb` | `sql.table` | Proven by |
 |-----------|------------|-------------|-----------|
 | `DROP TABLE IF EXISTS users` | `DROP` | `users` | `drop_if_exists_extracts_real_table` ([protocols.rs:1090-1099](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/protocols.rs#L1090-L1099)) |
-| `DROP MATERIALIZED VIEW mv` | `DROP` | `` — not a table | `a_drop_of_a_non_table_object_names_no_table` ([protocols.rs:1530-1550](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/protocols.rs#L1530-L1550)) |
+| `DROP MATERIALIZED VIEW scratch` | `DROP` | `` — not a table | `a_drop_of_a_non_table_object_names_no_table` ([protocols.rs:1530-1550](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/protocols.rs#L1530-L1550)) |
 | `DROP TABLE a, b` / `TRUNCATE a, b` | `DROP` / `TRUNCATE` | `` — two targets | `a_multi_target_drop_or_truncate_names_no_table` ([protocols.rs:1241-1256](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/protocols.rs#L1241-L1256)) |
 | `TRUNCATE scratch CASCADE` | `TRUNCATE` | `` — reaches tables it never names | `a_cascading_truncate_or_drop_names_no_table` ([protocols.rs:1360-1380](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/protocols.rs#L1360-L1380)) |
 | `SELECT * FROM public.orders WHERE id = 1` | `SELECT` | `orders` | `parses_postgres_truncate_and_select` ([protocols.rs:1041-1053](https://github.com/pleaseai/honmoon/blob/main/crates/honmoon-core/src/protocols.rs#L1041-L1053)) |
